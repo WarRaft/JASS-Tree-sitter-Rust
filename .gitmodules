@@ -1,0 +1,3 @@
+[submodule "tree-sitter-lua"]
+	path = tree-sitter-lua
+	url = https://github.com/WarRaft/tree-sitter-lua
