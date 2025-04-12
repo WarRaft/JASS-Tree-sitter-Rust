@@ -1,0 +1,23 @@
+# https://doc.rust-lang.org/nightly/rustc/platform-support.html
+
+[target.x86_64-apple-darwin]
+# 64-bit macOS (10.12+, Sierra+)
+# https://hub.docker.com/layers/demurgos/rust-cross-guest-x86_64-apple-darwin/2024.3/images/sha256-7b23166c6c95eab6a1e3173ed4f75465db76ea2c173abc934170c75187a1c3df?context=explore
+image = "demurgos/rust-cross-guest-x86_64-apple-darwin:2024.3"
+
+[target.aarch64-apple-darwin]
+# ARM64 macOS (11.0+, Big Sur+)
+# https://hub.docker.com/layers/romariosun/aarch64-apple-darwin-cross/R_M/images/sha256-aa0b17106773450cd14b0610eb6f9f73f362aa29aba18eb7a207296525cd8a08
+image = "romariosun/aarch64-apple-darwin-cross:R_M"
+
+[target.aarch64-unknown-linux-gnu]
+# ARM64 Linux (kernel 4.1, glibc 2.17+)
+
+[target.x86_64-pc-windows-gnu]
+# 64-bit MinGW (Windows 10+, Windows Server 2016+)
+
+#[target.x86_64-pc-windows-msvc]
+# 64-bit MSVC (Windows 10+, Windows Server 2016+)
+
+[target.x86_64-unknown-linux-gnu]
+# 64-bit Linux (kernel 3.2+, glibc 2.17+)
