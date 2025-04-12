@@ -9,7 +9,7 @@ fi
 
 # Get name from Cargo.toml
 PROJECT_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
-DIST_DIR="target/dist"
+DIST_DIR="dist"
 mkdir -p "$DIST_DIR"
 
 echo "📦 Building universal macOS binary..."
@@ -34,5 +34,5 @@ cargo build --release --target x86_64-pc-windows-gnu
 cp "target/x86_64-pc-windows-gnu/release/$PROJECT_NAME.exe" "$DIST_DIR/$PROJECT_NAME-windows.exe"
 
 echo ""
-echo "✅ Все сборки завершены. Бинарники:"
+echo "✅ Build complete:"
 ls -lh "$DIST_DIR"
