@@ -1,4 +1,3 @@
 {
-  "jass-tree-sitter-rust.trace.server": "verbose",
-
+  "JassTreeSitterRustLsp.trace.server": "verbose"
 }

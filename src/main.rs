@@ -1,3 +1,6 @@
+mod lsp;
+
+use log::{error, info};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::io::{self, BufRead, BufReader, Write};
@@ -37,11 +40,11 @@ fn read_lsp_message<R: BufRead>(reader: &mut R) -> Option<String> {
     loop {
         line.clear();
         if reader.read_line(&mut line).ok()? == 0 {
-            return None;
+            return None; // stdin закрыт
         }
         if line == "\r\n" {
             break;
-        } else if let Some(cl) = line.strip_prefix("Content-Length: ") {
+        } else if let Some(cl) = line.strip_prefix("Content-Length:") {
             content_length = cl.trim().parse::<usize>().ok()?;
         }
     }
@@ -60,28 +63,29 @@ fn write_lsp_message<W: Write>(writer: &mut W, message: &Value) {
 
 fn main() {
     env_logger::init();
+
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin.lock());
     let mut writer = stdout.lock();
 
+    info!("LSP server started");
+
     while let Some(msg) = read_lsp_message(&mut reader) {
+        info!("<<< {}", msg);
+
         let request: Request = match serde_json::from_str(&msg) {
             Ok(req) => req,
             Err(err) => {
-                eprintln!("Failed to parse request: {err}");
+                error!("Failed to parse request: {}", err);
                 continue;
             }
         };
 
         match request.method.as_str() {
             "initialize" => {
-                //let params: InitializeParams = serde_json::from_value(request.params.unwrap_or_default()).unwrap();
-
                 let result = InitializeResult {
-                    capabilities: json!({
-                        //"textDocumentSync": 1
-                    }),
+                    capabilities: json!({}),
                 };
 
                 let response = Response {
@@ -92,20 +96,23 @@ fn main() {
                 };
 
                 let value = serde_json::to_value(response).unwrap();
+                info!(">>> {}", value);
                 write_lsp_message(&mut writer, &value);
             }
             "shutdown" => {
                 let response = Response {
                     jsonrpc: "2.0".to_string(),
                     id: request.id,
-                    result: Some(()),
+                    result: Some(json!(null)),
                     error: None,
                 };
                 let value = serde_json::to_value(response).unwrap();
+                info!(">>> {}", value);
                 write_lsp_message(&mut writer, &value);
                 break;
             }
             "exit" => {
+                info!("Received 'exit' method. Exiting.");
                 break;
             }
             _ => {
@@ -119,8 +126,12 @@ fn main() {
                     })),
                 };
                 let value = serde_json::to_value(response).unwrap();
+                info!(">>> {}", value);
                 write_lsp_message(&mut writer, &value);
             }
         }
     }
+
+    info!("LSP server shutting down (stdin closed)");
+    std::process::exit(0);
 }

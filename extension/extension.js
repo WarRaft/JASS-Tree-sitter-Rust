@@ -4,7 +4,7 @@
 const {
     workspace,
     window,
-    Uri
+    Uri, ExtensionMode
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
@@ -22,51 +22,61 @@ module.exports = {
 
     /** @param {ExtensionContext} context */
     async activate(context) {
-        let binName;
+        let binName = 'JASS-Tree-sitter-Rust-'
 
         switch (process.platform) {
-            case "win32":
-                binName = "JASS-Tree-sitter-Rust-win.exe";
-                break;
-            case "darwin":
-                binName = "JASS-Tree-sitter-Rust-macos";
-                break;
-            case "linux":
-                binName = "JASS-Tree-sitter-Rust-linux";
-                break;
+            case 'win32':
+                binName += 'win.exe'
+                break
+            case 'darwin':
+                binName += 'macos'
+                break
+            case 'linux':
+                binName += 'linux'
+                break
             default:
-                window.showErrorMessage(`Unsupported platform: ${process.platform}`);
-                return;
+                window.showErrorMessage(`Unsupported platform: ${process.platform}`)
+                return
         }
 
-        const binPath = Uri.file(
-            path.join(context.extensionPath, "dist", binName)
-        );
+        const binPath = path.join(context.extensionPath, 'dist', binName)
+        const binUri = Uri.file(binPath)
 
         try {
-            await workspace.fs.stat(binPath);
+            await workspace.fs.stat(binUri)
         } catch (error) {
-            window.showErrorMessage(`LSP binary not found:\n${binPath.fsPath}\n\n${error.message}`);
-            return;
+            window.showErrorMessage(`LSP binary not found:\n${binUri.fsPath}\n\n${error.message}`)
+            return
+        }
+
+        const options = context.extensionMode === ExtensionMode.Production ? {
+            command: binUri.fsPath,
+        } : {
+            command: process.execPath, // node
+            args: [path.join(context.extensionPath, 'lsp-proxy.js')],
+            options: {
+                env: {
+                    ...process.env,
+                    REAL_LSP_PATH: binPath
+                }
+            }
         }
 
         client = new LanguageClient(
             'JassTreeSitterRustLsp',
             'JassTreeSitterRustLspClient',
-            {
-                command: binPath.fsPath,
-            },
+            options,
             {
                 progressOnInitialization: true,
                 initializationOptions: {},
                 documentSelector: [
                     {
                         scheme: 'file',
-                        language: 'luz',
+                        language: 'lua',
                     },
                 ],
-                outputChannelName: "JASS-Tree-Sitter-Rust Logs",
-                traceOutputChannel: window.createOutputChannel("JASS-Tree-Sitter-Rust Trace"),
+                outputChannelName: 'JASS-Tree-Sitter-Rust Logs',
+                traceOutputChannel: window.createOutputChannel('JASS-Tree-Sitter-Rust Trace'),
                 trace: Trace.Verbose
             }
         )

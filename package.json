@@ -42,19 +42,19 @@
   "contributes": {
     "languages": [
       {
-        "id": "luz",
+        "id": "lua-rust",
         "aliases": [
-          "Luz",
-          "luz"
+          "Lua",
+          "lua"
         ],
         "extensions": [
-          ".luz"
+          ".lua"
         ],
         "icon": {
           "light": "./icons/lua.svg",
           "dark": "./icons/lua.svg"
         },
-        "configuration": "./syntaxes/luz.language-configuration.json"
+        "configuration": "./syntaxes/lua.language-configuration.json"
       }
     ]
   }
