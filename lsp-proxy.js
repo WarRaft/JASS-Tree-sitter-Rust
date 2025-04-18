@@ -37,6 +37,12 @@ server.stdout.on('data', chunk => {
     })
 })
 
+process.stdin.on('end', () => {
+    console.log('stdin closed, shutting down the server...')
+    server.stdin.end()  // Закрыть stdin потока серверного процесса
+    server.kill('SIGTERM')  // Отправить сигнал завершения процессу
+})
+
 function tryParseMessages(buffer, onMessage, onRemaining) {
     while (true) {
         const headerEnd = buffer.indexOf('\r\n\r\n')
