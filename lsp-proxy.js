@@ -13,10 +13,16 @@ const server = spawn(realServerPath, [], {
 let clientBuffer = ''
 let serverBuffer = ''
 
+function format(msg) {
+    const j = JSON.parse(msg)
+    if (j['method'] === 'initialize') return '🔥initialize'
+    return JSON.stringify(j, null, 4)
+}
+
 process.stdin.on('data', chunk => {
     clientBuffer += chunk.toString()
     tryParseMessages(clientBuffer, msg => {
-        console.error('➡️>>> To Server:\n', msg)
+        console.error('➡️ To Server:\n', format(msg))
         const msgBuf = Buffer.from(msg, 'utf8')
         server.stdin.write(`Content-Length: ${msgBuf.length}\r\n\r\n`)
         server.stdin.write(msgBuf)
@@ -28,7 +34,7 @@ process.stdin.on('data', chunk => {
 server.stdout.on('data', chunk => {
     serverBuffer += chunk.toString()
     tryParseMessages(serverBuffer, msg => {
-        console.error('⬅️<<< From Server:\n', msg)
+        console.error('⬅️ From Server:\n', format(msg))
         const msgBuf = Buffer.from(msg, 'utf8')
         process.stdout.write(`Content-Length: ${msgBuf.length}\r\n\r\n`)
         process.stdout.write(msgBuf)

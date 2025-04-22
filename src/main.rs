@@ -1,9 +1,11 @@
 mod lsp;
 
-use crate::lsp::initialize::InitializeResult;
+use crate::lsp::initialize::{InitializeResult, TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::{LspMessage, MethodCall, ResponseMessage};
+use initialize::ServerCapabilities;
 use log::{error, info};
+use lsp::initialize;
 use serde::Serialize;
 use serde_json::json;
 use std::io::{self, BufRead, BufReader, Write};
@@ -33,7 +35,13 @@ fn main() {
                                 jsonrpc: "2.0".into(),
                                 id,
                                 result: Some(InitializeResult {
-                                    capabilities: json!({}),
+                                    capabilities: ServerCapabilities {
+                                        text_document_sync: Some(TextDocumentSyncOptions {
+                                            open_close: Some(true),
+                                            change: Some(TextDocumentSyncKind::Incremental),
+                                        }),
+                                        ..Default::default()
+                                    },
                                 }),
                                 error: None,
                             },
@@ -83,9 +91,7 @@ fn main() {
                 },
             },
 
-            Ok(LspMessage::Response(_)) => {
-                // Handle if needed
-            }
+            Ok(LspMessage::Response(_)) => {}
 
             Err(err) => {
                 error!("Failed to parse message: {}", err);
