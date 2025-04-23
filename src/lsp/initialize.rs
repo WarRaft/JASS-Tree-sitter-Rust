@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_repr::{Deserialize_repr, Serialize_repr};
+use std::fmt::Display;
+use strum::IntoEnumIterator;
+use strum_macros::{Display, EnumIter};
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#initialize
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,7 +45,7 @@ pub struct SemanticTokensLegend {
     pub token_modifiers: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, EnumIter, Display)]
 #[serde(rename_all = "camelCase")]
 pub enum TokenType {
     Namespace,     // For identifiers that declare or reference a namespace, module, or package.
@@ -70,7 +73,7 @@ pub enum TokenType {
     Operator,   // For tokens that represent an operator.
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, EnumIter, Display)]
 #[serde(rename_all = "camelCase")]
 pub enum TokenModifier {
     Declaration,    //	For declarations of symbols.
@@ -85,37 +88,26 @@ pub enum TokenModifier {
     DefaultLibrary, //	For symbols that are part of the standard library.
 }
 
-/*
-export interface SemanticTokensOptions extends WorkDoneProgressOptions {
-    /**
-     * The legend used by the server
-     */
-    legend: SemanticTokensLegend;
-
-    /**
-     * Server supports providing semantic tokens for a specific range
-     * of a document.
-     */
-    range?: boolean | {
-    };
-
-    /**
-     * Server supports providing semantic tokens for a full document.
-     */
-    full?: boolean | {
-        /**
-         * The server supports deltas for full documents.
-         */
-        delta?: boolean;
-    };
+pub trait ToCamelVec {
+    fn get_vec() -> Vec<String>;
 }
- */
-
-/*
-
-   semantic_tokens_provider?: SemanticTokensOptions
-       | SemanticTokensRegistrationOptions;
-*/
+impl<T> ToCamelVec for T
+where
+    T: IntoEnumIterator + Display,
+{
+    fn get_vec() -> Vec<String> {
+        T::iter()
+            .map(|variant| {
+                let s = variant.to_string();
+                let mut chars = s.chars();
+                match chars.next() {
+                    Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            })
+            .collect()
+    }
+}
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentSyncOptions
 #[derive(Debug, Default, Serialize, Deserialize)]

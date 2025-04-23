@@ -1,6 +1,9 @@
 mod lsp;
 
-use crate::lsp::initialize::{InitializeResult, TextDocumentSyncKind, TextDocumentSyncOptions};
+use crate::lsp::initialize::{
+    InitializeResult, SemanticTokensLegend, SemanticTokensOptions, TextDocumentSyncKind,
+    TextDocumentSyncOptions, ToCamelVec, TokenModifier, TokenType,
+};
 use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::{LspMessage, MethodCall, ResponseMessage};
 use initialize::ServerCapabilities;
@@ -39,6 +42,14 @@ fn main() {
                                         text_document_sync: Some(TextDocumentSyncOptions {
                                             open_close: Some(true),
                                             change: Some(TextDocumentSyncKind::Incremental),
+                                        }),
+                                        semantic_tokens_provider: Some(SemanticTokensOptions {
+                                            legend: SemanticTokensLegend {
+                                                token_types: <TokenType as ToCamelVec>::get_vec(),
+                                                token_modifiers:
+                                                    <TokenModifier as ToCamelVec>::get_vec(),
+                                            },
+                                            full: true,
                                         }),
                                         ..Default::default()
                                     },

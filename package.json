@@ -70,6 +70,21 @@
           "dark": "./icons/vjass.svg"
         },
         "configuration": "./syntaxes/vjass.language-configuration.json"
+      },
+      {
+        "id": "bni",
+        "aliases": [
+          "Blizzard Notation Ini",
+          "BNI"
+        ],
+        "extensions": [
+          ".bni"
+        ],
+        "icon": {
+          "light": "./icons/bni.svg",
+          "dark": "./icons/bni.svg"
+        },
+        "configuration": "./syntaxes/bni.language-configuration.json"
       }
     ]
   }

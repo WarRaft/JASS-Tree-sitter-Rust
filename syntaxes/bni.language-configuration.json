@@ -1,6 +1,4 @@
 {
   "autoClosingPairs": [],
-  "surroundingPairs": [
-    ["{", "}"]
-  ]
+  "surroundingPairs": []
 }

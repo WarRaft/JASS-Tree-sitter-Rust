@@ -1,6 +1,7 @@
 pub mod initialize;
 pub mod initialized;
 pub mod set_trace;
+mod text_document;
 
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
