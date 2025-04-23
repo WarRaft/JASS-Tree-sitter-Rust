@@ -1,0 +1,9 @@
+*
+**
+!node_modules/**
+!extension/**
+!dist/**
+!sdk/**
+!icons/**
+!images/**
+!LICENSE
