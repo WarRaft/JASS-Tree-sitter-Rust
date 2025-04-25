@@ -1,12 +1,14 @@
 pub mod initialize;
 pub mod initialized;
+mod position;
+mod range;
 pub mod set_trace;
 mod text_document;
 
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
 use crate::lsp::set_trace::SetTraceParams;
-use crate::lsp::text_document::DidOpenTextDocumentParams;
+use crate::lsp::text_document::{DidChangeTextDocumentParams, DidOpenTextDocumentParams};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -45,6 +47,9 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/didOpen")]
     DidOpen(DidOpenTextDocumentParams),
+
+    #[serde(rename = "textDocument/didChange")]
+    DidChange(DidChangeTextDocumentParams),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

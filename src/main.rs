@@ -1,3 +1,4 @@
+mod lng;
 mod lsp;
 
 use crate::lsp::initialize::{
@@ -67,7 +68,16 @@ fn main() {
                 MethodCall::SetTrace(_) => {}
 
                 MethodCall::DidOpen(params) => {
-                    info!("Received 'didOpenTextDocument' notification: {:?}", params);
+                    if params.text_document.language_id == "bni" {
+                        lng::bni::parse(&params.text_document.text);
+                    }
+                }
+
+                MethodCall::DidChange(params) => {
+                    info!(
+                        "Received 'didChangeTextDocument' notification: {:?}",
+                        params
+                    );
                 }
             },
 

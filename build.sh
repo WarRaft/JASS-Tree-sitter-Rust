@@ -1,13 +1,11 @@
 #!/bin/bash
 set -e
 
-# Проверка на наличие jq
 if ! command -v jq &> /dev/null; then
     echo "❌ Требуется 'jq'. Установи: brew install jq"
     exit 1
 fi
 
-# Get name from Cargo.toml
 PROJECT_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
 DIST_DIR="dist"
 mkdir -p "$DIST_DIR"
