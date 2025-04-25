@@ -4,13 +4,12 @@ use crate::lsp::initialize::{
     InitializeResult, SemanticTokensLegend, SemanticTokensOptions, TextDocumentSyncKind,
     TextDocumentSyncOptions, ToCamelVec, TokenModifier, TokenType,
 };
-use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::{LspMessage, MethodCall, ResponseMessage};
 use initialize::ServerCapabilities;
 use log::{error, info};
 use lsp::initialize;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io::{self, BufRead, BufReader, Write};
 
 fn main() {
@@ -21,88 +20,60 @@ fn main() {
     let mut reader = BufReader::new(stdin.lock());
     let mut writer = stdout.lock();
 
-    info!("LSP server started");
-
     while let Some(msg) = lsp_read(&mut reader) {
-        info!("<<< {}", msg);
-
         match serde_json::from_str::<LspMessage>(&msg) {
-            Ok(LspMessage::Call(call)) => match call.id {
-                Some(id) => match call.payload {
-                    MethodCall::Initialize(params) => {
-                        info!("Initialize Params: {:?}", params);
+            Ok(LspMessage::Call(call)) => match call.payload {
+                MethodCall::Initialize(_) => {
+                    lsp_send(
+                        &mut writer,
+                        &ResponseMessage {
+                            jsonrpc: "2.0".into(),
+                            id: Some(Value::from(call.id)),
+                            result: Some(InitializeResult {
+                                capabilities: ServerCapabilities {
+                                    text_document_sync: Some(TextDocumentSyncOptions {
+                                        open_close: Some(true),
+                                        change: Some(TextDocumentSyncKind::Incremental),
+                                    }),
+                                    semantic_tokens_provider: Some(SemanticTokensOptions {
+                                        legend: SemanticTokensLegend {
+                                            token_types: <TokenType as ToCamelVec>::get_vec(),
+                                            token_modifiers: <TokenModifier as ToCamelVec>::get_vec(
+                                            ),
+                                        },
+                                        full: true,
+                                    }),
+                                    ..Default::default()
+                                },
+                            }),
+                            error: None,
+                        },
+                    );
+                }
+                MethodCall::Shutdown() | MethodCall::Exit() => {
+                    lsp_send(
+                        &mut writer,
+                        &ResponseMessage {
+                            jsonrpc: "2.0".into(),
+                            id: Some(json!(null)),
+                            result: Some(json!(null)),
+                            error: None,
+                        },
+                    );
+                    break;
+                }
 
-                        lsp_send(
-                            &mut writer,
-                            &ResponseMessage {
-                                jsonrpc: "2.0".into(),
-                                id,
-                                result: Some(InitializeResult {
-                                    capabilities: ServerCapabilities {
-                                        text_document_sync: Some(TextDocumentSyncOptions {
-                                            open_close: Some(true),
-                                            change: Some(TextDocumentSyncKind::Incremental),
-                                        }),
-                                        semantic_tokens_provider: Some(SemanticTokensOptions {
-                                            legend: SemanticTokensLegend {
-                                                token_types: <TokenType as ToCamelVec>::get_vec(),
-                                                token_modifiers:
-                                                    <TokenModifier as ToCamelVec>::get_vec(),
-                                            },
-                                            full: true,
-                                        }),
-                                        ..Default::default()
-                                    },
-                                }),
-                                error: None,
-                            },
-                        );
-                    }
+                MethodCall::Initialized(_) => {}
+                MethodCall::SetTrace(_) => {}
 
-                    MethodCall::Shutdown() => {
-                        lsp_send(
-                            &mut writer,
-                            &ResponseMessage {
-                                jsonrpc: "2.0".into(),
-                                id,
-                                result: Some(json!(null)),
-                                error: None,
-                            },
-                        );
-                        break;
-                    }
-                    MethodCall::Exit() => {
-                        lsp_send(
-                            &mut writer,
-                            &ResponseMessage {
-                                jsonrpc: "2.0".into(),
-                                id,
-                                result: Some(json!(null)),
-                                error: None,
-                            },
-                        );
-                        break;
-                    }
-
-                    _ => {
-                        error!("Unknown request method");
-                    }
-                },
-
-                None => match call.payload {
-                    MethodCall::Initialized(_) => {
-                        info!("Received 'initialized' notification");
-                    }
-                    MethodCall::SetTrace(SetTraceParams { value }) => {
-                        info!("Set trace level: {:?}", value);
-                    }
-                    _ => {
-                        info!("Unknown notification method");
-                    }
-                },
+                MethodCall::DidOpen(params) => {
+                    info!("Received 'didOpenTextDocument' notification: {:?}", params);
+                }
             },
 
-            Ok(LspMessage::Response(_)) => {}
+            Ok(LspMessage::RequestMessage(msg)) => {
+                error!("Unexpected request: {:?}", msg);
+            }
 
             Err(err) => {
                 error!("Failed to parse message: {}", err);
@@ -110,7 +81,6 @@ fn main() {
         }
     }
 
-    info!("LSP server shutting down (stdin closed)");
     std::process::exit(0);
 }
 

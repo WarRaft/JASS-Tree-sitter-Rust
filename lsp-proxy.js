@@ -7,7 +7,7 @@ if (!realServerPath) {
 }
 
 const server = spawn(realServerPath, [], {
-    stdio: ['pipe', 'pipe', 'inherit']
+    stdio: ['pipe', 'pipe', 'pipe']
 })
 
 let clientBuffer = ''
@@ -43,10 +43,13 @@ server.stdout.on('data', chunk => {
     })
 })
 
+server.stderr.on('data', chunk => {
+    console.error('⚠️', chunk.toString())
+})
+
 process.stdin.on('end', () => {
-    console.log('stdin closed, shutting down the server...')
-    server.stdin.end()  // Закрыть stdin потока серверного процесса
-    server.kill('SIGTERM')  // Отправить сигнал завершения процессу
+    server.stdin.end()
+    server.kill('SIGTERM')
 })
 
 function tryParseMessages(buffer, onMessage, onRemaining) {

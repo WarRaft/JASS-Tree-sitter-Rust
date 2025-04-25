@@ -57,7 +57,8 @@ module.exports = {
             options: {
                 env: {
                     ...process.env,
-                    REAL_LSP_PATH: binPath
+                    REAL_LSP_PATH: binPath,
+                    RUST_LOG: 'debug'
                 }
             }
         }
