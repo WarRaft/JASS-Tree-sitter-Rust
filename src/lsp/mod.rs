@@ -1,12 +1,15 @@
 pub mod initialize;
 pub mod initialized;
-mod position;
-mod range;
+pub mod position;
+pub mod range;
+pub mod semantic;
 pub mod set_trace;
-mod text_document;
+pub mod text_document;
+mod semantic_hub;
 
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
+use crate::lsp::semantic::SemanticTokensParams;
 use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::text_document::{DidChangeTextDocumentParams, DidOpenTextDocumentParams};
 use serde::{Deserialize, Serialize};
@@ -50,6 +53,9 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/didChange")]
     DidChange(DidChangeTextDocumentParams),
+
+    #[serde(rename = "textDocument/semanticTokens/full")]
+    SemanticFull(SemanticTokensParams),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

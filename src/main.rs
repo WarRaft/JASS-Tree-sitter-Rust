@@ -1,9 +1,10 @@
 mod lng;
 mod lsp;
 
-use crate::lsp::initialize::{
-    InitializeResult, SemanticTokensLegend, SemanticTokensOptions, TextDocumentSyncKind,
-    TextDocumentSyncOptions, ToCamelVec, TokenModifier, TokenType,
+use crate::lsp::initialize::{InitializeResult, TextDocumentSyncKind, TextDocumentSyncOptions};
+use crate::lsp::semantic::{
+    SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, ToCamelVec, TokenModifier,
+    TokenType,
 };
 use crate::lsp::{LspMessage, MethodCall, ResponseMessage};
 use initialize::ServerCapabilities;
@@ -77,6 +78,19 @@ fn main() {
                     info!(
                         "Received 'didChangeTextDocument' notification: {:?}",
                         params
+                    );
+                }
+
+                MethodCall::SemanticFull(params) => {
+                    
+                    lsp_send(
+                        &mut writer,
+                        &ResponseMessage {
+                            jsonrpc: "2.0".into(),
+                            id: Some(Value::from(call.id)),
+                            result: Some(SemanticTokens { data: vec![] }),
+                            error: None,
+                        },
                     );
                 }
             },

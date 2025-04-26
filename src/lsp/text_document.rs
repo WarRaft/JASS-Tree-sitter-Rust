@@ -27,6 +27,12 @@ pub struct DidChangeTextDocumentParams {
     pub content_changes: Vec<TextDocumentContentChangeEvent>,
 }
 
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentIdentifier
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TextDocumentIdentifier {
+    pub uri: Url,
+}
+
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#versionedTextDocumentIdentifier
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
