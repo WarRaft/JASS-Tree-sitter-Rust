@@ -1,11 +1,13 @@
-mod lng;
-mod lsp;
+pub mod lng;
+pub mod lsp;
 
-use crate::lsp::initialize::{InitializeResult, TextDocumentSyncKind, TextDocumentSyncOptions};
+use crate::lsp::initialize::InitializeResult;
 use crate::lsp::semantic::{
     SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, ToCamelVec, TokenModifier,
     TokenType,
 };
+use crate::lsp::semantic_hub::SEMANTIC_STORE;
+use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::lsp::{LspMessage, MethodCall, ResponseMessage};
 use initialize::ServerCapabilities;
 use log::{error, info};
@@ -70,7 +72,7 @@ fn main() {
 
                 MethodCall::DidOpen(params) => {
                     if params.text_document.language_id == "bni" {
-                        lng::bni::parse(&params.text_document.text);
+                        lng::bni::parse(&params.text_document.uri, &params.text_document.text);
                     }
                 }
 
@@ -82,13 +84,14 @@ fn main() {
                 }
 
                 MethodCall::SemanticFull(params) => {
-                    
+                    let mut store = SEMANTIC_STORE.lock().unwrap();
+                    let hub = store.hub(&params.text_document.uri);
                     lsp_send(
                         &mut writer,
                         &ResponseMessage {
                             jsonrpc: "2.0".into(),
                             id: Some(Value::from(call.id)),
-                            result: Some(SemanticTokens { data: vec![] }),
+                            result: Some(SemanticTokens { data: hub.data() }),
                             error: None,
                         },
                     );

@@ -5,7 +5,7 @@ pub mod range;
 pub mod semantic;
 pub mod set_trace;
 pub mod text_document;
-mod semantic_hub;
+pub mod semantic_hub;
 
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;

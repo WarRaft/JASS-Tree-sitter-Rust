@@ -15,7 +15,7 @@ pub struct SemanticTokensParams {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticTokens {
-    pub data: Vec<u32>,
+    pub data: Vec<usize>,
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokensOptions

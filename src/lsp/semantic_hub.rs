@@ -1,35 +1,64 @@
 use crate::lsp::semantic::{TokenModifier, TokenType};
 use std::collections::BTreeMap;
 
-#[derive(Clone)]
-pub struct SemanticToken {
-    pub line: u32,
-    pub pos: u32,
-    pub len: u32,
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use url::Url;
+
+pub static SEMANTIC_STORE: Lazy<Mutex<SemanticStore>> =
+    Lazy::new(|| Mutex::new(SemanticStore::new()));
+
+#[derive(Debug)]
+pub struct SemanticStore {
+    pub(crate) hubs: HashMap<Url, SemanticTokenHub>,
+}
+
+impl SemanticStore {
+    pub fn new() -> Self {
+        Self {
+            hubs: HashMap::new(),
+        }
+    }
+
+    pub fn hub(&mut self, url: &Url) -> &mut SemanticTokenHub {
+        self.hubs
+            .entry(url.clone())
+            .or_insert_with(SemanticTokenHub::new)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Token {
+    pub line: usize,
+    pub pos: usize,
+    pub len: usize,
     pub token_type: TokenType,
     pub modifier: Option<TokenModifier>,
 }
 
-pub struct SemanticTokenLine {
-    pub index: u32,
-    pub tokens: Vec<SemanticToken>,
+#[derive(Debug)]
+pub struct TokenLine {
+    pub index: usize,
+    pub tokens: Vec<Token>,
 }
 
-impl SemanticTokenLine {
-    pub fn new(index: u32) -> Self {
+impl TokenLine {
+    pub fn new(index: usize) -> Self {
         Self {
             index,
             tokens: Vec::new(),
         }
     }
 
-    pub fn add(&mut self, token: SemanticToken) {
+    pub fn add(&mut self, token: Token) {
         self.tokens.push(token);
     }
 }
 
+#[derive(Debug)]
 pub struct SemanticTokenHub {
-    pub lines: BTreeMap<u32, SemanticTokenLine>,
+    pub lines: BTreeMap<usize, TokenLine>,
 }
 
 impl SemanticTokenHub {
@@ -41,28 +70,26 @@ impl SemanticTokenHub {
 
     pub fn add(
         &mut self,
-        line: u32,
-        pos: u32,
-        len: u32,
+        line: usize,
+        pos: usize,
+        len: usize,
         token_type: TokenType,
         modifier: Option<TokenModifier>,
     ) -> &mut Self {
-        let token = SemanticToken {
-            line,
-            pos,
-            len,
-            token_type,
-            modifier,
-        };
-
         self.lines
             .entry(line)
-            .or_insert_with(|| SemanticTokenLine::new(line))
-            .add(token);
+            .or_insert_with(|| TokenLine::new(line))
+            .add(Token {
+                line,
+                pos,
+                len,
+                token_type,
+                modifier,
+            });
 
         self
     }
-    pub fn data(&self) -> Vec<u32> {
+    pub fn data(&self) -> Vec<usize> {
         let mut result = Vec::new();
         let mut line_last = 0;
 
@@ -75,8 +102,8 @@ impl SemanticTokenHub {
                 result.push(if i == 0 { token.line - line_last } else { 0 });
                 result.push(token.pos - token_last);
                 result.push(token.len);
-                result.push(token.token_type.clone() as u32);
-                result.push(token.modifier.as_ref().map_or(0, |m| m.clone() as u32));
+                result.push(token.token_type.clone() as usize);
+                result.push(token.modifier.as_ref().map_or(0, |m| m.clone() as usize));
                 token_last = token.pos;
             }
 
