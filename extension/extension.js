@@ -39,7 +39,7 @@ module.exports = {
                 return
         }
 
-        const binPath = path.join(context.extensionPath, 'dist', binName)
+        const binPath = path.join(context.extensionPath, 'bin', binName)
         const binUri = Uri.file(binPath)
 
         try {
