@@ -85,7 +85,8 @@ impl SemanticTokenHub {
 
         result
     }
-    pub fn clear(&mut self) {
+    pub fn clear(&mut self) -> &mut Self {
         self.lines.clear();
+        self
     }
 }

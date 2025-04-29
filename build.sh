@@ -7,7 +7,7 @@ if ! command -v jq &> /dev/null; then
 fi
 
 PROJECT_NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
-DIST_DIR="dist"
+DIST_DIR="bin"
 mkdir -p "$DIST_DIR"
 
 echo "📦 Building universal macOS binary..."

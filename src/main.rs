@@ -86,14 +86,16 @@ fn main() {
                 }
 
                 MethodCall::SemanticFull(params) => {
-                    let mut store = URI_MAP.lock().unwrap();
-                    let hub = store.semantic(&params.text_document.uri);
+                    let mut map = URI_MAP.lock().unwrap();
+                    let semantic = map.entry(&params.text_document.uri).semantic;
                     lsp_send(
                         &mut writer,
                         &ResponseMessage {
                             jsonrpc: "2.0".into(),
                             id: Some(Value::from(call.id)),
-                            result: Some(SemanticTokens { data: hub.data() }),
+                            result: Some(SemanticTokens {
+                                data: semantic.data(),
+                            }),
                             error: None,
                         },
                     );

@@ -1,6 +1,5 @@
 use crate::lsp::semantic::TokenType;
 use crate::util::uri_map::URI_MAP;
-use log::info;
 use tree_sitter::Parser;
 use url::Url;
 
@@ -13,12 +12,13 @@ pub fn parse(uri: &Url, text: impl AsRef<[u8]>) {
         .expect("Error loading Bni parser");
 
     let mut map = URI_MAP.lock().unwrap();
-    let semantic = map.semantic(&uri);
-    semantic.clear();
+    let entry = map.entry(&uri);
 
-    let tree = parser.parse(&text, None).unwrap();
+    let semantic = entry.semantic.clear();
+    let old_tree = entry.tree;
 
-    let root = tree.root_node();
+    let new_tree = parser.parse(&text, None).unwrap();
+    let root = new_tree.root_node();
 
     for i in 0..root.child_count() {
         let node = root.child(i).unwrap();
@@ -29,7 +29,6 @@ pub fn parse(uri: &Url, text: impl AsRef<[u8]>) {
             continue;
         }
 
-        info!("kind:>{:?}<|{:?}|{:?}|", node.kind(), s, e);
         match node.kind() {
             "section" => {
                 semantic.add(
@@ -52,11 +51,4 @@ pub fn parse(uri: &Url, text: impl AsRef<[u8]>) {
             _ => {}
         }
     }
-
-    info!("hubs1:");
-    for (uri, hub) in &map.semantic {
-        info!("uri = {:?}, hub = {:?}", uri, hub);
-    }
-
-    //info!("{:?}", hub.lines);
 }
