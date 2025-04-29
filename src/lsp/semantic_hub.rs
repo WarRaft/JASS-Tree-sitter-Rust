@@ -1,33 +1,6 @@
 use crate::lsp::semantic::{TokenModifier, TokenType};
 use std::collections::BTreeMap;
 
-use once_cell::sync::Lazy;
-use std::collections::HashMap;
-use std::sync::Mutex;
-use url::Url;
-
-pub static SEMANTIC_STORE: Lazy<Mutex<SemanticStore>> =
-    Lazy::new(|| Mutex::new(SemanticStore::new()));
-
-#[derive(Debug)]
-pub struct SemanticStore {
-    pub(crate) hubs: HashMap<Url, SemanticTokenHub>,
-}
-
-impl SemanticStore {
-    pub fn new() -> Self {
-        Self {
-            hubs: HashMap::new(),
-        }
-    }
-
-    pub fn hub(&mut self, url: &Url) -> &mut SemanticTokenHub {
-        self.hubs
-            .entry(url.clone())
-            .or_insert_with(SemanticTokenHub::new)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Token {
     pub line: usize,

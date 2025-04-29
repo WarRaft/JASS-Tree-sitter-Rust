@@ -1,14 +1,16 @@
 pub mod lng;
 pub mod lsp;
+mod util;
 
 use crate::lsp::initialize::InitializeResult;
 use crate::lsp::semantic::{
     SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, ToCamelVec, TokenModifier,
     TokenType,
 };
-use crate::lsp::semantic_hub::SEMANTIC_STORE;
+
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::lsp::{LspMessage, MethodCall, ResponseMessage};
+use crate::util::uri_map::URI_MAP;
 use initialize::ServerCapabilities;
 use log::{error, info};
 use lsp::initialize;
@@ -84,8 +86,8 @@ fn main() {
                 }
 
                 MethodCall::SemanticFull(params) => {
-                    let mut store = SEMANTIC_STORE.lock().unwrap();
-                    let hub = store.hub(&params.text_document.uri);
+                    let mut store = URI_MAP.lock().unwrap();
+                    let hub = store.semantic(&params.text_document.uri);
                     lsp_send(
                         &mut writer,
                         &ResponseMessage {
