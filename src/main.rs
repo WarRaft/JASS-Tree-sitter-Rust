@@ -12,13 +12,14 @@ use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::lsp::{LspMessage, MethodCall, ResponseMessage};
 use crate::util::uri_map::URI_MAP;
 use initialize::ServerCapabilities;
-use log::{error, info};
+use log::error;
 use lsp::initialize;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::io::{self, BufRead, BufReader, Write};
 
 fn main() {
+
     env_logger::init();
 
     let stdin = io::stdin();
@@ -74,15 +75,20 @@ fn main() {
 
                 MethodCall::DidOpen(params) => {
                     if params.text_document.language_id == "bni" {
-                        lng::bni::parse(&params.text_document.uri, &params.text_document.text);
+                        lng::bni::open(&params.text_document.uri, &params.text_document.text);
                     }
                 }
 
                 MethodCall::DidChange(params) => {
-                    info!(
-                        "Received 'didChangeTextDocument' notification: {:?}",
-                        params
-                    );
+                    let mut map = URI_MAP.lock().unwrap();
+                    let uri = &params.text_document.uri;
+
+                    match map.entry(&uri).lng {
+                        Some(ref lng) if lng == "bni" => {
+                            lng::bni::change(&uri, params.content_changes);
+                        }
+                        _ => {}
+                    }
                 }
 
                 MethodCall::SemanticFull(params) => {

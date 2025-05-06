@@ -2,7 +2,7 @@
 name = "JASS-Tree-sitter-Rust"
 version = "0.2.0"
 authors = ["nazarpunk <nazarpunk@gmail.com>"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 tree-sitter = "0.25.3"
