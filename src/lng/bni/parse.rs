@@ -1,30 +1,40 @@
 use crate::lng::bni::kind::Kind;
 use crate::lsp::semantic::TokenType;
-use crate::util::uri_map::UriMapEntry;
+use crate::lsp::semantic_hub::SemanticTokenHub;
+use crate::util::uri_map::{SEMANTIC_MAP, TREE_MAP};
 use log::error;
+use url::Url;
 
-pub fn parse(entry: UriMapEntry) {
-    let tree = match entry.tree {
-        &mut Some(ref t) => t,
-        None => return,
+pub async fn parse(uri: &Url) {
+    let tree = {
+        let tree_map = TREE_MAP.lock().await;
+        match tree_map.get(uri) {
+            Some(Some(tree)) => tree.clone(),
+            _ => return,
+        }
     };
 
-    let root = tree.root_node();
-    let semantic = entry.semantic.clear();
+    let mut semantic_map = SEMANTIC_MAP.lock().await;
+    let semantic = semantic_map
+        .entry(uri.clone())
+        .or_insert_with(SemanticTokenHub::new);
+    semantic.clear();
 
+    let root = tree.root_node();
     for i in 0..root.child_count() {
-        let node = root.child(i).unwrap();
-        match node.kind().parse::<Kind>() {
-            Ok(kind) => match kind {
-                Kind::Section => {
-                    semantic.add_node(&node, TokenType::Keyword, None);
-                }
-                Kind::Item => {
-                    semantic.add_node(&node, TokenType::String, None);
-                }
-                _ => {}
-            },
-            Err(e) => error!("Node {}, error {}", node, e),
+        if let Some(node) = root.child(i) {
+            match node.kind().parse::<Kind>() {
+                Ok(kind) => match kind {
+                    Kind::Section => {
+                        semantic.add_node(&node, TokenType::Keyword, None);
+                    }
+                    Kind::Item => {
+                        semantic.add_node(&node, TokenType::String, None);
+                    }
+                    _ => {}
+                },
+                Err(e) => error!("Node {}, error {}", node, e),
+            }
         }
     }
 }

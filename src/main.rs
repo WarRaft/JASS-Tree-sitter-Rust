@@ -17,7 +17,7 @@ use crate::lsp::semantic::{
 };
 use crate::lsp::send::send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
-use crate::util::uri_map::URI_MAP;
+use crate::util::uri_map::{LNG_MAP, SEMANTIC_MAP};
 use log::error;
 
 #[tokio::main]
@@ -108,28 +108,36 @@ async fn main() {
 
                             MethodCall::DidChange(params) => {
                                 let uri = &params.text_document.uri;
-                                let mut map = URI_MAP.lock().await;
-                                let lng = map.entry(&uri).lng.as_ref().cloned();
-                                drop(map);
+
+                                let lng = {
+                                    let map = LNG_MAP.lock().await;
+                                    map.get(uri).cloned().flatten()
+                                };
+
                                 if let Some(lng) = lng {
                                     if lng == "bni" {
-                                        lng::bni::change::change(&uri, params.content_changes)
-                                            .await;
+                                        lng::bni::change::change(uri, params.content_changes).await;
                                     }
                                 }
                             }
 
                             MethodCall::SemanticFull(params) => {
-                                let mut map = URI_MAP.lock().await;
-                                let semantic = map.entry(&params.text_document.uri).semantic;
+                                let uri = &params.text_document.uri;
+
+                                let data = {
+                                    let map = SEMANTIC_MAP.lock().await;
+                                    match map.get(uri) {
+                                        Some(semantic) => semantic.data(),
+                                        None => Vec::new(), // если семантика не проинициализирована
+                                    }
+                                };
+
                                 send(
                                     &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: Some(Value::from(call.id)),
-                                        result: Some(SemanticTokens {
-                                            data: semantic.data(),
-                                        }),
+                                        result: Some(SemanticTokens { data }),
                                         error: None,
                                     },
                                 )
