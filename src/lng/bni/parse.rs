@@ -1,5 +1,7 @@
+use crate::lng::bni::kind::Kind;
 use crate::lsp::semantic::TokenType;
 use crate::util::uri_map::UriMapEntry;
+use log::error;
 
 pub fn parse(entry: UriMapEntry) {
     let tree = match entry.tree {
@@ -12,33 +14,17 @@ pub fn parse(entry: UriMapEntry) {
 
     for i in 0..root.child_count() {
         let node = root.child(i).unwrap();
-        let s = node.start_position();
-        let e = node.end_position();
-
-        if s.row != e.row {
-            continue;
-        }
-
-        match node.kind() {
-            "section" => {
-                semantic.add(
-                    s.row,
-                    s.column,
-                    e.column - s.column + 1,
-                    TokenType::Keyword,
-                    None,
-                );
-            }
-            "item" => {
-                semantic.add(
-                    s.row,
-                    s.column,
-                    e.column - s.column + 1,
-                    TokenType::String,
-                    None,
-                );
-            }
-            _ => {}
+        match node.kind().parse::<Kind>() {
+            Ok(kind) => match kind {
+                Kind::Section => {
+                    semantic.add_node(&node, TokenType::Keyword, None);
+                }
+                Kind::Item => {
+                    semantic.add_node(&node, TokenType::String, None);
+                }
+                _ => {}
+            },
+            Err(e) => error!("Node {}, error {}", node, e),
         }
     }
 }

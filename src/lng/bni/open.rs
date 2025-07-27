@@ -1,6 +1,5 @@
 use crate::lng::bni::parse::parse;
 use crate::util::uri_map::URI_MAP;
-use log::info;
 use tree_sitter::Parser;
 use url::Url;
 
@@ -18,7 +17,6 @@ pub async fn open(uri: &Url, text: impl AsRef<[u8]>) {
 
     entry.lng.replace("bni".to_string());
     entry.tree.replace(parser.parse(&text, None).unwrap());
-    info!("open");
 
     parse(entry);
 }

@@ -1,5 +1,6 @@
 use crate::lsp::semantic::{TokenModifier, TokenType};
 use std::collections::BTreeMap;
+use tree_sitter::Node;
 
 #[derive(Debug, Clone)]
 pub struct Token {
@@ -41,6 +42,7 @@ impl SemanticTokenHub {
         }
     }
 
+    #[allow(dead_code)]
     pub fn add(
         &mut self,
         line: usize,
@@ -59,9 +61,35 @@ impl SemanticTokenHub {
                 token_type,
                 modifier,
             });
-
         self
     }
+
+    pub fn add_node(
+        &mut self,
+        node: &Node,
+        token_type: TokenType,
+        modifier: Option<TokenModifier>,
+    ) -> &mut Self {
+        let s = node.start_position();
+        let e = node.end_position();
+
+        if s.row != e.row {
+            return self;
+        }
+
+        self.lines
+            .entry(s.row)
+            .or_insert_with(|| TokenLine::new(s.row))
+            .add(Token {
+                line: s.row,
+                pos: s.column,
+                len: e.column - s.column + 1,
+                token_type,
+                modifier,
+            });
+        self
+    }
+
     pub fn data(&self) -> Vec<usize> {
         let mut result = Vec::new();
         let mut line_last = 0;
