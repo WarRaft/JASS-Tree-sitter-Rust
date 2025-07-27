@@ -1,1 +1,1 @@
-pub mod bni;
+pub(crate) mod bni;

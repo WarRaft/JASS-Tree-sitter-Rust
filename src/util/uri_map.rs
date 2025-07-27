@@ -2,7 +2,7 @@ use crate::lsp::semantic_hub::SemanticTokenHub;
 use crate::util::line_list::LineList;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 use tree_sitter::Tree;
 use url::Url;
 
