@@ -12,7 +12,7 @@ pub async fn open(uri: &Url, text: impl AsRef<[u8]>) {
         let line_list = line_list_map
             .entry(uri.clone())
             .or_insert_with(LineList::new);
-        line_list.set_text(text);
+        line_list.set_text(std::str::from_utf8(text).expect("Invalid UTF-8"));
     }
 
     {

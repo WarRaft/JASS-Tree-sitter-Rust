@@ -38,7 +38,7 @@ async fn main() {
         let parsed = match serde_json::from_str::<LspMessage>(&msg) {
             Ok(p) => p,
             Err(err) => {
-                error!("Failed to parse message: {}", err);
+                error!("Failed to parse message: {} |{}", err, msg);
                 continue;
             }
         };
