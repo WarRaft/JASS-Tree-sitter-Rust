@@ -1,4 +1,5 @@
 const {spawn} = require('child_process')
+const {Buffer} = require('buffer')
 
 const realServerPath = process.env.REAL_LSP_PATH
 if (!realServerPath) {
@@ -10,17 +11,21 @@ const server = spawn(realServerPath, [], {
     stdio: ['pipe', 'pipe', 'pipe']
 })
 
-let clientBuffer = ''
-let serverBuffer = ''
+let clientBuffer = Buffer.alloc(0)
+let serverBuffer = Buffer.alloc(0)
 
 function format(msg) {
-    const j = JSON.parse(msg)
-    if (j['method'] === 'initialize') return '🔥initialize'
-    return JSON.stringify(j, null, 4)
+    try {
+        const j = JSON.parse(msg)
+        if (j.method === 'initialize') return '🔥initialize'
+        return JSON.stringify(j, null, 4)
+    } catch (e) {
+        return msg
+    }
 }
 
 process.stdin.on('data', chunk => {
-    clientBuffer += chunk.toString()
+    clientBuffer = Buffer.concat([clientBuffer, chunk])
     tryParseMessages(clientBuffer, msg => {
         console.error('➡️ To Server:\n', format(msg))
         const msgBuf = Buffer.from(msg, 'utf8')
@@ -32,7 +37,7 @@ process.stdin.on('data', chunk => {
 })
 
 server.stdout.on('data', chunk => {
-    serverBuffer += chunk.toString()
+    serverBuffer = Buffer.concat([serverBuffer, chunk])
     tryParseMessages(serverBuffer, msg => {
         console.error('⬅️ From Server:\n', format(msg))
         const msgBuf = Buffer.from(msg, 'utf8')
@@ -53,21 +58,27 @@ process.stdin.on('end', () => {
 })
 
 function tryParseMessages(buffer, onMessage, onRemaining) {
+    let offset = 0
     while (true) {
-        const headerEnd = buffer.indexOf('\r\n\r\n')
+        const headerEnd = buffer.indexOf('\r\n\r\n', offset)
         if (headerEnd === -1) break
 
-        const header = buffer.slice(0, headerEnd)
-        const match = header.match(/Content-Length: (\d+)/i)
+        const headerStr = buffer.slice(offset, headerEnd).toString('utf8')
+        const match = headerStr.match(/Content-Length: (\d+)/i)
         if (!match) break
 
-        const length = parseInt(match[1], 10)
-        const totalLength = headerEnd + 4 + length
-        if (buffer.length < totalLength) break
+        const contentLength = parseInt(match[1], 10)
+        const messageStart = headerEnd + 4
+        const messageEnd = messageStart + contentLength
 
-        const message = buffer.slice(headerEnd + 4, totalLength)
+        if (buffer.length < messageEnd) break
+
+        const message = buffer.slice(messageStart, messageEnd).toString('utf8')
         onMessage(message)
-        buffer = buffer.slice(totalLength)
+
+        offset = messageEnd
     }
-    onRemaining(buffer)
+
+    // slice remaining unprocessed buffer
+    onRemaining(buffer.slice(offset))
 }

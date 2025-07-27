@@ -3,15 +3,15 @@ use crate::util::line_list::LineList;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
-use tree_sitter::Tree;
+use tree_sitter::{Parser, Tree};
 use url::Url;
 
 pub static URI_MAP: Lazy<Mutex<UriMap>> = Lazy::new(|| Mutex::new(UriMap::new()));
 
-#[derive(Debug)]
 pub struct UriMap {
-    pub semantic: HashMap<Url, SemanticTokenHub>,
+    pub parser: HashMap<Url, Parser>,
     pub tree: HashMap<Url, Option<Tree>>,
+    pub semantic: HashMap<Url, SemanticTokenHub>,
     pub lng: HashMap<Url, Option<String>>,
     pub line_list: HashMap<Url, LineList>,
     //pub diagnostics: HashMap<Url, Vec<String>>,
@@ -22,8 +22,9 @@ pub struct UriMap {
 impl UriMap {
     pub fn new() -> Self {
         Self {
-            semantic: HashMap::new(),
+            parser: HashMap::new(),
             tree: HashMap::new(),
+            semantic: HashMap::new(),
             lng: HashMap::new(),
             line_list: HashMap::new(),
             //diagnostics: HashMap::new(),
@@ -43,13 +44,18 @@ impl UriMap {
             .line_list
             .entry(url.clone())
             .or_insert_with(LineList::new);
-        //let diagnostics = self.diagnostics.entry(url.clone()).or_insert_with(Vec::new);
-        //let symbols = self.symbols.entry(url.clone()).or_insert_with(Vec::new);
-        //let comments = self.comments.entry(url.clone()).or_insert_with(Vec::new);
+        let parser = self.parser.entry(url.clone()).or_insert_with(|| {
+            let mut parser = Parser::new();
+            parser
+                .set_language(&tree_sitter_bni::LANGUAGE.into())
+                .unwrap();
+            parser
+        });
 
         UriMapEntry {
-            semantic,
+            parser,
             tree,
+            semantic,
             lng,
             line_list,
             //diagnostics,
@@ -62,6 +68,7 @@ impl UriMap {
 pub struct UriMapEntry<'a> {
     pub semantic: &'a mut SemanticTokenHub,
     pub tree: &'a mut Option<Tree>,
+    pub parser: &'a mut Parser,
     pub lng: &'a mut Option<String>,
     pub line_list: &'a mut LineList,
     //pub diagnostics: &'a mut Vec<String>,

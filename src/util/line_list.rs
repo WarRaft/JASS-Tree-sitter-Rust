@@ -1,4 +1,5 @@
 use crate::lsp::position::Position;
+use tree_sitter::Point;
 
 #[derive(Clone, Debug)]
 pub struct LineList {
@@ -23,29 +24,38 @@ impl LineList {
         if pos.line >= self.lines.len() {
             return None;
         }
+
         let mut offset = 0;
+
         for i in 0..pos.line {
-            offset += self.lines.get(i)?.len() + 1; // +1 за '\n'
+            offset += self.lines.get(i)?.as_bytes().len() + 1; // +1 за '\n'
         }
-        Some(offset + pos.character)
+
+        let line = self.lines.get(pos.line)?;
+        let byte_offset_in_line = line
+            .chars()
+            .take(pos.character)
+            .map(|c| c.len_utf8())
+            .sum::<usize>();
+
+        Some(offset + byte_offset_in_line)
     }
 
-    pub fn point_from_offset(&self, offset: usize) -> tree_sitter::Point {
+    pub fn point_from_offset(&self, offset: usize) -> Point {
         let mut total = 0;
+
         for (row, line) in self.lines.iter().enumerate() {
-            let len = line.len() + 1;
-            if total + len > offset {
-                return tree_sitter::Point {
-                    row,
-                    column: offset - total,
-                };
+            let line_len = line.as_bytes().len() + 1; // +1 за '\n'
+            if total + line_len > offset {
+                let column = offset - total;
+                return Point { row, column };
             }
-            total += len;
+            total += line_len;
         }
-        // Если offset за концом текста
+
         let last_row = self.lines.len().saturating_sub(1);
-        let last_col = self.lines.get(last_row).map_or(0, |l| l.len());
-        tree_sitter::Point {
+        let last_col = self.lines.get(last_row).map_or(0, |l| l.as_bytes().len());
+        Point {
             row: last_row,
             column: last_col,
         }
@@ -53,19 +63,33 @@ impl LineList {
 
     pub fn apply_change(&mut self, start: &Position, end: &Position, new_text: &str) {
         let start_line = start.line;
-        let start_col = start.character;
         let end_line = end.line;
-        let end_col = end.character;
+
+        let start_col = {
+            let line = &self.lines[start_line];
+            line.chars()
+                .take(start.character)
+                .map(|c| c.len_utf8())
+                .sum::<usize>()
+        };
+
+        let end_col = {
+            let line = &self.lines[end_line];
+            line.chars()
+                .take(end.character)
+                .map(|c| c.len_utf8())
+                .sum::<usize>()
+        };
 
         let before = &self.lines[start_line][..start_col];
         let after = &self.lines[end_line][end_col..];
 
-        let new_lines: Vec<String> = new_text.lines().map(|s| s.to_string()).collect();
+        let new_lines: Vec<String> = new_text.lines().map(str::to_string).collect();
         let replacement = match new_lines.len() {
             0 => vec![format!("{before}{after}")],
             1 => vec![format!("{before}{}{}", new_lines[0], after)],
             _ => {
-                let mut result = Vec::new();
+                let mut result = Vec::with_capacity(new_lines.len());
                 result.push(format!("{before}{}", new_lines[0]));
                 result.extend_from_slice(&new_lines[1..new_lines.len() - 1]);
                 result.push(format!("{}{}", new_lines.last().unwrap(), after));
