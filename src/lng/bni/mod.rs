@@ -1,13 +1,13 @@
 use crate::lsp::semantic::TokenType;
 use crate::lsp::text_document::TextDocumentContentChangeEvent;
-use crate::util::uri_map::{UriMapEntry, URI_MAP};
+use crate::util::uri_map::{URI_MAP, UriMapEntry};
 use log::info;
 use tree_sitter::{InputEdit, Parser};
 use url::Url;
 
 fn parse(entry: UriMapEntry) {
     let tree = match entry.tree {
-        Some(ref t) => t,
+        &mut Some(ref t) => t,
         None => return,
     };
 

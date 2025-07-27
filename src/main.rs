@@ -15,11 +15,10 @@ use initialize::ServerCapabilities;
 use log::error;
 use lsp::initialize;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::io::{self, BufRead, BufReader, Write};
 
 fn main() {
-
     env_logger::init();
 
     let stdin = io::stdin();
@@ -84,7 +83,7 @@ fn main() {
                     let uri = &params.text_document.uri;
 
                     match map.entry(&uri).lng {
-                        Some(ref lng) if lng == "bni" => {
+                        &mut Some(ref lng) if lng == "bni" => {
                             lng::bni::change(&uri, params.content_changes);
                         }
                         _ => {}

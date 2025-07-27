@@ -35,8 +35,8 @@
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
-    "@types/vscode": "^1.99.1",
-    "@vscode/vsce": "^3.3.2"
+    "@types/vscode": "^1.102.0",
+    "@vscode/vsce": "^3.6.0"
   },
   "configurationDefaults": {},
   "contributes": {
