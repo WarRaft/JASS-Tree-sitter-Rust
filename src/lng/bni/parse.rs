@@ -1,8 +1,8 @@
 use crate::lng::bni::kind::Kind;
-use crate::lsp::semantic::TokenType;
+use crate::lsp::semantic::Kind as TokenKind;
 use crate::lsp::semantic_hub::SemanticTokenHub;
+use crate::util::node_kinded::NodeKindedExt;
 use crate::util::uri_map::{SEMANTIC_MAP, TREE_MAP};
-use log::error;
 use url::Url;
 
 pub async fn parse(uri: &Url) {
@@ -20,21 +20,33 @@ pub async fn parse(uri: &Url) {
         .or_insert_with(SemanticTokenHub::new);
     semantic.clear();
 
-    let root = tree.root_node();
-    for i in 0..root.child_count() {
-        if let Some(node) = root.child(i) {
-            match node.kind().parse::<Kind>() {
-                Ok(kind) => match kind {
-                    Kind::Section => {
-                        semantic.add_node(&node, TokenType::Keyword, None);
+    for (kind, node) in tree.root_node().kinds::<Kind>() {
+        match kind {
+            Kind::Section => {
+                for (sec_kind, sec_node) in node.kinds::<Kind>() {
+                    match sec_kind {
+                        Kind::LeftBracket | Kind::RightBracket => {
+                            semantic.add_node(&sec_node, TokenKind::Comment, 0u32);
+                        }
+
+                        Kind::SectionName => {
+                            semantic.add_node(&sec_node, TokenKind::Keyword, 0u32);
+                        }
+                        _ => {}
                     }
-                    Kind::Item => {
-                        semantic.add_node(&node, TokenType::String, None);
-                    }
-                    _ => {}
-                },
-                Err(e) => error!("Node {}, error {}", node, e),
+                }
             }
+            Kind::Item => {
+                for (item_kind, item) in node.kinds::<Kind>() {
+                    if item_kind == Kind::Key {
+                        semantic.add_node(&item, TokenKind::Function, 0u32);
+                    }
+                }
+            }
+            Kind::Comment => {
+                semantic.add_node(&node, TokenKind::Comment, 0u32);
+            }
+            _ => {}
         }
     }
 }

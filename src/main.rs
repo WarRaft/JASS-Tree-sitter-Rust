@@ -12,8 +12,8 @@ use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::read::read;
 use crate::lsp::semantic::{
-    SemanticTokens, SemanticTokensLegend, SemanticTokensOptions, ToCamelVec, TokenModifier,
-    TokenType,
+    Kind, Mod, SemanticTokens, SemanticTokensFullOptions, SemanticTokensFullOptionsObject,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensRangeProviderCapability, ToCamelVec,
 };
 use crate::lsp::send::send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
@@ -61,11 +61,22 @@ async fn main() {
                                     }),
                                     semantic_tokens_provider: Some(SemanticTokensOptions {
                                         legend: SemanticTokensLegend {
-                                            token_types: <TokenType as ToCamelVec>::get_vec(),
-                                            token_modifiers: <TokenModifier as ToCamelVec>::get_vec(
-                                            ),
+                                            token_types: <Kind as ToCamelVec>::get_vec(),
+                                            token_modifiers: <Mod as ToCamelVec>::get_vec(),
                                         },
-                                        full: true,
+                                        range: Some(SemanticTokensRangeProviderCapability::Simple(
+                                            false,
+                                        )),
+                                        full: Some(SemanticTokensFullOptions::Simple(true)),
+                                        /*
+                                        range: Some(SemanticTokensRangeProviderCapability::Simple(
+                                            true,
+                                        )),
+                                        full: Some(SemanticTokensFullOptions::Options(
+                                            SemanticTokensFullOptionsObject { delta: Some(true) },
+                                        )),
+
+                                         */
                                     }),
                                     ..Default::default()
                                 },
@@ -95,7 +106,7 @@ async fn main() {
                         match other {
                             MethodCall::Initialized(_) => {}
                             MethodCall::SetTrace(_) => {}
-
+                            MethodCall::DidClose(_) => {}
                             MethodCall::DidOpen(params) => {
                                 if params.text_document.language_id == "bni" {
                                     lng::bni::open::open(

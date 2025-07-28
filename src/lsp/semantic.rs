@@ -1,6 +1,7 @@
 use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
+use std::ops::Add;
 use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter};
 
@@ -22,7 +23,34 @@ pub struct SemanticTokens {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SemanticTokensOptions {
     pub legend: SemanticTokensLegend,
-    pub full: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<SemanticTokensRangeProviderCapability>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full: Option<SemanticTokensFullOptions>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SemanticTokensRangeProviderCapability {
+    Simple(bool),
+    Options(SemanticTokensRangeOptions),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SemanticTokensRangeOptions {}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SemanticTokensFullOptions {
+    Simple(bool),
+    Options(SemanticTokensFullOptionsObject),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SemanticTokensFullOptionsObject {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta: Option<bool>,
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokensLegend
@@ -34,10 +62,10 @@ pub struct SemanticTokensLegend {
     pub token_modifiers: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, EnumIter, Display, Clone)]
+#[derive(Debug, Serialize, Deserialize, EnumIter, Display, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 #[repr(u32)]
-pub enum TokenType {
+pub enum Kind {
     Namespace = 0, // For identifiers that declare or reference a namespace, module, or package.
     Class,         // For identifiers that declare or reference a class type.
     Enum,          // For identifiers that declare or reference an enumeration type.
@@ -63,20 +91,42 @@ pub enum TokenType {
     Operator,   // For tokens that represent an operator.
 }
 
-#[derive(Debug, Serialize, Deserialize, EnumIter, Display)]
+#[repr(u32)]
+#[derive(Debug, Serialize, Deserialize, EnumIter, Display, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
-#[derive(Clone)]
-pub enum TokenModifier {
-    Declaration,    //	For declarations of symbols.
-    Definition,     //	For definitions of symbols, for example, in header files.
-    Readonly,       //	For readonly variables and member fields (constants).
-    Static,         //	For class members (static members).
-    Deprecated,     //	For symbols that should no longer be used.
-    Abstract,       //	For types and member functions that are abstract.
-    Async,          //	For functions that are marked async.
-    Modification,   //	For variable references where the variable is assigned to.
-    Documentation,  //	For occurrences of symbols in documentation.
-    DefaultLibrary, //	For symbols that are part of the standard library.
+pub enum Mod {
+    Declaration = 0,
+    Definition,
+    Readonly,
+    Static,
+    Deprecated,
+    Abstract,
+    Async,
+    Modification,
+    Documentation,
+    DefaultLibrary,
+}
+
+impl From<Mod> for u32 {
+    fn from(m: Mod) -> u32 {
+        1 << (m as u32)
+    }
+}
+
+impl Add for Mod {
+    type Output = u32;
+
+    fn add(self, rhs: Mod) -> u32 {
+        (1 << self as u32) | (1 << rhs as u32)
+    }
+}
+
+impl Add<Mod> for u32 {
+    type Output = u32;
+
+    fn add(self, rhs: Mod) -> u32 {
+        self | (1 << rhs as u32)
+    }
 }
 
 pub trait ToCamelVec {

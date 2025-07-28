@@ -1,2 +1,3 @@
-pub mod line_list;
-pub mod uri_map;
+pub(crate) mod line_list;
+pub(crate) mod node_kinded;
+pub(crate) mod uri_map;

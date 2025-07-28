@@ -1,10 +1,12 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
 use crate::lsp::semantic::SemanticTokensParams;
 use crate::lsp::set_trace::SetTraceParams;
-use crate::lsp::text_document::{DidChangeTextDocumentParams, DidOpenTextDocumentParams};
+use crate::lsp::text_document::{
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -38,6 +40,9 @@ pub enum MethodCall {
 
     #[serde(rename = "$/setTrace")]
     SetTrace(SetTraceParams),
+
+    #[serde(rename = "textDocument/didClose")]
+    DidClose(DidCloseTextDocumentParams),
 
     #[serde(rename = "textDocument/didOpen")]
     DidOpen(DidOpenTextDocumentParams),

@@ -23,6 +23,12 @@ pub enum TextDocumentSyncKind {
     Incremental = 2,
 }
 
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#didCloseTextDocumentParams
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DidCloseTextDocumentParams {
+    pub text_document: TextDocumentItem,
+}
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#didOpenTextDocumentParams
 #[derive(Debug, Serialize, Deserialize)]

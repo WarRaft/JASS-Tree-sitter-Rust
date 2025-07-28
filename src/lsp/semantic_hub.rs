@@ -1,23 +1,23 @@
-use crate::lsp::semantic::{TokenModifier, TokenType};
+use crate::lsp::semantic::Kind;
 use std::collections::BTreeMap;
 use tree_sitter::Node;
 
 #[derive(Debug, Clone)]
 pub struct Token {
-    pub line: usize,
-    pub pos: usize,
+    pub row: usize,
+    pub col: usize,
     pub len: usize,
-    pub token_type: TokenType,
-    pub modifier: Option<TokenModifier>,
+    pub kind: Kind,
+    pub modifiers: u32,
 }
 
 #[derive(Debug)]
-pub struct TokenLine {
+pub struct Line {
     pub index: usize,
     pub tokens: Vec<Token>,
 }
 
-impl TokenLine {
+impl Line {
     pub fn new(index: usize) -> Self {
         Self {
             index,
@@ -32,7 +32,7 @@ impl TokenLine {
 
 #[derive(Debug)]
 pub struct SemanticTokenHub {
-    pub lines: BTreeMap<usize, TokenLine>,
+    pub lines: BTreeMap<usize, Line>,
 }
 
 impl SemanticTokenHub {
@@ -42,33 +42,11 @@ impl SemanticTokenHub {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn add(
-        &mut self,
-        line: usize,
-        pos: usize,
-        len: usize,
-        token_type: TokenType,
-        modifier: Option<TokenModifier>,
-    ) -> &mut Self {
-        self.lines
-            .entry(line)
-            .or_insert_with(|| TokenLine::new(line))
-            .add(Token {
-                line,
-                pos,
-                len,
-                token_type,
-                modifier,
-            });
-        self
-    }
-
     pub fn add_node(
         &mut self,
         node: &Node,
-        token_type: TokenType,
-        modifier: Option<TokenModifier>,
+        token_type: Kind,
+        modifiers: impl Into<u32>,
     ) -> &mut Self {
         let s = node.start_position();
         let e = node.end_position();
@@ -79,13 +57,13 @@ impl SemanticTokenHub {
 
         self.lines
             .entry(s.row)
-            .or_insert_with(|| TokenLine::new(s.row))
+            .or_insert_with(|| Line::new(s.row))
             .add(Token {
-                line: s.row,
-                pos: s.column,
-                len: e.column - s.column + 1,
-                token_type,
-                modifier,
+                row: s.row,
+                col: s.column,
+                len: e.column.saturating_sub(s.column),
+                kind: token_type,
+                modifiers: modifiers.into(),
             });
         self
     }
@@ -94,25 +72,43 @@ impl SemanticTokenHub {
         let mut result = Vec::new();
         let mut line_last = 0;
 
-        for line in self.lines.values() {
+        let mut lines: Vec<_> = self.lines.values().collect();
+        lines.sort_by_key(|line| line.index);
+
+        for line in lines {
             let mut tokens = line.tokens.clone();
-            tokens.sort_by_key(|t| t.pos);
+            tokens.sort_by_key(|t| t.col);
+
+            if tokens.is_empty() {
+                continue;
+            }
+
             let mut token_last = 0;
 
             for (i, token) in tokens.iter().enumerate() {
-                result.push(if i == 0 { token.line - line_last } else { 0 });
-                result.push(token.pos - token_last);
+                let delta_line = if i == 0 {
+                    token.row.saturating_sub(line_last)
+                } else {
+                    0
+                };
+
+                let delta_start = token.col.saturating_sub(token_last);
+
+                result.push(delta_line);
+                result.push(delta_start);
                 result.push(token.len);
-                result.push(token.token_type.clone() as usize);
-                result.push(token.modifier.as_ref().map_or(0, |m| m.clone() as usize));
-                token_last = token.pos;
+                result.push(token.kind as usize);
+                result.push(token.modifiers as usize);
+
+                token_last = token.col;
             }
 
-            line_last = line.index;
+            line_last = tokens.last().unwrap().row;
         }
 
         result
     }
+
     pub fn clear(&mut self) -> &mut Self {
         self.lines.clear();
         self
