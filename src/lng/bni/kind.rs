@@ -5,6 +5,7 @@ use strum_macros::{AsRefStr, Display, EnumString};
 pub enum Kind {
     Blank,
     Item,
+    Int,
     Program,
     Section,
     ValueList,
