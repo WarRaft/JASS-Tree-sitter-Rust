@@ -26,7 +26,7 @@ pub async fn parse(uri: &Url) {
                 for (sec_kind, sec_node) in node.kinds::<Kind>() {
                     match sec_kind {
                         Kind::LeftBracket | Kind::RightBracket => {
-                            semantic.add_node(&sec_node, TokenKind::Comment, 0u32);
+                            semantic.add_node(&sec_node, TokenKind::Operator, 0u32);
                         }
 
                         Kind::SectionName => {
@@ -37,9 +37,32 @@ pub async fn parse(uri: &Url) {
                 }
             }
             Kind::Item => {
-                for (item_kind, item) in node.kinds::<Kind>() {
-                    if item_kind == Kind::Key {
-                        semantic.add_node(&item, TokenKind::Function, 0u32);
+                for (item_kind, item_node) in node.kinds::<Kind>() {
+                    match item_kind {
+                        Kind::Key => {
+                            semantic.add_node(&item_node, TokenKind::Function, 0u32);
+                        }
+                        Kind::Equal => {
+                            semantic.add_node(&item_node, TokenKind::Operator, 0u32);
+                        }
+                        Kind::ValueList => {
+                            for (val_kind, val_node) in item_node.kinds::<Kind>() {
+                                match val_kind {
+                                    Kind::QuotedString | Kind::UnquotedString => {
+                                        semantic.add_node(&val_node, TokenKind::String, 0u32);
+                                    }
+                                    Kind::Int => {
+                                        semantic.add_node(&val_node, TokenKind::Number, 0u32);
+                                    }
+                                    Kind::Comma => {
+                                        semantic.add_node(&val_node, TokenKind::Operator, 0u32);
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+
+                        _ => {}
                     }
                 }
             }
