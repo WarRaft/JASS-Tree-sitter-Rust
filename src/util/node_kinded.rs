@@ -1,5 +1,4 @@
 use std::marker::PhantomData;
-use std::str::FromStr;
 use tree_sitter::Node;
 
 pub struct NodeKinded<'a, K> {
@@ -10,7 +9,7 @@ pub struct NodeKinded<'a, K> {
 
 impl<'a, K> NodeKinded<'a, K>
 where
-    K: FromStr,
+    K: TryFrom<u16>,
 {
     pub fn new(parent: Node<'a>) -> Self {
         let children: Vec<_> = parent.children(&mut parent.walk()).collect();
@@ -24,7 +23,7 @@ where
 
 impl<'a, K> Iterator for NodeKinded<'a, K>
 where
-    K: FromStr,
+    K: TryFrom<u16>,
 {
     type Item = (K, Node<'a>);
 
@@ -33,7 +32,7 @@ where
             let node = self.children[self.index];
             self.index += 1;
 
-            if let Ok(kind) = node.kind().parse::<K>() {
+            if let Ok(kind) = K::try_from(node.grammar_id()) {
                 return Some((kind, node));
             }
         }
@@ -42,15 +41,16 @@ where
 }
 
 pub trait NodeKindedExt<'a> {
+    #[allow(dead_code)]
     fn kinds<K>(&'a self) -> NodeKinded<'a, K>
     where
-        K: FromStr;
+        K: TryFrom<u16>;
 }
 
 impl<'a> NodeKindedExt<'a> for Node<'a> {
     fn kinds<K>(&'a self) -> NodeKinded<'a, K>
     where
-        K: FromStr,
+        K: TryFrom<u16>,
     {
         NodeKinded::new(*self)
     }

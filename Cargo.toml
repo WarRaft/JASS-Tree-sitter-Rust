@@ -2,6 +2,7 @@
 name = "JASS-Tree-sitter-Rust"
 version = "0.2.0"
 authors = ["nazarpunk <nazarpunk@gmail.com>"]
+repository = "https://github.com/WarRaft/JASS-Tree-sitter-rust"
 edition = "2024"
 
 [dependencies]
@@ -19,6 +20,7 @@ ropey = "1.6.1"
 log = "0.4.27"
 url = { version = "2.5.4", features = ["serde"] }
 once_cell = "1.21.3"
+num_enum = "0.7.4"
 
 [build-dependencies]
 
