@@ -49,14 +49,14 @@ pub async fn parse(uri: &Url) {
         if node.is_missing() {
             diagnostics.push(Diagnostic {
                 range: to_range(&node),
-                message: "Missing node".into(),
+                message: format!("Missing node: expected `{}`", node.kind()),
                 severity: Some(DiagnosticSeverity::Error),
                 ..Default::default()
             });
             return;
         }
 
-        if node.is_error() || node.has_error() {
+        if node.is_error() {
             diagnostics.push(Diagnostic {
                 range: to_range(&node),
                 message: "Syntax error".into(),

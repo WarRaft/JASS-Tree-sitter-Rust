@@ -1,3 +1,5 @@
+[![](https://dcbadge.limes.pink/api/server/https://discord.gg/CNeQmXAgVq)](https://discord.gg/CNeQmXAgVq)
+
 # JASS Tree-sitter Rust
 
 Yes, the name literally describes the stack — a Tree-sitter grammar written in Rust.  

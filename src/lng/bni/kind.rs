@@ -1,7 +1,7 @@
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TryFromPrimitive, IntoPrimitive)]
 #[repr(u16)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TryFromPrimitive, IntoPrimitive)]
 pub enum Kind {
     RightBracket = 1,
     Equal = 2,
@@ -17,10 +17,11 @@ pub enum Kind {
     SectionName = 12,
     Key = 13,
     Program = 14,
-    // _line           = 15, // internal, пропускаем
-    Section = 16,
-    Comment = 17,
-    Item = 18,
-    ValueList = 19,
-    // aux ...         = 20+
+    //_Line = 15,
+    //_LineContent = 16,
+    Section = 17,
+    Comment = 18,
+    Item = 19,
+    ValueList = 20,
+    // aux_sym... начинаются с 21+
 }
