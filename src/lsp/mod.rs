@@ -1,6 +1,9 @@
+pub(crate) mod diagnostic;
 pub(crate) mod initialize;
 pub(crate) mod initialized;
+pub(crate) mod location;
 pub(crate) mod position;
+pub(crate) mod progress;
 pub(crate) mod protocol;
 pub(crate) mod range;
 pub(crate) mod read;
@@ -8,4 +11,3 @@ pub(crate) mod semantic;
 pub(crate) mod send;
 pub(crate) mod set_trace;
 pub(crate) mod text_document;
-mod progress;

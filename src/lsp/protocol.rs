@@ -1,3 +1,4 @@
+use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
 use crate::lsp::semantic::lsp::{SemanticTokensParams, SemanticTokensRangeParams};
@@ -55,6 +56,9 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/semanticTokens/range")]
     SemanticRange(SemanticTokensRangeParams),
+
+    #[serde(rename = "textDocument/diagnostic")]
+    Diagnostic(DocumentDiagnosticParams),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

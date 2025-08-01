@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use tree_sitter::Point;
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#position
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Position {
     pub line: usize,

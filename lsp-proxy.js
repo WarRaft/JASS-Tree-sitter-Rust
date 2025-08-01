@@ -14,11 +14,18 @@ const server = spawn(realServerPath, [], {
 let clientBuffer = Buffer.alloc(0)
 let serverBuffer = Buffer.alloc(0)
 
-function format(msg) {
+function format(msg, pretty = true) {
     try {
         const j = JSON.parse(msg)
-        if (j.method === 'initialize') return '🔥initialize'
-        return JSON.stringify(j, null, 4)
+        switch (j.method) {
+            case 'initialize':
+            case 'textDocument/semanticTokens/full':
+            case 'textDocument/semanticTokens/range':
+                pretty = false
+                break
+        }
+
+        return pretty ? JSON.stringify(j, null, 4) : JSON.stringify(j)
     } catch (e) {
         return msg
     }
@@ -39,7 +46,7 @@ process.stdin.on('data', chunk => {
 server.stdout.on('data', chunk => {
     serverBuffer = Buffer.concat([serverBuffer, chunk])
     tryParseMessages(serverBuffer, msg => {
-        console.error('⬅️ From Server:\n', format(msg))
+        console.error('⬅️ From Server:\n', format(msg, false))
         const msgBuf = Buffer.from(msg, 'utf8')
         process.stdout.write(`Content-Length: ${msgBuf.length}\r\n\r\n`)
         process.stdout.write(msgBuf)

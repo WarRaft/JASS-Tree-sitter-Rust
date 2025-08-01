@@ -8,6 +8,8 @@ use std::sync::Arc;
 use tokio::io::{self, BufReader, Stdout};
 use tokio::sync::Mutex;
 
+use crate::lsp::diagnostic::lsp::{DiagnosticOptions, DocumentDiagnosticReport};
+use crate::lsp::diagnostic::uri_map::URI_MAP;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::range::Range;
@@ -16,7 +18,7 @@ use crate::lsp::semantic::lsp::{
     Kind, Mod, SemanticTokens, SemanticTokensFullOptions, SemanticTokensFullOptionsObject,
     SemanticTokensLegend, SemanticTokensOptions, SemanticTokensRangeProviderCapability, ToCamelVec,
 };
-use crate::lsp::semantic::uri_map::URI_MAP;
+use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
 use crate::lsp::send::send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::util::uri_map::LNG_MAP;
@@ -73,6 +75,11 @@ async fn main() {
                                         full: Some(SemanticTokensFullOptions::Options(
                                             SemanticTokensFullOptionsObject { delta: Some(false) },
                                         )),
+                                    }),
+                                    diagnostic_provider: Some(DiagnosticOptions {
+                                        inter_file_dependencies: false,
+                                        workspace_diagnostics: false,
+                                        ..Default::default()
                                     }),
                                     ..Default::default()
                                 },
@@ -148,6 +155,32 @@ async fn main() {
                                 .await
                             }
 
+                            MethodCall::Diagnostic(params) => {
+                                let uri = &params.text_document.uri;
+
+                                let map = URI_MAP.lock().await;
+
+                                let result = match map.get(uri) {
+                                    Some(report) => &report,
+                                    None => &DocumentDiagnosticReport::Full {
+                                        result_id: None,
+                                        items: vec![],
+                                        related_documents: None,
+                                    },
+                                };
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: Some(Value::from(call.id)),
+                                        result: Some(result),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
                             _ => {
                                 error!("Unexpected method call: {:?}", other);
                             }
@@ -172,19 +205,21 @@ async fn semantic_token_send(
     range: Option<Range>,
 ) {
     let data = {
-        let map = URI_MAP.lock().await;
+        let map = SEMANTIC_URI_MAP.lock().await;
         match map.get(uri) {
             Some(semantic) => semantic.data(range),
             None => Vec::new(),
         }
     };
 
-    let response = ResponseMessage {
-        jsonrpc: "2.0".into(),
-        id: Some(call_id.clone()),
-        result: Some(SemanticTokens { data }),
-        error: None,
-    };
-
-    let _ = send(writer, &response).await;
+    let _ = send(
+        writer,
+        &ResponseMessage {
+            jsonrpc: "2.0".into(),
+            id: Some(call_id.clone()),
+            result: Some(SemanticTokens { data }),
+            error: None,
+        },
+    )
+    .await;
 }
