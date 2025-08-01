@@ -7,7 +7,6 @@ use crate::lsp::semantic::hub::Hub;
 use crate::lsp::semantic::lsp::Kind as TokenKind;
 use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
 use crate::util::uri_map::TREE_MAP;
-use log::error;
 use tree_sitter::Node;
 use url::Url;
 
@@ -39,25 +38,27 @@ pub async fn parse(uri: &Url) {
         _ => unreachable!("Expected Full report"),
     };
 
-    fn walk(
-        node: Node,
-        semantic: &mut Hub,
-        diagnostics: &mut Vec<Diagnostic>,
-        current_section: Option<Node>,
-        current_item: Option<Node>,
-    ) {
+    let mut stack = vec![tree.root_node().walk()];
+    let mut current_section: Option<Node> = None;
+    let mut current_item: Option<Node> = None;
+
+    while let Some(mut cursor) = stack.pop() {
+        let node = cursor.node();
+
         if node.is_missing() {
-            diagnostics.push(Diagnostic {
+            let expected = node.kind();
+            let field = cursor.field_name().unwrap_or("?");
+            items.push(Diagnostic {
                 range: to_range(&node),
-                message: format!("Missing node: expected `{}`", node.kind()),
+                message: format!("Missing `{}` in field `{}`", expected, field),
                 severity: Some(DiagnosticSeverity::Error),
                 ..Default::default()
             });
-            return;
+            continue;
         }
 
         if node.is_error() {
-            diagnostics.push(Diagnostic {
+            items.push(Diagnostic {
                 range: to_range(&node),
                 message: "Syntax error".into(),
                 severity: Some(DiagnosticSeverity::Error),
@@ -65,30 +66,18 @@ pub async fn parse(uri: &Url) {
             });
         }
 
-        let mut new_section = current_section;
-        let mut new_item = current_item;
-
-        if !node.is_error() {
-            let kind = match Kind::try_from(node.grammar_id()) {
-                Ok(k) => k,
-                Err(_) => {
-                    error!("Unknown error kind {:?}", node.kind());
-                    return;
-                }
-            };
-
-            new_section = match kind {
-                Kind::Section => Some(node),
-                _ => current_section,
-            };
-
-            new_item = match kind {
-                Kind::Item => Some(node),
-                Kind::Section | Kind::Comment => None,
-                _ => current_item,
-            };
-
+        if let Ok(kind) = Kind::try_from(node.grammar_id()) {
             match kind {
+                Kind::Section => {
+                    current_section = Some(node);
+                    current_item = None;
+                }
+                Kind::Item => {
+                    current_item = Some(node);
+                }
+                Kind::Comment => {
+                    current_item = None;
+                }
                 Kind::LeftBracket | Kind::RightBracket | Kind::Equal | Kind::Comma => {
                     semantic.add_node(&node, TokenKind::Operator, 0u32);
                 }
@@ -111,17 +100,16 @@ pub async fn parse(uri: &Url) {
             }
         }
 
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                walk(child, semantic, diagnostics, new_section, new_item);
+        if cursor.goto_first_child() {
+            let mut child = cursor.clone();
+            loop {
+                stack.push(child.clone());
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+                child = cursor.clone();
             }
-        }
-    }
-
-    let root = tree.root_node();
-    for i in 0..root.child_count() {
-        if let Some(child) = root.child(i) {
-            walk(child, semantic, items, None, None);
+            cursor.goto_parent();
         }
     }
 
