@@ -1,10 +1,11 @@
 use crate::lng::bni::kind::Kind;
-use crate::lsp::semantic::Kind as TokenKind;
-use crate::lsp::semantic_hub::SemanticTokenHub;
-use crate::util::uri_map::{SEMANTIC_MAP, TREE_MAP};
+use crate::lsp::semantic::hub::Hub;
+use crate::lsp::semantic::lsp::Kind as TokenKind;
+use crate::util::uri_map::{ TREE_MAP};
 use log::error;
 use tree_sitter::Node;
 use url::Url;
+use crate::lsp::semantic::uri_map::URI_MAP;
 
 pub async fn parse(uri: &Url) {
     let tree = {
@@ -15,15 +16,13 @@ pub async fn parse(uri: &Url) {
         }
     };
 
-    let mut semantic_map = SEMANTIC_MAP.lock().await;
-    let semantic = semantic_map
-        .entry(uri.clone())
-        .or_insert_with(SemanticTokenHub::new);
+    let mut semantic_map = URI_MAP.lock().await;
+    let semantic = semantic_map.entry(uri.clone()).or_insert_with(Hub::new);
     semantic.clear();
 
     fn walk(
         node: Node,
-        semantic: &mut SemanticTokenHub,
+        semantic: &mut Hub,
         current_section: Option<Node>,
         current_item: Option<Node>,
     ) {

@@ -1,3 +1,5 @@
+use crate::lsp::progress::ProgressToken;
+use crate::lsp::range::Range;
 use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
@@ -10,6 +12,16 @@ use strum_macros::{Display, EnumIter};
 #[serde(rename_all = "camelCase")]
 pub struct SemanticTokensParams {
     pub text_document: TextDocumentIdentifier,
+}
+
+/// // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokens_rangeRequest
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticTokensRangeParams {
+    pub text_document: TextDocumentIdentifier,
+    pub range: Range,
+    /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#partialResultParams
+    pub partial_result_token: Option<ProgressToken>,
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokens

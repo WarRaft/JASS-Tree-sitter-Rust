@@ -1,7 +1,7 @@
-use crate::lsp::semantic::SemanticTokensOptions;
 use crate::lsp::text_document::TextDocumentSyncOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::lsp::semantic::lsp::SemanticTokensOptions;
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#initialize
 #[derive(Debug, Serialize, Deserialize)]

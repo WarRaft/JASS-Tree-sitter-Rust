@@ -1,6 +1,6 @@
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
-use crate::lsp::semantic::SemanticTokensParams;
+use crate::lsp::semantic::lsp::{SemanticTokensParams, SemanticTokensRangeParams};
 use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::text_document::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
@@ -52,6 +52,9 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/semanticTokens/full")]
     SemanticFull(SemanticTokensParams),
+
+    #[serde(rename = "textDocument/semanticTokens/range")]
+    SemanticRange(SemanticTokensRangeParams),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

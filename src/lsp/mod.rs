@@ -5,7 +5,7 @@ pub(crate) mod protocol;
 pub(crate) mod range;
 pub(crate) mod read;
 pub(crate) mod semantic;
-pub(crate) mod semantic_hub;
 pub(crate) mod send;
 pub(crate) mod set_trace;
 pub(crate) mod text_document;
+mod progress;

@@ -1,6 +1,7 @@
-use crate::lsp::semantic::Kind;
 use std::collections::BTreeMap;
 use tree_sitter::Node;
+use crate::lsp::range::Range;
+use crate::lsp::semantic::lsp::Kind;
 
 #[derive(Debug, Clone)]
 pub struct Token {
@@ -31,11 +32,11 @@ impl Line {
 }
 
 #[derive(Debug)]
-pub struct SemanticTokenHub {
+pub struct Hub {
     pub lines: BTreeMap<usize, Line>,
 }
 
-impl SemanticTokenHub {
+impl Hub {
     pub fn new() -> Self {
         Self {
             lines: BTreeMap::new(),
@@ -68,7 +69,7 @@ impl SemanticTokenHub {
         self
     }
 
-    pub fn data(&self) -> Vec<usize> {
+    pub fn data(&self, range: Option<Range>) -> Vec<usize> {
         let mut result = Vec::new();
         let mut line_last = 0;
 
@@ -76,17 +77,34 @@ impl SemanticTokenHub {
         lines.sort_by_key(|line| line.index);
 
         for line in lines {
-            let mut tokens = line.tokens.clone();
-            tokens.sort_by_key(|t| t.col);
+            let line_index = line.index;
 
-            if tokens.is_empty() {
-                continue;
+            if let Some(ref range) = range {
+                if line_index < range.start.line || line_index > range.end.line {
+                    continue;
+                }
             }
 
-            let mut token_last = 0;
+            let mut tokens: Vec<_> = line.tokens.iter().collect();
+            tokens.sort_by_key(|t| t.col);
 
-            for (i, token) in tokens.iter().enumerate() {
-                let delta_line = if i == 0 {
+            let mut token_last = 0;
+            let mut any_token = false;
+
+            for token in tokens {
+                if let Some(ref range) = range {
+                    if token.row < range.start.line || token.row > range.end.line {
+                        continue;
+                    }
+                    if token.row == range.start.line && token.col < range.start.character {
+                        continue;
+                    }
+                    if token.row == range.end.line && token.col >= range.end.character {
+                        continue;
+                    }
+                }
+
+                let delta_line = if !any_token {
                     token.row.saturating_sub(line_last)
                 } else {
                     0
@@ -101,13 +119,18 @@ impl SemanticTokenHub {
                 result.push(token.modifiers as usize);
 
                 token_last = token.col;
+                any_token = true;
             }
 
-            line_last = tokens.last().unwrap().row;
+            if any_token {
+                line_last = line_index;
+            }
         }
 
         result
     }
+
+
 
     pub fn clear(&mut self) -> &mut Self {
         self.lines.clear();

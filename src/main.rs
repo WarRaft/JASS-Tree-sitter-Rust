@@ -5,20 +5,23 @@ pub(crate) mod lng;
 
 use serde_json::{Value, json};
 use std::sync::Arc;
-use tokio::io::{self, BufReader};
+use tokio::io::{self, BufReader, Stdout};
 use tokio::sync::Mutex;
 
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
+use crate::lsp::range::Range;
 use crate::lsp::read::read;
-use crate::lsp::semantic::{
+use crate::lsp::semantic::lsp::{
     Kind, Mod, SemanticTokens, SemanticTokensFullOptions, SemanticTokensFullOptionsObject,
     SemanticTokensLegend, SemanticTokensOptions, SemanticTokensRangeProviderCapability, ToCamelVec,
 };
+use crate::lsp::semantic::uri_map::URI_MAP;
 use crate::lsp::send::send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
-use crate::util::uri_map::{LNG_MAP, SEMANTIC_MAP};
+use crate::util::uri_map::LNG_MAP;
 use log::error;
+use url::Url;
 
 #[tokio::main]
 async fn main() {
@@ -43,7 +46,7 @@ async fn main() {
             }
         };
 
-        let writer = writer.clone();
+        let writer: Arc<Mutex<Stdout>> = writer.clone();
 
         match parsed {
             LspMessage::Call(call) => match call.payload {
@@ -65,18 +68,11 @@ async fn main() {
                                             token_modifiers: <Mod as ToCamelVec>::get_vec(),
                                         },
                                         range: Some(SemanticTokensRangeProviderCapability::Simple(
-                                            false,
-                                        )),
-                                        full: Some(SemanticTokensFullOptions::Simple(true)),
-                                        /*
-                                        range: Some(SemanticTokensRangeProviderCapability::Simple(
                                             true,
                                         )),
                                         full: Some(SemanticTokensFullOptions::Options(
-                                            SemanticTokensFullOptionsObject { delta: Some(true) },
+                                            SemanticTokensFullOptionsObject { delta: Some(false) },
                                         )),
-
-                                         */
                                     }),
                                     ..Default::default()
                                 },
@@ -133,26 +129,23 @@ async fn main() {
                             }
 
                             MethodCall::SemanticFull(params) => {
-                                let uri = &params.text_document.uri;
-
-                                let data = {
-                                    let map = SEMANTIC_MAP.lock().await;
-                                    match map.get(uri) {
-                                        Some(semantic) => semantic.data(),
-                                        None => Vec::new(), // если семантика не проинициализирована
-                                    }
-                                };
-
-                                send(
+                                semantic_token_send(
                                     &writer,
-                                    &ResponseMessage {
-                                        jsonrpc: "2.0".into(),
-                                        id: Some(Value::from(call.id)),
-                                        result: Some(SemanticTokens { data }),
-                                        error: None,
-                                    },
+                                    &Value::from(call.id),
+                                    &params.text_document.uri,
+                                    None,
                                 )
-                                .await;
+                                .await
+                            }
+
+                            MethodCall::SemanticRange(params) => {
+                                semantic_token_send(
+                                    &writer,
+                                    &Value::from(call.id),
+                                    &params.text_document.uri,
+                                    Some(params.range),
+                                )
+                                .await
                             }
 
                             _ => {
@@ -170,4 +163,28 @@ async fn main() {
     }
 
     std::process::exit(0);
+}
+
+async fn semantic_token_send(
+    writer: &Arc<Mutex<Stdout>>,
+    call_id: &Value,
+    uri: &Url,
+    range: Option<Range>,
+) {
+    let data = {
+        let map = URI_MAP.lock().await;
+        match map.get(uri) {
+            Some(semantic) => semantic.data(range),
+            None => Vec::new(),
+        }
+    };
+
+    let response = ResponseMessage {
+        jsonrpc: "2.0".into(),
+        id: Some(call_id.clone()),
+        result: Some(SemanticTokens { data }),
+        error: None,
+    };
+
+    let _ = send(writer, &response).await;
 }

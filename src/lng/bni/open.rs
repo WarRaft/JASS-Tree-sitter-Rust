@@ -1,8 +1,9 @@
 use crate::lng::bni::parse::parse;
 use crate::util::line_list::LineList;
-use crate::util::uri_map::{LINE_LIST_MAP, LNG_MAP, PARSER_MAP, TREE_MAP};
+use crate::util::uri_map::{LINE_LIST_MAP, LNG_MAP, TREE_MAP};
 use tree_sitter::Parser;
 use url::Url;
+use crate::lng::bni::uri_map::PARSER_MAP;
 
 pub async fn open(uri: &Url, text: impl AsRef<[u8]>) {
     let text = text.as_ref();

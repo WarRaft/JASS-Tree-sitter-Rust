@@ -1,6 +1,7 @@
 use crate::lng::bni::parse::parse;
+use crate::lng::bni::uri_map::PARSER_MAP;
 use crate::lsp::text_document::TextDocumentContentChangeEvent;
-use crate::util::uri_map::{LINE_LIST_MAP, PARSER_MAP, TREE_MAP};
+use crate::util::uri_map::{LINE_LIST_MAP, TREE_MAP};
 use tree_sitter::InputEdit;
 use url::Url;
 
