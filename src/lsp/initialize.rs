@@ -1,4 +1,5 @@
 use crate::lsp::diagnostic::lsp::DiagnosticOptions;
+use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::semantic::lsp::SemanticTokensOptions;
 use crate::lsp::text_document::TextDocumentSyncOptions;
 use serde::{Deserialize, Serialize};
@@ -27,4 +28,5 @@ pub struct ServerCapabilities {
     pub text_document_sync: Option<TextDocumentSyncOptions>,
     pub semantic_tokens_provider: Option<SemanticTokensOptions>,
     pub diagnostic_provider: Option<DiagnosticOptions>,
+    pub document_symbol_provider: Option<DocumentSymbolOptions>,
 }

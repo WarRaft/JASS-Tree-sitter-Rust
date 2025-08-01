@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 use crate::lsp::diagnostic::lsp::{DiagnosticOptions, DocumentDiagnosticReport};
 use crate::lsp::diagnostic::uri_map::URI_MAP;
+use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::range::Range;
@@ -80,6 +81,9 @@ async fn main() {
                                         inter_file_dependencies: false,
                                         workspace_diagnostics: false,
                                         ..Default::default()
+                                    }),
+                                    document_symbol_provider: Some(DocumentSymbolOptions {
+                                        label: None,
                                     }),
                                     ..Default::default()
                                 },
@@ -179,6 +183,10 @@ async fn main() {
                                     },
                                 )
                                 .await;
+                            }
+                            
+                            MethodCall::DocumentSymbol(params) => {
+                                
                             }
 
                             _ => {

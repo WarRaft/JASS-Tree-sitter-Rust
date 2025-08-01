@@ -12,10 +12,3 @@ pub static LNG_MAP: Lazy<Mutex<HashMap<Url, Option<String>>>> =
 
 pub static LINE_LIST_MAP: Lazy<Mutex<HashMap<Url, LineList>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
-
-// pub static DIAGNOSTICS_MAP: Lazy<Mutex<HashMap<Url, Vec<String>>>> =
-//     Lazy::new(|| Mutex::new(HashMap::new()));
-// pub static SYMBOLS_MAP: Lazy<Mutex<HashMap<Url, Vec<String>>>> =
-//     Lazy::new(|| Mutex::new(HashMap::new()));
-// pub static COMMENTS_MAP: Lazy<Mutex<HashMap<Url, Vec<String>>>> =
-//     Lazy::new(|| Mutex::new(HashMap::new()));

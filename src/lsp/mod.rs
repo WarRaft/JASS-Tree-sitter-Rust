@@ -11,3 +11,4 @@ pub(crate) mod semantic;
 pub(crate) mod send;
 pub(crate) mod set_trace;
 pub(crate) mod text_document;
+pub(crate) mod document_symbol;
