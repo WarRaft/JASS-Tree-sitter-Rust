@@ -1,6 +1,6 @@
 use crate::lsp::diagnostic::lsp::DiagnosticOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
-use crate::lsp::folding::lsp::{FoldingRangeOptions, FoldingRangeParams};
+use crate::lsp::folding::lsp::FoldingRangeOptions;
 use crate::lsp::semantic::lsp::SemanticTokensOptions;
 use crate::lsp::text_document::TextDocumentSyncOptions;
 use serde::{Deserialize, Serialize};

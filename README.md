@@ -11,3 +11,10 @@ The plugin collects various tools for working with classic WarCraft content, off
 and a few modern conveniences along the way.
 
 👉 [VSCode Marketplace](https://marketplace.visualstudio.com/items?itemName=WarRaft.jass-tree-sitter-rust)
+
+## [BNI](https://github.com/WarRaft/BNI)
+
+This plugin adds support for the **BNI** format — a structured configuration format used in Warcraft III modding.  
+Support is based on a dedicated Tree-sitter grammar, developed in
+the [tree-sitter-bni](https://github.com/WarRaft/tree-sitter-bni) repository.
+
