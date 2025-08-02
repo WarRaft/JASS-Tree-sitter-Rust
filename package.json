@@ -15,7 +15,7 @@
     "ujapi"
   ],
   "engines": {
-    "vscode": "^1.99.1"
+    "vscode": "^1.102.0"
   },
   "categories": [
     "Programming Languages"
@@ -41,36 +41,6 @@
   "configurationDefaults": {},
   "contributes": {
     "languages": [
-      {
-        "id": "lua-rust",
-        "aliases": [
-          "Lua",
-          "lua"
-        ],
-        "extensions": [
-          ".lua"
-        ],
-        "icon": {
-          "light": "./icons/lua.svg",
-          "dark": "./icons/lua.svg"
-        },
-        "configuration": "./syntaxes/lua.language-configuration.json"
-      },
-      {
-        "id": "vjass",
-        "aliases": [
-          "VJASS",
-          "vjass"
-        ],
-        "extensions": [
-          ".vj"
-        ],
-        "icon": {
-          "light": "./icons/vjass.svg",
-          "dark": "./icons/vjass.svg"
-        },
-        "configuration": "./syntaxes/vjass.language-configuration.json"
-      },
       {
         "id": "bni",
         "aliases": [
