@@ -2,6 +2,7 @@
 **
 !node_modules/**
 !extension/**
+!bin/**
 !dist/**
 !sdk/**
 !icons/**
