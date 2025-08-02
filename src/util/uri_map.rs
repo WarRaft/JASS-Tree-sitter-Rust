@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use tokio::sync::Mutex;
 use tree_sitter::Tree;
 use url::Url;
+
+
 pub static TREE_MAP: Lazy<Mutex<HashMap<Url, Option<Tree>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 

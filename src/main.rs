@@ -3,14 +3,16 @@ pub(crate) mod util;
 
 pub(crate) mod lng;
 
-use serde_json::{Value, json};
+use serde_json::{json};
 use std::sync::Arc;
 use tokio::io::{self, BufReader, Stdout};
 use tokio::sync::Mutex;
 
+use crate::lsp::cancel::{CancelCheck, CancelId};
 use crate::lsp::diagnostic::lsp::{DiagnosticOptions, DocumentDiagnosticReport};
-use crate::lsp::diagnostic::uri_map::URI_MAP;
+use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
+use crate::lsp::document_symbol::uri_map::URI_MAP as SYMBOL_URI_MAP;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::range::Range;
@@ -58,7 +60,7 @@ async fn main() {
                         &writer,
                         &ResponseMessage {
                             jsonrpc: "2.0".into(),
-                            id: Some(Value::from(call.id)),
+                            id: call.id,
                             result: Some(InitializeResult {
                                 capabilities: ServerCapabilities {
                                     text_document_sync: Some(TextDocumentSyncOptions {
@@ -99,7 +101,7 @@ async fn main() {
                         &writer,
                         &ResponseMessage {
                             jsonrpc: "2.0".into(),
-                            id: Some(json!(null)),
+                            id: None,
                             result: Some(json!(null)),
                             error: None,
                         },
@@ -114,6 +116,10 @@ async fn main() {
                             MethodCall::Initialized(_) => {}
                             MethodCall::SetTrace(_) => {}
                             MethodCall::DidClose(_) => {}
+                            MethodCall::Cancel(params) => {
+                                params.id.mark_cancelled().await;
+                            }
+
                             MethodCall::DidOpen(params) => {
                                 if params.text_document.language_id == "bni" {
                                     lng::bni::open::open(
@@ -140,9 +146,13 @@ async fn main() {
                             }
 
                             MethodCall::SemanticFull(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+
                                 semantic_token_send(
                                     &writer,
-                                    &Value::from(call.id),
+                                    call.id,
                                     &params.text_document.uri,
                                     None,
                                 )
@@ -152,7 +162,7 @@ async fn main() {
                             MethodCall::SemanticRange(params) => {
                                 semantic_token_send(
                                     &writer,
-                                    &Value::from(call.id),
+                                    call.id,
                                     &params.text_document.uri,
                                     Some(params.range),
                                 )
@@ -162,7 +172,7 @@ async fn main() {
                             MethodCall::Diagnostic(params) => {
                                 let uri = &params.text_document.uri;
 
-                                let map = URI_MAP.lock().await;
+                                let map = DIAGNOSTIC_URI_MAP.lock().await;
 
                                 let result = match map.get(uri) {
                                     Some(report) => &report,
@@ -177,16 +187,29 @@ async fn main() {
                                     &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
-                                        id: Some(Value::from(call.id)),
+                                        id: call.id,
                                         result: Some(result),
                                         error: None,
                                     },
                                 )
                                 .await;
                             }
-                            
+
                             MethodCall::DocumentSymbol(params) => {
-                                
+                                let uri = &params.text_document.uri;
+
+                                let map = SYMBOL_URI_MAP.lock().await;
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: map.get(uri),
+                                        error: None,
+                                    },
+                                )
+                                .await;
                             }
 
                             _ => {
@@ -208,7 +231,7 @@ async fn main() {
 
 async fn semantic_token_send(
     writer: &Arc<Mutex<Stdout>>,
-    call_id: &Value,
+    call_id: Option<CancelId>,
     uri: &Url,
     range: Option<Range>,
 ) {
@@ -224,7 +247,7 @@ async fn semantic_token_send(
         writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
-            id: Some(call_id.clone()),
+            id: call_id,
             result: Some(SemanticTokens { data }),
             error: None,
         },

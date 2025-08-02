@@ -1,3 +1,4 @@
+use crate::lsp::cancel::{CancelId, CancelParams};
 use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
 use crate::lsp::document_symbol::lsp::DocumentSymbolParams;
 use crate::lsp::initialize::InitializeParams;
@@ -10,6 +11,7 @@ use crate::lsp::text_document::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LspMessage {
@@ -20,7 +22,7 @@ pub enum LspMessage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LspCall {
     pub jsonrpc: String,
-    pub id: Option<Value>,
+    pub id: Option<CancelId>,
     #[serde(flatten)]
     pub payload: MethodCall,
 }
@@ -42,6 +44,9 @@ pub enum MethodCall {
 
     #[serde(rename = "$/setTrace")]
     SetTrace(SetTraceParams),
+
+    #[serde(rename = "$/cancelRequest")]
+    Cancel(CancelParams),
 
     #[serde(rename = "textDocument/didClose")]
     DidClose(DidCloseTextDocumentParams),
@@ -77,7 +82,7 @@ pub struct RequestMessage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponseMessage<T = Value> {
     pub jsonrpc: String,
-    pub id: Option<Value>,
+    pub id: Option<CancelId>,
     pub result: Option<T>,
     pub error: Option<Value>,
 }

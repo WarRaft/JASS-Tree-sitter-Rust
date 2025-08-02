@@ -9,11 +9,29 @@ pub struct Position {
     pub character: usize,
 }
 
-impl Position {
-    pub fn point(&self) -> Point {
+impl From<Point> for Position {
+    fn from(p: Point) -> Self {
+        Position {
+            line: p.row,
+            character: p.column,
+        }
+    }
+}
+
+impl From<Position> for Point {
+    fn from(p: Position) -> Self {
         Point {
-            row: self.line,
-            column: self.character,
+            row: p.line,
+            column: p.character,
+        }
+    }
+}
+
+impl From<&Position> for Point {
+    fn from(p: &Position) -> Self {
+        Point {
+            row: p.line,
+            column: p.character,
         }
     }
 }

@@ -1,4 +1,6 @@
+pub(crate) mod cancel;
 pub(crate) mod diagnostic;
+pub(crate) mod document_symbol;
 pub(crate) mod initialize;
 pub(crate) mod initialized;
 pub(crate) mod location;
@@ -11,4 +13,3 @@ pub(crate) mod semantic;
 pub(crate) mod send;
 pub(crate) mod set_trace;
 pub(crate) mod text_document;
-pub(crate) mod document_symbol;

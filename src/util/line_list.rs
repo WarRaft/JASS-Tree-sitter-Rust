@@ -1,7 +1,7 @@
 use crate::lsp::position::Position;
 use ropey::Rope;
 use std::str;
-use tree_sitter::Point;
+use tree_sitter::{Node, Point};
 
 #[derive(Clone, Debug)]
 pub struct LineList {
@@ -64,5 +64,18 @@ impl LineList {
 
         self.rope.remove(start_char..end_char);
         self.rope.insert(start_char, new_text);
+    }
+
+    pub fn node_text(&self, node: &Node) -> &str {
+        let start_byte = node.start_byte();
+        let end_byte = node.end_byte();
+
+        let start_char = self.rope.byte_to_char(start_byte);
+        let end_char = self.rope.byte_to_char(end_byte);
+
+        self.rope
+            .slice(start_char..end_char)
+            .as_str()
+            .expect("Rope slice is not valid UTF-8")
     }
 }

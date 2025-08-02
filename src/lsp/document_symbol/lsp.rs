@@ -1,6 +1,7 @@
 use crate::lsp::range::Range;
 use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentSymbolOptions
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -18,7 +19,7 @@ pub struct DocumentSymbolParams {
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentSymbol
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSymbol {
     pub name: String,
@@ -42,8 +43,8 @@ pub struct DocumentSymbol {
     pub children: Option<Vec<DocumentSymbol>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum SymbolKind {
     File = 1,
     Module = 2,
@@ -63,6 +64,7 @@ pub enum SymbolKind {
     Number = 16,
     Boolean = 17,
     Array = 18,
+    #[default]
     Object = 19,
     Key = 20,
     Null = 21,
@@ -73,8 +75,8 @@ pub enum SymbolKind {
     TypeParameter = 26,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum SymbolTag {
     Deprecated = 1,
 }

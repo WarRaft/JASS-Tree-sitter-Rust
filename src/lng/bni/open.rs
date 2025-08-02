@@ -1,20 +1,20 @@
 use crate::lng::bni::parse::parse;
+use crate::lng::bni::uri_map::PARSER_MAP;
 use crate::util::line_list::LineList;
 use crate::util::uri_map::{LINE_LIST_MAP, LNG_MAP, TREE_MAP};
+use std::collections::HashMap;
+use tokio::sync::MutexGuard;
 use tree_sitter::Parser;
 use url::Url;
-use crate::lng::bni::uri_map::PARSER_MAP;
 
 pub async fn open(uri: &Url, text: impl AsRef<[u8]>) {
     let text = text.as_ref();
 
-    {
-        let mut line_list_map = LINE_LIST_MAP.lock().await;
-        let line_list = line_list_map
-            .entry(uri.clone())
-            .or_insert_with(LineList::new);
-        line_list.set_text(std::str::from_utf8(text).expect("Invalid UTF-8"));
-    }
+    let mut line_list_map: MutexGuard<HashMap<Url, LineList>> = LINE_LIST_MAP.lock().await;
+    let line_list = line_list_map
+        .entry(uri.clone())
+        .or_insert_with(LineList::new);
+    line_list.set_text(std::str::from_utf8(text).expect("Invalid UTF-8"));
 
     {
         let mut lng_map = LNG_MAP.lock().await;
@@ -43,5 +43,5 @@ pub async fn open(uri: &Url, text: impl AsRef<[u8]>) {
         tree_map.insert(uri.clone(), Some(new_tree));
     }
 
-    parse(uri).await;
+    parse(uri,line_list).await;
 }
