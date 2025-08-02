@@ -3,7 +3,7 @@ pub(crate) mod util;
 
 pub(crate) mod lng;
 
-use serde_json::{json};
+use serde_json::json;
 use std::sync::Arc;
 use tokio::io::{self, BufReader, Stdout};
 use tokio::sync::Mutex;
@@ -122,11 +122,14 @@ async fn main() {
 
                             MethodCall::DidOpen(params) => {
                                 if params.text_document.language_id == "bni" {
-                                    lng::bni::open::open(
+                                    if let Err(err) = lng::bni::open::open(
                                         &params.text_document.uri,
                                         &params.text_document.text,
                                     )
-                                    .await;
+                                    .await
+                                    {
+                                        error!("Failed to apply change: {}", err);
+                                    }
                                 }
                             }
 
@@ -135,12 +138,17 @@ async fn main() {
 
                                 let lng = {
                                     let map = LNG_MAP.lock().await;
-                                    map.get(uri).cloned().flatten()
+                                    map.get(uri).cloned()
                                 };
 
                                 if let Some(lng) = lng {
                                     if lng == "bni" {
-                                        lng::bni::change::change(uri, params.content_changes).await;
+                                        if let Err(err) =
+                                            lng::bni::change::change(uri, params.content_changes)
+                                                .await
+                                        {
+                                            error!("Failed to apply change: {}", err);
+                                        }
                                     }
                                 }
                             }
@@ -170,6 +178,10 @@ async fn main() {
                             }
 
                             MethodCall::Diagnostic(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+
                                 let uri = &params.text_document.uri;
 
                                 let map = DIAGNOSTIC_URI_MAP.lock().await;
@@ -196,6 +208,10 @@ async fn main() {
                             }
 
                             MethodCall::DocumentSymbol(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+
                                 let uri = &params.text_document.uri;
 
                                 let map = SYMBOL_URI_MAP.lock().await;

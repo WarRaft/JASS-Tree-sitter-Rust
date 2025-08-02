@@ -5,12 +5,9 @@ use tokio::sync::Mutex;
 use tree_sitter::Tree;
 use url::Url;
 
+pub static TREE_MAP: Lazy<Mutex<HashMap<Url, Tree>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
-pub static TREE_MAP: Lazy<Mutex<HashMap<Url, Option<Tree>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
-
-pub static LNG_MAP: Lazy<Mutex<HashMap<Url, Option<String>>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+pub static LNG_MAP: Lazy<Mutex<HashMap<Url, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub static LINE_LIST_MAP: Lazy<Mutex<HashMap<Url, LineList>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
