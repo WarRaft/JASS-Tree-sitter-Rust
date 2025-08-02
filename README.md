@@ -12,7 +12,7 @@ and a few modern conveniences along the way.
 
 👉 [VSCode Marketplace](https://marketplace.visualstudio.com/items?itemName=WarRaft.jass-tree-sitter-rust)
 
-## <img src="https://raw.githubusercontent.com/WarRaft/JASS-Tree-sitter-Rust/refs/heads/main/icons/bni.svg" alt="BNI" width="30" /> [BNI](https://github.com/WarRaft/BNI)
+## [BNI](https://github.com/WarRaft/BNI)
 
 This plugin adds support for the **BNI** format — a structured configuration format used in Warcraft III modding.  
 Support is based on a dedicated Tree-sitter grammar, developed in
