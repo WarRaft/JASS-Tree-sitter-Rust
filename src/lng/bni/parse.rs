@@ -13,18 +13,17 @@ use url::Url;
 
 pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
     {
-        let map = TREE_MAP.lock().await;
-        let tree = map.get(&uri.clone()).ok_or("no tree")?;
-
+        let tree_map = TREE_MAP.lock().await;
         let mut line_list_map = LINE_LIST_MAP.lock().await;
-        let line_list = line_list_map.get_mut(uri).ok_or("no line list")?;
-
         let mut semantic_map = SEMANTIC_URI_MAP.lock().await;
-        let semantic = semantic_map.entry(uri.clone()).or_insert_with(Hub::new);
-
-        semantic.clear();
-
         let mut diagnostic_map = DIAGNOSTIC_URI_MAP.lock().await;
+        let mut symbol_map = SYMBOL_URI_MAP.lock().await;
+
+        let line_list = line_list_map.get_mut(&uri).ok_or("no line list")?;
+        let semantic = semantic_map
+            .entry(uri.clone())
+            .or_insert_with(Hub::new)
+            .clear();
 
         let mut report = DocumentDiagnosticReport::Full {
             result_id: None,
@@ -37,14 +36,13 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
             _ => unreachable!("Expected Full report"),
         };
 
-        let mut symbol_map = SYMBOL_URI_MAP.lock().await;
         let mut symbols: Vec<DocumentSymbol> = Vec::new();
 
         //let mut current_section: Option<Node> = None;
         //let mut current_item: Option<Node> = None;
         let mut current_symbol: Option<DocumentSymbol> = None;
 
-        let root = tree.root_node();
+        let root = tree_map.get(&uri).ok_or("no tree")?.root_node();
         for node in Dfs::new(root) {
             if node.is_missing() {
                 let expected = node.kind();

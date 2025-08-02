@@ -16,7 +16,7 @@ pub async fn change(
         let mut tree_map = TREE_MAP.lock().await;
 
         let line_list = line_list_map.get_mut(uri).ok_or("no line list")?;
-        let old_tree = tree_map.get_mut(uri).ok_or("no tree")?;
+        let tree_old = tree_map.get_mut(uri).ok_or("no tree")?;
 
         for change in &changes {
             let start = &change.range.start;
@@ -25,12 +25,14 @@ pub async fn change(
             let start_byte = line_list
                 .position_to_offset(start)
                 .ok_or("no start position")?;
+
             let old_end_byte = line_list.position_to_offset(end).ok_or("no end position")?;
+
             line_list.apply_change(start, end, &change.text);
 
             let new_end_byte = start_byte + change.text.len();
 
-            old_tree.edit(&InputEdit {
+            tree_old.edit(&InputEdit {
                 start_byte,
                 old_end_byte,
                 new_end_byte,
@@ -40,15 +42,15 @@ pub async fn change(
             });
         }
 
-        let new_tree = {
+        let tree_new = {
             let mut parser_map = PARSER_MAP.lock().await;
             let parser = parser_map.get_mut(uri).ok_or("no parser")?;
             parser
-                .parse(line_list.to_text(), Some(old_tree))
+                .parse(line_list.to_text(), Some(tree_old))
                 .ok_or("parse failed")?
         };
 
-        tree_map.insert(uri.clone(), new_tree);
+        tree_map.insert(uri.clone(), tree_new);
         info!("Updated tree for {}", uri);
     }
     parse(uri).await
