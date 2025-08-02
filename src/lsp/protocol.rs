@@ -1,6 +1,7 @@
 use crate::lsp::cancel::{CancelId, CancelParams};
 use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
 use crate::lsp::document_symbol::lsp::DocumentSymbolParams;
+use crate::lsp::folding::lsp::FoldingRangeParams;
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
 use crate::lsp::semantic::lsp::{SemanticTokensParams, SemanticTokensRangeParams};
@@ -11,7 +12,7 @@ use crate::lsp::text_document::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LspMessage {
@@ -68,6 +69,9 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/documentSymbol")]
     DocumentSymbol(DocumentSymbolParams),
+
+    #[serde(rename = "textDocument/foldingRange")]
+    Folding(FoldingRangeParams),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

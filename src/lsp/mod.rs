@@ -1,6 +1,7 @@
 pub(crate) mod cancel;
 pub(crate) mod diagnostic;
 pub(crate) mod document_symbol;
+pub(crate) mod folding;
 pub(crate) mod initialize;
 pub(crate) mod initialized;
 pub(crate) mod location;

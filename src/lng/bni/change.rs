@@ -1,7 +1,7 @@
 use crate::lng::bni::parse::parse;
-use crate::lng::bni::uri_map::PARSER_MAP;
+use crate::lng::bni::uri_map::{PARSER_MAP, TREE_MAP};
 use crate::lsp::text_document::TextDocumentContentChangeEvent;
-use crate::util::uri_map::{LINE_LIST_MAP, TREE_MAP};
+use crate::util::uri_map::LINE_LIST_MAP;
 use log::info;
 use std::error::Error;
 use tree_sitter::InputEdit;
@@ -12,6 +12,7 @@ pub async fn change(
     changes: Vec<TextDocumentContentChangeEvent>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     {
+        let mut parser_map = PARSER_MAP.lock().await;
         let mut line_list_map = LINE_LIST_MAP.lock().await;
         let mut tree_map = TREE_MAP.lock().await;
 
@@ -43,7 +44,6 @@ pub async fn change(
         }
 
         let tree_new = {
-            let mut parser_map = PARSER_MAP.lock().await;
             let parser = parser_map.get_mut(uri).ok_or("no parser")?;
             parser
                 .parse(line_list.to_text(), Some(tree_old))

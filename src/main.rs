@@ -13,6 +13,8 @@ use crate::lsp::diagnostic::lsp::{DiagnosticOptions, DocumentDiagnosticReport};
 use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::document_symbol::uri_map::URI_MAP as SYMBOL_URI_MAP;
+use crate::lsp::folding::lsp::FoldingRangeOptions;
+use crate::lsp::folding::uri_map::URI_MAP as FOLDING_URI_MAP;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::range::Range;
@@ -87,6 +89,8 @@ async fn main() {
                                     document_symbol_provider: Some(DocumentSymbolOptions {
                                         label: None,
                                     }),
+                                    folding_range_provider: Some(FoldingRangeOptions {}),
+
                                     ..Default::default()
                                 },
                             }),
@@ -168,6 +172,10 @@ async fn main() {
                             }
 
                             MethodCall::SemanticRange(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+
                                 semantic_token_send(
                                     &writer,
                                     call.id,
@@ -222,6 +230,32 @@ async fn main() {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
                                         result: map.get(uri),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
+                            MethodCall::Folding(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+
+                                let uri = &params.text_document.uri;
+
+                                let map = FOLDING_URI_MAP.lock().await;
+
+                                let result = match map.get(uri) {
+                                    Some(r) => r,
+                                    None => return,
+                                };
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(result),
                                         error: None,
                                     },
                                 )
