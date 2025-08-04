@@ -8,6 +8,7 @@ const {
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
+const {resolveBlpEditor} = require('blp_viewer')
 
 const path = require('path')
 
@@ -84,6 +85,31 @@ module.exports = {
         client.onNotification('window/logMessage', params => {
             console.log(`${params.message}`)
         })
+
+        context.subscriptions.push(
+            // https://code.visualstudio.com/api/references/vscode-api#window.registerCustomEditorProvider
+            window.registerCustomEditorProvider(
+                'blp.preview',
+                {
+                    openCustomDocument(uri) {
+                        return {
+                            uri,
+                            dispose: () => {
+                            }
+                        }
+                    },
+                    async resolveCustomEditor(document, webviewPanel, _token) {
+                        return resolveBlpEditor(document, webviewPanel, _token, client)
+                    }
+                },
+                {
+                    webviewOptions: {
+                        retainContextWhenHidden: true
+                    },
+                    supportsMultipleEditorsPerDocument: false
+                }
+            )
+        )
 
         await client.start()
     },
