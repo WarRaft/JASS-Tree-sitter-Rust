@@ -33,18 +33,12 @@ impl Line {
     }
 }
 
-#[derive(Debug)]
+#[derive(Default, Debug)]
 pub struct Hub {
     pub lines: BTreeMap<usize, Line>,
 }
 
 impl Hub {
-    pub fn new() -> Self {
-        Self {
-            lines: BTreeMap::new(),
-        }
-    }
-
     pub fn add_node(
         &mut self,
         node: &Node,
@@ -170,10 +164,5 @@ impl Hub {
         }
 
         result
-    }
-
-    pub fn clear(&mut self) -> &mut Self {
-        self.lines.clear();
-        self
     }
 }

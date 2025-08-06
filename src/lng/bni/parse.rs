@@ -12,32 +12,22 @@ use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
 use crate::util::dfs_node::Dfs;
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
+use crate::util::uri_lock::uri_unlock;
 use lapce_xi_rope::Rope;
 use std::error::Error;
 use url::Url;
 
 pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
     {
-        let tree_map = TREE_MAP.read().await;
-        let rope_map = ROPE_MAP.read().await;
+        let rope_entry = ROPE_MAP.get(&uri.clone()).ok_or("no rope")?;
+        let rope: &Rope = rope_entry.value();
 
-        let mut semantic_map = SEMANTIC_URI_MAP.write().await;
-        let mut diagnostic_map = DIAGNOSTIC_URI_MAP.write().await;
-        let mut symbol_map = SYMBOL_URI_MAP.write().await;
-        let mut folding_map = FOLDING_URI_MAP.write().await;
-
-        let rope: &Rope = rope_map.get(uri).ok_or("no rope")?;
-        let semantic = semantic_map
-            .entry(uri.clone())
-            .or_insert_with(Hub::new)
-            .clear();
-
+        let mut semantic = Hub::default();
         let mut report = DocumentDiagnosticReport::Full {
             result_id: None,
             items: vec![],
             related_documents: None,
         };
-
         let diagnostic = match &mut report {
             DocumentDiagnosticReport::Full { items, .. } => items,
             _ => unreachable!("Expected Full report"),
@@ -51,7 +41,9 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut current_symbol: Option<DocumentSymbol> = None;
         let mut current_folding: Option<FoldingRange> = None;
 
-        let root = tree_map.get(&uri).ok_or("no tree")?.root_node();
+        let tree_entry = TREE_MAP.get(&uri.clone()).ok_or("no tree")?;
+        let root = tree_entry.value().root_node();
+
         for node in Dfs::new(root) {
             if node.is_missing() {
                 let expected = node.kind();
@@ -128,7 +120,7 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                         semantic.add_node(&node, &rope, TokenKind::Operator, 0u32);
                     }
                     Kind::Key => {
-                        semantic.add_node(&node,  &rope,TokenKind::Function, 0u32);
+                        semantic.add_node(&node, &rope, TokenKind::Function, 0u32);
                     }
                     Kind::QuotedString | Kind::UnquotedString => {
                         semantic.add_node(&node, &rope, TokenKind::String, 0u32);
@@ -151,9 +143,12 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
             folding.push(prev);
         }
 
-        folding_map.insert(uri.clone(), folding);
-        symbol_map.insert(uri.clone(), symbols);
-        diagnostic_map.insert(uri.clone(), report);
+        FOLDING_URI_MAP.insert(uri.clone(), folding);
+        SYMBOL_URI_MAP.insert(uri.clone(), symbols);
+        DIAGNOSTIC_URI_MAP.insert(uri.clone(), report);
+        SEMANTIC_URI_MAP.insert(uri.clone(), semantic);
+
+        uri_unlock(uri);
     }
     Ok(())
 }

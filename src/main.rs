@@ -26,7 +26,8 @@ use crate::lsp::semantic::lsp::{
 use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
 use crate::lsp::send::send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
-use crate::util::uri_map::LNG_MAP;
+use crate::util::uri_lock::uri_wait;
+use crate::util::uri_map::LNG_URI_MAP;
 use log::error;
 use url::Url;
 
@@ -90,7 +91,6 @@ async fn main() {
                                         label: None,
                                     }),
                                     folding_range_provider: Some(FoldingRangeOptions {}),
-
                                     ..Default::default()
                                 },
                             }),
@@ -156,13 +156,8 @@ async fn main() {
                             MethodCall::DidChange(params) => {
                                 let uri = &params.text_document.uri;
 
-                                let lng = {
-                                    let map = LNG_MAP.read().await;
-                                    map.get(uri).cloned()
-                                };
-
-                                if let Some(lng) = lng {
-                                    if lng == "bni" {
+                                if let Some(lng) = LNG_URI_MAP.get(uri) {
+                                    if lng.value() == "bni" {
                                         if let Err(err) =
                                             lng::bni::change::change(uri, params.content_changes)
                                                 .await
@@ -177,28 +172,21 @@ async fn main() {
                                 if call.id.was_cancelled().await {
                                     return;
                                 }
+                                let uri = &params.text_document.uri;
 
-                                semantic_token_send(
-                                    &writer,
-                                    call.id,
-                                    &params.text_document.uri,
-                                    None,
-                                )
-                                .await
+                                uri_wait(uri).await;
+
+                                semantic_token_send(&writer, call.id, uri, None).await
                             }
 
                             MethodCall::SemanticRange(params) => {
                                 if call.id.was_cancelled().await {
                                     return;
                                 }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
 
-                                semantic_token_send(
-                                    &writer,
-                                    call.id,
-                                    &params.text_document.uri,
-                                    Some(params.range),
-                                )
-                                .await
+                                semantic_token_send(&writer, call.id, uri, Some(params.range)).await
                             }
 
                             MethodCall::Diagnostic(params) => {
@@ -207,17 +195,22 @@ async fn main() {
                                 }
 
                                 let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
 
-                                let map = DIAGNOSTIC_URI_MAP.read().await;
-
-                                let result = match map.get(uri) {
-                                    Some(report) => &report,
-                                    None => &DocumentDiagnosticReport::Full {
-                                        result_id: None,
-                                        items: vec![],
-                                        related_documents: None,
-                                    },
+                                let default = DocumentDiagnosticReport::Full {
+                                    result_id: None,
+                                    items: vec![],
+                                    related_documents: None,
                                 };
+                                let result_ref;
+                                let result: &DocumentDiagnosticReport;
+
+                                if let Some(entry) = DIAGNOSTIC_URI_MAP.get(uri) {
+                                    result_ref = entry;
+                                    result = result_ref.value();
+                                } else {
+                                    result = &default;
+                                }
 
                                 send(
                                     &writer,
@@ -237,15 +230,23 @@ async fn main() {
                                 }
 
                                 let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
 
-                                let map = SYMBOL_URI_MAP.read().await;
+                                let result_ref;
+                                let result: Option<&_> =
+                                    if let Some(entry) = SYMBOL_URI_MAP.get(uri) {
+                                        result_ref = entry; // держим Ref живым
+                                        Some(result_ref.value()) // возвращаем ссылку, живущую столько же
+                                    } else {
+                                        None
+                                    };
 
                                 send(
                                     &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
-                                        result: map.get(uri),
+                                        result,
                                         error: None,
                                     },
                                 )
@@ -256,14 +257,16 @@ async fn main() {
                                 if call.id.was_cancelled().await {
                                     return;
                                 }
-
                                 let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
 
-                                let map = FOLDING_URI_MAP.read().await;
-
-                                let result = match map.get(uri) {
-                                    Some(r) => r,
-                                    None => return,
+                                let result_ref;
+                                let result = match FOLDING_URI_MAP.get(uri) {
+                                    Some(r) => {
+                                        result_ref = r;
+                                        result_ref.value()
+                                    }
+                                    None => &[].into(),
                                 };
 
                                 send(
@@ -301,13 +304,10 @@ async fn semantic_token_send(
     uri: &Url,
     range: Option<Range>,
 ) {
-    let data = {
-        let map = SEMANTIC_URI_MAP.read().await;
-        match map.get(uri) {
-            Some(semantic) => semantic.data(range),
-            None => Vec::new(),
-        }
-    };
+    let data = SEMANTIC_URI_MAP
+        .get(uri)
+        .map(|semantic| semantic.value().data(range))
+        .unwrap_or_default();
 
     let _ = send(
         writer,
