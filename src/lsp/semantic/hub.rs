@@ -1,7 +1,9 @@
-use std::collections::BTreeMap;
-use tree_sitter::Node;
 use crate::lsp::range::Range;
 use crate::lsp::semantic::lsp::Kind;
+use lapce_xi_rope::Rope;
+use log::error;
+use std::collections::BTreeMap;
+use tree_sitter::Node;
 
 #[derive(Debug, Clone)]
 pub struct Token {
@@ -46,26 +48,66 @@ impl Hub {
     pub fn add_node(
         &mut self,
         node: &Node,
-        token_type: Kind,
+        rope: &Rope,
+        kind: Kind,
         modifiers: impl Into<u32>,
     ) -> &mut Self {
-        let s = node.start_position();
-        let e = node.end_position();
+        let start_byte = node.start_byte();
+        let end_byte = node.end_byte();
 
-        if s.row != e.row {
+        if end_byte <= start_byte {
+            error!("Node byte range is invalid: {} -> {}", start_byte, end_byte);
             return self;
         }
 
-        self.lines
-            .entry(s.row)
-            .or_insert_with(|| Line::new(s.row))
-            .add(Token {
-                row: s.row,
-                col: s.column,
-                len: e.column.saturating_sub(s.column),
-                kind: token_type,
-                modifiers: modifiers.into(),
-            });
+        let modifiers = modifiers.into();
+
+        let start_line = rope.line_of_offset(start_byte);
+        let end_line = rope.line_of_offset(end_byte);
+
+        for row in start_line..=end_line {
+            let line_start_byte = rope.offset_of_line(row);
+            let line_end_byte = rope.offset_of_line(row + 1).min(rope.len());
+            let line_text = rope.slice(line_start_byte..line_end_byte).to_string();
+
+            // Относительные байтовые границы для текущей строки,
+            // но ограничиваем в пределах строки
+            let rel_start = if row == start_line {
+                start_byte
+                    .saturating_sub(line_start_byte)
+                    .min(line_text.len())
+            } else {
+                0
+            };
+            let rel_end = if row == end_line {
+                end_byte
+                    .saturating_sub(line_start_byte)
+                    .min(line_text.len())
+            } else {
+                line_text.len()
+            };
+
+            // Считаем UTF-16 колонки для начала и конца токена в этой строке
+            let utf16_start_col = line_text[..rel_start].encode_utf16().count();
+            let utf16_end_col = line_text[..rel_end].encode_utf16().count();
+
+            let len = utf16_end_col.saturating_sub(utf16_start_col);
+            if len == 0 {
+                continue;
+            }
+
+            self.lines
+                .entry(row)
+                .or_insert_with(|| Line::new(row))
+                .add(Token {
+                    row,
+                    col: utf16_start_col,
+                    len,
+                    kind,
+                    modifiers,
+                });
+        }
+
         self
     }
 
@@ -129,8 +171,6 @@ impl Hub {
 
         result
     }
-
-
 
     pub fn clear(&mut self) -> &mut Self {
         self.lines.clear();

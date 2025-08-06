@@ -1,7 +1,7 @@
 use crate::lsp::semantic::hub::Hub;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use url::Url;
 
-pub static URI_MAP: Lazy<Mutex<HashMap<Url, Hub>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+pub static URI_MAP: Lazy<RwLock<HashMap<Url, Hub>>> = Lazy::new(|| RwLock::new(HashMap::new()));

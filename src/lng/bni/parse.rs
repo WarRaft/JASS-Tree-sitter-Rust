@@ -10,20 +10,23 @@ use crate::lsp::semantic::hub::Hub;
 use crate::lsp::semantic::lsp::Kind as TokenKind;
 use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
 use crate::util::dfs_node::Dfs;
-use crate::util::uri_map::LINE_LIST_MAP;
+use crate::util::roper::node::NodeExt;
+use crate::util::roper::uri_map::ROPE_MAP;
+use lapce_xi_rope::Rope;
 use std::error::Error;
 use url::Url;
 
 pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
     {
-        let tree_map = TREE_MAP.lock().await;
-        let mut line_list_map = LINE_LIST_MAP.lock().await;
-        let mut semantic_map = SEMANTIC_URI_MAP.lock().await;
-        let mut diagnostic_map = DIAGNOSTIC_URI_MAP.lock().await;
-        let mut symbol_map = SYMBOL_URI_MAP.lock().await;
-        let mut folding_map = FOLDING_URI_MAP.lock().await;
+        let tree_map = TREE_MAP.read().await;
+        let rope_map = ROPE_MAP.read().await;
 
-        let line_list = line_list_map.get_mut(&uri).ok_or("no line list")?;
+        let mut semantic_map = SEMANTIC_URI_MAP.write().await;
+        let mut diagnostic_map = DIAGNOSTIC_URI_MAP.write().await;
+        let mut symbol_map = SYMBOL_URI_MAP.write().await;
+        let mut folding_map = FOLDING_URI_MAP.write().await;
+
+        let rope: &Rope = rope_map.get(uri).ok_or("no rope")?;
         let semantic = semantic_map
             .entry(uri.clone())
             .or_insert_with(Hub::new)
@@ -53,7 +56,7 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
             if node.is_missing() {
                 let expected = node.kind();
                 diagnostic.push(Diagnostic {
-                    range: node.into(),
+                    range: node.to_range(&rope),
                     message: format!("Missing `{}`", expected),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
@@ -63,7 +66,7 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
 
             if node.is_error() {
                 diagnostic.push(Diagnostic {
-                    range: node.into(),
+                    range: node.to_range(&rope),
                     message: "Syntax error".into(),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
@@ -81,8 +84,8 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                         current_symbol = Some(DocumentSymbol {
                             name: "<unnamed>".into(),
                             kind: SymbolKind::Namespace,
-                            range: node.into(),
-                            selection_range: node.into(),
+                            range: node.to_range(&rope),
+                            selection_range: node.to_range(&rope),
                             ..Default::default()
                         });
 
@@ -97,10 +100,10 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                         })
                     }
                     Kind::SectionName => {
-                        semantic.add_node(&node, TokenKind::Keyword, 0u32);
+                        semantic.add_node(&node, &rope, TokenKind::Keyword, 0u32);
                         if let Some(symbol) = current_symbol.as_mut() {
-                            symbol.name = line_list.node_text(&node).to_string();
-                            symbol.selection_range = node.into();
+                            symbol.name = node.text(rope).to_string();
+                            symbol.selection_range = node.to_range(&rope);
                         }
                     }
                     Kind::Item => {
@@ -122,19 +125,19 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                         }
                     }
                     Kind::LeftBracket | Kind::RightBracket | Kind::Equal | Kind::Comma => {
-                        semantic.add_node(&node, TokenKind::Operator, 0u32);
+                        semantic.add_node(&node, &rope, TokenKind::Operator, 0u32);
                     }
                     Kind::Key => {
-                        semantic.add_node(&node, TokenKind::Function, 0u32);
+                        semantic.add_node(&node,  &rope,TokenKind::Function, 0u32);
                     }
                     Kind::QuotedString | Kind::UnquotedString => {
-                        semantic.add_node(&node, TokenKind::String, 0u32);
+                        semantic.add_node(&node, &rope, TokenKind::String, 0u32);
                     }
                     Kind::Int | Kind::Float => {
-                        semantic.add_node(&node, TokenKind::Number, 0u32);
+                        semantic.add_node(&node, &rope, TokenKind::Number, 0u32);
                     }
                     Kind::LineComment => {
-                        semantic.add_node(&node, TokenKind::Comment, 0u32);
+                        semantic.add_node(&node, &rope, TokenKind::Comment, 0u32);
                     }
                     _ => {}
                 }

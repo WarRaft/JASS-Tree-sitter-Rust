@@ -117,6 +117,22 @@ async fn main() {
                 other => {
                     tokio::spawn(async move {
                         match other {
+                            MethodCall::BlpRender(param) => {
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(json!({
+                                            "test": 123,
+                                            "uri": param.uri,
+                                        })),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
                             MethodCall::Initialized(_) => {}
                             MethodCall::SetTrace(_) => {}
                             MethodCall::DidClose(_) => {}
@@ -141,7 +157,7 @@ async fn main() {
                                 let uri = &params.text_document.uri;
 
                                 let lng = {
-                                    let map = LNG_MAP.lock().await;
+                                    let map = LNG_MAP.read().await;
                                     map.get(uri).cloned()
                                 };
 
@@ -192,7 +208,7 @@ async fn main() {
 
                                 let uri = &params.text_document.uri;
 
-                                let map = DIAGNOSTIC_URI_MAP.lock().await;
+                                let map = DIAGNOSTIC_URI_MAP.read().await;
 
                                 let result = match map.get(uri) {
                                     Some(report) => &report,
@@ -222,7 +238,7 @@ async fn main() {
 
                                 let uri = &params.text_document.uri;
 
-                                let map = SYMBOL_URI_MAP.lock().await;
+                                let map = SYMBOL_URI_MAP.read().await;
 
                                 send(
                                     &writer,
@@ -243,7 +259,7 @@ async fn main() {
 
                                 let uri = &params.text_document.uri;
 
-                                let map = FOLDING_URI_MAP.lock().await;
+                                let map = FOLDING_URI_MAP.read().await;
 
                                 let result = match map.get(uri) {
                                     Some(r) => r,
@@ -286,7 +302,7 @@ async fn semantic_token_send(
     range: Option<Range>,
 ) {
     let data = {
-        let map = SEMANTIC_URI_MAP.lock().await;
+        let map = SEMANTIC_URI_MAP.read().await;
         match map.get(uri) {
             Some(semantic) => semantic.data(range),
             None => Vec::new(),

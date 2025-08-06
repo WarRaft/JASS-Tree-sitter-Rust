@@ -8,7 +8,7 @@ const {
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
-const {resolveBlpEditor} = require('blp_viewer')
+const {resolveBlpEditor} = require('./blp_viewer.js')
 
 const path = require('path')
 

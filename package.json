@@ -67,6 +67,11 @@
         "configuration": "./syntaxes/blp.language-configuration.json"
       }
     ],
+    "configurationDefaults": {
+      "[bni]": {
+        "editor.occurrencesHighlight": false
+      }
+    },
     "customEditors": [
       {
         "viewType": "blp.preview",

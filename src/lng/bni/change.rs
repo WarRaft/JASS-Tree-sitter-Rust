@@ -1,10 +1,11 @@
 use crate::lng::bni::parse::parse;
 use crate::lng::bni::uri_map::{PARSER_MAP, TREE_MAP};
+use crate::lsp::position::Position;
 use crate::lsp::text_document::TextDocumentContentChangeEvent;
-use crate::util::uri_map::LINE_LIST_MAP;
-use log::info;
+use crate::util::roper::uri_map::ROPE_MAP;
+use lapce_xi_rope::Rope;
 use std::error::Error;
-use tree_sitter::InputEdit;
+use tree_sitter::{InputEdit, Tree};
 use url::Url;
 
 pub async fn change(
@@ -12,46 +13,47 @@ pub async fn change(
     changes: Vec<TextDocumentContentChangeEvent>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     {
-        let mut parser_map = PARSER_MAP.lock().await;
-        let mut line_list_map = LINE_LIST_MAP.lock().await;
-        let mut tree_map = TREE_MAP.lock().await;
+        let mut parser_map = PARSER_MAP.write().await;
+        let mut tree_map = TREE_MAP.write().await;
+        let mut rope_map = ROPE_MAP.write().await;
 
-        let line_list = line_list_map.get_mut(uri).ok_or("no line list")?;
-        let tree_old = tree_map.get_mut(uri).ok_or("no tree")?;
+        let rope: &mut Rope = rope_map.get_mut(uri).ok_or("no rope")?;
+        let tree: &mut Tree = tree_map.get_mut(uri).ok_or("no tree")?;
 
         for change in &changes {
             let start = &change.range.start;
             let end = &change.range.end;
+            let new_text = &change.text;
 
-            let start_byte = line_list
-                .position_to_offset(start)
-                .ok_or("no start position")?;
+            let start_byte = start.to_byte_offset(rope).ok_or("no start byte")?;
+            let old_end_byte = end.to_byte_offset(rope).ok_or("no end byte")?;
 
-            let old_end_byte = line_list.position_to_offset(end).ok_or("no end position")?;
+            // edit Rope
+            rope.edit(start_byte..old_end_byte, new_text);
 
-            line_list.apply_change(start, end, &change.text);
+            let new_end_byte = start_byte + new_text.len();
+            let new_end_point =
+                Position::from_byte_offset(rope, new_end_byte).ok_or("no new end point")?;
 
-            let new_end_byte = start_byte + change.text.len();
-
-            tree_old.edit(&InputEdit {
+            tree.edit(&InputEdit {
                 start_byte,
                 old_end_byte,
                 new_end_byte,
                 start_position: start.into(),
                 old_end_position: end.into(),
-                new_end_position: line_list.point_from_offset(new_end_byte),
+                new_end_position: new_end_point.into(),
             });
         }
 
-        let tree_new = {
-            let parser = parser_map.get_mut(uri).ok_or("no parser")?;
-            parser
-                .parse(line_list.to_text(), Some(tree_old))
-                .ok_or("parse failed")?
-        };
+        let parser = parser_map.get_mut(uri).ok_or("no parser")?;
+        let tree_old = tree_map.get(uri).ok_or("no tree after edit")?;
+
+        // Note: rope.to_string() может быть неэффективным, но tree-sitter требует &str
+        let text = rope.to_string();
+        let tree_new = parser.parse(&text, Some(tree_old)).ok_or("parse failed")?;
 
         tree_map.insert(uri.clone(), tree_new);
-        info!("Updated tree for {}", uri);
     }
+
     parse(uri).await
 }

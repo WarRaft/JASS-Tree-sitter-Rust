@@ -8,6 +8,7 @@ use crate::lsp::semantic::lsp::{SemanticTokensParams, SemanticTokensRangeParams}
 use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::text_document::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    TextDocumentIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,6 +32,11 @@ pub struct LspCall {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
 pub enum MethodCall {
+    /// BLP
+    #[serde(rename = "blp/render")]
+    BlpRender(TextDocumentIdentifier),
+
+    /// LSP
     #[serde(rename = "initialize")]
     Initialize(InitializeParams),
 
