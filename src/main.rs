@@ -8,7 +8,8 @@ use std::sync::Arc;
 use tokio::io::{self, BufReader, Stdout};
 use tokio::sync::Mutex;
 
-use crate::lsp::cancel::{CancelCheck, CancelId};
+use crate::lng::blp::send::send as blp_send;
+use crate::lsp::cancel::CancelCheck;
 use crate::lsp::diagnostic::lsp::{DiagnosticOptions, DocumentDiagnosticReport};
 use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
@@ -17,19 +18,17 @@ use crate::lsp::folding::lsp::FoldingRangeOptions;
 use crate::lsp::folding::uri_map::URI_MAP as FOLDING_URI_MAP;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
-use crate::lsp::range::Range;
 use crate::lsp::read::read;
 use crate::lsp::semantic::lsp::{
-    Kind, Mod, SemanticTokens, SemanticTokensFullOptions, SemanticTokensFullOptionsObject,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensRangeProviderCapability, ToCamelVec,
+    Kind, Mod, SemanticTokensFullOptions, SemanticTokensFullOptionsObject, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensRangeProviderCapability, ToCamelVec,
 };
-use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
+use crate::lsp::semantic::send::send as semantic_send;
 use crate::lsp::send::send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::util::uri_lock::uri_wait;
 use crate::util::uri_map::LNG_URI_MAP;
 use log::error;
-use url::Url;
 
 #[tokio::main]
 async fn main() {
@@ -118,19 +117,7 @@ async fn main() {
                     tokio::spawn(async move {
                         match other {
                             MethodCall::BlpRender(param) => {
-                                send(
-                                    &writer,
-                                    &ResponseMessage {
-                                        jsonrpc: "2.0".into(),
-                                        id: call.id,
-                                        result: Some(json!({
-                                            "test": 123,
-                                            "uri": param.uri,
-                                        })),
-                                        error: None,
-                                    },
-                                )
-                                .await;
+                                blp_send(&writer, call.id, &param.uri).await;
                             }
 
                             MethodCall::Initialized(_) => {}
@@ -176,7 +163,7 @@ async fn main() {
 
                                 uri_wait(uri).await;
 
-                                semantic_token_send(&writer, call.id, uri, None).await
+                                semantic_send(&writer, call.id, uri, None).await
                             }
 
                             MethodCall::SemanticRange(params) => {
@@ -186,7 +173,7 @@ async fn main() {
                                 let uri = &params.text_document.uri;
                                 uri_wait(uri).await;
 
-                                semantic_token_send(&writer, call.id, uri, Some(params.range)).await
+                                semantic_send(&writer, call.id, uri, Some(params.range)).await
                             }
 
                             MethodCall::Diagnostic(params) => {
@@ -296,27 +283,4 @@ async fn main() {
     }
 
     std::process::exit(0);
-}
-
-async fn semantic_token_send(
-    writer: &Arc<Mutex<Stdout>>,
-    call_id: Option<CancelId>,
-    uri: &Url,
-    range: Option<Range>,
-) {
-    let data = SEMANTIC_URI_MAP
-        .get(uri)
-        .map(|semantic| semantic.value().data(range))
-        .unwrap_or_default();
-
-    let _ = send(
-        writer,
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id: call_id,
-            result: Some(SemanticTokens { data }),
-            error: None,
-        },
-    )
-    .await;
 }

@@ -50,7 +50,7 @@ module.exports = {
             return
         }
 
-        const options = context.extensionMode === ExtensionMode.Production ? {
+        const options = context.extensionMode === ExtensionMode.Production || true ? {
             command: binUri.fsPath,
         } : {
             command: process.execPath, // node
