@@ -1,5 +1,5 @@
 {
-  "version": "0.0.8",
+  "version": "0.0.9",
   "license": "MIT",
   "author": "WarRaft",
   "publisher": "WarRaft",
@@ -58,8 +58,12 @@
       },
       {
         "id": "blp",
-        "aliases": ["BLP Image"],
-        "extensions": [".blp"],
+        "aliases": [
+          "BLP Image"
+        ],
+        "extensions": [
+          ".blp"
+        ],
         "icon": {
           "light": "./icons/blp.svg",
           "dark": "./icons/blp.svg"
@@ -76,7 +80,11 @@
       {
         "viewType": "blp.preview",
         "displayName": "BLP Image Viewer",
-        "selector": [{"filenamePattern": "*.blp"}],
+        "selector": [
+          {
+            "filenamePattern": "*.blp"
+          }
+        ],
         "priority": "default"
       }
     ],
