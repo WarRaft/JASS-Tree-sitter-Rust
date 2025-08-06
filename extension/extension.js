@@ -99,12 +99,15 @@ module.exports = {
                         }
                     },
                     async resolveCustomEditor(document, webviewPanel, _token) {
+                        webviewPanel.webview.options = {
+                            enableScripts: true
+                        }
                         return resolveBlpEditor(document, webviewPanel, _token, client)
                     }
                 },
                 {
                     webviewOptions: {
-                        retainContextWhenHidden: true
+                        retainContextWhenHidden: true,
                     },
                     supportsMultipleEditorsPerDocument: false
                 }
