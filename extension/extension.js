@@ -1,14 +1,13 @@
 // noinspection JSUnusedGlobalSymbols
-
 // noinspection NpmUsedModulesInstalled
 const {
-    workspace,
     window,
     Uri, ExtensionMode
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
-const {resolveBlpEditor} = require('./blp_viewer.js')
+const {resolveBlpEditor} = require('./resolveBlpEditor.js')
+const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 
 const path = require('path')
 
@@ -27,7 +26,7 @@ module.exports = {
 
         switch (process.platform) {
             case 'win32':
-                binName += 'win.exe'
+                binName += 'windows.exe'
                 break
             case 'darwin':
                 binName += 'macos'
@@ -42,13 +41,6 @@ module.exports = {
 
         const binPath = path.join(context.extensionPath, 'bin', binName)
         const binUri = Uri.file(binPath)
-
-        try {
-            await workspace.fs.stat(binUri)
-        } catch (error) {
-            window.showErrorMessage(`LSP binary not found:\n${binUri.fsPath}\n\n${error.message}`)
-            return
-        }
 
         const options = context.extensionMode === ExtensionMode.Production || true ? {
             command: binUri.fsPath,
@@ -72,8 +64,6 @@ module.exports = {
                 progressOnInitialization: true,
                 initializationOptions: {},
                 documentSelector: [
-                    {scheme: 'file', language: 'lua'},
-                    {scheme: 'file', language: 'vjass'},
                     {scheme: 'file', language: 'bni'},
                 ],
                 outputChannelName: 'JASS-Tree-Sitter-Rust Logs',
@@ -114,11 +104,23 @@ module.exports = {
             )
         )
 
-        await client.start()
+        client.onDidChangeState(({oldState, newState}) => {
+            const message = onDidChangeStateMessage(oldState, newState)
+            if (message) {
+                window.showWarningMessage(message)
+            }
+        })
+
+        try {
+            await client.start()
+        } catch (err) {
+            window.showErrorMessage(`❌ Failed to start LSP client:\n\n${err.message}`)
+        }
     },
 
     async deactivate() {
-        if (client) return
+        if (!client) return
         await client.stop()
+        client = undefined
     }
 }
