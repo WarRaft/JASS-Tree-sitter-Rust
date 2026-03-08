@@ -1,6 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use blp_rs::mipmap::Mipmap;
+use blp::core::mipmap::Mipmap;
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde::Serialize;
 use std::io::Cursor;

@@ -2,7 +2,7 @@ use crate::lng::blp::response::{BlpMipmapMeta, BlpResponse};
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
-use blp_rs::image_blp::ImageBlp;
+use blp::core::image::ImageBlp;
 use serde_json::{json, to_value};
 use std::error::Error;
 use std::sync::Arc;
@@ -35,7 +35,9 @@ async fn _send(uri: &Url) -> Result<serde_json::Value, Box<dyn Error + Send + Sy
 
     let buf = tokio::fs::read(&path).await?;
 
-    let image = ImageBlp::from_bytes(&buf)?;
+    let mut image = ImageBlp::from_buf(&buf)?;
+
+    image.decode(&buf, &[])?;
 
     let mipmaps = image.mipmaps.iter().map(BlpMipmapMeta::from).collect();
 
