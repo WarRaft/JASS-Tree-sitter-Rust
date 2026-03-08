@@ -22,7 +22,7 @@ impl<'tree> Iterator for Dfs<'tree> {
                 if child_count > 0 {
                     self.stack.push((node, 1));
                     for i in 0..child_count {
-                        if let Some(child) = node.child(i) {
+                        if let Some(child) = node.child(i as u32) {
                             self.stack.push((child, 0));
                             break;
                         }
@@ -33,7 +33,7 @@ impl<'tree> Iterator for Dfs<'tree> {
                 let total = node.child_count();
                 let mut i = index;
                 while i < total {
-                    if let Some(child) = node.child(i) {
+                    if let Some(child) = node.child(i as u32) {
                         self.stack.push((node, i + 1));
                         self.stack.push((child, 0));
                         break;
