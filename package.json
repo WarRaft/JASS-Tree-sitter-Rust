@@ -103,13 +103,13 @@
     ],
     "configurationDefaults": {
       "[bni]": {
-        "editor.occurrencesHighlight": false
+        "editor.occurrencesHighlight": "off"
       },
       "[jass]": {
-        "editor.occurrencesHighlight": false
+        "editor.occurrencesHighlight": "off"
       },
       "[angelscript]": {
-        "editor.occurrencesHighlight": false
+        "editor.occurrencesHighlight": "off"
       }
     },
     "customEditors": [
