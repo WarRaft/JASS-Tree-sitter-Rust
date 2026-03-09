@@ -43,7 +43,7 @@ pub struct DocumentSymbol {
     pub children: Option<Vec<DocumentSymbol>>,
 }
 
-#[derive(Debug, Default, Serialize_repr, Deserialize_repr)]
+#[derive(Debug, Default, PartialEq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum SymbolKind {
     File = 1,
