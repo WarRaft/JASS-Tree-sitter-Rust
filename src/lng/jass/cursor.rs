@@ -25,6 +25,7 @@ pub struct VarInfo {
 
 /// A completed scope snapshot.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Scope {
     pub name: String,
     pub vars: HashMap<String, VarInfo>,
@@ -548,7 +549,8 @@ impl Cursor {
                             _ => {
                                 // Descend
                                 if cursor.goto_first_child() { continue; }
-                                visit = false;
+                                #[allow(unused_assignments)]
+                                { visit = false; }
                                 if cursor.goto_next_sibling() { visit = true; continue; }
                                 while !cursor.goto_next_sibling() {
                                     if !cursor.goto_parent() { return; }

@@ -129,6 +129,7 @@ pub struct CallStmt<'tree> {
 
 /// `<name>(<args>)`
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct FunctionCall<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -181,6 +182,7 @@ pub struct Comment<'tree> {
 
 /// Expression node in the AST.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Expr<'tree> {
     /// Variable / identifier reference.
     Id(Id<'tree>),
