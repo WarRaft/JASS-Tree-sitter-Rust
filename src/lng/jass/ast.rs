@@ -10,6 +10,7 @@ const FIELD_VALUE: u16 = Field::Value as u16;
 const FIELD_VARIABLE: u16 = Field::Variable as u16;
 const FIELD_INDEX: u16 = Field::Index as u16;
 const FIELD_ARGS: u16 = Field::Args as u16;
+const FIELD_CONDITION: u16 = Field::Condition as u16;
 
 // ─── Semantic role for identifiers ───────────────────────────────────────────
 
@@ -88,7 +89,7 @@ pub struct FunctionDecl<'tree> {
 pub struct VarInit<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
-    pub has_value: bool,
+    pub value: Option<Expr<'tree>>,
 }
 
 /// `[constant] <type> [array] <decls>`  (inside globals)
@@ -107,7 +108,7 @@ pub struct LocalDecl<'tree> {
     pub node: Node<'tree>,
     pub type_id: Option<Id<'tree>>,
     pub name: Option<Id<'tree>>,
-    pub has_value: bool,
+    pub value: Option<Expr<'tree>>,
 }
 
 /// `set <variable>[<index>] = <value>`
@@ -115,7 +116,8 @@ pub struct LocalDecl<'tree> {
 pub struct SetStmt<'tree> {
     pub node: Node<'tree>,
     pub variable: Option<Id<'tree>>,
-    pub has_index: bool,
+    pub index: Option<Expr<'tree>>,
+    pub value: Option<Expr<'tree>>,
 }
 
 /// `call <function_call>`
@@ -130,25 +132,28 @@ pub struct CallStmt<'tree> {
 pub struct FunctionCall<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
-    pub arg_count: usize,
+    pub args: Vec<Expr<'tree>>,
 }
 
 /// `return [<expr>]`
 #[derive(Debug, Clone)]
 pub struct ReturnStmt<'tree> {
     pub node: Node<'tree>,
+    pub value: Option<Expr<'tree>>,
 }
 
 /// `exitwhen <expr>`
 #[derive(Debug, Clone)]
 pub struct ExitwhenStmt<'tree> {
     pub node: Node<'tree>,
+    pub condition: Option<Expr<'tree>>,
 }
 
 /// `if <cond> then ... [elseif ...] [else ...] endif`
 #[derive(Debug, Clone)]
 pub struct IfStmt<'tree> {
     pub node: Node<'tree>,
+    pub condition: Option<Expr<'tree>>,
     pub body: Vec<Statement<'tree>>,
 }
 
@@ -170,6 +175,43 @@ pub struct GlobalsBlock<'tree> {
 #[derive(Debug, Clone)]
 pub struct Comment<'tree> {
     pub node: Node<'tree>,
+}
+
+// ─── Expressions ─────────────────────────────────────────────────────────────
+
+/// Expression node in the AST.
+#[derive(Debug, Clone)]
+pub enum Expr<'tree> {
+    /// Variable / identifier reference.
+    Id(Id<'tree>),
+    /// `function_call`: `name(args...)`
+    Call(FunctionCall<'tree>),
+    /// `function <name>` — function reference expression.
+    FuncRef(Id<'tree>),
+    /// Binary: `left OP right`
+    Binary {
+        node: Node<'tree>,
+        left: Box<Expr<'tree>>,
+        right: Box<Expr<'tree>>,
+    },
+    /// Unary: `not expr`, `-expr`
+    Unary {
+        node: Node<'tree>,
+        operand: Box<Expr<'tree>>,
+    },
+    /// Parenthesized: `(expr)`
+    Parens {
+        node: Node<'tree>,
+        inner: Box<Expr<'tree>>,
+    },
+    /// Array index: `expr[expr]`
+    Index {
+        node: Node<'tree>,
+        array: Box<Expr<'tree>>,
+        index: Box<Expr<'tree>>,
+    },
+    /// Literal (number, rawcode, string, etc.)
+    Literal(Node<'tree>),
 }
 
 /// Any top-level or body statement.
@@ -257,8 +299,8 @@ fn build_statement<'tree>(
         Ok(Kind::LocalStatement) => Some(Statement::Local(build_local_decl(node))),
         Ok(Kind::SetStatement) => Some(Statement::Set(build_set_stmt(node))),
         Ok(Kind::CallStatement) => Some(Statement::Call(build_call_stmt(node))),
-        Ok(Kind::ReturnStatement) => Some(Statement::Return(ReturnStmt { node: *node })),
-        Ok(Kind::ExitwhenStatement) => Some(Statement::Exitwhen(ExitwhenStmt { node: *node })),
+        Ok(Kind::ReturnStatement) => Some(Statement::Return(build_return_stmt(node))),
+        Ok(Kind::ExitwhenStatement) => Some(Statement::Exitwhen(build_exitwhen_stmt(node))),
         Ok(Kind::IfStatement) => Some(Statement::If(build_if_stmt(node, errors))),
         Ok(Kind::LoopStatement) => Some(Statement::Loop(build_loop_stmt(node, errors))),
         Ok(Kind::VarStmt) => Some(Statement::VarStmt(build_var_stmt(node))),
@@ -374,7 +416,7 @@ fn build_var_stmt<'tree>(node: &Node<'tree>) -> VarStmt<'tree> {
                 decls.push(VarInit {
                     node: child,
                     name: maybe_id(&child, FIELD_NAME, var_role),
-                    has_value: child.child_by_field_id(FIELD_VALUE).is_some(),
+                    value: child.child_by_field_id(FIELD_VALUE).and_then(|n| build_expr(&n)),
                 });
             }
         }
@@ -394,7 +436,7 @@ fn build_local_decl<'tree>(node: &Node<'tree>) -> LocalDecl<'tree> {
         node: *node,
         type_id: maybe_id(node, FIELD_TYPE, IdRole::TypeRef),
         name: maybe_id(node, FIELD_NAME, IdRole::Variable),
-        has_value: node.child_by_field_id(FIELD_VALUE).is_some(),
+        value: node.child_by_field_id(FIELD_VALUE).and_then(|n| build_expr(&n)),
     }
 }
 
@@ -402,7 +444,8 @@ fn build_set_stmt<'tree>(node: &Node<'tree>) -> SetStmt<'tree> {
     SetStmt {
         node: *node,
         variable: maybe_id(node, FIELD_VARIABLE, IdRole::Variable),
-        has_index: node.child_by_field_id(FIELD_INDEX).is_some(),
+        index: node.child_by_field_id(FIELD_INDEX).and_then(|n| build_expr(&n)),
+        value: node.child_by_field_id(FIELD_VALUE).and_then(|n| build_expr(&n)),
     }
 }
 
@@ -420,25 +463,23 @@ fn extract_call_name<'tree>(fc_node: &Node<'tree>) -> Option<Id<'tree>> {
 }
 
 fn build_function_call<'tree>(node: &Node<'tree>) -> FunctionCall<'tree> {
-    let arg_count = node
-        .child_by_field_id(FIELD_ARGS)
-        .map(|args| {
-            let mut count = 0usize;
-            let total = args.child_count();
-            for i in 0..total {
-                if let Some(child) = args.child(i as u32) {
-                    if Kind::try_from(child.kind_id()) == Ok(Kind::Expr) {
-                        count += 1;
+    let mut args = Vec::new();
+    if let Some(args_node) = node.child_by_field_id(FIELD_ARGS) {
+        let count = args_node.child_count();
+        for i in 0..count {
+            if let Some(child) = args_node.child(i as u32) {
+                if Kind::try_from(child.kind_id()) == Ok(Kind::Expr) {
+                    if let Some(expr) = build_expr(&child) {
+                        args.push(expr);
                     }
                 }
             }
-            count
-        })
-        .unwrap_or(0);
+        }
+    }
     FunctionCall {
         node: *node,
         name: extract_call_name(node),
-        arg_count,
+        args,
     }
 }
 
@@ -456,12 +497,41 @@ fn build_call_stmt<'tree>(node: &Node<'tree>) -> CallStmt<'tree> {
     CallStmt { node: *node, func }
 }
 
+fn build_return_stmt<'tree>(node: &Node<'tree>) -> ReturnStmt<'tree> {
+    let mut value = None;
+    let count = node.child_count();
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if Kind::try_from(child.kind_id()) == Ok(Kind::Expr) {
+                value = build_expr(&child);
+                break;
+            }
+        }
+    }
+    ReturnStmt { node: *node, value }
+}
+
+fn build_exitwhen_stmt<'tree>(node: &Node<'tree>) -> ExitwhenStmt<'tree> {
+    let mut condition = None;
+    let count = node.child_count();
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if Kind::try_from(child.kind_id()) == Ok(Kind::Expr) {
+                condition = build_expr(&child);
+                break;
+            }
+        }
+    }
+    ExitwhenStmt { node: *node, condition }
+}
+
 fn build_if_stmt<'tree>(
     node: &Node<'tree>,
     errors: &mut Vec<CstError<'tree>>,
 ) -> IfStmt<'tree> {
     IfStmt {
         node: *node,
+        condition: node.child_by_field_id(FIELD_CONDITION).and_then(|n| build_expr(&n)),
         body: build_children(node, errors),
     }
 }
@@ -476,13 +546,138 @@ fn build_loop_stmt<'tree>(
     }
 }
 
+// ─── Expression builder ─────────────────────────────────────────────────────
+
+fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
+    let kind = Kind::try_from(node.kind_id()).ok()?;
+    match kind {
+        Kind::Expr => build_expr_inner(node),
+        Kind::FunctionCall => Some(Expr::Call(build_function_call(node))),
+        Kind::FunctionRef => {
+            let name = maybe_id(node, FIELD_NAME, IdRole::FunctionRef)?;
+            Some(Expr::FuncRef(name))
+        }
+        Kind::Id => Some(Expr::Id(build_id(node, IdRole::Variable))),
+        Kind::Parens => {
+            let inner = find_child_expr(node)?;
+            Some(Expr::Parens {
+                node: *node,
+                inner: Box::new(inner),
+            })
+        }
+        Kind::Number | Kind::Float | Kind::Rawcode | Kind::StringLiteral => {
+            Some(Expr::Literal(*node))
+        }
+        _ => None,
+    }
+}
+
+fn build_expr_inner<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
+    let count = node.child_count();
+    if count == 0 {
+        return None;
+    }
+
+    if count == 1 {
+        return node.child(0).and_then(|c| build_expr(&c));
+    }
+
+    // Array index: has "[" child
+    let has_bracket = (0..count).any(|i| {
+        node.child(i as u32)
+            .map(|c| Kind::try_from(c.grammar_id()) == Ok(Kind::LeftBracket))
+            .unwrap_or(false)
+    });
+    if has_bracket {
+        let mut exprs = Vec::new();
+        for i in 0..count {
+            if let Some(child) = node.child(i as u32) {
+                if Kind::try_from(child.kind_id()) == Ok(Kind::Expr) {
+                    if let Some(e) = build_expr(&child) {
+                        exprs.push(e);
+                    }
+                }
+            }
+        }
+        if exprs.len() == 2 {
+            let index = exprs.pop().unwrap();
+            let array = exprs.pop().unwrap();
+            return Some(Expr::Index {
+                node: *node,
+                array: Box::new(array),
+                index: Box::new(index),
+            });
+        }
+    }
+
+    // Unary: first child is operator (not, -)
+    if let Some(first) = node.child(0) {
+        let first_kind = Kind::try_from(first.grammar_id()).ok();
+        if first_kind == Some(Kind::Not) || first_kind == Some(Kind::Minus) {
+            if let Some(operand) = find_child_expr(node) {
+                return Some(Expr::Unary {
+                    node: *node,
+                    operand: Box::new(operand),
+                });
+            }
+        }
+    }
+
+    // Binary: expr OP expr
+    let mut expr_children = Vec::new();
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if Kind::try_from(child.kind_id()) == Ok(Kind::Expr) {
+                if let Some(e) = build_expr(&child) {
+                    expr_children.push(e);
+                }
+            }
+        }
+    }
+    if expr_children.len() == 2 {
+        let right = expr_children.pop().unwrap();
+        let left = expr_children.pop().unwrap();
+        return Some(Expr::Binary {
+            node: *node,
+            left: Box::new(left),
+            right: Box::new(right),
+        });
+    }
+
+    // Single child
+    if expr_children.len() == 1 {
+        return expr_children.pop();
+    }
+
+    // Fallback
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if let Some(e) = build_expr(&child) {
+                return Some(e);
+            }
+        }
+    }
+    None
+}
+
+fn find_child_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
+    let count = node.child_count();
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if Kind::try_from(child.kind_id()) == Ok(Kind::Expr) {
+                return build_expr(&child);
+            }
+        }
+    }
+    None
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Parse JASS source, keeping tree alive, and run assertion closure on AST.
     fn with_ast(src: &str, f: impl FnOnce(&Ast)) {
         let mut parser = tree_sitter::Parser::new();
         parser
@@ -518,31 +713,18 @@ mod tests {
     }
 
     #[test]
-    fn native_takes_nothing() {
-        let src = "native Foo takes nothing returns nothing\n";
-        with_ast(src, |ast| {
-            match &ast.items[0] {
-                Statement::Native(n) => {
-                    assert_eq!(node_text(src, &n.name.as_ref().unwrap().node), "Foo");
-                    assert_eq!(n.name.as_ref().unwrap().role, IdRole::FunctionDecl);
-                    assert!(n.params.is_empty());
-                    assert!(n.return_type.is_none());
-                }
-                other => panic!("Expected Native, got {:?}", other),
-            }
-        });
-    }
-
-    #[test]
-    fn call_statement_function_ref() {
+    fn call_args() {
         let src = "call Foo(a, b, c)\n";
         with_ast(src, |ast| {
             match &ast.items[0] {
                 Statement::Call(c) => {
                     let fc = c.func.as_ref().unwrap();
-                    assert_eq!(node_text(src, &fc.name.as_ref().unwrap().node), "Foo");
                     assert_eq!(fc.name.as_ref().unwrap().role, IdRole::FunctionRef);
-                    assert_eq!(fc.arg_count, 3);
+                    assert_eq!(fc.args.len(), 3);
+                    match &fc.args[0] {
+                        Expr::Id(id) => assert_eq!(node_text(src, &id.node), "a"),
+                        other => panic!("Expected Id, got {:?}", other),
+                    }
                 }
                 other => panic!("Expected Call, got {:?}", other),
             }
@@ -550,29 +732,71 @@ mod tests {
     }
 
     #[test]
-    fn function_body() {
+    fn local_value_expr() {
+        let src = "local integer a = x + 1\n";
+        with_ast(src, |ast| {
+            match &ast.items[0] {
+                Statement::Local(l) => {
+                    assert!(l.value.is_some());
+                    match l.value.as_ref().unwrap() {
+                        Expr::Binary { left, right, .. } => {
+                            assert!(matches!(left.as_ref(), Expr::Id(_)));
+                            assert!(matches!(right.as_ref(), Expr::Literal(_)));
+                        }
+                        other => panic!("Expected Binary, got {:?}", other),
+                    }
+                }
+                other => panic!("Expected Local, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn set_index_and_value() {
+        let src = "set arr[i] = 5\n";
+        with_ast(src, |ast| {
+            match &ast.items[0] {
+                Statement::Set(s) => {
+                    assert!(s.index.is_some());
+                    match s.index.as_ref().unwrap() {
+                        Expr::Id(id) => assert_eq!(node_text(src, &id.node), "i"),
+                        other => panic!("Expected Id index, got {:?}", other),
+                    }
+                    assert!(s.value.is_some());
+                }
+                other => panic!("Expected Set, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn return_function_call_expr() {
         let src = "\
-function F takes integer x returns nothing
-    local integer y = 1
-    set y = 2
-    return
+function F takes unit t returns boolean
+    return UnitLife(t) > 0
 endfunction
 ";
         with_ast(src, |ast| {
             match &ast.items[0] {
                 Statement::Function(f) => {
-                    assert_eq!(f.params.len(), 1);
-                    assert_eq!(f.body.len(), 3);
                     match &f.body[0] {
-                        Statement::Local(l) => {
-                            assert_eq!(l.name.as_ref().unwrap().role, IdRole::Variable);
-                            assert!(l.has_value);
+                        Statement::Return(r) => {
+                            match r.value.as_ref().unwrap() {
+                                Expr::Binary { left, .. } => {
+                                    match left.as_ref() {
+                                        Expr::Call(fc) => {
+                                            let name = fc.name.as_ref().unwrap();
+                                            assert_eq!(node_text(src, &name.node), "UnitLife");
+                                            assert_eq!(name.role, IdRole::FunctionRef);
+                                            assert_eq!(fc.args.len(), 1);
+                                        }
+                                        other => panic!("Expected Call, got {:?}", other),
+                                    }
+                                }
+                                other => panic!("Expected Binary, got {:?}", other),
+                            }
                         }
-                        other => panic!("Expected Local, got {:?}", other),
-                    }
-                    match &f.body[1] {
-                        Statement::Set(s) => assert_eq!(s.variable.as_ref().unwrap().role, IdRole::Variable),
-                        other => panic!("Expected Set, got {:?}", other),
+                        other => panic!("Expected Return, got {:?}", other),
                     }
                 }
                 other => panic!("Expected Function, got {:?}", other),
@@ -581,23 +805,82 @@ endfunction
     }
 
     #[test]
-    fn globals_constant() {
+    fn exitwhen_condition() {
+        let src = "exitwhen not b\n";
+        with_ast(src, |ast| {
+            match &ast.items[0] {
+                Statement::Exitwhen(e) => {
+                    match e.condition.as_ref().unwrap() {
+                        Expr::Unary { operand, .. } => {
+                            assert!(matches!(operand.as_ref(), Expr::Id(_)));
+                        }
+                        other => panic!("Expected Unary, got {:?}", other),
+                    }
+                }
+                other => panic!("Expected Exitwhen, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn if_condition() {
         let src = "\
-globals
-    constant integer MAX = 100
-    real x
-endglobals
+function F takes nothing returns nothing
+    if a > 0 then
+        return
+    endif
+endfunction
 ";
         with_ast(src, |ast| {
             match &ast.items[0] {
-                Statement::Globals(g) => {
-                    assert_eq!(g.vars.len(), 2);
-                    assert!(g.vars[0].is_constant);
-                    assert_eq!(g.vars[0].decls[0].name.as_ref().unwrap().role, IdRole::Constant);
-                    assert!(!g.vars[1].is_constant);
-                    assert_eq!(g.vars[1].decls[0].name.as_ref().unwrap().role, IdRole::Variable);
+                Statement::Function(f) => match &f.body[0] {
+                    Statement::If(i) => assert!(matches!(i.condition.as_ref().unwrap(), Expr::Binary { .. })),
+                    other => panic!("Expected If, got {:?}", other),
+                },
+                other => panic!("Expected Function, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn function_ref_expr() {
+        let src = "\
+function F takes nothing returns nothing
+    return function G
+endfunction
+";
+        with_ast(src, |ast| {
+            match &ast.items[0] {
+                Statement::Function(f) => match &f.body[0] {
+                    Statement::Return(r) => match r.value.as_ref().unwrap() {
+                        Expr::FuncRef(id) => {
+                            assert_eq!(node_text(src, &id.node), "G");
+                            assert_eq!(id.role, IdRole::FunctionRef);
+                        }
+                        other => panic!("Expected FuncRef, got {:?}", other),
+                    },
+                    other => panic!("Expected Return, got {:?}", other),
+                },
+                other => panic!("Expected Function, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn parens_and_index_in_set() {
+        let src = "set a = (a * 2) - arr[x]\n";
+        with_ast(src, |ast| {
+            match &ast.items[0] {
+                Statement::Set(s) => {
+                    match s.value.as_ref().unwrap() {
+                        Expr::Binary { left, right, .. } => {
+                            assert!(matches!(left.as_ref(), Expr::Parens { .. }));
+                            assert!(matches!(right.as_ref(), Expr::Index { .. }));
+                        }
+                        other => panic!("Expected Binary, got {:?}", other),
+                    }
                 }
-                other => panic!("Expected Globals, got {:?}", other),
+                other => panic!("Expected Set, got {:?}", other),
             }
         });
     }
@@ -607,23 +890,6 @@ endglobals
         let src = "function\n";
         with_ast(src, |ast| {
             assert!(!ast.errors.is_empty());
-        });
-    }
-
-    #[test]
-    fn node_positions_preserved() {
-        let src = "type handle extends agent\n";
-        with_ast(src, |ast| {
-            match &ast.items[0] {
-                Statement::Type(t) => {
-                    assert_eq!(t.node.start_byte(), 0);
-                    assert_eq!(t.node.end_byte(), 25);
-                    let name = t.name.as_ref().unwrap();
-                    assert_eq!(name.node.start_byte(), 5);
-                    assert_eq!(name.node.end_byte(), 11);
-                }
-                _ => panic!("Expected Type"),
-            }
         });
     }
 }

@@ -6,6 +6,7 @@
       <sourceFolder url="file://$MODULE_DIR$/lsp/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/src/lsp/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/examples" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/lsp/target" />
       <excludeFolder url="file://$MODULE_DIR$/src/lsp/target" />
       <excludeFolder url="file://$MODULE_DIR$/target" />

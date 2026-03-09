@@ -74,7 +74,7 @@ pub struct SemanticTokensLegend {
     pub token_modifiers: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, EnumIter, Display, Clone, Copy)]
+#[derive(Debug, PartialEq, Serialize, Deserialize, EnumIter, Display, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 #[repr(u32)]
 pub enum Kind {

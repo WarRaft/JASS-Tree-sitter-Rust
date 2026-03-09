@@ -18,6 +18,12 @@ use std::error::Error;
 use url::Url;
 
 pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let result = _parse(uri);
+    uri_unlock(uri);
+    result
+}
+
+fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
     {
         let rope_entry = ROPE_MAP.get(&uri.clone()).ok_or("no rope")?;
         let rope: &Rope = rope_entry.value();
@@ -147,8 +153,6 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         SYMBOL_URI_MAP.insert(uri.clone(), symbols);
         DIAGNOSTIC_URI_MAP.insert(uri.clone(), report);
         SEMANTIC_URI_MAP.insert(uri.clone(), semantic);
-
-        uri_unlock(uri);
     }
     Ok(())
 }

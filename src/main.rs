@@ -167,6 +167,15 @@ async fn main() {
                                         {
                                             error!("Failed to apply change: {}", err);
                                         }
+                                        // Notify client to re-request semantic tokens
+                                        send(
+                                            &writer,
+                                            &json!({
+                                                "jsonrpc": "2.0",
+                                                "method": "workspace/semanticTokens/refresh"
+                                            }),
+                                        )
+                                        .await;
                                     }
                                 }
                             }
