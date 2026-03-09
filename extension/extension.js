@@ -66,6 +66,7 @@ module.exports = {
                 documentSelector: [
                     {scheme: 'file', language: 'bni'},
                     {scheme: 'file', language: 'jass'},
+                    {scheme: 'file', language: 'angelscript'},
                 ],
                 outputChannelName: 'JASS-Tree-Sitter-Rust Logs',
                 traceOutputChannel: window.createOutputChannel('JASS-Tree-Sitter-Rust Trace'),

@@ -146,6 +146,15 @@ async fn main() {
                                     {
                                         error!("Failed to apply change: {}", err);
                                     }
+                                } else if params.text_document.language_id == "angelscript" {
+                                    if let Err(err) = lng::ass::open::open(
+                                        &params.text_document.uri,
+                                        &params.text_document.text,
+                                    )
+                                    .await
+                                    {
+                                        error!("Failed to apply change: {}", err);
+                                    }
                                 }
                             }
 
@@ -168,6 +177,21 @@ async fn main() {
                                             error!("Failed to apply change: {}", err);
                                         }
                                         // Notify client to re-request semantic tokens
+                                        send(
+                                            &writer,
+                                            &json!({
+                                                "jsonrpc": "2.0",
+                                                "method": "workspace/semanticTokens/refresh"
+                                            }),
+                                        )
+                                        .await;
+                                    } else if lng.value() == "angelscript" {
+                                        if let Err(err) =
+                                            lng::ass::change::change(uri, params.content_changes)
+                                                .await
+                                        {
+                                            error!("Failed to apply change: {}", err);
+                                        }
                                         send(
                                             &writer,
                                             &json!({

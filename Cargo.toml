@@ -11,6 +11,7 @@ blp = "0.1.37"
 tree-sitter = "0.26.6"
 tree-sitter-bni = { path = "./../tree-sitter-bni" }
 tree-sitter-jass = { path = "./../tree-sitter-jass" }
+tree-sitter-as = { path = "./../tree-sitter-as" }
 strum = "0.28.0"
 strum_macros = "0.28.0"
 serde = { version = "1.0.228", features = ["derive"] }
