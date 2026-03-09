@@ -137,6 +137,15 @@ async fn main() {
                                     {
                                         error!("Failed to apply change: {}", err);
                                     }
+                                } else if params.text_document.language_id == "jass" {
+                                    if let Err(err) = lng::jass::open::open(
+                                        &params.text_document.uri,
+                                        &params.text_document.text,
+                                    )
+                                    .await
+                                    {
+                                        error!("Failed to apply change: {}", err);
+                                    }
                                 }
                             }
 
@@ -147,6 +156,13 @@ async fn main() {
                                     if lng.value() == "bni" {
                                         if let Err(err) =
                                             lng::bni::change::change(uri, params.content_changes)
+                                                .await
+                                        {
+                                            error!("Failed to apply change: {}", err);
+                                        }
+                                    } else if lng.value() == "jass" {
+                                        if let Err(err) =
+                                            lng::jass::change::change(uri, params.content_changes)
                                                 .await
                                         {
                                             error!("Failed to apply change: {}", err);

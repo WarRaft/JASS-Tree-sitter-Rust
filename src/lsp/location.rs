@@ -10,6 +10,7 @@ pub struct Location {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct LocationLink {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub origin_selection_range: Option<Range>,

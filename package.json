@@ -69,10 +69,28 @@
           "dark": "./icons/blp.svg"
         },
         "configuration": "./syntaxes/blp.language-configuration.json"
+      },
+      {
+        "id": "jass",
+        "aliases": [
+          "JASS"
+        ],
+        "extensions": [
+          ".j",
+          ".pld"
+        ],
+        "icon": {
+          "light": "./icons/jass.svg",
+          "dark": "./icons/jass.svg"
+        },
+        "configuration": "./syntaxes/jass.language-configuration.json"
       }
     ],
     "configurationDefaults": {
       "[bni]": {
+        "editor.occurrencesHighlight": false
+      },
+      "[jass]": {
         "editor.occurrencesHighlight": false
       }
     },
