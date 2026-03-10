@@ -81,24 +81,63 @@ async function showImportGraph(client, extensionUri, fileUri) {
 }
 
 /**
+ * Find the longest common directory prefix among `paths` and strip it,
+ * producing the shortest unique labels.
+ *
+ * Example:
+ *   ["/a/b/c/d.j", "/a/b/e.j", "/a/b/e/f.j"]
+ *   → common prefix "/a/b/" → ["c/d.j", "e.j", "e/f.j"]
+ *
+ * @param {string[]} paths - Filesystem paths (forward-slash separated).
+ * @returns {string[]}
+ */
+function shortenPaths(paths) {
+    if (paths.length === 0) return []
+    if (paths.length === 1) {
+        // Single path → just the filename
+        const parts = paths[0].split('/')
+        return [parts[parts.length - 1] || paths[0]]
+    }
+
+    // Split every path into directory segments (everything before the last /)
+    const split = paths.map(p => p.split('/'))
+
+    // Find the longest common prefix of *directory* segments.
+    // We compare all segments except the last one (the filename) of the
+    // shortest path, but we must stop at the shortest array minus one anyway.
+    const minLen = Math.min(...split.map(s => s.length))
+    let common = 0
+    outer:
+    for (let i = 0; i < minLen - 1; i++) {
+        const seg = split[0][i]
+        for (let j = 1; j < split.length; j++) {
+            if (split[j][i] !== seg) break outer
+        }
+        common = i + 1
+    }
+
+    return split.map(parts => parts.slice(common).join('/'))
+}
+
+/**
  * @param {ImportGraphResult} data
  * @param {string} d3Src - Webview-safe URI to the local d3.v7.min.js.
  * @returns {string}
  */
 function buildHtml(data, d3Src) {
-    // Shorten URIs to just filenames for display, with parent dir
-    const labels = data.nodes.map(uri => {
+    // Extract filesystem paths from URIs
+    const paths = data.nodes.map(uri => {
         try {
-            const p = decodeURIComponent(new URL(uri).pathname)
-            const parts = p.split('/')
-            if (parts.length >= 2) {
-                return parts.slice(-2).join('/')
-            }
-            return parts[parts.length - 1]
+            return decodeURIComponent(new URL(uri).pathname)
         } catch {
             return uri
         }
     })
+
+    // Find the longest common directory prefix and strip it.
+    // e.g. ["/a/b/c/d.j", "/a/b/e.j", "/a/b/e/f.j"] → common = "/a/b/"
+    //      → labels: ["c/d.j", "e.j", "e/f.j"]
+    const labels = shortenPaths(paths)
 
     const graphJSON = JSON.stringify({
         nodes: data.nodes.map((uri, i) => ({
