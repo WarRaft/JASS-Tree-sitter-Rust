@@ -36,6 +36,8 @@ pub struct ServerCapabilities {
     pub folding_range_provider: Option<FoldingRangeOptions>,
     pub completion_provider: Option<CompletionOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub hover_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub document_link_provider: Option<DocumentLinkOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceServerCapabilities>,

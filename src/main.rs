@@ -20,6 +20,7 @@ use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::document_symbol::uri_map::URI_MAP as SYMBOL_URI_MAP;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
 use crate::lsp::folding::uri_map::URI_MAP as FOLDING_URI_MAP;
+use crate::lsp::hover::send::send as hover_send;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::read::read;
@@ -105,6 +106,7 @@ async fn main() {
                                             "\\".into(),
                                         ]),
                                     }),
+                                    hover_provider: Some(true),
                                     document_link_provider: Some(DocumentLinkOptions {
                                         resolve_provider: Some(false),
                                     }),
@@ -354,6 +356,14 @@ async fn main() {
                                 }
                                 let uri = &params.text_document.uri;
                                 completion_send(&writer, call.id, uri, &params.position).await;
+                            }
+
+                            MethodCall::Hover(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                hover_send(&writer, call.id, uri, &params.position).await;
                             }
 
                             MethodCall::DocumentLink(params) => {

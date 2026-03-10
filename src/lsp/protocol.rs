@@ -4,6 +4,7 @@ use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
 use crate::lsp::document_link::lsp::DocumentLinkParams;
 use crate::lsp::document_symbol::lsp::DocumentSymbolParams;
 use crate::lsp::folding::lsp::FoldingRangeParams;
+use crate::lsp::hover::lsp::HoverParams;
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
 use crate::lsp::rename::lsp::RenameFilesParams;
@@ -84,6 +85,9 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/completion")]
     Completion(CompletionParams),
+
+    #[serde(rename = "textDocument/hover")]
+    Hover(HoverParams),
 
     #[serde(rename = "textDocument/documentLink")]
     DocumentLink(DocumentLinkParams),
