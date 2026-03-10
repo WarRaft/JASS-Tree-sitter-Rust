@@ -105,6 +105,70 @@ impl Hub {
         self
     }
 
+    /// Emit a semantic token from raw byte offset + byte length.
+    ///
+    /// Useful when the token doesn't correspond to a single tree-sitter node
+    /// (e.g. sub-ranges of a comment node used as an import directive).
+    pub fn add_range(
+        &mut self,
+        start_byte: usize,
+        byte_len: usize,
+        rope: &Rope,
+        kind: Kind,
+        modifiers: impl Into<u32>,
+    ) -> &mut Self {
+        if byte_len == 0 {
+            return self;
+        }
+        let end_byte = start_byte + byte_len;
+        let modifiers = modifiers.into();
+
+        let start_line = rope.line_of_offset(start_byte);
+        let end_line = rope.line_of_offset(end_byte);
+
+        for row in start_line..=end_line {
+            let line_start_byte = rope.offset_of_line(row);
+            let line_end_byte = rope.offset_of_line(row + 1).min(rope.len());
+            let line_text = rope.slice(line_start_byte..line_end_byte).to_string();
+
+            let rel_start = if row == start_line {
+                start_byte
+                    .saturating_sub(line_start_byte)
+                    .min(line_text.len())
+            } else {
+                0
+            };
+            let rel_end = if row == end_line {
+                end_byte
+                    .saturating_sub(line_start_byte)
+                    .min(line_text.len())
+            } else {
+                line_text.len()
+            };
+
+            let utf16_start_col = line_text[..rel_start].encode_utf16().count();
+            let utf16_end_col = line_text[..rel_end].encode_utf16().count();
+
+            let len = utf16_end_col.saturating_sub(utf16_start_col);
+            if len == 0 {
+                continue;
+            }
+
+            self.lines
+                .entry(row)
+                .or_insert_with(|| Line::new(row))
+                .add(Token {
+                    row,
+                    col: utf16_start_col,
+                    len,
+                    kind,
+                    modifiers,
+                });
+        }
+
+        self
+    }
+
     pub fn data(&self, range: Option<Range>) -> Vec<usize> {
         let mut result = Vec::new();
         let mut line_last = 0;

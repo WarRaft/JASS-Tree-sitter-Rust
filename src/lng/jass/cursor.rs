@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::lng::jass::ast::*;
 use crate::lng::jass::kind::Kind;
@@ -44,6 +44,8 @@ pub struct Cursor {
     // Working state
     rope: Rope,
     id_roles: HashMap<usize, IdRole>,
+    /// Start-bytes of import directive nodes — skipped during CST DFS.
+    import_nodes: HashSet<usize>,
     comment_start: Option<usize>,
     comment_end: usize,
 }
@@ -59,6 +61,7 @@ impl Cursor {
             scopes: Vec::new(),
             rope: rope.clone(),
             id_roles: HashMap::new(),
+            import_nodes: HashSet::new(),
             comment_start: None,
             comment_end: 0,
         };
@@ -111,6 +114,8 @@ impl Cursor {
             Statement::Loop(l) => l.node,
             Statement::VarStmt(v) => v.node,
             Statement::Comment(c) => c.node,
+            Statement::Import(i) => i.node,
+            Statement::Error(e) => e.node,
         }
     }
 
@@ -205,6 +210,63 @@ impl Cursor {
         stmt: &Statement,
         vars: &mut Vec<HashMap<String, VarInfo>>,
     ) -> Option<DocumentSymbol> {
+        // Import directives — skip comment tracking, add dedicated semantic
+        if let Statement::Import(imp) = stmt {
+            self.flush_comment_run();
+            // Mark the whole node so the CST DFS won't re-colour it as a
+            // plain comment.  We split semantic into:
+            //   - "//import" or "//import!" → Macro token
+            //   - path                      → String token
+            self.import_nodes.insert(imp.node.start_byte());
+
+            let node = &imp.node;
+            let prefix_len = if imp.frozen {
+                "//import!".len()
+            } else {
+                "//import".len()
+            };
+
+            // Macro token for the "//import" / "//import!" prefix
+            let start_byte = node.start_byte();
+            self.semantic.add_range(
+                start_byte,
+                prefix_len,
+                &self.rope,
+                TokenKind::Macro,
+                0u32,
+            );
+
+            if imp.path.is_empty() {
+                // Missing path → diagnostic error
+                self.diagnostics.push(Diagnostic {
+                    range: node.to_range(&self.rope),
+                    message: "Missing import path".into(),
+                    severity: Some(DiagnosticSeverity::Error),
+                    ..Default::default()
+                });
+            } else {
+                // String token for the path (skip whitespace between prefix and path)
+                let full_text_bytes = node.end_byte() - node.start_byte();
+                if full_text_bytes > prefix_len {
+                    let path_offset = start_byte + prefix_len;
+                    let path_len = full_text_bytes - prefix_len;
+                    let raw = &self.rope.slice_to_cow(path_offset..path_offset + path_len);
+                    let trimmed = raw.trim_start();
+                    let ws_len = raw.len() - trimmed.len();
+                    if !trimmed.is_empty() {
+                        self.semantic.add_range(
+                            path_offset + ws_len,
+                            trimmed.len(),
+                            &self.rope,
+                            TokenKind::String,
+                            0u32,
+                        );
+                    }
+                }
+            }
+            return None;
+        }
+
         // Comment tracking
         if let Statement::Comment(c) = stmt {
             let row = c.node.start_position().row;
@@ -448,6 +510,8 @@ impl Cursor {
                 None
             }
             Statement::Comment(_) => unreachable!("handled above"),
+            Statement::Import(_) => unreachable!("handled above"),
+            Statement::Error(_) => None, // diagnostics already collected from ast.errors
         }
     }
 
@@ -494,6 +558,20 @@ impl Cursor {
             if visit {
                 let node = cursor.node();
                 let kind = Kind::try_from(node.kind_id()).ok();
+
+                // Import directive comment nodes are handled in the AST pass —
+                // skip them entirely so they don't get re-coloured as Comment.
+                if kind == Some(Kind::Comment) && self.import_nodes.contains(&node.start_byte()) {
+                    if cursor.goto_next_sibling() {
+                        continue;
+                    }
+                    while !cursor.goto_next_sibling() {
+                        if !cursor.goto_parent() {
+                            return;
+                        }
+                    }
+                    continue;
+                }
 
                 // String literal: mark entire node and skip children
                 if kind == Some(Kind::StringLiteral) {

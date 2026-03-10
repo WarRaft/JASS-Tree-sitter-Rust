@@ -1,5 +1,7 @@
 pub(crate) mod cancel;
+pub(crate) mod completion;
 pub(crate) mod diagnostic;
+pub(crate) mod document_link;
 pub(crate) mod document_symbol;
 pub(crate) mod folding;
 pub(crate) mod initialize;
@@ -10,6 +12,7 @@ pub(crate) mod progress;
 pub(crate) mod protocol;
 pub(crate) mod range;
 pub(crate) mod read;
+pub(crate) mod rename;
 pub(crate) mod semantic;
 pub(crate) mod send;
 pub(crate) mod set_trace;

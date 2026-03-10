@@ -178,6 +178,25 @@ pub struct Comment<'tree> {
     pub node: Node<'tree>,
 }
 
+/// `//import path/to/file` or `//import! path/to/file`
+///
+/// Recognized only at the root level, before the first language statement.
+/// The `//import` prefix must start at column 0 with no space after `//`.
+///
+/// `//import!` marks the target as **frozen** — a read-only file that we
+/// cannot modify; we only pull declarations from it.
+#[derive(Debug, Clone)]
+pub struct ImportDirective<'tree> {
+    /// The original comment CST node.
+    pub node: Node<'tree>,
+    /// `true` when the directive is `//import!` — the imported file is
+    /// **frozen** (read-only): we only pull declarations from it without
+    /// allowing edits.
+    pub frozen: bool,
+    /// The raw relative path string (everything after `//import ` or `//import! `).
+    pub path: String,
+}
+
 // ─── Expressions ─────────────────────────────────────────────────────────────
 
 /// Expression node in the AST.
@@ -232,6 +251,10 @@ pub enum Statement<'tree> {
     Loop(LoopStmt<'tree>),
     VarStmt(VarStmt<'tree>),
     Comment(Comment<'tree>),
+    Import(ImportDirective<'tree>),
+    /// Unrecognized or error CST node preserved in the AST so it participates
+    /// in ordering (e.g. blocks import scanning) and can be highlighted.
+    Error(CstError<'tree>),
 }
 
 /// The root of the AST.
@@ -244,10 +267,74 @@ pub struct Ast<'tree> {
 // ─── Building the AST from CST ──────────────────────────────────────────────
 
 /// Build the AST from a tree-sitter CST root node.
+///
+/// Root-level `//import` / `//import!` comments are **not** rewritten here —
+/// call [`rewrite_imports`] afterwards with the source bytes.
 pub fn build_ast<'tree>(root: Node<'tree>) -> Ast<'tree> {
     let mut errors = Vec::new();
-    let items = build_children(&root, &mut errors);
+    let items = build_children(&root, &mut errors, true);
+
     Ast { items, errors }
+}
+
+/// Rewrite leading root-level comments into `Statement::Import` when they
+/// match the `//import` / `//import!` pattern.
+///
+/// Only comments **before the first non-comment statement** are considered.
+/// `Statement::Error` nodes (e.g. `a = 2`) also count as "real code" and
+/// stop the scan — later `//import` comments stay as plain comments.
+///
+/// A match requires the comment to start at column 0 and begin with
+/// `//import!` or `//import` followed by whitespace, tab, or end-of-token.
+/// `//importing` does **not** match (no word boundary after `import`).
+///
+/// An import with an empty path is still recorded as `Statement::Import`
+/// (with `path == ""`); the cursor pass will emit a diagnostic for it.
+///
+/// Must be called after `build_ast` and **before** any cursor / parse logic
+/// that depends on the distinction.
+///
+/// `src` — full file source (UTF-8 bytes).
+pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
+    let mut i = 0;
+    while i < ast.items.len() {
+        // Stop at first non-comment item (real statement OR error node).
+        if !matches!(&ast.items[i], Statement::Comment(_)) {
+            break;
+        }
+
+        if let Statement::Comment(c) = &ast.items[i] {
+            if c.node.start_position().column == 0 {
+                let text = &src[c.node.start_byte()..c.node.end_byte()];
+                let text = std::str::from_utf8(text).unwrap_or("");
+
+                if let Some(rest) = text.strip_prefix("//import!") {
+                    let path = rest.trim().to_string();
+                    let node = c.node;
+                    ast.items[i] = Statement::Import(ImportDirective {
+                        node,
+                        frozen: true,
+                        path,
+                    });
+                    i += 1;
+                    continue;
+                } else if let Some(rest) = text.strip_prefix("//import") {
+                    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+                        let path = rest.trim().to_string();
+                        let node = c.node;
+                        ast.items[i] = Statement::Import(ImportDirective {
+                            node,
+                            frozen: false,
+                            path,
+                        });
+                        i += 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
 }
 
 fn collect_errors<'tree>(node: &Node<'tree>, errors: &mut Vec<CstError<'tree>>) {
@@ -273,6 +360,7 @@ fn collect_errors<'tree>(node: &Node<'tree>, errors: &mut Vec<CstError<'tree>>) 
 fn build_children<'tree>(
     node: &Node<'tree>,
     errors: &mut Vec<CstError<'tree>>,
+    capture_unknown: bool,
 ) -> Vec<Statement<'tree>> {
     let mut stmts = Vec::new();
     let count = node.child_count();
@@ -283,6 +371,19 @@ fn build_children<'tree>(
             }
             if let Some(stmt) = build_statement(&child, errors) {
                 stmts.push(stmt);
+            } else if capture_unknown && (child.is_error() || child.is_named()) {
+                // Any named CST node that didn't map to a known statement
+                // (including ERROR nodes and unexpected constructs like bare
+                // expressions) is preserved so it blocks import scanning
+                // and is visible to diagnostics.
+                stmts.push(Statement::Error(CstError {
+                    node: child,
+                    message: if child.is_error() {
+                        "Syntax error".into()
+                    } else {
+                        format!("Unexpected `{}`", child.kind())
+                    },
+                }));
             }
         }
     }
@@ -372,7 +473,7 @@ fn build_function_decl<'tree>(
         name: maybe_id(node, FIELD_NAME, IdRole::FunctionDecl),
         params: build_params(node),
         return_type: maybe_id(node, FIELD_RETURN_TYPE, IdRole::TypeRef),
-        body: build_children(node, errors),
+        body: build_children(node, errors, false),
     }
 }
 
@@ -381,7 +482,7 @@ fn build_globals_block<'tree>(
     errors: &mut Vec<CstError<'tree>>,
 ) -> GlobalsBlock<'tree> {
     let mut vars = Vec::new();
-    for stmt in build_children(node, errors) {
+    for stmt in build_children(node, errors, false) {
         if let Statement::VarStmt(v) = stmt {
             vars.push(v);
         }
@@ -534,7 +635,7 @@ fn build_if_stmt<'tree>(
     IfStmt {
         node: *node,
         condition: node.child_by_field_id(FIELD_CONDITION).and_then(|n| build_expr(&n)),
-        body: build_children(node, errors),
+        body: build_children(node, errors, false),
     }
 }
 
@@ -544,7 +645,7 @@ fn build_loop_stmt<'tree>(
 ) -> LoopStmt<'tree> {
     LoopStmt {
         node: *node,
-        body: build_children(node, errors),
+        body: build_children(node, errors, false),
     }
 }
 

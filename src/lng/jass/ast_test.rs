@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::lng::jass::ast::*;
+    use crate::lng::jass::ast::rewrite_imports;
     use tree_sitter::Node;
 
     fn with_ast(src: &str, f: impl FnOnce(&Ast)) {
@@ -215,6 +216,145 @@ endfunction
         let src = "function\n";
         with_ast(src, |ast| {
             assert!(!ast.errors.is_empty());
+        });
+    }
+
+    // ─── Import directive tests ──────────────────────────────────────────
+
+    fn with_ast_imports(src: &str, f: impl FnOnce(&Ast)) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_jass::language().into())
+            .expect("Failed to set language");
+        let tree = parser.parse(src, None).expect("Failed to parse");
+        let mut ast = build_ast(tree.root_node());
+        rewrite_imports(&mut ast, src.as_bytes());
+        f(&ast);
+    }
+
+    #[test]
+    fn import_basic() {
+        let src = "//import path/to/file.j\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            assert_eq!(ast.items.len(), 2);
+            match &ast.items[0] {
+                Statement::Import(imp) => {
+                    assert!(!imp.frozen);
+                    assert_eq!(imp.path, "path/to/file.j");
+                }
+                other => panic!("Expected Import, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn import_frozen() {
+        let src = "//import! path/to/file.j\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            match &ast.items[0] {
+                Statement::Import(imp) => {
+                    assert!(imp.frozen);
+                    assert_eq!(imp.path, "path/to/file.j");
+                }
+                other => panic!("Expected Import, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn import_empty_path_is_still_import() {
+        // `//import` with no path — still becomes Import with empty path (error)
+        let src = "//import\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            match &ast.items[0] {
+                Statement::Import(imp) => {
+                    assert!(!imp.frozen);
+                    assert_eq!(imp.path, "");
+                }
+                other => panic!("Expected Import, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn import_frozen_empty_path() {
+        let src = "//import!\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            match &ast.items[0] {
+                Statement::Import(imp) => {
+                    assert!(imp.frozen);
+                    assert_eq!(imp.path, "");
+                }
+                other => panic!("Expected Import, got {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn import_stops_at_first_statement() {
+        // //import after real code stays as Comment
+        let src = "//import a.j\n//import b.j\nfunction F takes nothing returns nothing\nendfunction\n//import c.j\n";
+        with_ast_imports(src, |ast| {
+            let import_count = ast.items.iter().filter(|s| matches!(s, Statement::Import(_))).count();
+            assert_eq!(import_count, 2);
+            // "//import c.j" after the function stays as a Comment
+            let comment_count = ast.items.iter().filter(|s| matches!(s, Statement::Comment(_))).count();
+            assert_eq!(comment_count, 1);
+        });
+    }
+
+    #[test]
+    fn import_after_code_is_comment() {
+        // Even a single statement before //import makes it a plain comment
+        let src = "type handle extends agent\n//import a.j\n";
+        with_ast_imports(src, |ast| {
+            let import_count = ast.items.iter().filter(|s| matches!(s, Statement::Import(_))).count();
+            assert_eq!(import_count, 0);
+            let comment_count = ast.items.iter().filter(|s| matches!(s, Statement::Comment(_))).count();
+            assert_eq!(comment_count, 1);
+        });
+    }
+
+    #[test]
+    fn import_not_at_column_zero() {
+        // Indented comment should NOT be rewritten to import
+        let src = " //import a.j\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            let import_count = ast.items.iter().filter(|s| matches!(s, Statement::Import(_))).count();
+            assert_eq!(import_count, 0);
+        });
+    }
+
+    #[test]
+    fn import_mixed_with_regular_comments() {
+        let src = "//import a.j\n// regular comment\n//import b.j\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            let import_count = ast.items.iter().filter(|s| matches!(s, Statement::Import(_))).count();
+            assert_eq!(import_count, 2);
+            let comment_count = ast.items.iter().filter(|s| matches!(s, Statement::Comment(_))).count();
+            assert_eq!(comment_count, 1);
+        });
+    }
+
+    #[test]
+    fn import_no_false_positive() {
+        // "//importing" should NOT match (no space/tab after "//import")
+        let src = "//importing stuff\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            let import_count = ast.items.iter().filter(|s| matches!(s, Statement::Import(_))).count();
+            assert_eq!(import_count, 0);
+        });
+    }
+
+    #[test]
+    fn import_code_between_stops_second_import() {
+        // `a = 2` between two imports — the second import must stay a comment
+        let src = "//import path/to/file\na = 2\n//import! path/to/file\n";
+        with_ast_imports(src, |ast| {
+            let import_count = ast.items.iter().filter(|s| matches!(s, Statement::Import(_))).count();
+            assert_eq!(import_count, 1, "Only the first //import should be recognized");
+            let comment_count = ast.items.iter().filter(|s| matches!(s, Statement::Comment(_))).count();
+            assert_eq!(comment_count, 1, "The second //import! should stay as Comment");
         });
     }
 }

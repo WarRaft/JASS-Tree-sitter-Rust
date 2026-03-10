@@ -10,8 +10,12 @@ use tokio::sync::Mutex;
 
 use crate::lng::blp::send::send as blp_send;
 use crate::lsp::cancel::CancelCheck;
+use crate::lsp::completion::lsp::CompletionOptions;
+use crate::lsp::completion::send::send as completion_send;
 use crate::lsp::diagnostic::lsp::{DiagnosticOptions, DocumentDiagnosticReport};
 use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
+use crate::lsp::document_link::lsp::DocumentLinkOptions;
+use crate::lsp::document_link::uri_map::URI_MAP as LINK_URI_MAP;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::document_symbol::uri_map::URI_MAP as SYMBOL_URI_MAP;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
@@ -19,6 +23,11 @@ use crate::lsp::folding::uri_map::URI_MAP as FOLDING_URI_MAP;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::read::read;
+use crate::lsp::rename::handle::compute_rename_edits;
+use crate::lsp::rename::lsp::{
+    FileOperationFilter, FileOperationOptions, FileOperationPattern,
+    FileOperationRegistrationOptions, WorkspaceServerCapabilities,
+};
 use crate::lsp::semantic::lsp::{
     Kind, Mod, SemanticTokensFullOptions, SemanticTokensFullOptionsObject, SemanticTokensLegend,
     SemanticTokensOptions, SemanticTokensRangeProviderCapability, ToCamelVec,
@@ -90,6 +99,28 @@ async fn main() {
                                         label: None,
                                     }),
                                     folding_range_provider: Some(FoldingRangeOptions {}),
+                                    completion_provider: Some(CompletionOptions {
+                                        trigger_characters: Some(vec![
+                                            "/".into(),
+                                            "\\".into(),
+                                        ]),
+                                    }),
+                                    document_link_provider: Some(DocumentLinkOptions {
+                                        resolve_provider: Some(false),
+                                    }),
+                                    workspace: Some(WorkspaceServerCapabilities {
+                                        file_operations: Some(FileOperationOptions {
+                                            will_rename: Some(FileOperationRegistrationOptions {
+                                                filters: vec![FileOperationFilter {
+                                                    scheme: Some("file".into()),
+                                                    pattern: FileOperationPattern {
+                                                        glob: "**/*".into(),
+                                                        matches: None,
+                                                    },
+                                                }],
+                                            }),
+                                        }),
+                                    }),
                                     ..Default::default()
                                 },
                             }),
@@ -311,6 +342,57 @@ async fn main() {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
                                         result: Some(result),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
+                            MethodCall::Completion(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                completion_send(&writer, call.id, uri, &params.position).await;
+                            }
+
+                            MethodCall::DocumentLink(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
+
+                                let result_ref;
+                                let result: &Vec<crate::lsp::document_link::lsp::DocumentLink> =
+                                    match LINK_URI_MAP.get(uri) {
+                                        Some(r) => {
+                                            result_ref = r;
+                                            result_ref.value()
+                                        }
+                                        None => &vec![],
+                                    };
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(result),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
+                            MethodCall::WillRenameFiles(params) => {
+                                let edit = compute_rename_edits(&params.files);
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(edit),
                                         error: None,
                                     },
                                 )

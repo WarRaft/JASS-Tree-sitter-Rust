@@ -182,14 +182,14 @@ mod tests {
     fn resolve_import_relative() {
         let base = u("file:///project/src/main.j");
         let resolved = resolve_import(&base, "\"utils/helper.j\"").unwrap();
-        assert_eq!(resolved.as_str(), "file:///project/src/utils/helper.j");
+        assert_eq!(resolved.url.as_str(), "file:///project/src/utils/helper.j");
     }
 
     #[test]
     fn resolve_import_parent() {
         let base = u("file:///project/src/sub/main.j");
         let resolved = resolve_import(&base, "../common.j").unwrap();
-        assert_eq!(resolved.as_str(), "file:///project/src/common.j");
+        assert_eq!(resolved.url.as_str(), "file:///project/src/common.j");
     }
 
     #[test]
@@ -197,6 +197,146 @@ mod tests {
         let base = u("file:///project/src/main.j");
         assert!(resolve_import(&base, "").is_none());
         assert!(resolve_import(&base, "\"\"").is_none());
+    }
+
+    #[test]
+    fn resolve_import_backslashes() {
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, r"utils\helper.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///project/src/utils/helper.j");
+    }
+
+    #[test]
+    fn resolve_import_mixed_slashes() {
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, r"utils/sub\file.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///project/src/utils/sub/file.j");
+    }
+
+    #[test]
+    fn resolve_import_dot_current() {
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, "./helper.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///project/src/helper.j");
+    }
+
+    #[test]
+    fn resolve_import_dot_backslash() {
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, r".\helper.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///project/src/helper.j");
+    }
+
+    #[test]
+    fn resolve_import_parent_backslash() {
+        let base = u("file:///project/src/sub/main.j");
+        let resolved = resolve_import(&base, r"..\common.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///project/src/common.j");
+    }
+
+    #[test]
+    fn resolve_import_unix_absolute() {
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, "/usr/share/jass/common.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///usr/share/jass/common.j");
+    }
+
+    #[test]
+    fn resolve_import_unix_absolute_with_dotdot() {
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, "/usr/share/../lib/common.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///usr/lib/common.j");
+    }
+
+    #[test]
+    fn resolve_import_win_drive_forward() {
+        let base = u("file:///D:/project/main.j");
+        let resolved = resolve_import(&base, "C:/jass/common.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///C:/jass/common.j");
+    }
+
+    #[test]
+    fn resolve_import_win_drive_backslash() {
+        let base = u("file:///D:/project/main.j");
+        let resolved = resolve_import(&base, r"C:\jass\common.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///C:/jass/common.j");
+    }
+
+    #[test]
+    fn resolve_import_win_drive_double_slash() {
+        let base = u("file:///D:/project/main.j");
+        let resolved = resolve_import(&base, "C://jass//common.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///C:/jass/common.j");
+    }
+
+    #[test]
+    fn resolve_import_win_drive_double_backslash() {
+        let base = u("file:///D:/project/main.j");
+        let resolved = resolve_import(&base, r"C:\\jass\\common.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///C:/jass/common.j");
+    }
+
+    #[test]
+    fn resolve_import_win_drive_with_dotdot() {
+        let base = u("file:///D:/project/main.j");
+        let resolved = resolve_import(&base, r"C:\jass\sub\..\common.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///C:/jass/common.j");
+    }
+
+    #[test]
+    fn resolve_import_consecutive_slashes() {
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, "utils//helper.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///project/src/utils/helper.j");
+    }
+
+    #[test]
+    fn resolve_import_wandering_collapse() {
+        // /a/b/c/../../../a → pop c, pop b, pop a → /a
+        let base = u("file:///x/main.j");
+        let resolved = resolve_import(&base, "/a/b/c/../../../a").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///a");
+    }
+
+    #[test]
+    fn resolve_import_dotdot_above_root() {
+        // Extra .. beyond root are silently ignored
+        let base = u("file:///x/main.j");
+        let resolved = resolve_import(&base, "/a/b/c/../../../../x").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///x");
+    }
+
+    #[test]
+    fn resolve_import_relative_dotdot_above_root() {
+        // base dir = /project/src/, path = ../../../x.j
+        // /project/src + .. = /project, + .. = /, + .. = / (clamped), + x.j = /x.j
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, "../../../x.j").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///x.j");
+    }
+
+    #[test]
+    fn resolve_import_win_drive_dotdot_above_root() {
+        // C:/a/../../b → C:/b  (.. can't escape the drive)
+        let base = u("file:///D:/x.j");
+        let resolved = resolve_import(&base, r"C:\a\..\..\b").unwrap();
+        assert_eq!(resolved.url.as_str(), "file:///C:/b");
+    }
+
+    #[test]
+    fn resolve_import_nonexistent_file() {
+        let base = u("file:///project/src/main.j");
+        let resolved = resolve_import(&base, "does_not_exist_12345.j").unwrap();
+        assert!(!resolved.exists);
+    }
+
+    #[test]
+    fn resolve_import_existing_file() {
+        // Cargo.toml always exists in the project root
+        let cargo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let base_url = url::Url::from_file_path(cargo.parent().unwrap().join("dummy.rs")).unwrap();
+        let resolved = resolve_import(&base_url, "Cargo.toml").unwrap();
+        assert!(resolved.exists);
     }
 }
 

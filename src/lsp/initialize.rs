@@ -1,6 +1,9 @@
+use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::diagnostic::lsp::DiagnosticOptions;
+use crate::lsp::document_link::lsp::DocumentLinkOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
+use crate::lsp::rename::lsp::WorkspaceServerCapabilities;
 use crate::lsp::semantic::lsp::SemanticTokensOptions;
 use crate::lsp::text_document::TextDocumentSyncOptions;
 use serde::{Deserialize, Serialize};
@@ -31,4 +34,9 @@ pub struct ServerCapabilities {
     pub diagnostic_provider: Option<DiagnosticOptions>,
     pub document_symbol_provider: Option<DocumentSymbolOptions>,
     pub folding_range_provider: Option<FoldingRangeOptions>,
+    pub completion_provider: Option<CompletionOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_link_provider: Option<DocumentLinkOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceServerCapabilities>,
 }

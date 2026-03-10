@@ -208,6 +208,24 @@ impl ImportGraph {
         }
     }
 
+    /// Rename a node from `old_uri` to `new_uri`, preserving all edges.
+    ///
+    /// If `old_uri` doesn't exist this is a no-op.  If `new_uri` already
+    /// exists its edges are merged with the renamed node's.
+    pub fn rename_node(&self, old_uri: &Url, new_uri: &Url) {
+        let mut inner = self.inner.write().unwrap();
+        let Some(&old_idx) = inner.index.get(old_uri) else {
+            return;
+        };
+
+        // Update the node weight.
+        inner.graph[old_idx] = new_uri.clone();
+        inner.index.remove(old_uri);
+        inner.index.insert(new_uri.clone(), old_idx);
+
+        Self::save(&inner);
+    }
+
     // ─── Queries (read lock) ─────────────────────────────────────────────
 
     /// All files that **transitively** import `uri` (walk incoming edges).
@@ -349,23 +367,122 @@ impl ImportGraph {
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
-/// Resolve a relative import path against the directory of `base_uri`.
+/// Result of [`resolve_import`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedImport {
+    /// Normalised `file://` URL of the target.
+    pub url: Url,
+    /// `true` when the file actually exists on disk.
+    pub exists: bool,
+}
+
+/// Resolve an import path against the directory of `base_uri`.
 ///
-/// Strips surrounding quotes. Returns `None` if path is empty.
-pub fn resolve_import(base_uri: &Url, relative_path: &str) -> Option<Url> {
-    let path = relative_path.trim().trim_matches('"').trim_matches('\'');
+/// # Normalisation rules
+///
+/// * **Slashes** — `/` and `\` are treated identically.
+/// * **Quotes** — surrounding `"` or `'` are stripped.
+/// * **Consecutive slashes** are collapsed.
+/// * `.` segments are removed, `..` pops the parent (the OS decides
+///   what is valid — `..` is **not** artificially clamped at the root).
+/// * **Absolute paths** are used as-is:
+///   - Windows drive letters: `C:/…`, `C:\…`, `C://…`, `C:\\…`
+///   - Unix absolute paths: `/path/to/file`
+/// * **Relative paths** are joined to the directory of `base_uri`.
+///
+/// The resulting URL is always built via pure string normalisation
+/// (cross-platform, no `Url::from_file_path`).  A **separate** filesystem
+/// check sets [`ResolvedImport::exists`].
+///
+/// Returns `None` only when the path is empty after trimming.
+pub fn resolve_import(base_uri: &Url, raw_path: &str) -> Option<ResolvedImport> {
+    let path = raw_path.trim().trim_matches('"').trim_matches('\'').trim();
     if path.is_empty() {
         return None;
     }
-    let mut base = base_uri.clone();
-    base.path_segments_mut().ok()?.pop();
-    for segment in path.split('/') {
-        if segment == ".." {
-            base.path_segments_mut().ok()?.pop();
-        } else if segment != "." && !segment.is_empty() {
-            base.path_segments_mut().ok()?.push(segment);
+
+    // Normalise all backslashes to forward-slashes.
+    let norm = path.replace('\\', "/");
+
+    // Detect absolute path ---------------------------------------------------
+    // Windows drive letter: "C:/…"
+    let is_win_abs = norm.len() >= 3
+        && norm.as_bytes()[0].is_ascii_alphabetic()
+        && norm.as_bytes()[1] == b':'
+        && norm.as_bytes()[2] == b'/';
+    // Unix absolute: "/…"
+    let is_unix_abs = norm.starts_with('/');
+
+    let full_path = if is_win_abs || is_unix_abs {
+        norm
+    } else {
+        // Relative — prepend base URI directory.
+        let base_path = base_uri.path();
+        let dir = match base_path.rfind('/') {
+            Some(pos) => &base_path[..=pos],
+            None => "/",
+        };
+        format!("{}{}", dir, norm)
+    };
+
+    // Normalise the combined path string (collapse //, resolve . and ..).
+    let normalised = normalize_path(&full_path);
+
+    // Build the file:// URL from the normalised path.
+    let url = Url::parse(&format!("file://{}", normalised)).ok()?;
+
+    // Check whether the file actually exists on disk.
+    let exists = url
+        .to_file_path()
+        .map(|p| p.exists())
+        .unwrap_or(false);
+
+    Some(ResolvedImport { url, exists })
+}
+
+/// Collapse consecutive `/`, resolve `.` and `..` in a forward-slash path.
+///
+/// `..` past the root (or drive prefix) is silently ignored — the OS is the
+/// ultimate authority, but for URL construction we can't go higher.
+///
+/// Examples:
+/// * `/a/b/c/../../../a` → `/a`
+/// * `/a/b/c/../../../../x` → `/x`
+/// * `C:/a/../b` → (url-path) `/C:/b`
+fn normalize_path(path: &str) -> String {
+    // Separate optional Windows drive prefix ("C:" etc.)
+    let (prefix, rest) = if path.len() >= 2
+        && path.as_bytes()[0].is_ascii_alphabetic()
+        && path.as_bytes()[1] == b':'
+    {
+        (&path[..2], &path[2..])
+    } else if path.len() >= 4
+        && path.as_bytes()[0] == b'/'
+        && path.as_bytes()[1].is_ascii_alphabetic()
+        && path.as_bytes()[2] == b':'
+        && path.as_bytes()[3] == b'/'
+    {
+        // Already has leading / before drive letter (from base_uri.path()).
+        (&path[1..3], &path[3..])
+    } else {
+        ("", path)
+    };
+
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in rest.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => { parts.pop(); }
+            _ => parts.push(seg),
         }
     }
-    Some(base)
+
+    if prefix.is_empty() {
+        // Unix absolute — leading /
+        format!("/{}", parts.join("/"))
+    } else {
+        // Windows drive — e.g. /C:/dir/file
+        format!("/{}/{}", prefix, parts.join("/"))
+    }
 }
 
