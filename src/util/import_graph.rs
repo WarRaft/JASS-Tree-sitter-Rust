@@ -363,6 +363,70 @@ impl ImportGraph {
     pub fn edge_count(&self) -> usize {
         self.inner.read().unwrap().graph.edge_count()
     }
+
+    /// Return the **connected subgraph** reachable from `uri` walking both
+    /// outgoing (dependencies) and incoming (dependents) edges.
+    ///
+    /// The result is a pair `(nodes, edges)` where each node is a URL string
+    /// and each edge is `(source_index, target_index)` into the nodes vec.
+    /// `nodes[0]` is always `uri` itself (when it exists in the graph).
+    pub fn subgraph_for(&self, uri: &Url) -> (Vec<String>, Vec<(usize, usize)>) {
+        let inner = self.inner.read().unwrap();
+        let Some(&start) = inner.index.get(uri) else {
+            return (vec![uri.to_string()], vec![]);
+        };
+
+        // BFS in both directions to collect all reachable nodes.
+        let mut visited: HashSet<NodeIndex> = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(start);
+        visited.insert(start);
+
+        while let Some(cur) = queue.pop_front() {
+            for next in inner.graph.neighbors_directed(cur, Direction::Outgoing) {
+                if visited.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+            for next in inner.graph.neighbors_directed(cur, Direction::Incoming) {
+                if visited.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+
+        // Build nodes list; start node is always index 0.
+        let mut node_list: Vec<NodeIndex> = Vec::with_capacity(visited.len());
+        let mut idx_map: HashMap<NodeIndex, usize> = HashMap::new();
+
+        node_list.push(start);
+        idx_map.insert(start, 0);
+
+        for &ni in &visited {
+            if ni != start {
+                idx_map.insert(ni, node_list.len());
+                node_list.push(ni);
+            }
+        }
+
+        let nodes: Vec<String> = node_list
+            .iter()
+            .map(|&ni| inner.graph[ni].to_string())
+            .collect();
+
+        // Collect all edges within the subgraph.
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        for &ni in &node_list {
+            for e in inner.graph.edges_directed(ni, Direction::Outgoing) {
+                let target = e.target();
+                if let (Some(&si), Some(&ti)) = (idx_map.get(&ni), idx_map.get(&target)) {
+                    edges.push((si, ti));
+                }
+            }
+        }
+
+        (nodes, edges)
+    }
 }
 
 // ─── Utility ─────────────────────────────────────────────────────────────────

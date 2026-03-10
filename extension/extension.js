@@ -2,12 +2,13 @@
 // noinspection NpmUsedModulesInstalled
 const {
     window,
-    Uri, ExtensionMode
+    Uri, ExtensionMode, commands
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
 const {resolveBlpEditor} = require('./resolveBlpEditor.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
+const {showImportGraph} = require('./importGraphPanel.js')
 
 const path = require('path')
 
@@ -103,7 +104,12 @@ module.exports = {
                     },
                     supportsMultipleEditorsPerDocument: false
                 }
-            )
+            ),
+
+            // Import Graph panel
+            commands.registerCommand('importGraph.show', () => {
+                showImportGraph(client, context.extensionUri)
+            })
         )
 
         client.onDidChangeState(({oldState, newState}) => {

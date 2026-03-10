@@ -338,5 +338,50 @@ mod tests {
         let resolved = resolve_import(&base_url, "Cargo.toml").unwrap();
         assert!(resolved.exists);
     }
+
+    #[test]
+    fn subgraph_for_basic() {
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+        let d = u("file:///d.j"); // disconnected
+
+        g.update(&a, HashSet::from([b.clone()]));
+        g.update(&b, HashSet::from([c.clone()]));
+        g.update(&d, HashSet::new());
+
+        let (nodes, edges) = g.subgraph_for(&b);
+        // b is root (index 0), reachable: a (dependent), c (dependency)
+        assert_eq!(nodes[0], b.to_string());
+        assert_eq!(nodes.len(), 3);
+        assert!(nodes.contains(&a.to_string()));
+        assert!(nodes.contains(&c.to_string()));
+        // d should not appear
+        assert!(!nodes.contains(&d.to_string()));
+        // edges: a→b, b→c
+        assert_eq!(edges.len(), 2);
+    }
+
+    #[test]
+    fn subgraph_for_unknown_uri() {
+        let g = new_graph();
+        let unknown = u("file:///unknown.j");
+        let (nodes, edges) = g.subgraph_for(&unknown);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0], unknown.to_string());
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn subgraph_for_isolated_node() {
+        let g = new_graph();
+        let a = u("file:///a.j");
+        g.update(&a, HashSet::new());
+        let (nodes, edges) = g.subgraph_for(&a);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0], a.to_string());
+        assert!(edges.is_empty());
+    }
 }
 

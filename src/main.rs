@@ -399,6 +399,27 @@ async fn main() {
                                 .await;
                             }
 
+                            MethodCall::ImportGraphSubgraph(params) => {
+                                let uri = &params.uri;
+                                let (nodes, edges) =
+                                    crate::util::import_graph::IMPORT_GRAPH
+                                        .subgraph_for(uri);
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(json!({
+                                            "uri": uri.to_string(),
+                                            "nodes": nodes,
+                                            "edges": edges,
+                                        })),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
                             _ => {
                                 error!("Unexpected method call: {:?}", other);
                             }

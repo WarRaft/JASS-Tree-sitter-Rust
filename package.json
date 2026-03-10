@@ -126,6 +126,22 @@
     ],
     "activationEvents": [
       "onCustomEditor:blp.preview"
-    ]
+    ],
+    "commands": [
+      {
+        "command": "importGraph.show",
+        "title": "Show Import Graph",
+        "icon": "$(type-hierarchy)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "importGraph.show",
+          "when": "resourceLangId == jass || resourceLangId == angelscript",
+          "group": "navigation"
+        }
+      ]
+    }
   }
 }
