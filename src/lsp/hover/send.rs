@@ -5,17 +5,18 @@ use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::range::Range;
 use crate::lsp::send::send as lsp_send;
 use crate::util::roper::uri_map::ROPE_MAP;
+use crate::util::uri_map::LNG_URI_MAP;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::Stdout;
 use tokio::sync::Mutex;
 use url::Url;
 
-// ─── Embedded docs ──────────────────────────────────────────────────────────
+// ─── Embedded docs (JASS only) ──────────────────────────────────────────────
 
-const IMPORT_EN: &str = include_str!("../../../docs/import/en.md");
-const IMPORT_RU: &str = include_str!("../../../docs/import/ru.md");
-const IMPORT_UK: &str = include_str!("../../../docs/import/uk.md");
+const IMPORT_EN: &str = include_str!("../../../docs/jass/import/en.md");
+const IMPORT_RU: &str = include_str!("../../../docs/jass/import/ru.md");
+const IMPORT_UK: &str = include_str!("../../../docs/jass/import/uk.md");
 
 /// Pick the best doc by the system locale env vars.
 /// Falls back to English.
@@ -62,6 +63,12 @@ pub async fn send(
 }
 
 fn compute(uri: &Url, position: &Position) -> Option<Hover> {
+    // //import hover is JASS-only
+    let lng = LNG_URI_MAP.get(uri)?;
+    if lng.value() != "jass" {
+        return None;
+    }
+
     let rope_entry = ROPE_MAP.get(uri)?;
     let rope = rope_entry.value();
 
