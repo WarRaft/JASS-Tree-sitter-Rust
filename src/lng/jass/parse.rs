@@ -319,16 +319,9 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     let mut all_diagnostics = cursor.diagnostics;
     all_diagnostics.extend(import_diagnostics);
 
-    // 7. Store results
-    let report = DocumentDiagnosticReport::Full {
-        result_id: None,
-        items: all_diagnostics,
-        related_documents: None,
-    };
-
+    // 7. Store results (diagnostic report deferred until step 8)
     FOLDING_URI_MAP.insert(uri.clone(), cursor.folding);
     SYMBOL_URI_MAP.insert(uri.clone(), cursor.symbols);
-    DIAGNOSTIC_URI_MAP.insert(uri.clone(), report);
     SEMANTIC_URI_MAP.insert(uri.clone(), cursor.semantic);
     LINK_URI_MAP.insert(uri.clone(), links);
     FILE_SYMBOLS.insert(uri.clone(), cursor.file_symbols);
@@ -336,10 +329,56 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     if let Some(meta) = symbol_cache::FileMeta::from_uri(uri) {
         symbol_cache::store(uri, meta, &FILE_SYMBOLS.get(uri).unwrap().value().clone());
     }
+    let func_decl_keys = cursor.func_decl_keys;
     let ref_map = build_ref_map(cursor.ref_groups, cursor.ref_names, cursor.external_decls, rope);
     // Persist to disk cache for fast reload on restart.
     let hash = ref_cache::content_hash(rope);
     ref_cache::store(uri, &hash, &ref_map);
+
+    // 8. Call-graph diagnostics: unused functions & cyclic calls.
+    //    Must run after FILE_SYMBOLS is stored for the current file.
+    //    Only target ref_map groups whose DeclKey belongs to a function
+    //    declaration (not a same-named variable).
+    {
+        use crate::util::call_graph::diagnose_functions;
+
+        let func_diag = diagnose_functions(uri);
+
+        for (&key, group) in &ref_map.groups {
+            if !func_decl_keys.contains(&key) {
+                continue;
+            }
+            if let Some(decl_occ) = group.occurrences.iter().find(|o| o.is_decl) {
+                if func_diag.unused.contains(&group.name) {
+                    all_diagnostics.push(Diagnostic {
+                        range: decl_occ.range.clone(),
+                        message: format!("Unused function `{}`", group.name),
+                        severity: Some(DiagnosticSeverity::Hint),
+                        tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                        ..Default::default()
+                    });
+                }
+                if func_diag.in_cycle.contains(&group.name) {
+                    all_diagnostics.push(Diagnostic {
+                        range: decl_occ.range.clone(),
+                        message: format!(
+                            "Function `{}` is part of a cyclic call chain — cannot be ordered",
+                            group.name
+                        ),
+                        severity: Some(DiagnosticSeverity::Warning),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+
+    // 9. Store diagnostics and ref_map.
+    DIAGNOSTIC_URI_MAP.insert(uri.clone(), DocumentDiagnosticReport::Full {
+        result_id: None,
+        items: all_diagnostics,
+        related_documents: None,
+    });
     REF_URI_MAP.insert(uri.clone(), ref_map);
 
     // Update scope resolver — compare fingerprints to detect export changes.

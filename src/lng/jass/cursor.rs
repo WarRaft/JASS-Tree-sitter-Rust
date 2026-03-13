@@ -93,6 +93,10 @@ pub struct Cursor {
     /// Synthetic DeclKey → external declaration (for cross-file definition).
     pub external_decls: HashMap<DeclKey, ExternalDecl>,
 
+    /// DeclKeys that belong to function / native declarations (not variables).
+    /// Used by call-graph diagnostics to avoid tagging same-named variables.
+    pub func_decl_keys: HashSet<DeclKey>,
+
     /// Per-file settings parsed from `//set key value` directives.
     pub file_settings: HashMap<String, String>,
 
@@ -148,6 +152,7 @@ impl Cursor {
             ref_groups: HashMap::new(),
             ref_names: HashMap::new(),
             external_decls: HashMap::new(),
+            func_decl_keys: HashSet::new(),
             file_settings: HashMap::new(),
             rope: rope.clone(),
             id_roles: HashMap::new(),
@@ -446,6 +451,7 @@ impl Cursor {
                 is_decl: true,
             });
         self.ref_names.insert(key, name.to_string());
+        self.func_decl_keys.insert(key);
 
         if let Some(scope) = self.hl_scopes.last_mut() {
             scope.funcs.insert(name.to_string(), key);

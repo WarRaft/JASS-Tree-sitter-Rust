@@ -19,6 +19,134 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
+// ─── Diagnostic helpers ──────────────────────────────────────────────────────
+
+/// Per-function diagnostic info for a single file.
+#[derive(Debug, Default)]
+pub struct FuncDiagnostics {
+    /// Function names declared in this file that nobody calls.
+    pub unused: HashSet<String>,
+    /// Function names declared in this file that participate in a
+    /// non-trivial call cycle (SCC len > 1) preventing topological ordering.
+    pub in_cycle: HashSet<String>,
+}
+
+/// Lightweight analysis: return unused / cyclic function names declared in `uri`.
+///
+/// Reads `FILE_SYMBOLS` for every file in the connected component that
+/// contains `uri` (must already be populated).
+pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
+    let mut result = FuncDiagnostics::default();
+
+    let mut component: HashSet<Url> = IMPORT_GRAPH.connected_component(uri);
+    component.insert(uri.clone());
+
+    // Frozen URIs.
+    let mut frozen_uris: HashSet<Url> = HashSet::new();
+    for peer in &component {
+        if let Some(fs) = FILE_SYMBOLS.get(peer) {
+            for fu in &fs.frozen_imports {
+                frozen_uris.insert(fu.clone());
+            }
+        }
+    }
+
+    // Collect all functions/natives.
+    #[allow(dead_code)]
+    struct Info {
+        uri: Url,
+        is_native: bool,
+        is_frozen: bool,
+        callees: HashSet<String>,
+    }
+
+    let mut func_map: HashMap<String, Info> = HashMap::new();
+
+    for peer_uri in &component {
+        let fs = match FILE_SYMBOLS.get(peer_uri) {
+            Some(fs) => fs,
+            None => continue,
+        };
+        let is_frozen = frozen_uris.contains(peer_uri);
+
+        for f in &fs.functions {
+            func_map.insert(f.name.clone(), Info {
+                uri: peer_uri.clone(),
+                is_native: false,
+                is_frozen,
+                callees: f.callees.clone(),
+            });
+        }
+        for n in &fs.natives {
+            func_map.insert(n.name.clone(), Info {
+                uri: peer_uri.clone(),
+                is_native: true,
+                is_frozen,
+                callees: HashSet::new(),
+            });
+        }
+    }
+
+    // Build graph.
+    let mut graph: DiGraph<String, ()> = DiGraph::new();
+    let mut name_to_idx: HashMap<String, NodeIndex> = HashMap::new();
+
+    for name in func_map.keys() {
+        let idx = graph.add_node(name.clone());
+        name_to_idx.insert(name.clone(), idx);
+    }
+    for (name, info) in &func_map {
+        if let Some(&caller) = name_to_idx.get(name) {
+            for callee_name in &info.callees {
+                if let Some(&callee) = name_to_idx.get(callee_name) {
+                    graph.add_edge(caller, callee, ());
+                }
+            }
+        }
+    }
+
+    // In-degree (excluding self-loops) → unused.
+    let mut in_degree: HashMap<NodeIndex, usize> = HashMap::new();
+    for ni in graph.node_indices() {
+        in_degree.insert(ni, 0);
+    }
+    for edge in graph.edge_indices() {
+        if let Some((s, t)) = graph.edge_endpoints(edge) {
+            if s != t {
+                *in_degree.entry(t).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Tarjan SCC → cycles.
+    let sccs = tarjan_scc(&graph);
+    let mut cycle_nodes: HashSet<NodeIndex> = HashSet::new();
+    for scc in &sccs {
+        if scc.len() > 1 {
+            for &ni in scc {
+                cycle_nodes.insert(ni);
+            }
+        }
+    }
+
+    // Filter to functions declared in `uri`.
+    for (name, info) in &func_map {
+        if info.uri != *uri || info.is_native {
+            continue;
+        }
+        if let Some(&ni) = name_to_idx.get(name) {
+            if *in_degree.get(&ni).unwrap_or(&0) == 0 {
+                result.unused.insert(name.clone());
+            }
+            if cycle_nodes.contains(&ni) {
+                result.in_cycle.insert(name.clone());
+            }
+        }
+    }
+
+    result
+}
+
 // ─── Result types ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
