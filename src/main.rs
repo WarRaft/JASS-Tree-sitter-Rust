@@ -768,6 +768,22 @@ async fn main() {
                                 .await;
                             }
 
+                            MethodCall::CallGraphSubgraph(params) => {
+                                let uri = &params.uri;
+                                let result =
+                                    crate::util::call_graph::build_call_graph(uri);
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(json!(result)),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
                             _ => {
                                 error!("Unexpected method call: {:?}", other);
                             }

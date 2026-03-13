@@ -117,6 +117,9 @@ pub enum MethodCall {
 
     #[serde(rename = "importGraph/subgraph")]
     ImportGraphSubgraph(TextDocumentIdentifier),
+
+    #[serde(rename = "callGraph/subgraph")]
+    CallGraphSubgraph(TextDocumentIdentifier),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

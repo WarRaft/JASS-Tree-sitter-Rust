@@ -132,12 +132,22 @@
         "command": "importGraph.show",
         "title": "Show Import Graph",
         "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "callGraph.show",
+        "title": "Show Call Graph",
+        "icon": "$(call-outgoing)"
       }
     ],
     "menus": {
       "editor/title": [
         {
           "command": "importGraph.show",
+          "when": "resourceLangId == jass || resourceLangId == angelscript",
+          "group": "navigation"
+        },
+        {
+          "command": "callGraph.show",
           "when": "resourceLangId == jass || resourceLangId == angelscript",
           "group": "navigation"
         }

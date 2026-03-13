@@ -9,6 +9,7 @@ const {LanguageClient, Trace} = require('vscode-languageclient')
 const {resolveBlpEditor} = require('./resolveBlpEditor.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
+const {showCallGraph} = require('./callGraphPanel.js')
 
 const path = require('path')
 
@@ -43,7 +44,7 @@ module.exports = {
         const binPath = path.join(context.extensionPath, 'bin', binName)
         const binUri = Uri.file(binPath)
 
-        const options = context.extensionMode === ExtensionMode.Production  ? {
+        const options = context.extensionMode === ExtensionMode.Production || true ? {
             command: binUri.fsPath,
         } : {
             command: process.execPath, // node
@@ -109,6 +110,11 @@ module.exports = {
             // Import Graph panel
             commands.registerCommand('importGraph.show', () => {
                 showImportGraph(client, context.extensionUri)
+            }),
+
+            // Call Graph panel
+            commands.registerCommand('callGraph.show', () => {
+                showCallGraph(client, context.extensionUri)
             })
         )
 
