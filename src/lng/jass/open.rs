@@ -3,6 +3,7 @@ use crate::lng::jass::uri_map::{PARSER_MAP, TREE_MAP};
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
 use lapce_xi_rope::Rope;
+use log::error;
 use std::error::Error;
 use tree_sitter::Parser;
 use url::Url;
@@ -30,6 +31,17 @@ pub async fn open(uri: &Url, text: impl AsRef<[u8]>) -> Result<(), Box<dyn Error
         TREE_MAP.insert(uri.clone(), new_tree);
     }
 
-    parse(uri).await
+    let cascade = parse(uri).await?;
+
+    // Cascade re-parse: connected peers whose scope changed.
+    for peer_uri in &cascade {
+        if ROPE_MAP.contains_key(peer_uri) && TREE_MAP.contains_key(peer_uri) {
+            if let Err(e) = parse(peer_uri).await {
+                error!("cascade re-parse {}: {}", peer_uri, e);
+            }
+        }
+    }
+
+    Ok(())
 }
 

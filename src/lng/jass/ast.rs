@@ -197,6 +197,27 @@ pub struct ImportDirective<'tree> {
     pub path: String,
 }
 
+/// `//set <key> <value>` — file-local configuration directive.
+///
+/// Recognized only at the root level, before the first language statement
+/// (alongside `//import` directives).  The `//set` prefix must start at
+/// column 0 with no space after `//`.
+///
+/// ## Recognized keys
+///
+/// | Key | Values | Description |
+/// |-----|--------|-------------|
+/// | `ref-tip` | `1` / `0` | Show / hide reference ID inlay hints |
+#[derive(Debug, Clone)]
+pub struct SetDirective<'tree> {
+    /// The original comment CST node.
+    pub node: Node<'tree>,
+    /// The setting key (e.g. `ref-tip`).
+    pub key: String,
+    /// The raw value string (everything after the key until end-of-line, trimmed).
+    pub value: String,
+}
+
 // ─── Expressions ─────────────────────────────────────────────────────────────
 
 /// Expression node in the AST.
@@ -252,6 +273,7 @@ pub enum Statement<'tree> {
     VarStmt(VarStmt<'tree>),
     Comment(Comment<'tree>),
     Import(ImportDirective<'tree>),
+    SetDir(SetDirective<'tree>),
     /// Unrecognized or error CST node preserved in the AST so it participates
     /// in ordering (e.g. blocks import scanning) and can be highlighted.
     Error(CstError<'tree>),
@@ -277,19 +299,13 @@ pub fn build_ast<'tree>(root: Node<'tree>) -> Ast<'tree> {
     Ast { items, errors }
 }
 
-/// Rewrite leading root-level comments into `Statement::Import` when they
-/// match the `//import` / `//import!` pattern.
+/// Rewrite leading root-level comments into `Statement::Import` or
+/// `Statement::SetDir` when they match the `//import` / `//import!` /
+/// `//set` patterns.
 ///
 /// Only comments **before the first non-comment statement** are considered.
 /// `Statement::Error` nodes (e.g. `a = 2`) also count as "real code" and
-/// stop the scan — later `//import` comments stay as plain comments.
-///
-/// A match requires the comment to start at column 0 and begin with
-/// `//import!` or `//import` followed by whitespace, tab, or end-of-token.
-/// `//importing` does **not** match (no word boundary after `import`).
-///
-/// An import with an empty path is still recorded as `Statement::Import`
-/// (with `path == ""`); the cursor pass will emit a diagnostic for it.
+/// stop the scan — later directives stay as plain comments.
 ///
 /// Must be called after `build_ast` and **before** any cursor / parse logic
 /// that depends on the distinction.
@@ -298,9 +314,14 @@ pub fn build_ast<'tree>(root: Node<'tree>) -> Ast<'tree> {
 pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
     let mut i = 0;
     while i < ast.items.len() {
-        // Stop at first non-comment item (real statement OR error node).
-        if !matches!(&ast.items[i], Statement::Comment(_)) {
-            break;
+        // Stop at first non-comment, non-directive item.
+        match &ast.items[i] {
+            Statement::Comment(_) => {}
+            Statement::Import(_) | Statement::SetDir(_) => {
+                i += 1;
+                continue;
+            }
+            _ => break,
         }
 
         if let Statement::Comment(c) = &ast.items[i] {
@@ -308,6 +329,7 @@ pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
                 let text = &src[c.node.start_byte()..c.node.end_byte()];
                 let text = std::str::from_utf8(text).unwrap_or("");
 
+                // ── //import! ────────────────────────────────────────
                 if let Some(rest) = text.strip_prefix("//import!") {
                     let path = rest.trim().to_string();
                     let node = c.node;
@@ -318,7 +340,9 @@ pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
                     });
                     i += 1;
                     continue;
-                } else if let Some(rest) = text.strip_prefix("//import") {
+                }
+                // ── //import ─────────────────────────────────────────
+                if let Some(rest) = text.strip_prefix("//import") {
                     if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
                         let path = rest.trim().to_string();
                         let node = c.node;
@@ -326,6 +350,27 @@ pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
                             node,
                             frozen: false,
                             path,
+                        });
+                        i += 1;
+                        continue;
+                    }
+                }
+                // ── //set ────────────────────────────────────────────
+                if let Some(rest) = text.strip_prefix("//set") {
+                    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+                        let trimmed = rest.trim();
+                        let (key, value) = match trimmed.find(|c: char| c == ' ' || c == '\t') {
+                            Some(pos) => (
+                                trimmed[..pos].to_string(),
+                                trimmed[pos..].trim().to_string(),
+                            ),
+                            None => (trimmed.to_string(), String::new()),
+                        };
+                        let node = c.node;
+                        ast.items[i] = Statement::SetDir(SetDirective {
+                            node,
+                            key,
+                            value,
                         });
                         i += 1;
                         continue;
@@ -408,8 +453,90 @@ fn build_statement<'tree>(
         Ok(Kind::LoopStatement) => Some(Statement::Loop(build_loop_stmt(node, errors))),
         Ok(Kind::VarStmt) => Some(Statement::VarStmt(build_var_stmt(node))),
         Ok(Kind::Comment) => Some(Statement::Comment(Comment { node: *node })),
+        // Bare expression at statement level — e.g. `A = 21` without `set` keyword.
+        // The grammar parses this as `expr { expr(id) "=" expr(value) }`.
+        // We convert assignment expressions to Statement::Set.
+        Ok(Kind::Expr) => build_expr_statement(node),
         _ => None,
     }
+}
+
+/// Convert a bare `expr` at statement level.
+/// If it's an assignment (`id = value`), produce `Statement::Set`.
+/// Otherwise, wrap the whole thing as `Statement::Set` with only the expression.
+fn build_expr_statement<'tree>(node: &Node<'tree>) -> Option<Statement<'tree>> {
+    // Look for assignment pattern: child0=expr(id), child1='=', child2=expr(value)
+    let count = node.child_count();
+    if count >= 3 {
+        // Check if there's a '=' token among children
+        for i in 0..count {
+            if let Some(eq) = node.child(i as u32) {
+                if Kind::try_from(eq.kind_id()) == Ok(Kind::Equal) {
+                    // Left side = everything before '='
+                    let left = if i > 0 { node.child(0) } else { None };
+                    // Right side = everything after '='
+                    let right = if (i as u32 + 1) < count as u32 {
+                        node.child(i as u32 + 1)
+                    } else {
+                        None
+                    };
+
+                    // Extract variable id from left expr
+                    let variable = left.and_then(|l| {
+                        // The left side is an expr wrapping an id
+                        find_id_in_expr(&l)
+                    });
+
+                    // Check if left side is an array access: id[index]
+                    let index = left.and_then(|l| find_index_in_expr(&l));
+
+                    let value = right.and_then(|r| build_expr(&r));
+
+                    return Some(Statement::Set(SetStmt {
+                        node: *node,
+                        variable,
+                        index,
+                        value,
+                    }));
+                }
+            }
+        }
+    }
+    // Not an assignment — still process as expression for ref tracking
+    None
+}
+
+/// Find an `id` node inside an expr (possibly nested one level).
+fn find_id_in_expr<'tree>(node: &Node<'tree>) -> Option<Id<'tree>> {
+    if Kind::try_from(node.kind_id()) == Ok(Kind::Id) {
+        return Some(build_id(node, IdRole::Variable));
+    }
+    let count = node.child_count();
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if Kind::try_from(child.kind_id()) == Ok(Kind::Id) {
+                return Some(build_id(&child, IdRole::Variable));
+            }
+        }
+    }
+    None
+}
+
+/// Find an index expression in an array access expr (e.g. `A[i]`).
+fn find_index_in_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
+    // Look for pattern: expr { id "[" expr "]" }
+    let count = node.child_count();
+    let mut found_bracket = false;
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if Kind::try_from(child.kind_id()) == Ok(Kind::LeftBracket) {
+                found_bracket = true;
+            } else if found_bracket && Kind::try_from(child.kind_id()) != Ok(Kind::RightBracket) {
+                return build_expr(&child);
+            }
+        }
+    }
+    None
 }
 
 fn build_id<'tree>(node: &Node<'tree>, role: IdRole) -> Id<'tree> {

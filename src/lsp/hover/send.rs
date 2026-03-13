@@ -18,9 +18,13 @@ const IMPORT_EN: &str = include_str!("../../../docs/jass/import/en.md");
 const IMPORT_RU: &str = include_str!("../../../docs/jass/import/ru.md");
 const IMPORT_UK: &str = include_str!("../../../docs/jass/import/uk.md");
 
+const SET_EN: &str = include_str!("../../../docs/jass/set/en.md");
+const SET_RU: &str = include_str!("../../../docs/jass/set/ru.md");
+const SET_UK: &str = include_str!("../../../docs/jass/set/uk.md");
+
 /// Pick the best doc by the system locale env vars.
 /// Falls back to English.
-fn import_doc() -> &'static str {
+fn pick_locale<F: Fn(&str) -> &'static str>(picker: F) -> &'static str {
     let lang = std::env::var("LANG")
         .or_else(|_| std::env::var("LC_ALL"))
         .or_else(|_| std::env::var("LC_MESSAGES"))
@@ -29,12 +33,28 @@ fn import_doc() -> &'static str {
         .to_lowercase();
 
     if lang.starts_with("ru") {
-        IMPORT_RU
+        picker("ru")
     } else if lang.starts_with("uk") {
-        IMPORT_UK
+        picker("uk")
     } else {
-        IMPORT_EN
+        picker("en")
     }
+}
+
+fn import_doc() -> &'static str {
+    pick_locale(|l| match l {
+        "ru" => IMPORT_RU,
+        "uk" => IMPORT_UK,
+        _ => IMPORT_EN,
+    })
+}
+
+fn set_doc() -> &'static str {
+    pick_locale(|l| match l {
+        "ru" => SET_RU,
+        "uk" => SET_UK,
+        _ => SET_EN,
+    })
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
@@ -87,18 +107,25 @@ fn compute(uri: &Url, position: &Position) -> Option<Hover> {
     let line_text = rope.slice_to_cow(line_start..line_end);
     let trimmed = line_text.trim_start();
 
-    // Check if cursor is on an //import or //import! directive
-    let (prefix, _frozen) = if trimmed.starts_with("//import!") {
-        ("//import!", true)
-    } else if trimmed.starts_with("//import")
-        && (trimmed.len() == 8
-            || trimmed.as_bytes()[8] == b' '
-            || trimmed.as_bytes()[8] == b'\t')
-    {
-        ("//import", false)
-    } else {
-        return None;
-    };
+    // Check if cursor is on an //import, //import!, or //set directive
+    let (prefix, doc_fn): (&str, fn() -> &'static str) =
+        if trimmed.starts_with("//import!") {
+            ("//import!", import_doc as fn() -> &'static str)
+        } else if trimmed.starts_with("//import")
+            && (trimmed.len() == 8
+                || trimmed.as_bytes()[8] == b' '
+                || trimmed.as_bytes()[8] == b'\t')
+        {
+            ("//import", import_doc as fn() -> &'static str)
+        } else if trimmed.starts_with("//set")
+            && (trimmed.len() == 5
+                || trimmed.as_bytes()[5] == b' '
+                || trimmed.as_bytes()[5] == b'\t')
+        {
+            ("//set", set_doc as fn() -> &'static str)
+        } else {
+            return None;
+        };
 
     // The prefix starts at the beginning of trimmed text
     let leading_ws = line_text.len() - trimmed.len();
@@ -114,7 +141,7 @@ fn compute(uri: &Url, position: &Position) -> Option<Hover> {
     Some(Hover {
         contents: MarkupContent {
             kind: MarkupKind::Markdown,
-            value: import_doc().to_string(),
+            value: doc_fn().to_string(),
         },
         range: Some(Range {
             start: Position {

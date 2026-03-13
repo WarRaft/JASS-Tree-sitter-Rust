@@ -357,5 +357,82 @@ endfunction
             assert_eq!(comment_count, 1, "The second //import! should stay as Comment");
         });
     }
+
+    // ─── //set directive tests ──────────────────────────────────────────
+
+    #[test]
+    fn set_directive_basic() {
+        let src = "//set ref-tip 1\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
+            assert_eq!(set_count, 1);
+            if let Statement::SetDir(sd) = &ast.items[0] {
+                assert_eq!(sd.key, "ref-tip");
+                assert_eq!(sd.value, "1");
+            } else {
+                panic!("expected SetDir");
+            }
+        });
+    }
+
+    #[test]
+    fn set_directive_empty_value() {
+        let src = "//set ref-tip\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
+            assert_eq!(set_count, 1);
+            if let Statement::SetDir(sd) = &ast.items[0] {
+                assert_eq!(sd.key, "ref-tip");
+                assert_eq!(sd.value, "");
+            } else {
+                panic!("expected SetDir");
+            }
+        });
+    }
+
+    #[test]
+    fn set_directive_empty_key() {
+        let src = "//set\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
+            assert_eq!(set_count, 1);
+            if let Statement::SetDir(sd) = &ast.items[0] {
+                assert_eq!(sd.key, "");
+                assert_eq!(sd.value, "");
+            } else {
+                panic!("expected SetDir");
+            }
+        });
+    }
+
+    #[test]
+    fn set_and_import_interleaved() {
+        let src = "//import path/to/file\n//set ref-tip 1\n//import! other.j\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            let import_count = ast.items.iter().filter(|s| matches!(s, Statement::Import(_))).count();
+            let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
+            assert_eq!(import_count, 2);
+            assert_eq!(set_count, 1);
+        });
+    }
+
+    #[test]
+    fn set_after_code_stays_comment() {
+        let src = "function F takes nothing returns nothing\nendfunction\n//set ref-tip 1\n";
+        with_ast_imports(src, |ast| {
+            let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
+            assert_eq!(set_count, 0, "//set after code should stay as comment");
+        });
+    }
+
+    #[test]
+    fn set_no_false_positive() {
+        // "//setting" should NOT match
+        let src = "//setting stuff\nfunction F takes nothing returns nothing\nendfunction\n";
+        with_ast_imports(src, |ast| {
+            let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
+            assert_eq!(set_count, 0);
+        });
+    }
 }
 

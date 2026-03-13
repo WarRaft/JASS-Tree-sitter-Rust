@@ -1,7 +1,6 @@
 use crate::lsp::range::Range;
 use crate::lsp::semantic::lsp::Kind;
 use lapce_xi_rope::Rope;
-use log::error;
 use std::collections::BTreeMap;
 use tree_sitter::Node;
 
@@ -49,8 +48,9 @@ impl Hub {
         let start_byte = node.start_byte();
         let end_byte = node.end_byte();
 
+        // Zero-length nodes (MISSING / error nodes from tree-sitter during
+        // incremental editing) — silently skip, nothing to highlight.
         if end_byte <= start_byte {
-            error!("Node byte range is invalid: {} -> {}", start_byte, end_byte);
             return self;
         }
 

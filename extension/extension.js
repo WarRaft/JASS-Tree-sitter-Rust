@@ -43,7 +43,7 @@ module.exports = {
         const binPath = path.join(context.extensionPath, 'bin', binName)
         const binUri = Uri.file(binPath)
 
-        const options = context.extensionMode === ExtensionMode.Production || true ? {
+        const options = context.extensionMode === ExtensionMode.Production  ? {
             command: binUri.fsPath,
         } : {
             command: process.execPath, // node

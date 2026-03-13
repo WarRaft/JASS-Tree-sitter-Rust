@@ -1,0 +1,41 @@
+# `//set` — File Configuration Directive
+
+The `//set` directive allows you to configure per-file settings for the
+language server.  It must appear **at the very beginning** of the file,
+alongside `//import` directives, before any language statements.
+
+## Syntax
+
+```jass
+//set <key> <value>
+```
+
+* The `//set` token must start at **column 0** (no leading spaces).
+* `<key>` is the setting name (no spaces allowed in the key).
+* `<value>` is everything after the key until end-of-line (trimmed).
+
+## Example
+
+```jass
+//import common/natives.j
+//set ref-tip 1
+
+globals
+    integer count = 0
+endglobals
+```
+
+## Available Settings
+
+| Key | Values | Description |
+|-----|--------|-------------|
+| `ref-tip` | `1` / `0` | Show / hide reference ID inlay hints next to each identifier. Useful for debugging symbol resolution and rename refactoring. |
+
+## Behaviour
+
+* Settings are scoped to a single file — they do not propagate through
+  `//import`.
+* Unrecognized keys are silently accepted (for forward compatibility).
+* A missing value produces a warning diagnostic.
+
+

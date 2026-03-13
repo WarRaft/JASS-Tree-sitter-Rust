@@ -4,10 +4,12 @@ use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
 use crate::lsp::document_link::lsp::DocumentLinkParams;
 use crate::lsp::document_symbol::lsp::DocumentSymbolParams;
 use crate::lsp::folding::lsp::FoldingRangeParams;
+use crate::lsp::highlight::lsp::{DefinitionParams, DocumentHighlightParams, ReferenceParams};
 use crate::lsp::hover::lsp::HoverParams;
+use crate::lsp::inlay_hint::lsp::InlayHintParams;
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
-use crate::lsp::rename::lsp::RenameFilesParams;
+use crate::lsp::rename::lsp::{PrepareRenameParams, RenameFilesParams, RenameParams};
 use crate::lsp::semantic::lsp::{SemanticTokensParams, SemanticTokensRangeParams};
 use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::text_document::{
@@ -89,8 +91,26 @@ pub enum MethodCall {
     #[serde(rename = "textDocument/hover")]
     Hover(HoverParams),
 
+    #[serde(rename = "textDocument/documentHighlight")]
+    DocumentHighlight(DocumentHighlightParams),
+
+    #[serde(rename = "textDocument/definition")]
+    Definition(DefinitionParams),
+
+    #[serde(rename = "textDocument/references")]
+    References(ReferenceParams),
+
+    #[serde(rename = "textDocument/inlayHint")]
+    InlayHint(InlayHintParams),
+
     #[serde(rename = "textDocument/documentLink")]
     DocumentLink(DocumentLinkParams),
+
+    #[serde(rename = "textDocument/prepareRename")]
+    PrepareRename(PrepareRenameParams),
+
+    #[serde(rename = "textDocument/rename")]
+    Rename(RenameParams),
 
     #[serde(rename = "workspace/willRenameFiles")]
     WillRenameFiles(RenameFilesParams),
@@ -102,9 +122,9 @@ pub enum MethodCall {
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RequestMessage {
-    id: Value,
-    method: String,
-    params: Option<Value>,
+    pub id: Value,
+    pub method: String,
+    pub params: Option<Value>,
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#responseMessage

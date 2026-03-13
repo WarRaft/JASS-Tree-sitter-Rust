@@ -3,7 +3,8 @@ use crate::lsp::diagnostic::lsp::DiagnosticOptions;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
-use crate::lsp::rename::lsp::WorkspaceServerCapabilities;
+use crate::lsp::inlay_hint::lsp::InlayHintOptions;
+use crate::lsp::rename::lsp::{RenameOptions, WorkspaceServerCapabilities};
 use crate::lsp::semantic::lsp::SemanticTokensOptions;
 use crate::lsp::text_document::TextDocumentSyncOptions;
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,16 @@ pub struct ServerCapabilities {
     pub completion_provider: Option<CompletionOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hover_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_highlight_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub references_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inlay_hint_provider: Option<InlayHintOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rename_provider: Option<RenameOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document_link_provider: Option<DocumentLinkOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]

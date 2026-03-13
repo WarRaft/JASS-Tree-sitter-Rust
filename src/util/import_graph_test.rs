@@ -383,5 +383,108 @@ mod tests {
         assert_eq!(nodes[0], a.to_string());
         assert!(edges.is_empty());
     }
-}
 
+    // ── connected_component ──────────────────────────────────────────────
+
+    #[test]
+    fn connected_component_one_way_import() {
+        // A → B  (A imports B)
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        g.update(&a, HashSet::from([b.clone()]));
+
+        // From A: component = {B}
+        let ca = g.connected_component(&a);
+        assert_eq!(ca.len(), 1);
+        assert!(ca.contains(&b));
+
+        // From B: component = {A}  (bidirectional reach!)
+        let cb = g.connected_component(&b);
+        assert_eq!(cb.len(), 1);
+        assert!(cb.contains(&a));
+    }
+
+    #[test]
+    fn connected_component_triangle() {
+        // A → B, A → C  →  A, B, C are all connected
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+        g.update(&a, HashSet::from([b.clone(), c.clone()]));
+
+        // From B: should see {A, C}
+        let cb = g.connected_component(&b);
+        assert_eq!(cb.len(), 2);
+        assert!(cb.contains(&a));
+        assert!(cb.contains(&c));
+
+        // From C: should see {A, B}
+        let cc = g.connected_component(&c);
+        assert_eq!(cc.len(), 2);
+        assert!(cc.contains(&a));
+        assert!(cc.contains(&b));
+    }
+
+    #[test]
+    fn connected_component_chain() {
+        // A → B → C  →  all three connected
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+        g.update(&a, HashSet::from([b.clone()]));
+        g.update(&b, HashSet::from([c.clone()]));
+
+        // From C: should see {A, B}
+        let cc = g.connected_component(&c);
+        assert_eq!(cc.len(), 2);
+        assert!(cc.contains(&a));
+        assert!(cc.contains(&b));
+    }
+
+    #[test]
+    fn connected_component_separate_clusters() {
+        // Cluster 1: A → B
+        // Cluster 2: C → D (disconnected from A,B)
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+        let d = u("file:///d.j");
+        g.update(&a, HashSet::from([b.clone()]));
+        g.update(&c, HashSet::from([d.clone()]));
+
+        // From A: only B
+        let ca = g.connected_component(&a);
+        assert_eq!(ca.len(), 1);
+        assert!(ca.contains(&b));
+        assert!(!ca.contains(&c));
+        assert!(!ca.contains(&d));
+
+        // From D: only C
+        let cd = g.connected_component(&d);
+        assert_eq!(cd.len(), 1);
+        assert!(cd.contains(&c));
+    }
+
+    #[test]
+    fn connected_component_unknown_uri() {
+        let g = new_graph();
+        let unknown = u("file:///unknown.j");
+        let c = g.connected_component(&unknown);
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn connected_component_excludes_self() {
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        g.update(&a, HashSet::from([b.clone()]));
+
+        let ca = g.connected_component(&a);
+        assert!(!ca.contains(&a), "connected_component should exclude self");
+    }
+}

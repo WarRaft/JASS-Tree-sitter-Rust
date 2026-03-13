@@ -4,6 +4,7 @@ use crate::lsp::position::Position;
 use crate::lsp::text_document::TextDocumentContentChangeEvent;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_lock::{uri_lock, uri_unlock};
+use log::error;
 use std::error::Error;
 use tree_sitter::InputEdit;
 use url::Url;
@@ -20,7 +21,21 @@ pub async fn change(
     }
 
     // parse will call uri_unlock
-    parse(uri).await
+    let cascade = parse(uri).await?;
+
+    // Cascade re-parse: connected peers whose scope changed.
+    // One-level deep only — we discard the cascade list from each peer
+    // to avoid infinite loops.
+    for peer_uri in &cascade {
+        if ROPE_MAP.contains_key(peer_uri) && TREE_MAP.contains_key(peer_uri) {
+            // Peer is open — re-parse it to pick up the new symbols.
+            if let Err(e) = parse(peer_uri).await {
+                error!("cascade re-parse {}: {}", peer_uri, e);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn _apply_changes(

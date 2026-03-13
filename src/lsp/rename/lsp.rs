@@ -1,3 +1,4 @@
+use crate::lsp::position::Position;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -84,3 +85,38 @@ pub struct TextEdit {
     pub new_text: String,
 }
 
+// ─── textDocument/rename ─────────────────────────────────────────────────────
+
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#renameOptions
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameOptions {
+    /// Renames should be checked and tested before being executed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prepare_provider: Option<bool>,
+}
+
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#renameParams
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameParams {
+    pub text_document: crate::lsp::text_document::TextDocumentIdentifier,
+    pub position: Position,
+    pub new_name: String,
+}
+
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#prepareRenameParams
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareRenameParams {
+    pub text_document: crate::lsp::text_document::TextDocumentIdentifier,
+    pub position: Position,
+}
+
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#prepareRenameResult
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareRenameResult {
+    pub range: crate::lsp::range::Range,
+    pub placeholder: String,
+}

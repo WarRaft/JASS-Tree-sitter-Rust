@@ -20,11 +20,14 @@ use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::document_symbol::uri_map::URI_MAP as SYMBOL_URI_MAP;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
 use crate::lsp::folding::uri_map::URI_MAP as FOLDING_URI_MAP;
+use crate::lsp::highlight::send::send as highlight_send;
 use crate::lsp::hover::send::send as hover_send;
+use crate::lsp::inlay_hint::send::send as inlay_hint_send;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::read::read;
 use crate::lsp::rename::handle::compute_rename_edits;
+use crate::lsp::rename::identifier::{compute_identifier_rename, prepare_rename};
 use crate::lsp::rename::lsp::{
     FileOperationFilter, FileOperationOptions, FileOperationPattern,
     FileOperationRegistrationOptions, WorkspaceServerCapabilities,
@@ -38,7 +41,7 @@ use crate::lsp::send::send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::util::uri_lock::uri_wait;
 use crate::util::uri_map::LNG_URI_MAP;
-use log::error;
+use log::{error, info};
 
 #[tokio::main]
 async fn main() {
@@ -107,6 +110,19 @@ async fn main() {
                                         ]),
                                     }),
                                     hover_provider: Some(true),
+                                    document_highlight_provider: Some(true),
+                                    definition_provider: Some(true),
+                                    references_provider: Some(true),
+                                    inlay_hint_provider: Some(
+                                        crate::lsp::inlay_hint::lsp::InlayHintOptions {
+                                            resolve_provider: None,
+                                        },
+                                    ),
+                                    rename_provider: Some(
+                                        crate::lsp::rename::lsp::RenameOptions {
+                                            prepare_provider: Some(true),
+                                        },
+                                    ),
                                     document_link_provider: Some(DocumentLinkOptions {
                                         resolve_provider: Some(false),
                                     }),
@@ -153,7 +169,151 @@ async fn main() {
                                 blp_send(&writer, call.id, &param.uri).await;
                             }
 
-                            MethodCall::Initialized(_) => {}
+                            MethodCall::Initialized(_) => {
+                                use crate::lng::jass::symbol::FILE_SYMBOLS;
+                                use crate::util::import_graph::IMPORT_GRAPH;
+                                use crate::util::ref_cache;
+                                use crate::util::symbol_cache;
+                                use crate::util::scope_resolver::SCOPE_RESOLVER;
+                                use crate::lsp::ref_map::REF_URI_MAP;
+                                use std::collections::HashSet;
+
+                                // ── 0. Force-load the scope resolver from disk ───────
+                                // (Lazy::force triggers ScopeResolver::load)
+                                let _ = SCOPE_RESOLVER.file_count();
+
+                                // ── 1. Load ALL cached FileSymbols from disk ─────────
+                                let cached_entries = symbol_cache::load_all();
+                                let mut stale_uris: Vec<url::Url> = Vec::new();
+
+                                for (uri, cached_meta, symbols) in &cached_entries {
+                                    let current_meta = symbol_cache::FileMeta::from_uri(uri);
+                                    if current_meta == Some(*cached_meta) {
+                                        // Fresh — load into memory immediately.
+                                        FILE_SYMBOLS.insert(uri.clone(), symbols.clone());
+                                    } else if current_meta.is_some() {
+                                        // File exists but changed — needs re-parse.
+                                        stale_uris.push(uri.clone());
+                                    }
+                                    // If file doesn't exist anymore → skip (GC will clean).
+                                }
+
+                                info!(
+                                    "symbol_cache: loaded {} fresh, {} stale",
+                                    cached_entries.len() - stale_uris.len(),
+                                    stale_uris.len()
+                                );
+
+                                // ── 2. GC orphaned caches ────────────────────────────
+                                let all = IMPORT_GRAPH.all_uris();
+                                let keep: HashSet<String> =
+                                    all.iter().map(|u| u.as_str().to_string()).collect();
+                                let keep_urls: HashSet<url::Url> =
+                                    all.iter().cloned().collect();
+                                ref_cache::gc(&keep);
+                                symbol_cache::gc(&keep);
+                                SCOPE_RESOLVER.gc(&keep_urls);
+
+                                // ── 3. Load cached RefMaps for fresh files ───────────
+                                for uri in &all {
+                                    if REF_URI_MAP.contains_key(uri) {
+                                        continue;
+                                    }
+                                    if let Ok(path) = uri.to_file_path() {
+                                        if path.exists() {
+                                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                                let rope = lapce_xi_rope::Rope::from(content.as_str());
+                                                let hash = ref_cache::content_hash(&rope);
+                                                if let Some(ref_map) = ref_cache::load(uri, &hash) {
+                                                    REF_URI_MAP.insert(uri.clone(), ref_map);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // ── 4. Re-parse stale files with progress ────────────
+                                if !stale_uris.is_empty() {
+                                    let total = stale_uris.len();
+                                    let token = "jass-rescan";
+
+                                    // Create progress token
+                                    send(
+                                        &writer,
+                                        &json!({
+                                            "jsonrpc": "2.0",
+                                            "id": 99999,
+                                            "method": "window/workDoneProgress/create",
+                                            "params": { "token": token }
+                                        }),
+                                    ).await;
+
+                                    // Begin
+                                    send(
+                                        &writer,
+                                        &json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "$/progress",
+                                            "params": {
+                                                "token": token,
+                                                "value": {
+                                                    "kind": "begin",
+                                                    "title": "JASS: Rescanning files",
+                                                    "cancellable": false,
+                                                    "percentage": 0
+                                                }
+                                            }
+                                        }),
+                                    ).await;
+
+                                    for (i, uri) in stale_uris.iter().enumerate() {
+                                        // Report progress
+                                        let pct = ((i + 1) * 100 / total) as u32;
+                                        let path_str = uri.path();
+                                        let fname = path_str.rsplit('/').next().unwrap_or("");
+                                        send(
+                                            &writer,
+                                            &json!({
+                                                "jsonrpc": "2.0",
+                                                "method": "$/progress",
+                                                "params": {
+                                                    "token": token,
+                                                    "value": {
+                                                        "kind": "report",
+                                                        "message": format!("{}/{} {}", i + 1, total, fname),
+                                                        "percentage": pct
+                                                    }
+                                                }
+                                            }),
+                                        ).await;
+
+                                        // Full re-parse from disk
+                                        if let Ok(path) = uri.to_file_path() {
+                                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                                if let Err(e) = lng::jass::open::open(uri, &content).await {
+                                                    error!("rescan {}: {}", uri, e);
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // End
+                                    send(
+                                        &writer,
+                                        &json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "$/progress",
+                                            "params": {
+                                                "token": token,
+                                                "value": {
+                                                    "kind": "end",
+                                                    "message": format!("Done — {} files rescanned", total)
+                                                }
+                                            }
+                                        }),
+                                    ).await;
+                                }
+                            }
                             MethodCall::SetTrace(_) => {}
                             MethodCall::DidClose(_) => {}
                             MethodCall::Cancel(params) => {
@@ -209,15 +369,21 @@ async fn main() {
                                         {
                                             error!("Failed to apply change: {}", err);
                                         }
-                                        // Notify client to re-request semantic tokens
-                                        send(
-                                            &writer,
-                                            &json!({
-                                                "jsonrpc": "2.0",
-                                                "method": "workspace/semanticTokens/refresh"
-                                            }),
-                                        )
-                                        .await;
+                                        // Notify client to re-request all data for open files
+                                        for method in [
+                                            "workspace/semanticTokens/refresh",
+                                            "workspace/diagnostics/refresh",
+                                            "workspace/inlayHint/refresh",
+                                        ] {
+                                            send(
+                                                &writer,
+                                                &json!({
+                                                    "jsonrpc": "2.0",
+                                                    "method": method
+                                                }),
+                                            )
+                                            .await;
+                                        }
                                     } else if lng.value() == "angelscript" {
                                         if let Err(err) =
                                             lng::ass::change::change(uri, params.content_changes)
@@ -225,14 +391,20 @@ async fn main() {
                                         {
                                             error!("Failed to apply change: {}", err);
                                         }
-                                        send(
-                                            &writer,
-                                            &json!({
-                                                "jsonrpc": "2.0",
-                                                "method": "workspace/semanticTokens/refresh"
-                                            }),
-                                        )
-                                        .await;
+                                        for method in [
+                                            "workspace/semanticTokens/refresh",
+                                            "workspace/diagnostics/refresh",
+                                            "workspace/inlayHint/refresh",
+                                        ] {
+                                            send(
+                                                &writer,
+                                                &json!({
+                                                    "jsonrpc": "2.0",
+                                                    "method": method
+                                                }),
+                                            )
+                                            .await;
+                                        }
                                     }
                                 }
                             }
@@ -366,6 +538,124 @@ async fn main() {
                                 hover_send(&writer, call.id, uri, &params.position).await;
                             }
 
+                            MethodCall::DocumentHighlight(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
+                                highlight_send(&writer, call.id, &params).await;
+                            }
+
+                            MethodCall::Definition(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
+
+                                let result = {
+                                    use crate::lsp::ref_map::REF_URI_MAP;
+                                    let mut locs = Vec::new();
+                                    if let Some(ref_entry) = REF_URI_MAP.get(uri) {
+                                        if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
+                                            if let Some(byte) = params.position.to_byte_offset(rope_entry.value()) {
+                                                // Check if this is an external (imported) symbol first.
+                                                if let Some(ext) = ref_entry.value().external_at(byte) {
+                                                    // Jump to the declaration in the imported file.
+                                                    if let Some(ext_ref_entry) = REF_URI_MAP.get(&ext.uri) {
+                                                        let ext_ref_map = ext_ref_entry.value();
+                                                        // Find the declaration of this symbol name.
+                                                        for group in ext_ref_map.groups.values() {
+                                                            if group.name == ext.name {
+                                                                for occ in &group.occurrences {
+                                                                    if occ.is_decl {
+                                                                        locs.push(crate::lsp::location::Location {
+                                                                            uri: ext.uri.to_string(),
+                                                                            range: occ.range.clone(),
+                                                                        });
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Local definitions.
+                                                    for def in ref_entry.value().definitions_at(byte) {
+                                                        locs.push(crate::lsp::location::Location {
+                                                            uri: uri.to_string(),
+                                                            range: def.range.clone(),
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    locs
+                                };
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(&result),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
+                            MethodCall::References(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
+
+                                let result = {
+                                    use crate::lsp::ref_map::REF_URI_MAP;
+                                    let mut locs = Vec::new();
+                                    if let Some(ref_entry) = REF_URI_MAP.get(uri) {
+                                        if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
+                                            if let Some(byte) = params.position.to_byte_offset(rope_entry.value()) {
+                                                let include_decl = params.context.include_declaration;
+                                                for occ in ref_entry.value().occurrences_at(byte) {
+                                                    if !include_decl && occ.is_decl {
+                                                        continue;
+                                                    }
+                                                    locs.push(crate::lsp::location::Location {
+                                                        uri: uri.to_string(),
+                                                        range: occ.range.clone(),
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                    locs
+                                };
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(&result),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
+                            MethodCall::InlayHint(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
+                                inlay_hint_send(&writer, call.id, &params).await;
+                            }
+
                             MethodCall::DocumentLink(params) => {
                                 if call.id.was_cancelled().await {
                                     return;
@@ -389,6 +679,54 @@ async fn main() {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
                                         result: Some(result),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
+                            MethodCall::PrepareRename(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
+
+                                let result = prepare_rename(uri, &params.position);
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(match result {
+                                            Some(r) => serde_json::to_value(r)
+                                                .unwrap_or(serde_json::Value::Null),
+                                            None => serde_json::Value::Null,
+                                        }),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
+                            MethodCall::Rename(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
+
+                                let edit = compute_identifier_rename(
+                                    uri,
+                                    &params.position,
+                                    &params.new_name,
+                                );
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(edit),
                                         error: None,
                                     },
                                 )
@@ -439,7 +777,24 @@ async fn main() {
             },
 
             LspMessage::RequestMessage(msg) => {
-                error!("Unexpected request: {:?}", msg);
+                match msg.method.as_str() {
+                    "shutdown" | "exit" => {
+                        send(
+                            &writer,
+                            &ResponseMessage {
+                                jsonrpc: "2.0".into(),
+                                id: None,
+                                result: Some(json!(null)),
+                                error: None,
+                            },
+                        )
+                        .await;
+                        break;
+                    }
+                    _ => {
+                        error!("Unexpected request: {:?}", msg);
+                    }
+                }
             }
         }
     }

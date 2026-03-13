@@ -57,7 +57,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
     let byte_col = utf16_to_byte_offset(&line_text, position.character);
     let prefix = &line_text[..byte_col.min(line_text.len())];
 
-    // ── Case 1: cursor right after "//" → suggest `import` and `import!` ─────
+    // ── Case 1: cursor right after "//" → suggest `import`, `import!`, `set` ──
     if prefix.trim_start() == "//" {
         return vec![
             CompletionItem {
@@ -74,11 +74,39 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 insert_text: Some("import! ".into()),
                 sort_text: Some("1".into()),
             },
+            CompletionItem {
+                label: "set".into(),
+                kind: Some(CompletionItemKind::Keyword),
+                detail: Some("Set a file-local configuration value".into()),
+                insert_text: Some("set ".into()),
+                sort_text: Some("2".into()),
+            },
         ];
     }
 
-    // ── Case 2: cursor on the path after "//import " or "//import! " ─────────
+    // ── Case 2: cursor after "//set " → suggest known setting keys ─────────────
     let trimmed = prefix.trim_start();
+
+    if let Some(rest) = trimmed.strip_prefix("//set") {
+        if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+            let typed = rest.trim_start();
+            // Only suggest keys if we haven't started typing a value yet
+            if !typed.contains(' ') && !typed.contains('\t') {
+                return vec![
+                    CompletionItem {
+                        label: "ref-tip".into(),
+                        kind: Some(CompletionItemKind::Property),
+                        detail: Some("Show reference ID inlay hints (1 = on, 0 = off)".into()),
+                        insert_text: Some("ref-tip 1".into()),
+                        sort_text: Some("0".into()),
+                    },
+                ];
+            }
+            return vec![];
+        }
+    }
+
+    // ── Case 3: cursor on the path after "//import " or "//import! " ─────────
 
     let path_part = if let Some(rest) = trimmed.strip_prefix("//import!") {
         rest.strip_prefix(' ').or(Some(rest))

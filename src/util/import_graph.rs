@@ -205,6 +205,8 @@ impl ImportGraph {
                 .collect();
             inner.index = rebuilt;
             Self::save(&inner);
+            // Evict cached RefMap for the removed file.
+            crate::util::ref_cache::evict(uri);
         }
     }
 
@@ -224,6 +226,9 @@ impl ImportGraph {
         inner.index.insert(new_uri.clone(), old_idx);
 
         Self::save(&inner);
+
+        // Evict stale cache for the old URI.
+        crate::util::ref_cache::evict(old_uri);
     }
 
     // ─── Queries (read lock) ─────────────────────────────────────────────
@@ -302,6 +307,12 @@ impl ImportGraph {
         is_cyclic_directed(&inner.graph)
     }
 
+    /// All URIs known to the graph (for cache GC / preloading).
+    pub fn all_uris(&self) -> Vec<Url> {
+        let inner = self.inner.read().unwrap();
+        inner.graph.node_indices().map(|n| inner.graph[n].clone()).collect()
+    }
+
     /// Find all cycles that `uri` participates in.
     /// Returns a list of cycles, each cycle is a Vec<Url>.
     #[allow(dead_code)]
@@ -362,6 +373,43 @@ impl ImportGraph {
     #[allow(dead_code)]
     pub fn edge_count(&self) -> usize {
         self.inner.read().unwrap().graph.edge_count()
+    }
+
+    /// All URIs in the same **connected component** as `uri`, walking both
+    /// outgoing and incoming edges.  The result **excludes** `uri` itself.
+    ///
+    /// This is the "unified scope" set: every file in the component shares
+    /// the same global symbol namespace.
+    pub fn connected_component(&self, uri: &Url) -> HashSet<Url> {
+        let inner = self.inner.read().unwrap();
+        let Some(&start) = inner.index.get(uri) else {
+            return HashSet::new();
+        };
+
+        let mut visited: HashSet<NodeIndex> = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(start);
+        visited.insert(start);
+
+        while let Some(cur) = queue.pop_front() {
+            for next in inner.graph.neighbors_directed(cur, Direction::Outgoing) {
+                if visited.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+            for next in inner.graph.neighbors_directed(cur, Direction::Incoming) {
+                if visited.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+
+        // Exclude the start node itself.
+        visited
+            .iter()
+            .filter(|&&n| n != start)
+            .map(|&n| inner.graph[n].clone())
+            .collect()
     }
 
     /// Return the **connected subgraph** reachable from `uri` walking both
