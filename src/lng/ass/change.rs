@@ -2,6 +2,7 @@ use crate::lng::ass::parse::parse;
 use crate::lng::ass::uri_map::{PARSER_MAP, TREE_MAP};
 use crate::lsp::position::Position;
 use crate::lsp::text_document::TextDocumentContentChangeEvent;
+use crate::util::file_store::{publish_diagnostics, send_refresh_all};
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_lock::{uri_lock, uri_unlock};
 use std::error::Error;
@@ -20,7 +21,13 @@ pub async fn change(
     }
 
     // parse will call uri_unlock
-    parse(uri).await
+    parse(uri).await?;
+
+    // Push diagnostics and tell VS Code to re-request all data.
+    publish_diagnostics(uri).await;
+    send_refresh_all().await;
+
+    Ok(())
 }
 
 fn _apply_changes(

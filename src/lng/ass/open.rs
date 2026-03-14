@@ -1,5 +1,6 @@
 use crate::lng::ass::parse::parse;
 use crate::lng::ass::uri_map::{PARSER_MAP, TREE_MAP};
+use crate::util::file_store::{publish_diagnostics, send_refresh_all};
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
 use crate::util::uri_lock::uri_lock;
@@ -30,6 +31,11 @@ pub async fn open(uri: &Url, text: impl AsRef<[u8]>) -> Result<(), Box<dyn Error
         TREE_MAP.insert(uri.clone(), new_tree);
     }
 
-    parse(uri).await
+    parse(uri).await?;
+
+    publish_diagnostics(uri).await;
+    send_refresh_all().await;
+
+    Ok(())
 }
 

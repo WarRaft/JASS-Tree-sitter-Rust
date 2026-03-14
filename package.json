@@ -130,13 +130,18 @@
     "commands": [
       {
         "command": "importGraph.show",
-        "title": "Show Import Graph",
+        "title": "%command.importGraph.show%",
         "icon": "$(type-hierarchy)"
       },
       {
         "command": "callGraph.show",
-        "title": "Show Call Graph",
+        "title": "%command.callGraph.show%",
         "icon": "$(call-outgoing)"
+      },
+      {
+        "command": "build.execute",
+        "title": "%command.build.execute%",
+        "icon": "$(play)"
       }
     ],
     "menus": {
@@ -148,6 +153,11 @@
         },
         {
           "command": "callGraph.show",
+          "when": "resourceLangId == jass || resourceLangId == angelscript",
+          "group": "navigation"
+        },
+        {
+          "command": "build.execute",
           "when": "resourceLangId == jass || resourceLangId == angelscript",
           "group": "navigation"
         }

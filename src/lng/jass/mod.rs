@@ -1,4 +1,5 @@
 pub(crate) mod ast;
+pub(crate) mod build;
 pub(crate) mod change;
 pub(crate) mod cursor;
 pub(crate) mod kind;

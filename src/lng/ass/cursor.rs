@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::lng::ass::ast::*;
 use crate::lng::ass::kind::Kind;
@@ -19,9 +19,13 @@ pub struct Cursor {
     pub symbols: Vec<DocumentSymbol>,
     pub folding: Vec<FoldingRange>,
     pub semantic: Hub,
+    /// Per-file settings parsed from `//set key value` directives.
+    pub file_settings: HashMap<String, String>,
 
     rope: Rope,
     id_roles: HashMap<usize, IdRole>,
+    /// Start-bytes of directive nodes (//import, //set) — skipped during CST DFS.
+    directive_nodes: HashSet<usize>,
     comment_start: Option<usize>,
     comment_end: usize,
 }
@@ -34,8 +38,10 @@ impl Cursor {
             symbols: Vec::new(),
             folding: Vec::new(),
             semantic: Hub::default(),
+            file_settings: HashMap::new(),
             rope: rope.clone(),
             id_roles: HashMap::new(),
+            directive_nodes: HashSet::new(),
             comment_start: None,
             comment_end: 0,
         };
@@ -87,6 +93,8 @@ impl Cursor {
             TopLevel::Function(n) => n.node,
             TopLevel::VarDecl(n) => n.node,
             TopLevel::Comment(n) => n.node,
+            TopLevel::ImportDir(n) => n.node,
+            TopLevel::SetDir(n) => n.node,
             TopLevel::Other(n) => *n,
         }
     }
@@ -155,6 +163,33 @@ impl Cursor {
     }
 
     fn visit_top_level(&mut self, item: &TopLevel) -> Option<DocumentSymbol> {
+        // Import directives — skip comment tracking, add dedicated semantic
+        if let TopLevel::ImportDir(imp) = item {
+            self.flush_comment_run();
+            self.directive_nodes.insert(imp.node.start_byte());
+            crate::lng::directive::visit_import_semantic(
+                imp,
+                &mut self.semantic,
+                &mut self.diagnostics,
+                &self.rope,
+            );
+            return None;
+        }
+
+        // SetDir directives — skip comment tracking, add dedicated semantic
+        if let TopLevel::SetDir(sd) = item {
+            self.flush_comment_run();
+            self.directive_nodes.insert(sd.node.start_byte());
+            crate::lng::directive::visit_set_semantic(
+                sd,
+                &mut self.semantic,
+                &mut self.diagnostics,
+                &mut self.file_settings,
+                &self.rope,
+            );
+            return None;
+        }
+
         // Comment run tracking
         if let TopLevel::Comment(c) = item {
             let row = c.node.start_position().row;
@@ -287,6 +322,8 @@ impl Cursor {
             TopLevel::Function(f) => self.visit_function(f),
             TopLevel::VarDecl(v) => self.visit_var_decl(v),
             TopLevel::Comment(_) => unreachable!("handled above"),
+            TopLevel::ImportDir(_) => unreachable!("handled above"),
+            TopLevel::SetDir(_) => unreachable!("handled above"),
             TopLevel::Other(_) => None,
         }
     }
@@ -494,6 +531,18 @@ impl Cursor {
             if visit {
                 let node = cursor.node();
                 let kind = Kind::try_from(node.kind_id()).ok();
+
+                // Directive comment nodes are handled in the AST pass —
+                // skip them entirely so they don't get re-coloured as Comment.
+                if (kind == Some(Kind::Comment) || kind == Some(Kind::BlockComment))
+                    && self.directive_nodes.contains(&node.start_byte())
+                {
+                    if cursor.goto_next_sibling() { continue; }
+                    while !cursor.goto_next_sibling() {
+                        if !cursor.goto_parent() { return; }
+                    }
+                    continue;
+                }
 
                 // String literal: mark entire node and skip children
                 if kind == Some(Kind::StringLiteral) {

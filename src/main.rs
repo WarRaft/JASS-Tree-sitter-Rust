@@ -12,14 +12,10 @@ use crate::lng::blp::send::send as blp_send;
 use crate::lsp::cancel::CancelCheck;
 use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::completion::send::send as completion_send;
-use crate::lsp::diagnostic::lsp::{DiagnosticOptions, DocumentDiagnosticReport};
-use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
+use crate::lsp::diagnostic::lsp::DiagnosticOptions;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
-use crate::lsp::document_link::uri_map::URI_MAP as LINK_URI_MAP;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
-use crate::lsp::document_symbol::uri_map::URI_MAP as SYMBOL_URI_MAP;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
-use crate::lsp::folding::uri_map::URI_MAP as FOLDING_URI_MAP;
 use crate::lsp::highlight::send::send as highlight_send;
 use crate::lsp::hover::send::send as hover_send;
 use crate::lsp::inlay_hint::send::send as inlay_hint_send;
@@ -39,6 +35,7 @@ use crate::lsp::semantic::lsp::{
 use crate::lsp::semantic::send::send as semantic_send;
 use crate::lsp::send::send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
+use crate::util::file_store::{diagnostic_report, FILE_STORE, LSP_WRITER};
 use crate::util::uri_lock::uri_wait;
 use crate::util::uri_map::LNG_URI_MAP;
 use log::{error, info};
@@ -51,6 +48,8 @@ async fn main() {
     let stdout = io::stdout();
     let mut reader = BufReader::new(stdin);
     let writer = Arc::new(Mutex::new(stdout));
+    // Set the global writer for background push notifications.
+    let _ = LSP_WRITER.set(writer.clone());
 
     loop {
         let msg = match read(&mut reader).await {
@@ -95,7 +94,7 @@ async fn main() {
                                         )),
                                     }),
                                     diagnostic_provider: Some(DiagnosticOptions {
-                                        inter_file_dependencies: false,
+                                        inter_file_dependencies: true,
                                         workspace_diagnostics: false,
                                         ..Default::default()
                                     }),
@@ -369,41 +368,12 @@ async fn main() {
                                         {
                                             error!("Failed to apply change: {}", err);
                                         }
-                                        // Notify client to re-request all data for open files
-                                        for method in [
-                                            "workspace/semanticTokens/refresh",
-                                            "workspace/diagnostics/refresh",
-                                            "workspace/inlayHint/refresh",
-                                        ] {
-                                            send(
-                                                &writer,
-                                                &json!({
-                                                    "jsonrpc": "2.0",
-                                                    "method": method
-                                                }),
-                                            )
-                                            .await;
-                                        }
                                     } else if lng.value() == "angelscript" {
                                         if let Err(err) =
                                             lng::ass::change::change(uri, params.content_changes)
                                                 .await
                                         {
                                             error!("Failed to apply change: {}", err);
-                                        }
-                                        for method in [
-                                            "workspace/semanticTokens/refresh",
-                                            "workspace/diagnostics/refresh",
-                                            "workspace/inlayHint/refresh",
-                                        ] {
-                                            send(
-                                                &writer,
-                                                &json!({
-                                                    "jsonrpc": "2.0",
-                                                    "method": method
-                                                }),
-                                            )
-                                            .await;
                                         }
                                     }
                                 }
@@ -438,27 +408,14 @@ async fn main() {
                                 let uri = &params.text_document.uri;
                                 uri_wait(uri).await;
 
-                                let default = DocumentDiagnosticReport::Full {
-                                    result_id: None,
-                                    items: vec![],
-                                    related_documents: None,
-                                };
-                                let result_ref;
-                                let result: &DocumentDiagnosticReport;
-
-                                if let Some(entry) = DIAGNOSTIC_URI_MAP.get(uri) {
-                                    result_ref = entry;
-                                    result = result_ref.value();
-                                } else {
-                                    result = &default;
-                                }
+                                let result = diagnostic_report(uri);
 
                                 send(
                                     &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
-                                        result: Some(result),
+                                        result: Some(&result),
                                         error: None,
                                     },
                                 )
@@ -473,14 +430,9 @@ async fn main() {
                                 let uri = &params.text_document.uri;
                                 uri_wait(uri).await;
 
-                                let result_ref;
-                                let result: Option<&_> =
-                                    if let Some(entry) = SYMBOL_URI_MAP.get(uri) {
-                                        result_ref = entry; // держим Ref живым
-                                        Some(result_ref.value()) // возвращаем ссылку, живущую столько же
-                                    } else {
-                                        None
-                                    };
+                                let snapshot = FILE_STORE.get(uri);
+                                let result: Option<&Vec<_>> =
+                                    snapshot.as_ref().map(|s| &s.value().symbols);
 
                                 send(
                                     &writer,
@@ -501,14 +453,12 @@ async fn main() {
                                 let uri = &params.text_document.uri;
                                 uri_wait(uri).await;
 
-                                let result_ref;
-                                let result = match FOLDING_URI_MAP.get(uri) {
-                                    Some(r) => {
-                                        result_ref = r;
-                                        result_ref.value()
-                                    }
-                                    None => &[].into(),
-                                };
+                                let snapshot = FILE_STORE.get(uri);
+                                let empty_vec = vec![];
+                                let result: &Vec<_> = snapshot
+                                    .as_ref()
+                                    .map(|s| &s.value().folding)
+                                    .unwrap_or(&empty_vec);
 
                                 send(
                                     &writer,
@@ -557,15 +507,13 @@ async fn main() {
                                 let result = {
                                     use crate::lsp::ref_map::REF_URI_MAP;
                                     let mut locs = Vec::new();
-                                    if let Some(ref_entry) = REF_URI_MAP.get(uri) {
+                                    if let Some(snapshot) = FILE_STORE.get(uri) {
                                         if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
                                             if let Some(byte) = params.position.to_byte_offset(rope_entry.value()) {
-                                                // Check if this is an external (imported) symbol first.
-                                                if let Some(ext) = ref_entry.value().external_at(byte) {
-                                                    // Jump to the declaration in the imported file.
+                                                let ref_map = &snapshot.ref_map;
+                                                if let Some(ext) = ref_map.external_at(byte) {
                                                     if let Some(ext_ref_entry) = REF_URI_MAP.get(&ext.uri) {
                                                         let ext_ref_map = ext_ref_entry.value();
-                                                        // Find the declaration of this symbol name.
                                                         for group in ext_ref_map.groups.values() {
                                                             if group.name == ext.name {
                                                                 for occ in &group.occurrences {
@@ -580,8 +528,7 @@ async fn main() {
                                                         }
                                                     }
                                                 } else {
-                                                    // Local definitions.
-                                                    for def in ref_entry.value().definitions_at(byte) {
+                                                    for def in ref_map.definitions_at(byte) {
                                                         locs.push(crate::lsp::location::Location {
                                                             uri: uri.to_string(),
                                                             range: def.range.clone(),
@@ -614,13 +561,12 @@ async fn main() {
                                 uri_wait(uri).await;
 
                                 let result = {
-                                    use crate::lsp::ref_map::REF_URI_MAP;
                                     let mut locs = Vec::new();
-                                    if let Some(ref_entry) = REF_URI_MAP.get(uri) {
+                                    if let Some(snapshot) = FILE_STORE.get(uri) {
                                         if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
                                             if let Some(byte) = params.position.to_byte_offset(rope_entry.value()) {
                                                 let include_decl = params.context.include_declaration;
-                                                for occ in ref_entry.value().occurrences_at(byte) {
+                                                for occ in snapshot.ref_map.occurrences_at(byte) {
                                                     if !include_decl && occ.is_decl {
                                                         continue;
                                                     }
@@ -663,15 +609,13 @@ async fn main() {
                                 let uri = &params.text_document.uri;
                                 uri_wait(uri).await;
 
-                                let result_ref;
+                                let snapshot = FILE_STORE.get(uri);
+                                let empty_vec = vec![];
                                 let result: &Vec<crate::lsp::document_link::lsp::DocumentLink> =
-                                    match LINK_URI_MAP.get(uri) {
-                                        Some(r) => {
-                                            result_ref = r;
-                                            result_ref.value()
-                                        }
-                                        None => &vec![],
-                                    };
+                                    snapshot
+                                        .as_ref()
+                                        .map(|s| &s.value().links)
+                                        .unwrap_or(&empty_vec);
 
                                 send(
                                     &writer,
@@ -784,6 +728,48 @@ async fn main() {
                                 .await;
                             }
 
+                            MethodCall::BuildExecute(params) => {
+                                let uri = &params.uri;
+
+                                // Try both build targets; search the entire
+                                // import tree, preferring JASS.
+                                let has_jass =
+                                    crate::lng::jass::build::has_build_setting(uri, "build-jass");
+                                let has_as =
+                                    crate::lng::jass::build::has_build_setting(uri, "build-as");
+
+                                let result = if has_jass && has_as {
+                                    let r1 = crate::lng::jass::build::build_jass(uri);
+                                    let r2 = crate::lng::jass::build::build_as(uri);
+                                    if r1.ok && r2.ok {
+                                        crate::lng::jass::build::BuildResult {
+                                            ok: true,
+                                            path: format!("{}, {}", r1.path, r2.path),
+                                            message: format!("JASS: {} | AS: {}", r1.message, r2.message),
+                                        }
+                                    } else if !r1.ok {
+                                        r1
+                                    } else {
+                                        r2
+                                    }
+                                } else if has_as {
+                                    crate::lng::jass::build::build_as(uri)
+                                } else {
+                                    crate::lng::jass::build::build_jass(uri)
+                                };
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(json!(result)),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
                             _ => {
                                 error!("Unexpected method call: {:?}", other);
                             }
@@ -812,6 +798,9 @@ async fn main() {
                     }
                 }
             }
+
+            // Responses to server-initiated requests (refresh, etc.) — ignore.
+            LspMessage::ClientResponse(_) => {}
         }
     }
 

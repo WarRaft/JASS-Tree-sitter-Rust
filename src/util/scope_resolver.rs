@@ -275,6 +275,7 @@ impl ScopeResolver {
     /// Returns `true` if:
     /// - `uri` is not in the index, or
     /// - the stored hash differs from `current_hash`.
+    #[allow(dead_code)]
     pub fn is_stale(&self, uri: &Url, current_hash: &[u8; 32]) -> bool {
         let inner = self.inner.read().unwrap();
         match inner.hashes.get(uri) {
@@ -290,6 +291,7 @@ impl ScopeResolver {
     /// fingerprint, so the caller can skip cascade re-parses.
     ///
     /// Returns `None` if `uri` is unknown.
+    #[allow(dead_code)]
     pub fn export_fingerprint(&self, uri: &Url) -> Option<u64> {
         use std::hash::{Hash, Hasher};
         let inner = self.inner.read().unwrap();

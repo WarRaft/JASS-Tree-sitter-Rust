@@ -25,6 +25,18 @@ use serde_json::Value;
 pub enum LspMessage {
     Call(LspCall),
     RequestMessage(RequestMessage),
+    /// Response from the client to a server-initiated request
+    /// (e.g. `workspace/semanticTokens/refresh`).  Silently consumed.
+    ClientResponse(ClientResponse),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClientResponse {
+    pub id: Value,
+    #[serde(default)]
+    pub result: Option<Value>,
+    #[serde(default)]
+    pub error: Option<Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,6 +132,9 @@ pub enum MethodCall {
 
     #[serde(rename = "callGraph/subgraph")]
     CallGraphSubgraph(TextDocumentIdentifier),
+
+    #[serde(rename = "build/execute")]
+    BuildExecute(TextDocumentIdentifier),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

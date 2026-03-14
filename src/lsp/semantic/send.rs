@@ -3,6 +3,7 @@ use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::range::Range;
 use crate::lsp::semantic::lsp::SemanticTokens;
 use crate::lsp::send::send as lsp_send;
+use crate::util::file_store::FILE_STORE;
 use std::sync::Arc;
 use tokio::io::Stdout;
 use tokio::sync::Mutex;
@@ -14,10 +15,17 @@ pub async fn send(
     uri: &Url,
     range: Option<Range>,
 ) {
-    let data = crate::lsp::semantic::uri_map::URI_MAP
-        .get(uri)
-        .map(|semantic| semantic.value().data(range))
-        .unwrap_or_default();
+    // FILE_STORE is used by both JASS and AS.
+    // BNI still uses legacy SEMANTIC_URI_MAP — fall back if needed.
+    let data = if let Some(snap) = FILE_STORE.get(uri) {
+        snap.value().semantic.data(range)
+    } else {
+        use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
+        SEMANTIC_URI_MAP
+            .get(uri)
+            .map(|hub| hub.value().data(range))
+            .unwrap_or_default()
+    };
 
     let _ = lsp_send(
         writer,

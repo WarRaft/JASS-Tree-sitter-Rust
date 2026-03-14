@@ -96,6 +96,9 @@ pub struct FileSymbols {
     pub frozen_imports: HashSet<Url>,
     /// Per-file settings parsed from `//set key value` directives.
     pub file_settings: HashMap<String, String>,
+    /// Function names called from bare top-level statements (outside any
+    /// function body).  These are effectively callees of the implicit `main`.
+    pub bare_callees: HashSet<String>,
 }
 
 impl FileSymbols {

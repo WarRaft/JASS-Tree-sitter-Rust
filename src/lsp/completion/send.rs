@@ -100,6 +100,20 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                         insert_text: Some("ref-tip 1".into()),
                         sort_text: Some("0".into()),
                     },
+                    CompletionItem {
+                        label: "build-jass".into(),
+                        kind: Some(CompletionItemKind::Property),
+                        detail: Some("Output path for the JASS build".into()),
+                        insert_text: Some("build-jass ./".into()),
+                        sort_text: Some("1".into()),
+                    },
+                    CompletionItem {
+                        label: "build-as".into(),
+                        kind: Some(CompletionItemKind::Property),
+                        detail: Some("Output path for the AngelScript build".into()),
+                        insert_text: Some("build-as ./".into()),
+                        sort_text: Some("2".into()),
+                    },
                 ];
             }
             return vec![];

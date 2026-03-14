@@ -425,6 +425,9 @@ pub enum Expr<'tree> {
     Other(Node<'tree>),
 }
 
+// Re-export shared directive types for convenience.
+pub use crate::lng::directive::{ImportDirective, SetDirective};
+
 /// Top-level statement (script level or inside namespace).
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -441,6 +444,10 @@ pub enum TopLevel<'tree> {
     Function(FunctionDecl<'tree>),
     VarDecl(VarDeclStmt<'tree>),
     Comment(Comment<'tree>),
+    /// `//import` / `//import!` directive (shared with JASS).
+    ImportDir(ImportDirective<'tree>),
+    /// `//set key value` directive (shared with JASS).
+    SetDir(SetDirective<'tree>),
     Other(Node<'tree>),
 }
 
@@ -454,10 +461,48 @@ pub struct Ast<'tree> {
 // ─── Building the AST from CST ──────────────────────────────────────────────
 
 /// Build the AST from a tree-sitter CST root node.
+///
+/// Root-level `//import` / `//import!` / `//set` comments are **not** rewritten
+/// here — call [`rewrite_directives`] afterwards with the source bytes.
 pub fn build_ast(root: Node) -> Ast {
     let mut errors = Vec::new();
     let items = build_top_level_children(&root, &mut errors);
     Ast { items, errors }
+}
+
+/// Rewrite leading root-level comments into `TopLevel::ImportDir` or
+/// `TopLevel::SetDir` when they match the `//import` / `//import!` /
+/// `//set` patterns.
+///
+/// Only comments **before the first non-comment statement** are considered.
+///
+/// `src` — full file source (UTF-8 bytes).
+pub fn rewrite_directives(ast: &mut Ast, src: &[u8]) {
+    use crate::lng::directive::{try_parse_directive, Directive};
+
+    let mut i = 0;
+    while i < ast.items.len() {
+        match &ast.items[i] {
+            TopLevel::Comment(_) => {}
+            TopLevel::ImportDir(_) | TopLevel::SetDir(_) => {
+                i += 1;
+                continue;
+            }
+            _ => break,
+        }
+
+        if let TopLevel::Comment(c) = &ast.items[i] {
+            if let Some(dir) = try_parse_directive(&c.node, src) {
+                ast.items[i] = match dir {
+                    Directive::Import(imp) => TopLevel::ImportDir(imp),
+                    Directive::Set(sd) => TopLevel::SetDir(sd),
+                };
+                i += 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
 }
 
 fn collect_errors<'tree>(node: &Node<'tree>, errors: &mut Vec<CstError<'tree>>) {

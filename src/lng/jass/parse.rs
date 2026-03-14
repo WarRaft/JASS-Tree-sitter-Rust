@@ -2,25 +2,25 @@ use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
 use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::lng::jass::symbol::FILE_SYMBOLS;
 use crate::lng::jass::uri_map::TREE_MAP;
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity, DocumentDiagnosticReport};
-use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
+use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_link::lsp::DocumentLink;
-use crate::lsp::document_link::uri_map::URI_MAP as LINK_URI_MAP;
-use crate::lsp::document_symbol::uri_map::URI_MAP as SYMBOL_URI_MAP;
-use crate::lsp::folding::uri_map::URI_MAP as FOLDING_URI_MAP;
 use crate::lsp::position::Position;
 use crate::lsp::ref_map::{build_ref_map, RefMap, REF_URI_MAP};
 use crate::lsp::range::Range;
-use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
+use crate::util::file_store::{
+    exports_changed, new_cancel_token, ParseSnapshot, FILE_STORE,
+};
 use crate::util::import_graph::{resolve_import, IMPORT_GRAPH};
 use crate::util::ref_cache;
 use crate::util::scope_resolver::{GlobalEntry, SymbolNS, SCOPE_RESOLVER};
 use crate::util::symbol_cache;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::uri_lock::uri_unlock;
+use crate::util::uri_lock::{uri_lock, uri_unlock};
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
 use std::error::Error;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 // ─── Main parse entry point ─────────────────────────────────────────────────
@@ -37,22 +37,17 @@ fn find_decl_key_by_name(ref_map: &RefMap, name: &str) -> Option<usize> {
 
 /// Ensure that `FILE_SYMBOLS` and `SCOPE_RESOLVER` have entries for `dep_uri`.
 ///
-/// Resolution order:
-/// 1. Already in memory (`SCOPE_RESOLVER` knows the URI) → done.
-/// 2. Disk cache (`symbol_cache`) → load into memory + populate resolver.
-/// 3. Parse the file from disk (lightweight — no imported symbols, just local
-///    declarations).  Result is cached for future use.
+/// **Must NOT be called for the file currently being parsed** — the caller
+/// must exclude `current_uri` from the loop to avoid clobbering in-flight data.
 fn ensure_file_symbols(dep_uri: &Url) {
-    // 1. Already known to the resolver → skip (FILE_SYMBOLS populated below).
-    if !SCOPE_RESOLVER.is_stale(dep_uri, &[0u8; 32]) && FILE_SYMBOLS.contains_key(dep_uri) {
+    // Already in memory — no need to reload.
+    if FILE_SYMBOLS.contains_key(dep_uri) {
         return;
     }
 
     // 2. Disk cache
     if let Some((_meta, symbols)) = symbol_cache::load(dep_uri) {
         let entries = file_symbols_to_entries(dep_uri, &symbols);
-        // Use a zero hash here — the real hash will be set when the file is
-        // fully parsed (or from symbol_cache metadata).
         let rope_hash = compute_hash_for_uri(dep_uri);
         SCOPE_RESOLVER.update_file(dep_uri, rope_hash, entries);
         FILE_SYMBOLS.insert(dep_uri.clone(), symbols);
@@ -81,14 +76,11 @@ fn ensure_file_symbols(dep_uri: &Url) {
     };
     let rope = Rope::from(content.as_str());
     let ast = build_ast(tree.root_node());
-    // Lightweight walk — no imports, just collect local declarations.
     let cursor = Cursor::walk(&ast, &rope, &[]);
     let file_symbols = cursor.file_symbols;
-    // Persist to disk cache for next startup.
     if let Some(meta) = symbol_cache::FileMeta::from_uri(dep_uri) {
         symbol_cache::store(dep_uri, meta, &file_symbols);
     }
-    // Populate scope resolver
     let entries = file_symbols_to_entries(dep_uri, &file_symbols);
     let hash = ref_cache::content_hash(&rope);
     SCOPE_RESOLVER.update_file(dep_uri, hash, entries);
@@ -178,12 +170,13 @@ fn file_symbols_to_entries(
 /// Returns the list of **open** files that directly import `uri` and should be
 /// re-parsed to pick up the new symbols.
 pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
-    let result = _parse(uri);
+    let token = new_cancel_token(uri);
+    let result = _parse(uri, &token);
     uri_unlock(uri);
     result
 }
 
-fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+fn _parse(uri: &Url, cancel: &CancellationToken) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     let rope_entry = ROPE_MAP.get(&uri.clone()).ok_or("no rope")?;
     let rope = rope_entry.value();
 
@@ -192,6 +185,9 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
 
     // 1. Build AST from CST
     let mut ast = build_ast(root);
+
+    // ── Cancellation checkpoint ──
+    if cancel.is_cancelled() { return Ok(vec![]); }
 
     // 2. Rewrite leading `//import` / `//import!` comments into Import nodes
     let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
@@ -242,14 +238,12 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
                     }
 
                     if resolved.exists {
-                        // Clickable link → opens the file
                         links.push(DocumentLink {
                             range: path_range,
                             target: Some(resolved.url.to_string()),
                             tooltip: Some(resolved.url.to_string()),
                         });
                     } else {
-                        // File does not exist → diagnostic error
                         import_diagnostics.push(Diagnostic {
                             range: path_range,
                             message: format!("File not found: {}", imp.path),
@@ -269,6 +263,10 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
             }
         }
     }
+
+    // ── Cancellation checkpoint ──
+    if cancel.is_cancelled() { return Ok(vec![]); }
+
     // Capture the old connected component BEFORE updating the graph,
     // so we can detect peers that lost visibility after import removal.
     let old_component = IMPORT_GRAPH.connected_component(uri);
@@ -276,23 +274,27 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     IMPORT_GRAPH.update(uri, imports.clone());
 
     // 4. Gather symbols from the **entire connected component** (unified scope).
-    //    All files connected via imports — in either direction — share one
-    //    global namespace, so a file sees symbols from every peer, not just
-    //    its direct imports.
     let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
     let component: HashSet<Url>;
     {
         component = IMPORT_GRAPH.connected_component(uri);
 
-        // Ensure every peer is in the scope resolver.
+        // Ensure every PEER is in the scope resolver.
+        // Skip `uri` itself to avoid clobbering current-file data with stale cache.
         for peer_uri in &component {
-            ensure_file_symbols(peer_uri);
+            if peer_uri != uri {
+                ensure_file_symbols(peer_uri);
+            }
         }
 
         // O(1)-per-name: get all symbols from the connected component.
         let visible_entries = SCOPE_RESOLVER.all_visible(&component);
 
         for entry in &visible_entries {
+            // Skip entries from the file being parsed — cursor builds them locally.
+            if &entry.uri == uri {
+                continue;
+            }
             let origin_ref_map = REF_URI_MAP.get(&entry.uri);
             let origin_decl_key = origin_ref_map
                 .as_ref()
@@ -310,35 +312,28 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
         }
     }
 
+    // ── Cancellation checkpoint ──
+    if cancel.is_cancelled() { return Ok(vec![]); }
+
     // 5. Single-pass cursor: diagnostics + symbols + folding + id_roles + scopes
     let mut cursor = Cursor::walk(&ast, rope, &imported_symbols);
     cursor.file_symbols.frozen_imports = frozen_imports;
     cursor.file_symbols.file_settings = cursor.file_settings.clone();
+    cursor.file_symbols.bare_callees = cursor.bare_callees.clone();
 
     // 6. Merge import diagnostics with cursor diagnostics
     let mut all_diagnostics = cursor.diagnostics;
     all_diagnostics.extend(import_diagnostics);
 
-    // 7. Store results (diagnostic report deferred until step 8)
-    FOLDING_URI_MAP.insert(uri.clone(), cursor.folding);
-    SYMBOL_URI_MAP.insert(uri.clone(), cursor.symbols);
-    SEMANTIC_URI_MAP.insert(uri.clone(), cursor.semantic);
-    LINK_URI_MAP.insert(uri.clone(), links);
-    FILE_SYMBOLS.insert(uri.clone(), cursor.file_symbols);
-    // Persist FileSymbols to disk cache.
-    if let Some(meta) = symbol_cache::FileMeta::from_uri(uri) {
-        symbol_cache::store(uri, meta, &FILE_SYMBOLS.get(uri).unwrap().value().clone());
-    }
+    // 7. Build ref_map + persist to disk cache.
     let func_decl_keys = cursor.func_decl_keys;
     let ref_map = build_ref_map(cursor.ref_groups, cursor.ref_names, cursor.external_decls, rope);
-    // Persist to disk cache for fast reload on restart.
     let hash = ref_cache::content_hash(rope);
     ref_cache::store(uri, &hash, &ref_map);
 
     // 8. Call-graph diagnostics: unused functions & cyclic calls.
-    //    Must run after FILE_SYMBOLS is stored for the current file.
-    //    Only target ref_map groups whose DeclKey belongs to a function
-    //    declaration (not a same-named variable).
+    //    We need FILE_SYMBOLS populated for the current file, so write it first.
+    FILE_SYMBOLS.insert(uri.clone(), cursor.file_symbols.clone());
     {
         use crate::util::call_graph::diagnose_functions;
 
@@ -373,32 +368,52 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
         }
     }
 
-    // 9. Store diagnostics and ref_map.
-    DIAGNOSTIC_URI_MAP.insert(uri.clone(), DocumentDiagnosticReport::Full {
-        result_id: None,
-        items: all_diagnostics,
-        related_documents: None,
-    });
-    REF_URI_MAP.insert(uri.clone(), ref_map);
+    // ── FINAL cancellation check — don't store stale results ──
+    if cancel.is_cancelled() { return Ok(vec![]); }
 
-    // Update scope resolver — compare fingerprints to detect export changes.
-    let old_fp = SCOPE_RESOLVER.export_fingerprint(uri);
+    // 9. Build snapshot and store atomically.
+    let old_snapshot = FILE_STORE.get(uri).map(|e| Arc::clone(e.value()));
+
+    let new_snapshot = Arc::new(ParseSnapshot {
+        folding: cursor.folding,
+        symbols: cursor.symbols,
+        semantic: cursor.semantic,
+        diagnostics: all_diagnostics,
+        links,
+        ref_map,
+        file_symbols: cursor.file_symbols,
+        func_decl_keys,
+    });
+
+    // Persist to disk cache.
+    if let Some(meta) = symbol_cache::FileMeta::from_uri(uri) {
+        symbol_cache::store(uri, meta, &new_snapshot.file_symbols);
+    }
+
+    // Keep FILE_SYMBOLS / REF_URI_MAP in sync for cross-file consumers.
+    FILE_SYMBOLS.insert(uri.clone(), new_snapshot.file_symbols.clone());
+    REF_URI_MAP.insert(uri.clone(), RefMap {
+        groups: new_snapshot.ref_map.groups.clone(),
+        spans: new_snapshot.ref_map.spans.clone(),
+        external_decls: new_snapshot.ref_map.external_decls.clone(),
+    });
+
+    // ── Atomic store ──
+    FILE_STORE.insert(uri.clone(), new_snapshot.clone());
+
+    // 10. Export diff — decide on cascade.
+    let did_change = exports_changed(old_snapshot.as_deref(), &new_snapshot);
     {
-        let fs = FILE_SYMBOLS.get(uri).unwrap();
-        let entries = file_symbols_to_entries(uri, fs.value());
+        let entries = file_symbols_to_entries(uri, &new_snapshot.file_symbols);
         SCOPE_RESOLVER.update_file(uri, hash, entries);
     }
-    let new_fp = SCOPE_RESOLVER.export_fingerprint(uri);
 
-    // If exported symbols changed OR the connected component changed
-    // (imports were added/removed), return the union of old and new peers
-    // that are currently open so the caller can cascade re-parse them.
-    let cascade = if old_fp != new_fp || old_component != component {
+    let cascade = if did_change || old_component != component {
         let mut all_affected = old_component;
         all_affected.extend(component.into_iter());
         all_affected
             .into_iter()
-            .filter(|peer| peer != uri && ROPE_MAP.contains_key(peer))
+            .filter(|peer| peer != uri)
             .collect()
     } else {
         vec![]
@@ -406,3 +421,39 @@ fn _parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
 
     Ok(cascade)
 }
+
+/// Parse a **closed** file from disk, produce a full [`ParseSnapshot`], and
+/// store it in [`FILE_STORE`].  Call [`publish_diagnostics`] afterwards to push
+/// the result to the client.
+///
+/// Temporarily inserts the rope/tree into the global maps so that the existing
+/// `_parse` pipeline can be reused.  The entries are removed immediately after
+/// parsing — the file is not considered "open".
+pub async fn parse_from_disk(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let path = uri.to_file_path().map_err(|_| "invalid file path")?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&path)?;
+    let rope = Rope::from(content.as_str());
+
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&tree_sitter_jass::language().into())?;
+    let tree = parser.parse(&content, None).ok_or("parse failed")?;
+
+    // Temporarily insert into maps so _parse can find them.
+    ROPE_MAP.insert(uri.clone(), rope);
+    TREE_MAP.insert(uri.clone(), tree);
+
+    uri_lock(uri).await;
+    let token = new_cancel_token(uri);
+    let result = _parse(uri, &token);
+    uri_unlock(uri);
+
+    // Clean up — file is not open in the editor.
+    ROPE_MAP.remove(uri);
+    TREE_MAP.remove(uri);
+
+    result.map(|_| ())
+}
+

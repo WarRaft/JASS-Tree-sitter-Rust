@@ -112,6 +112,8 @@ pub struct Cursor {
     /// Callee names collected while visiting the current function body.
     /// `None` when outside a function.
     current_callees: Option<HashSet<String>>,
+    /// Callee names from bare top-level statements (outside any function).
+    pub bare_callees: HashSet<String>,
     /// Name resolution stack for variables and functions (separate namespaces).
     /// Last entry = innermost scope.
     hl_scopes: Vec<HlScope>,
@@ -161,6 +163,7 @@ impl Cursor {
             comment_end: 0,
             decl_counter: 0,
             current_callees: None,
+            bare_callees: HashSet::new(),
             hl_scopes: vec![HlScope::default()], // global scope
             unresolved_refs: Vec::new(),
         };
@@ -407,10 +410,13 @@ impl Cursor {
             .collect()
     }
 
-    /// Record a callee name if we're currently inside a function body.
+    /// Record a callee name.  If we're inside a function body it goes into
+    /// `current_callees`; otherwise it's a bare top-level call → `bare_callees`.
     fn record_callee(&mut self, name: &str) {
         if let Some(ref mut callees) = self.current_callees {
             callees.insert(name.to_string());
+        } else {
+            self.bare_callees.insert(name.to_string());
         }
     }
 
@@ -608,57 +614,13 @@ impl Cursor {
         // Import directives — skip comment tracking, add dedicated semantic
         if let Statement::Import(imp) = stmt {
             self.flush_comment_run();
-            // Mark the whole node so the CST DFS won't re-colour it as a
-            // plain comment.  We split semantic into:
-            //   - "//import" or "//import!" → Macro token
-            //   - path                      → String token
             self.directive_nodes.insert(imp.node.start_byte());
-
-            let node = &imp.node;
-            let prefix_len = if imp.frozen {
-                "//import!".len()
-            } else {
-                "//import".len()
-            };
-
-            // Macro token for the "//import" / "//import!" prefix
-            let start_byte = node.start_byte();
-            self.semantic.add_range(
-                start_byte,
-                prefix_len,
+            crate::lng::directive::visit_import_semantic(
+                imp,
+                &mut self.semantic,
+                &mut self.diagnostics,
                 &self.rope,
-                TokenKind::Macro,
-                0u32,
             );
-
-            if imp.path.is_empty() {
-                // Missing path → diagnostic error
-                self.diagnostics.push(Diagnostic {
-                    range: node.to_range(&self.rope),
-                    message: "Missing import path".into(),
-                    severity: Some(DiagnosticSeverity::Error),
-                    ..Default::default()
-                });
-            } else {
-                // String token for the path (skip whitespace between prefix and path)
-                let full_text_bytes = node.end_byte() - node.start_byte();
-                if full_text_bytes > prefix_len {
-                    let path_offset = start_byte + prefix_len;
-                    let path_len = full_text_bytes - prefix_len;
-                    let raw = &self.rope.slice_to_cow(path_offset..path_offset + path_len);
-                    let trimmed = raw.trim_start();
-                    let ws_len = raw.len() - trimmed.len();
-                    if !trimmed.is_empty() {
-                        self.semantic.add_range(
-                            path_offset + ws_len,
-                            trimmed.len(),
-                            &self.rope,
-                            TokenKind::String,
-                            0u32,
-                        );
-                    }
-                }
-            }
             return None;
         }
 
@@ -666,77 +628,13 @@ impl Cursor {
         if let Statement::SetDir(sd) = stmt {
             self.flush_comment_run();
             self.directive_nodes.insert(sd.node.start_byte());
-
-            let node = &sd.node;
-            let prefix_len = "//set".len();
-            let start_byte = node.start_byte();
-
-            // Macro token for the "//set" prefix
-            self.semantic.add_range(
-                start_byte,
-                prefix_len,
+            crate::lng::directive::visit_set_semantic(
+                sd,
+                &mut self.semantic,
+                &mut self.diagnostics,
+                &mut self.file_settings,
                 &self.rope,
-                TokenKind::Macro,
-                0u32,
             );
-
-            let full_text_bytes = node.end_byte() - node.start_byte();
-            if full_text_bytes > prefix_len {
-                let after_prefix_offset = start_byte + prefix_len;
-                let after_prefix_len = full_text_bytes - prefix_len;
-                let raw = self.rope.slice_to_cow(after_prefix_offset..after_prefix_offset + after_prefix_len).to_string();
-                let trimmed = raw.trim_start();
-                let ws_before_key = raw.len() - trimmed.len();
-
-                if !trimmed.is_empty() {
-                    // Key: Property token
-                    let key_len = trimmed.find(|c: char| c == ' ' || c == '\t')
-                        .unwrap_or(trimmed.len());
-                    let key_offset = after_prefix_offset + ws_before_key;
-                    self.semantic.add_range(
-                        key_offset,
-                        key_len,
-                        &self.rope,
-                        TokenKind::Property,
-                        0u32,
-                    );
-
-                    // Value: String token (if present)
-                    if key_len < trimmed.len() {
-                        let after_key = &trimmed[key_len..];
-                        let value_part = after_key.trim_start();
-                        let ws_before_value = after_key.len() - value_part.len();
-                        if !value_part.is_empty() {
-                            let val_offset = key_offset + key_len + ws_before_value;
-                            self.semantic.add_range(
-                                val_offset,
-                                value_part.len(),
-                                &self.rope,
-                                TokenKind::String,
-                                0u32,
-                            );
-                        }
-                    }
-                }
-            }
-
-            if sd.key.is_empty() {
-                self.diagnostics.push(Diagnostic {
-                    range: node.to_range(&self.rope),
-                    message: "Missing setting key".into(),
-                    severity: Some(DiagnosticSeverity::Error),
-                    ..Default::default()
-                });
-            } else if sd.value.is_empty() {
-                self.diagnostics.push(Diagnostic {
-                    range: node.to_range(&self.rope),
-                    message: format!("Missing value for setting `{}`", sd.key),
-                    severity: Some(DiagnosticSeverity::Warning),
-                    ..Default::default()
-                });
-            } else {
-                self.file_settings.insert(sd.key.clone(), sd.value.clone());
-            }
 
             return None;
         }

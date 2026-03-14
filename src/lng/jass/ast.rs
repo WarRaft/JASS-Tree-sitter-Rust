@@ -178,45 +178,8 @@ pub struct Comment<'tree> {
     pub node: Node<'tree>,
 }
 
-/// `//import path/to/file` or `//import! path/to/file`
-///
-/// Recognized only at the root level, before the first language statement.
-/// The `//import` prefix must start at column 0 with no space after `//`.
-///
-/// `//import!` marks the target as **frozen** — a read-only file that we
-/// cannot modify; we only pull declarations from it.
-#[derive(Debug, Clone)]
-pub struct ImportDirective<'tree> {
-    /// The original comment CST node.
-    pub node: Node<'tree>,
-    /// `true` when the directive is `//import!` — the imported file is
-    /// **frozen** (read-only): we only pull declarations from it without
-    /// allowing edits.
-    pub frozen: bool,
-    /// The raw relative path string (everything after `//import ` or `//import! `).
-    pub path: String,
-}
-
-/// `//set <key> <value>` — file-local configuration directive.
-///
-/// Recognized only at the root level, before the first language statement
-/// (alongside `//import` directives).  The `//set` prefix must start at
-/// column 0 with no space after `//`.
-///
-/// ## Recognized keys
-///
-/// | Key | Values | Description |
-/// |-----|--------|-------------|
-/// | `ref-tip` | `1` / `0` | Show / hide reference ID inlay hints |
-#[derive(Debug, Clone)]
-pub struct SetDirective<'tree> {
-    /// The original comment CST node.
-    pub node: Node<'tree>,
-    /// The setting key (e.g. `ref-tip`).
-    pub key: String,
-    /// The raw value string (everything after the key until end-of-line, trimmed).
-    pub value: String,
-}
+// Re-export shared directive types for convenience.
+pub use crate::lng::directive::{ImportDirective, SetDirective};
 
 // ─── Expressions ─────────────────────────────────────────────────────────────
 
@@ -312,6 +275,8 @@ pub fn build_ast<'tree>(root: Node<'tree>) -> Ast<'tree> {
 ///
 /// `src` — full file source (UTF-8 bytes).
 pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
+    use crate::lng::directive::{try_parse_directive, Directive};
+
     let mut i = 0;
     while i < ast.items.len() {
         // Stop at first non-comment, non-directive item.
@@ -325,57 +290,13 @@ pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
         }
 
         if let Statement::Comment(c) = &ast.items[i] {
-            if c.node.start_position().column == 0 {
-                let text = &src[c.node.start_byte()..c.node.end_byte()];
-                let text = std::str::from_utf8(text).unwrap_or("");
-
-                // ── //import! ────────────────────────────────────────
-                if let Some(rest) = text.strip_prefix("//import!") {
-                    let path = rest.trim().to_string();
-                    let node = c.node;
-                    ast.items[i] = Statement::Import(ImportDirective {
-                        node,
-                        frozen: true,
-                        path,
-                    });
-                    i += 1;
-                    continue;
-                }
-                // ── //import ─────────────────────────────────────────
-                if let Some(rest) = text.strip_prefix("//import") {
-                    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
-                        let path = rest.trim().to_string();
-                        let node = c.node;
-                        ast.items[i] = Statement::Import(ImportDirective {
-                            node,
-                            frozen: false,
-                            path,
-                        });
-                        i += 1;
-                        continue;
-                    }
-                }
-                // ── //set ────────────────────────────────────────────
-                if let Some(rest) = text.strip_prefix("//set") {
-                    if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
-                        let trimmed = rest.trim();
-                        let (key, value) = match trimmed.find(|c: char| c == ' ' || c == '\t') {
-                            Some(pos) => (
-                                trimmed[..pos].to_string(),
-                                trimmed[pos..].trim().to_string(),
-                            ),
-                            None => (trimmed.to_string(), String::new()),
-                        };
-                        let node = c.node;
-                        ast.items[i] = Statement::SetDir(SetDirective {
-                            node,
-                            key,
-                            value,
-                        });
-                        i += 1;
-                        continue;
-                    }
-                }
+            if let Some(dir) = try_parse_directive(&c.node, src) {
+                ast.items[i] = match dir {
+                    Directive::Import(imp) => Statement::Import(imp),
+                    Directive::Set(sd) => Statement::SetDir(sd),
+                };
+                i += 1;
+                continue;
             }
         }
         i += 1;

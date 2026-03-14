@@ -1,19 +1,20 @@
-use crate::lng::ass::ast::{build_ast, TopLevel};
+use crate::lng::ass::ast::{build_ast, rewrite_directives, TopLevel};
 use crate::lng::ass::cursor::Cursor;
 use crate::lng::ass::uri_map::TREE_MAP;
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity, DocumentDiagnosticReport};
-use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
+use crate::lng::jass::symbol::FileSymbols;
+use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_link::lsp::DocumentLink;
-use crate::lsp::document_link::uri_map::URI_MAP as LINK_URI_MAP;
-use crate::lsp::document_symbol::uri_map::URI_MAP as SYMBOL_URI_MAP;
-use crate::lsp::folding::uri_map::URI_MAP as FOLDING_URI_MAP;
-use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
+use crate::lsp::position::Position;
+use crate::lsp::range::Range;
+use crate::lsp::ref_map::RefMap;
+use crate::util::file_store::{ParseSnapshot, FILE_STORE};
 use crate::util::import_graph::{resolve_import, IMPORT_GRAPH};
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_lock::uri_unlock;
 use std::collections::HashSet;
 use std::error::Error;
+use std::sync::Arc;
 use url::Url;
 
 // ─── Main parse entry point ─────────────────────────────────────────────────
@@ -32,14 +33,20 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
     let root = tree_entry.value().root_node();
 
     // 1. Build AST from CST
-    let ast = build_ast(root);
+    let mut ast = build_ast(root);
 
-    // 2. Extract imports from #include directives + document links + diagnostics
+    // 2. Rewrite leading `//import` / `//import!` / `//set` comments into directive nodes
+    let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
+    rewrite_directives(&mut ast, &src);
+
+    // 3. Extract imports from BOTH #include directives AND //import directives
     let mut imports = HashSet::new();
+    let mut frozen_imports = HashSet::new();
     let mut links = Vec::new();
     let mut import_diagnostics = Vec::new();
 
     for item in &ast.items {
+        // Native #include
         if let TopLevel::Include(incl) = item {
             if let Some(path_node) = &incl.path {
                 let path_text = path_node.text(rope);
@@ -75,28 +82,91 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
             }
         }
+
+        // //import / //import! directives
+        if let TopLevel::ImportDir(imp) = item {
+            if imp.path.is_empty() {
+                continue; // cursor already emits "Missing import path"
+            }
+
+            let node = &imp.node;
+            let prefix_len = if imp.frozen {
+                "//import!".len()
+            } else {
+                "//import".len()
+            };
+            let node_text =
+                std::str::from_utf8(&src[node.start_byte()..node.end_byte()]).unwrap_or("");
+            let after_prefix = &node_text[prefix_len..];
+            let ws_len = after_prefix.len() - after_prefix.trim_start().len();
+            let path_start_byte = node.start_byte() + prefix_len + ws_len;
+            let path_end_byte = node.start_byte() + prefix_len + ws_len + imp.path.len();
+
+            let path_range = Range {
+                start: Position::from_byte_offset(rope, path_start_byte).unwrap_or_default(),
+                end: Position::from_byte_offset(rope, path_end_byte).unwrap_or_default(),
+            };
+
+            match resolve_import(uri, &imp.path) {
+                Some(resolved) => {
+                    imports.insert(resolved.url.clone());
+
+                    if imp.frozen {
+                        frozen_imports.insert(resolved.url.clone());
+                    }
+
+                    if resolved.exists {
+                        links.push(DocumentLink {
+                            range: path_range,
+                            target: Some(resolved.url.to_string()),
+                            tooltip: Some(resolved.url.to_string()),
+                        });
+                    } else {
+                        import_diagnostics.push(Diagnostic {
+                            range: path_range,
+                            message: format!("File not found: {}", imp.path),
+                            severity: Some(DiagnosticSeverity::Error),
+                            ..Default::default()
+                        });
+                    }
+                }
+                None => {
+                    import_diagnostics.push(Diagnostic {
+                        range: path_range,
+                        message: format!("Cannot resolve import path: {}", imp.path),
+                        severity: Some(DiagnosticSeverity::Error),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
     }
     IMPORT_GRAPH.update(uri, imports);
 
-    // 3. Single-pass cursor: diagnostics + symbols + folding + id_roles
+    // 4. Single-pass cursor: diagnostics + symbols + folding + id_roles
     let cursor = Cursor::walk(&ast, rope);
 
-    // 4. Merge import diagnostics with cursor diagnostics
+    // 5. Merge import diagnostics with cursor diagnostics
     let mut all_diagnostics = cursor.diagnostics;
     all_diagnostics.extend(import_diagnostics);
 
-    // 5. Store results
-    let report = DocumentDiagnosticReport::Full {
-        result_id: None,
-        items: all_diagnostics,
-        related_documents: None,
-    };
+    // 6. Build snapshot and store atomically in FILE_STORE.
+    let mut file_symbols = FileSymbols::new();
+    file_symbols.frozen_imports = frozen_imports;
+    file_symbols.file_settings = cursor.file_settings;
 
-    FOLDING_URI_MAP.insert(uri.clone(), cursor.folding);
-    SYMBOL_URI_MAP.insert(uri.clone(), cursor.symbols);
-    DIAGNOSTIC_URI_MAP.insert(uri.clone(), report);
-    SEMANTIC_URI_MAP.insert(uri.clone(), cursor.semantic);
-    LINK_URI_MAP.insert(uri.clone(), links);
+    let snapshot = Arc::new(ParseSnapshot {
+        folding: cursor.folding,
+        symbols: cursor.symbols,
+        semantic: cursor.semantic,
+        diagnostics: all_diagnostics,
+        links,
+        ref_map: RefMap::default(),
+        file_symbols,
+        func_decl_keys: HashSet::new(),
+    });
+
+    FILE_STORE.insert(uri.clone(), snapshot);
 
     Ok(())
 }

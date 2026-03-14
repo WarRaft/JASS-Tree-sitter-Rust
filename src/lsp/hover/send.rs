@@ -17,10 +17,14 @@ use url::Url;
 const IMPORT_EN: &str = include_str!("../../../docs/jass/import/en.md");
 const IMPORT_RU: &str = include_str!("../../../docs/jass/import/ru.md");
 const IMPORT_UK: &str = include_str!("../../../docs/jass/import/uk.md");
+const IMPORT_ZH: &str = include_str!("../../../docs/jass/import/zh.md");
+const IMPORT_TC: &str = include_str!("../../../docs/jass/import/tc.md");
 
 const SET_EN: &str = include_str!("../../../docs/jass/set/en.md");
 const SET_RU: &str = include_str!("../../../docs/jass/set/ru.md");
 const SET_UK: &str = include_str!("../../../docs/jass/set/uk.md");
+const SET_ZH: &str = include_str!("../../../docs/jass/set/zh.md");
+const SET_TC: &str = include_str!("../../../docs/jass/set/tc.md");
 
 /// Pick the best doc by the system locale env vars.
 /// Falls back to English.
@@ -36,6 +40,10 @@ fn pick_locale<F: Fn(&str) -> &'static str>(picker: F) -> &'static str {
         picker("ru")
     } else if lang.starts_with("uk") {
         picker("uk")
+    } else if lang.starts_with("zh_tw") || lang.starts_with("zh_hant") || lang.starts_with("zh-tw") || lang.starts_with("zh-hant") {
+        picker("tc")
+    } else if lang.starts_with("zh") {
+        picker("zh")
     } else {
         picker("en")
     }
@@ -45,6 +53,8 @@ fn import_doc() -> &'static str {
     pick_locale(|l| match l {
         "ru" => IMPORT_RU,
         "uk" => IMPORT_UK,
+        "zh" => IMPORT_ZH,
+        "tc" => IMPORT_TC,
         _ => IMPORT_EN,
     })
 }
@@ -53,6 +63,8 @@ fn set_doc() -> &'static str {
     pick_locale(|l| match l {
         "ru" => SET_RU,
         "uk" => SET_UK,
+        "zh" => SET_ZH,
+        "tc" => SET_TC,
         _ => SET_EN,
     })
 }

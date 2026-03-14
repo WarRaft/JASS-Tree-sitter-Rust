@@ -1,9 +1,8 @@
-use crate::lng::jass::symbol::FILE_SYMBOLS;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::inlay_hint::lsp::{InlayHint, InlayHintKind, InlayHintParams};
 use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::ref_map::REF_URI_MAP;
 use crate::lsp::send::send as lsp_send;
+use crate::util::file_store::FILE_STORE;
 use std::sync::Arc;
 use tokio::io::Stdout;
 use tokio::sync::Mutex;
@@ -33,22 +32,23 @@ fn compute(
     uri: &url::Url,
     range: &crate::lsp::range::Range,
 ) -> Vec<InlayHint> {
+    let snapshot = match FILE_STORE.get(uri) {
+        Some(s) => s,
+        None => return vec![],
+    };
+
     // Only show hints when `//set ref-tip 1` is present in the file header.
-    let enabled = FILE_SYMBOLS
-        .get(uri)
-        .and_then(|e| e.value().file_settings.get("ref-tip").cloned())
+    let enabled = snapshot
+        .file_symbols
+        .file_settings
+        .get("ref-tip")
         .map(|v| v == "1")
         .unwrap_or(false);
     if !enabled {
         return vec![];
     }
 
-    let ref_entry = match REF_URI_MAP.get(uri) {
-        Some(e) => e,
-        None => return vec![],
-    };
-    let ref_map = ref_entry.value();
-
+    let ref_map = &snapshot.ref_map;
     let mut hints = Vec::new();
 
     for span in &ref_map.spans {
@@ -95,4 +95,3 @@ fn compute(
 
     hints
 }
-

@@ -115,6 +115,26 @@ module.exports = {
             // Call Graph panel
             commands.registerCommand('callGraph.show', () => {
                 showCallGraph(client, context.extensionUri)
+            }),
+
+            // Build
+            commands.registerCommand('build.execute', async () => {
+                const editor = window.activeTextEditor
+                if (!editor) {
+                    window.showWarningMessage('No active editor.')
+                    return
+                }
+                const uri = editor.document.uri.toString()
+                try {
+                    const result = await client.sendRequest('build/execute', {uri})
+                    if (result && result.ok) {
+                        window.showInformationMessage(`✓ ${result.message}`)
+                    } else {
+                        window.showErrorMessage(`✗ ${result ? result.message : 'Build failed'}`)
+                    }
+                } catch (e) {
+                    window.showErrorMessage(`Build error: ${e.message}`)
+                }
             })
         )
 

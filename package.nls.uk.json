@@ -1,0 +1,6 @@
+{
+  "command.importGraph.show": "Показати граф імпортів",
+  "command.callGraph.show": "Показати граф викликів",
+  "command.build.execute": "Збірка"
+}
+

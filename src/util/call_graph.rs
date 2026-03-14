@@ -19,6 +19,9 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
+/// JASS entry-point function names — never considered unused.
+const ENTRY_POINTS: &[&str] = &["main", "config"];
+
 // ─── Diagnostic helpers ──────────────────────────────────────────────────────
 
 /// Per-function diagnostic info for a single file.
@@ -87,6 +90,28 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
         }
     }
 
+    // Merge bare top-level callees into `main`.
+    // If a real `main` function exists, its callees set is extended;
+    // otherwise a virtual `main` node is created.
+    let mut all_bare: HashSet<String> = HashSet::new();
+    for peer_uri in &component {
+        if let Some(fs) = FILE_SYMBOLS.get(peer_uri) {
+            all_bare.extend(fs.bare_callees.iter().cloned());
+        }
+    }
+    if !all_bare.is_empty() {
+        if let Some(main_info) = func_map.get_mut("main") {
+            main_info.callees.extend(all_bare);
+        } else {
+            func_map.insert("main".to_string(), Info {
+                uri: uri.clone(),
+                is_native: false,
+                is_frozen: false,
+                callees: all_bare,
+            });
+        }
+    }
+
     // Build graph.
     let mut graph: DiGraph<String, ()> = DiGraph::new();
     let mut name_to_idx: HashMap<String, NodeIndex> = HashMap::new();
@@ -132,6 +157,9 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     // Filter to functions declared in `uri`.
     for (name, info) in &func_map {
         if info.uri != *uri || info.is_native {
+            continue;
+        }
+        if ENTRY_POINTS.contains(&name.as_str()) {
             continue;
         }
         if let Some(&ni) = name_to_idx.get(name) {
@@ -238,6 +266,26 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
                     callees: HashSet::new(),
                 },
             );
+        }
+    }
+
+    // Merge bare top-level callees into `main`.
+    let mut all_bare: HashSet<String> = HashSet::new();
+    for peer_uri in &component {
+        if let Some(fs) = FILE_SYMBOLS.get(peer_uri) {
+            all_bare.extend(fs.bare_callees.iter().cloned());
+        }
+    }
+    if !all_bare.is_empty() {
+        if let Some(main_info) = func_map.get_mut("main") {
+            main_info.callees.extend(all_bare);
+        } else {
+            func_map.insert("main".to_string(), FuncInfo {
+                uri: uri.clone(),
+                is_native: false,
+                is_frozen: false,
+                callees: all_bare,
+            });
         }
     }
 
@@ -354,7 +402,9 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
             is_frozen: info.is_frozen,
             is_recursive: self_loops.contains(&ni),
             in_cycle: cycle_nodes.contains(&ni),
-            is_unused: *in_degree.get(&ni).unwrap_or(&0) == 0 && !info.is_native,
+            is_unused: *in_degree.get(&ni).unwrap_or(&0) == 0
+                && !info.is_native
+                && !ENTRY_POINTS.contains(&name.as_str()),
             is_native: info.is_native,
         });
     }

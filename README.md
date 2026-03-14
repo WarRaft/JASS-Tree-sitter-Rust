@@ -7,14 +7,162 @@ We put JASS front and center to draw attention (and nostalgia), and of course, w
 
 ## [VSCode](https://code.visualstudio.com)
 
-The plugin collects various tools for working with classic WarCraft content, offering syntax support, editor features,
+The plugin collects various tools for working with classic WarCraft III content, offering syntax support, editor features,
 and a few modern conveniences along the way.
 
 👉 [VSCode Marketplace](https://marketplace.visualstudio.com/items?itemName=WarRaft.jass-tree-sitter-rust)
 
-## [BNI](https://github.com/WarRaft/BNI)
+---
 
-This plugin adds support for the **BNI** format — a structured configuration format used in Warcraft III modding.  
-Support is based on a dedicated Tree-sitter grammar, developed in
-the [tree-sitter-bni](https://github.com/WarRaft/tree-sitter-bni) repository.
+## Supported Languages
 
+### [JASS](https://github.com/WarRaft/tree-sitter-jass) — `.j`, `.pld`
+
+The primary language of WarCraft III scripting. Full support based on a dedicated
+[tree-sitter-jass](https://github.com/WarRaft/tree-sitter-jass) grammar.
+
+### [AngelScript](https://github.com/WarRaft/tree-sitter-as) — `.as`
+
+AngelScript support for UJAPI-based WarCraft III modding. Grammar —
+[tree-sitter-as](https://github.com/WarRaft/tree-sitter-as).
+
+### [BNI](https://github.com/WarRaft/tree-sitter-bni) — `.bni`
+
+**BNI** (Blizzard Notation Ini) — a structured configuration format used in Warcraft III modding.  
+Grammar — [tree-sitter-bni](https://github.com/WarRaft/tree-sitter-bni).
+
+### BLP — `.blp`
+
+Built-in image viewer for the **BLP** texture format used by WarCraft III.
+
+---
+
+## LSP Features
+
+The extension ships a standalone Rust-based LSP server (Linux, macOS, Windows) that provides:
+
+| Feature | JASS | AngelScript | BNI |
+|---------|:----:|:-----------:|:---:|
+| **Semantic highlighting** | ✅ | ✅ | ✅ |
+| **Folding ranges** | ✅ | ✅ | ✅ |
+| **Document symbols** | ✅ | ✅ | ✅ |
+| **Diagnostics** | ✅ | ✅ | — |
+| **Go to definition** | ✅ | ✅ | — |
+| **Find all references** | ✅ | ✅ | — |
+| **Document highlight** | ✅ | ✅ | — |
+| **Rename** | ✅ | ✅ | — |
+| **Hover** | ✅ | ✅ | — |
+| **Completion** | ✅ | ✅ | — |
+| **Inlay hints** | ✅ | ✅ | — |
+| **Document links** | ✅ | ✅ | — |
+
+---
+
+## Import System
+
+JASS files can be linked together using special comment-based directives:
+
+```jass
+//import path/to/file.j
+//import! blizzard/common.j
+```
+
+- `//import` — links another file into a shared scope. All top-level declarations (functions, globals, types, natives) become available.
+- `//import!` — **frozen** import. Same as `//import`, but the target file is treated as read-only and will not be modified by refactoring or auto-rename.
+
+Directives must appear at the very beginning of the file, before any language statements.
+
+### Import features
+
+- **Path completion** — autocomplete for file paths after `//import`.
+- **Ctrl+Click** — opens the imported file in the editor.
+- **Invalid path diagnostics** — non-existent paths are highlighted as errors.
+- **Auto-update on rename/move** — when an imported file is renamed or moved, paths in all referencing files are automatically rewritten.
+- **Cross-platform paths** — `/` and `\` are interchangeable; supports relative, absolute, and Windows-style (`C://`) paths.
+- **Cycle detection** — circular imports are detected and reported.
+
+---
+
+## `//set` — Per-File Configuration
+
+```jass
+//set ref-tip 1
+//set build-jass ./out/war3map.j
+//set build-as ./out/war3map.as
+```
+
+| Key | Values | Description |
+|-----|--------|-------------|
+| `ref-tip` | `1` / `0` | Show / hide reference-ID inlay hints next to each identifier — useful for debugging symbol resolution. |
+| `build-jass` | `<path>` | Output path for the JASS build. Merges the entire import tree into a single `.j` file. |
+| `build-as` | `<path>` | Output path for the AngelScript build. Same merge logic, but emits `.as` syntax. |
+
+---
+
+## Cross-File Intelligence
+
+All files linked by `//import` form a **connected component** — a shared global scope:
+
+- **Scope resolver** — persistent O(1) name lookup across all imported files, preserved between server restarts.
+- **Two-phase resolution** — Phase 1 resolves symbols locally; Phase 2 links unresolved references against imported symbols.
+- **Export diffing** — only re-parses dependent files when the set of exported declarations actually changes.
+- **Push diagnostics** — errors are reported for affected files immediately, even if they are not open in the editor.
+
+---
+
+## Call Graph
+
+The server builds a function call graph across the connected component:
+
+- **Unused function detection** — functions not reachable from `main` / `config` entry points are flagged.
+- **Cycle detection** — cyclic call chains are reported via diagnostics.
+- **Topological sort** — used by the build system to ensure callees appear before callers (required by JASS).
+
+A D3.js-powered **Call Graph** panel is available via the editor title bar button.
+
+---
+
+## Import Graph Visualization
+
+A D3.js-powered **Import Graph** panel shows the dependency tree of the current file. Available via the editor title bar button. All visualization assets are bundled — no internet connection required.
+
+---
+
+## Build System
+
+The `//set build-jass <path>` and `//set build-as <path>` directives trigger a build that:
+
+1. Collects all files in the import tree.
+2. Performs topological sort on functions.
+3. Merges everything into a single output file: **types → globals → functions → `main`**.
+4. Skips `native` declarations and type definitions (they are engine-provided).
+5. Bare top-level call expressions are folded into `main`.
+
+---
+
+## Persistent Caching
+
+All heavy data structures are serialized to disk via **bincode** and restored on server restart:
+
+- **Import graph** — file dependency graph (petgraph-based).
+- **Scope resolver** — global symbol index.
+- **Symbol cache** — per-file function/variable/type declarations.
+- **Reference cache** — per-file reference maps.
+
+This means near-instant startup even for large projects.
+
+---
+
+## Architecture
+
+- **Tree-sitter** — incremental parsing for all supported grammars.
+- **`ParseSnapshot`** — atomic immutable snapshot of all LSP data per file, stored in `Arc<ParseSnapshot>` for lock-free concurrent reads.
+- **`CancellationToken`** — per-file cancellation: new edits abort stale parse tasks immediately.
+- **DashMap** — concurrent file store for all snapshots.
+- **petgraph** — import graph and call graph analysis.
+
+---
+
+## License
+
+[MIT](LICENSE)

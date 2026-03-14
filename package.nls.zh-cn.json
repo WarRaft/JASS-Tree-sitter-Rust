@@ -1,0 +1,6 @@
+{
+  "command.importGraph.show": "显示导入图",
+  "command.callGraph.show": "显示调用图",
+  "command.build.execute": "构建"
+}
+
