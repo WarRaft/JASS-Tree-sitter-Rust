@@ -1,5 +1,7 @@
 [![](https://dcbadge.limes.pink/api/server/https://discord.gg/CNeQmXAgVq)](https://discord.gg/CNeQmXAgVq)
 
+**English** | [Русский](README.ru.md) | [Українська](README.uk.md) | [简体中文](README.zh-cn.md) | [繁體中文](README.zh-tw.md)
+
 # JASS Tree-sitter Rust
 
 Yes, the name literally describes the stack — a Tree-sitter grammar written in Rust.  
@@ -160,6 +162,30 @@ This means near-instant startup even for large projects.
 - **`CancellationToken`** — per-file cancellation: new edits abort stale parse tasks immediately.
 - **DashMap** — concurrent file store for all snapshots.
 - **petgraph** — import graph and call graph analysis.
+
+---
+
+## Keyboard Shortcuts
+
+All commands are available via the editor title bar buttons, but you can also assign custom keyboard shortcuts.
+
+Open **Keyboard Shortcuts** (`Ctrl+K Ctrl+S` / `⌘K ⌘S`), search for the command name, and bind any key combination.
+
+| Command ID | Description |
+|------------|-------------|
+| `importGraph.show` | Show Import Graph |
+| `callGraph.show` | Show Call Graph |
+| `build.execute` | Build (JASS / AngelScript) |
+
+Alternatively, add bindings directly to `keybindings.json` (`Ctrl+Shift+P` → *Preferences: Open Keyboard Shortcuts (JSON)*):
+
+```json
+[
+  { "key": "ctrl+shift+i", "command": "importGraph.show", "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+g", "command": "callGraph.show",   "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+b", "command": "build.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" }
+]
+```
 
 ---
 
