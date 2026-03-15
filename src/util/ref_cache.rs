@@ -144,12 +144,15 @@ pub fn gc(keep: &HashSet<String>) {
     }
 
     // Build the set of filenames that should be kept.
-    let keep_filenames: HashSet<String> = keep.iter().map(|uri_str| {
-        let mut hasher = Sha256::new();
-        hasher.update(uri_str.as_bytes());
-        let hash = hasher.finalize();
-        format!("{:x}.bin", hash)
-    }).collect();
+    let keep_filenames: HashSet<String> = keep
+        .iter()
+        .map(|uri_str| {
+            let mut hasher = Sha256::new();
+            hasher.update(uri_str.as_bytes());
+            let hash = hasher.finalize();
+            format!("{:x}.bin", hash)
+        })
+        .collect();
 
     let entries = match fs::read_dir(&dir) {
         Ok(e) => e,
@@ -169,6 +172,3 @@ pub fn gc(keep: &HashSet<String>) {
         info!("ref_cache: gc removed {} stale entries", removed);
     }
 }
-
-
-
