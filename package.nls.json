@@ -1,6 +1,7 @@
 {
   "command.importGraph.show": "Show Import Graph",
   "command.callGraph.show": "Show Call Graph",
+  "command.typeGraph.show": "Show Type Graph",
   "command.build.execute": "Build"
 }
 

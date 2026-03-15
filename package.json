@@ -139,6 +139,11 @@
         "icon": "$(call-outgoing)"
       },
       {
+        "command": "typeGraph.show",
+        "title": "%command.typeGraph.show%",
+        "icon": "$(symbol-class)"
+      },
+      {
         "command": "build.execute",
         "title": "%command.build.execute%",
         "icon": "$(play)"
@@ -153,6 +158,11 @@
         },
         {
           "command": "callGraph.show",
+          "when": "resourceLangId == jass || resourceLangId == angelscript",
+          "group": "navigation"
+        },
+        {
+          "command": "typeGraph.show",
           "when": "resourceLangId == jass || resourceLangId == angelscript",
           "group": "navigation"
         },

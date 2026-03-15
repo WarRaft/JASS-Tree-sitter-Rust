@@ -18,9 +18,10 @@ let panel
  *
  * @param {import('vscode-languageclient').LanguageClient} client
  * @param {import('vscode').Uri} extensionUri - Extension root URI (context.extensionUri).
+ * @param {import('vscode').ExtensionContext} context
  * @param {string} [fileUri] - If not given, uses the active editor's URI.
  */
-async function showImportGraph(client, extensionUri, fileUri) {
+async function showImportGraph(client, extensionUri, context, fileUri) {
     if (!fileUri) {
         const editor = window.activeTextEditor
         if (!editor) {
@@ -67,7 +68,11 @@ async function showImportGraph(client, extensionUri, fileUri) {
                     window.showErrorMessage(`Cannot open file: ${e.message}`)
                 }
             } else if (msg.type === 'refresh') {
-                await showImportGraph(client, extensionUri, msg.uri)
+                await showImportGraph(client, extensionUri, context, msg.uri)
+            } else if (msg.type === 'saveSettings') {
+                if (context && context.globalState) {
+                    await context.globalState.update('d3PhysicsSettings', msg.settings)
+                }
             }
         })
     }
@@ -77,7 +82,8 @@ async function showImportGraph(client, extensionUri, fileUri) {
     )
 
     panel.title = `Import Graph — ${path.basename(decodeURIComponent(new URL(result.uri).pathname))}`
-    panel.webview.html = buildHtml(result, d3Uri.toString())
+    const savedSettings = context.globalState.get('d3PhysicsSettings', null)
+    panel.webview.html = buildHtml(result, d3Uri.toString(), savedSettings)
 }
 
 /**
@@ -122,9 +128,10 @@ function shortenPaths(paths) {
 /**
  * @param {ImportGraphResult} data
  * @param {string} d3Src - Webview-safe URI to the local d3.v7.min.js.
+ * @param {Object|null} savedSettings
  * @returns {string}
  */
-function buildHtml(data, d3Src) {
+function buildHtml(data, d3Src, savedSettings) {
     // Extract filesystem paths from URIs
     const paths = data.nodes.map(uri => {
         try {
@@ -147,6 +154,13 @@ function buildHtml(data, d3Src) {
             isRoot: i === 0,
         })),
         links: data.edges.map(([s, t]) => ({source: s, target: t})),
+    })
+
+    const settingsJSON = JSON.stringify(savedSettings || {
+        linkDistance: 120,
+        chargeStrength: -400,
+        collisionRadius: 30,
+        centerStrength: 0.05,
     })
 
     return /*html*/`<!DOCTYPE html>
@@ -243,6 +257,30 @@ function buildHtml(data, d3Src) {
         background: var(--vscode-editor-background, #1e1e1e);
         border: 1.5px solid var(--vscode-focusBorder, #007acc);
     }
+
+    #settingsBtn {
+        position: fixed; bottom: 8px; right: 8px; z-index: 20;
+        background: var(--vscode-button-background, #0e639c);
+        color: var(--vscode-button-foreground, #fff);
+        border: none; border-radius: 50%; width: 32px; height: 32px;
+        font-size: 16px; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+    }
+    #settingsBtn:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+    #settingsPanel {
+        display: none; position: fixed; bottom: 48px; right: 8px; z-index: 20;
+        background: var(--vscode-sideBar-background, #252526);
+        border: 1px solid var(--vscode-editorWidget-border, #454545);
+        border-radius: 6px; padding: 12px 14px; width: 240px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    }
+    #settingsPanel.open { display: block; }
+    #settingsPanel h3 { margin: 0 0 10px 0; font-size: 12px; font-weight: 600; }
+    .setting-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 11px; }
+    .setting-row label { flex: 1; }
+    .setting-row input[type=range] { width: 100px; accent-color: var(--vscode-focusBorder, #007acc); }
+    .setting-row .val { width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -255,16 +293,45 @@ function buildHtml(data, d3Src) {
     <span><span class="legend-dot dep"></span>Dependency</span>
     <span>→ imports</span>
 </div>
+<button id="settingsBtn" title="D3 Physics Settings">⚙</button>
+<div id="settingsPanel">
+    <h3>⚙ Physics Settings</h3>
+    <div class="setting-row"><label>Link distance</label><input type="range" id="sLinkDist" min="20" max="300" step="5"/><span class="val" id="vLinkDist"></span></div>
+    <div class="setting-row"><label>Charge</label><input type="range" id="sCharge" min="-1000" max="0" step="10"/><span class="val" id="vCharge"></span></div>
+    <div class="setting-row"><label>Collision</label><input type="range" id="sCollision" min="5" max="80" step="1"/><span class="val" id="vCollision"></span></div>
+    <div class="setting-row"><label>Center</label><input type="range" id="sCenter" min="0" max="1" step="0.01"/><span class="val" id="vCenter"></span></div>
+</div>
 <svg id="graph"></svg>
 
 <script src="${d3Src}"></script>
 <script>
 const vscode = acquireVsCodeApi();
 const graphData = ${graphJSON};
+let settings = ${settingsJSON};
 
 const svg = d3.select('#graph');
 const width = window.innerWidth;
 const height = window.innerHeight;
+
+document.getElementById('settingsBtn').addEventListener('click', () => {
+    document.getElementById('settingsPanel').classList.toggle('open');
+});
+
+function initSliders() {
+    [['sLinkDist','vLinkDist','linkDistance'],['sCharge','vCharge','chargeStrength'],['sCollision','vCollision','collisionRadius'],['sCenter','vCenter','centerStrength']].forEach(([sid,vid,key]) => {
+        const s = document.getElementById(sid), v = document.getElementById(vid);
+        s.value = settings[key]; v.textContent = settings[key];
+        s.addEventListener('input', () => { settings[key] = parseFloat(s.value); v.textContent = settings[key]; applySettings(); vscode.postMessage({type:'saveSettings',settings}); });
+    });
+}
+
+function applySettings() {
+    simulation.force('link').distance(settings.linkDistance);
+    simulation.force('charge').strength(settings.chargeStrength);
+    simulation.force('collision').radius(settings.collisionRadius);
+    simulation.force('center').strength(settings.centerStrength);
+    simulation.alpha(0.5).restart();
+}
 
 // Defs: arrow marker
 svg.append('defs').append('marker')
@@ -292,10 +359,10 @@ svg.call(zoom);
 const simulation = d3.forceSimulation(graphData.nodes)
     .force('link', d3.forceLink(graphData.links)
         .id(d => d.id)
-        .distance(120))
-    .force('charge', d3.forceManyBody().strength(-400))
-    .force('center', d3.forceCenter(width / 2, height / 2))
-    .force('collision', d3.forceCollide(30));
+        .distance(settings.linkDistance))
+    .force('charge', d3.forceManyBody().strength(settings.chargeStrength))
+    .force('center', d3.forceCenter(width / 2, height / 2).strength(settings.centerStrength))
+    .force('collision', d3.forceCollide(settings.collisionRadius));
 
 // Links
 const link = g.append('g')
@@ -381,6 +448,8 @@ document.getElementById('btnRefresh').addEventListener('click', () => {
 simulation.on('end', () => {
     document.getElementById('btnFit').click();
 });
+
+initSliders();
 </script>
 </body>
 </html>`

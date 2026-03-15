@@ -10,6 +10,7 @@ const {resolveBlpEditor} = require('./resolveBlpEditor.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
+const {showTypeGraph} = require('./typeGraphPanel.js')
 
 const path = require('path')
 
@@ -109,12 +110,17 @@ module.exports = {
 
             // Import Graph panel
             commands.registerCommand('importGraph.show', () => {
-                showImportGraph(client, context.extensionUri)
+                showImportGraph(client, context.extensionUri, context)
             }),
 
             // Call Graph panel
             commands.registerCommand('callGraph.show', () => {
-                showCallGraph(client, context.extensionUri)
+                showCallGraph(client, context.extensionUri, context)
+            }),
+
+            // Type Graph panel
+            commands.registerCommand('typeGraph.show', () => {
+                showTypeGraph(client, context.extensionUri, context)
             }),
 
             // Build

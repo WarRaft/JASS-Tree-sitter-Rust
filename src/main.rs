@@ -728,6 +728,22 @@ async fn main() {
                                 .await;
                             }
 
+                            MethodCall::TypeGraphSubgraph(params) => {
+                                let uri = &params.uri;
+                                let result =
+                                    crate::util::type_graph::build_type_graph(uri);
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(json!(result)),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
                             MethodCall::BuildExecute(params) => {
                                 let uri = &params.uri;
 

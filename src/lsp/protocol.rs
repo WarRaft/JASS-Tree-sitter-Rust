@@ -133,6 +133,9 @@ pub enum MethodCall {
     #[serde(rename = "callGraph/subgraph")]
     CallGraphSubgraph(TextDocumentIdentifier),
 
+    #[serde(rename = "typeGraph/subgraph")]
+    TypeGraphSubgraph(TextDocumentIdentifier),
+
     #[serde(rename = "build/execute")]
     BuildExecute(TextDocumentIdentifier),
 }

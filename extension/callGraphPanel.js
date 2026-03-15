@@ -20,7 +20,7 @@
  * @property {number[][]} cycles
  */
 
-const {window, ViewColumn, Uri, commands, workspace, Position, Selection} = require('vscode')
+const {window, ViewColumn, Uri, workspace, Position, Selection} = require('vscode')
 const path = require('path')
 
 /** @type {import('vscode').WebviewPanel | undefined} */
@@ -29,9 +29,10 @@ let panel
 /**
  * @param {import('vscode-languageclient').LanguageClient} client
  * @param {import('vscode').Uri} extensionUri
+ * @param {import('vscode').ExtensionContext} context
  * @param {string} [fileUri]
  */
-async function showCallGraph(client, extensionUri, fileUri) {
+async function showCallGraph(client, extensionUri, context, fileUri) {
     if (!fileUri) {
         const editor = window.activeTextEditor
         if (!editor) {
@@ -118,7 +119,11 @@ async function showCallGraph(client, extensionUri, fileUri) {
                     window.showErrorMessage(`Cannot open file: ${e.message}`)
                 }
             } else if (msg.type === 'refresh') {
-                await showCallGraph(client, extensionUri, msg.uri)
+                await showCallGraph(client, extensionUri, context, msg.uri)
+            } else if (msg.type === 'saveSettings') {
+                if (context && context.globalState) {
+                    await context.globalState.update('d3PhysicsSettings', msg.settings)
+                }
             }
         })
     }
@@ -128,8 +133,9 @@ async function showCallGraph(client, extensionUri, fileUri) {
     )
 
     const basename = path.basename(decodeURIComponent(new URL(fileUri).pathname))
+    const savedSettings = context.globalState.get('d3PhysicsSettings', null)
     panel.title = `Call Graph — ${basename}`
-    panel.webview.html = buildHtml(result, d3Uri.toString(), fileUri)
+    panel.webview.html = buildHtml(result, d3Uri.toString(), fileUri, savedSettings)
 }
 
 /** @param {string} s */
@@ -141,9 +147,10 @@ function escapeRegex(s) {
  * @param {CallGraphResult} data
  * @param {string} d3Src
  * @param {string} rootUri
+ * @param {Object|null} savedSettings
  * @returns {string}
  */
-function buildHtml(data, d3Src, rootUri) {
+function buildHtml(data, d3Src, rootUri, savedSettings) {
     const graphJSON = JSON.stringify({
         nodes: data.nodes.map((n, i) => ({
             id: i,
@@ -159,6 +166,13 @@ function buildHtml(data, d3Src, rootUri) {
         topoOrder: data.topo_order,
         isOrderable: data.is_orderable,
         cycles: data.cycles,
+    })
+
+    const settingsJSON = JSON.stringify(savedSettings || {
+        linkDistance: 90,
+        chargeStrength: -250,
+        collisionRadius: 8,
+        centerStrength: 0.05,
     })
 
     return /*html*/`<!DOCTYPE html>
