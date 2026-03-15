@@ -434,5 +434,209 @@ endfunction
             assert_eq!(set_count, 0);
         });
     }
+
+    #[test]
+    fn native_and_constant_native_are_statement_native() {
+        let src = "native Foo takes nothing returns nothing\nconstant native Bar takes integer a returns integer\n";
+        with_ast(src, |ast| {
+            assert_eq!(ast.items.len(), 2, "Expected 2 items, got {:?}", ast.items);
+            assert!(
+                matches!(&ast.items[0], Statement::Native(_)),
+                "Expected Statement::Native for 'native Foo', got {:?}",
+                ast.items[0]
+            );
+            assert!(
+                matches!(&ast.items[1], Statement::Native(_)),
+                "Expected Statement::Native for 'constant native Bar', got {:?}",
+                ast.items[1]
+            );
+        });
+    }
+
+    #[test]
+    fn type_is_statement_type() {
+        let src = "type agent extends handle\n";
+        with_ast(src, |ast| {
+            assert_eq!(ast.items.len(), 1);
+            assert!(matches!(&ast.items[0], Statement::Type(_)));
+        });
+    }
+
+    #[test]
+    fn natives_excluded_from_function_list() {
+        // A file with natives, types, and functions — only functions should remain
+        let src = "type agent extends handle\nnative Foo takes nothing returns nothing\nconstant native Bar takes integer a returns integer\nfunction Baz takes nothing returns nothing\nendfunction\n";
+        with_ast(src, |ast| {
+            let funcs: Vec<_> = ast.items.iter().filter(|s| matches!(s, Statement::Function(_))).collect();
+            let natives: Vec<_> = ast.items.iter().filter(|s| matches!(s, Statement::Native(_))).collect();
+            let types: Vec<_> = ast.items.iter().filter(|s| matches!(s, Statement::Type(_))).collect();
+            assert_eq!(funcs.len(), 1, "Expected 1 function");
+            assert_eq!(natives.len(), 2, "Expected 2 natives");
+            assert_eq!(types.len(), 1, "Expected 1 type");
+        });
+    }
+
+    #[test]
+    fn common_j_style_natives_parsed_correctly() {
+        // common.j uses lots of whitespace in native declarations
+        let src = "\
+type agent                          extends     handle
+type event              extends     agent
+type player             extends     agent
+
+constant native ConvertRace                 takes integer i returns race
+constant native ConvertAllianceType         takes integer i returns alliancetype
+native CreateUnit                   takes player id, integer unitid, real x, real y, real face returns unit
+constant native GetHandleId takes handle h returns integer
+
+function InitBlizzard takes nothing returns nothing
+endfunction
+";
+        with_ast(src, |ast| {
+            let types: Vec<_> = ast.items.iter().filter(|s| matches!(s, Statement::Type(_))).collect();
+            let natives: Vec<_> = ast.items.iter().filter(|s| matches!(s, Statement::Native(_))).collect();
+            let funcs: Vec<_> = ast.items.iter().filter(|s| matches!(s, Statement::Function(_))).collect();
+
+            assert_eq!(types.len(), 3, "Expected 3 types, got {}", types.len());
+            assert_eq!(natives.len(), 4, "Expected 4 natives, got {}", natives.len());
+            assert_eq!(funcs.len(), 1, "Expected 1 function, got {}", funcs.len());
+
+            // Verify no natives or types are accidentally parsed as functions
+            for item in &ast.items {
+                if let Statement::Function(f) = item {
+                    let name = f.name.as_ref().map(|id| node_text(src, &id.node)).unwrap_or("");
+                    assert_eq!(name, "InitBlizzard", "Only InitBlizzard should be a function, got: {}", name);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn build_fragments_skip_natives_and_types() {
+        // Simulates what collect_fragments does: parse file, iterate AST, skip native/type
+        let src = "\
+type agent extends handle
+native Foo takes nothing returns nothing
+constant native Bar takes integer a returns integer
+function Baz takes nothing returns nothing
+endfunction
+";
+        with_ast(src, |ast| {
+            let mut forward_decls = Vec::<String>::new();
+            for item in &ast.items {
+                match item {
+                    Statement::Type(_) | Statement::Native(_) => {
+                        // These should be skipped — exactly what build.rs does
+                    }
+                    Statement::Function(f) => {
+                        let name = f.name.as_ref().map(|id| node_text(src, &id.node)).unwrap_or("");
+                        forward_decls.push(format!("function {} takes ...", name));
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(forward_decls.len(), 1, "Only 1 function forward decl expected");
+            assert!(forward_decls[0].contains("Baz"), "Expected Baz, got: {}", forward_decls[0]);
+        });
+    }
+
+    /// Parse real common.j and show the actual breakdown of statement types.
+    /// This test never fails but prints the stats so we can see what's happening.
+    #[test]
+    fn real_common_j_parse_stats() {
+        let path = "/Users/nazarpunk/Downloads/JassTest/Scripts/common.j";
+        let src = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("Skipping real_common_j_parse_stats: file not found");
+                return;
+            }
+        };
+        with_ast(&src, |ast| {
+            let mut natives = 0usize;
+            let mut types = 0usize;
+            let mut funcs = 0usize;
+            let mut globals = 0usize;
+            let mut comments = 0usize;
+            let mut errors = 0usize;
+            let mut leaked_func_names = Vec::<String>::new();
+
+            for item in &ast.items {
+                match item {
+                    Statement::Native(_) => natives += 1,
+                    Statement::Type(_) => types += 1,
+                    Statement::Function(f) => {
+                        funcs += 1;
+                        let name = f.name.as_ref()
+                            .map(|id| node_text(&src, &id.node))
+                            .unwrap_or("<unnamed>");
+                        leaked_func_names.push(name.to_string());
+                    }
+                    Statement::Globals(_) => globals += 1,
+                    Statement::Comment(_) => comments += 1,
+                    Statement::Error(_) => errors += 1,
+                    _ => {}
+                }
+            }
+            eprintln!("=== common.j AST breakdown ===");
+            eprintln!("  natives:   {}", natives);
+            eprintln!("  types:     {}", types);
+            eprintln!("  functions: {}", funcs);
+            eprintln!("  globals:   {}", globals);
+            eprintln!("  comments:  {}", comments);
+            eprintln!("  errors:    {}", errors);
+            if !leaked_func_names.is_empty() {
+                eprintln!("  LEAKED FUNCTION NAMES: {:?}", leaked_func_names);
+            }
+            // common.j should NOT have any function_statement nodes
+            assert_eq!(funcs, 0, "common.j should have 0 functions, but found: {:?}", leaked_func_names);
+        });
+    }
+
+    /// Parse real Blizzard.j and show stats.
+    #[test]
+    fn real_blizzard_j_parse_stats() {
+        let path = "/Users/nazarpunk/Downloads/JassTest/Scripts/Blizzard.j";
+        let src = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => {
+                eprintln!("Skipping real_blizzard_j_parse_stats: file not found");
+                return;
+            }
+        };
+        with_ast(&src, |ast| {
+            let mut natives = 0usize;
+            let mut types = 0usize;
+            let mut funcs = 0usize;
+            let mut globals = 0usize;
+            let mut leaked_native_names = Vec::<String>::new();
+
+            for item in &ast.items {
+                match item {
+                    Statement::Native(n) => {
+                        natives += 1;
+                        let name = n.name.as_ref()
+                            .map(|id| node_text(&src, &id.node))
+                            .unwrap_or("<unnamed>");
+                        leaked_native_names.push(name.to_string());
+                    }
+                    Statement::Type(_) => types += 1,
+                    Statement::Function(_) => funcs += 1,
+                    Statement::Globals(_) => globals += 1,
+                    _ => {}
+                }
+            }
+            eprintln!("=== Blizzard.j AST breakdown ===");
+            eprintln!("  natives:   {}", natives);
+            eprintln!("  types:     {}", types);
+            eprintln!("  functions: {}", funcs);
+            eprintln!("  globals:   {}", globals);
+            if !leaked_native_names.is_empty() {
+                eprintln!("  NATIVE NAMES (should be 0): {:?}", leaked_native_names);
+            }
+            // Blizzard.j should NOT have any native_statement nodes
+            assert_eq!(natives, 0, "Blizzard.j should have 0 natives, but found: {:?}", leaked_native_names);
+        });
+    }
 }
 

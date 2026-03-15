@@ -699,7 +699,7 @@ fn build_loop_stmt<'tree>(
 
 // ─── Expression builder ─────────────────────────────────────────────────────
 
-fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
+pub(crate) fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
     let kind = Kind::try_from(node.kind_id()).ok()?;
     match kind {
         Kind::Expr => build_expr_inner(node),

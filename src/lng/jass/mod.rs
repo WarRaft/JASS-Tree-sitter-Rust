@@ -11,6 +11,8 @@ pub(crate) mod uri_map;
 #[cfg(test)]
 mod ast_test;
 #[cfg(test)]
+mod build_test;
+#[cfg(test)]
 mod cursor_test;
 #[cfg(test)]
 mod symbol_test;
