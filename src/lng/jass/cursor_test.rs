@@ -16,7 +16,8 @@ mod tests {
             .set_language(&tree_sitter_jass::language().into())
             .expect("Failed to set language");
         let tree = parser.parse(src, None).expect("Failed to parse");
-        let ast = build_ast(tree.root_node());
+        let mut ast = build_ast(tree.root_node());
+        rewrite_imports(&mut ast, src.as_bytes());
         let rope = Rope::from(src);
         let cursor = Cursor::walk(&ast, &rope, &[]);
         f(&cursor);
@@ -1102,12 +1103,32 @@ globals
 endglobals
 function A takes nothing returns nothing
 endfunction
+function Main takes nothing returns nothing
+    set A = 10
+    call A()
+endfunction
 ";
         with_cursor(src, |c| {
             let groups = find_groups(c, "A");
             // Should be 2 separate groups: one for variable, one for function
             assert_eq!(groups.len(), 2,
                 "var A and function A should be in separate groups (different namespaces)");
+
+            // Variable group: decl (line 1) + set (line 6)
+            let var_group = groups.iter()
+                .find(|(_, occs)| occs.iter().any(|o| o.range.start.line == 1))
+                .expect("should have A var group at line 1");
+            let var_lines: Vec<_> = var_group.1.iter().map(|o| o.range.start.line).collect();
+            assert!(var_lines.contains(&1), "var group: decl at line 1");
+            assert!(var_lines.contains(&6), "var group: set at line 6");
+
+            // Function group: decl (line 3) + call (line 7)
+            let func_group = groups.iter()
+                .find(|(_, occs)| occs.iter().any(|o| o.range.start.line == 3))
+                .expect("should have A func group at line 3");
+            let func_lines: Vec<_> = func_group.1.iter().map(|o| o.range.start.line).collect();
+            assert!(func_lines.contains(&3), "func group: decl at line 3");
+            assert!(func_lines.contains(&7), "func group: call at line 7");
         });
     }
 
@@ -1281,6 +1302,118 @@ call A()
         });
     }
 
+    // ── import: same-name func + var resolve to separate external groups ──
+
+    #[test]
+    fn link_import_func_and_var_same_name_separate() {
+        // Simulates ass.j: `A = 44` (var ref) + `call A()` (func ref)
+        // where anal.j exports both `real A` (Var) and `function A` (Func).
+        let src = "\
+A = 44
+call A()
+call A()
+";
+        let origin = Url::parse("file:///test/anal.j").unwrap();
+        let imported = vec![
+            ImportedSymbol {
+                origin_uri: origin.clone(),
+                name: "A".into(),
+                kind: ImportedKind::Var,
+                origin_decl_key: None,
+            },
+            ImportedSymbol {
+                origin_uri: origin.clone(),
+                name: "A".into(),
+                kind: ImportedKind::Func,
+                origin_decl_key: None,
+            },
+        ];
+        with_cursor_imported(src, &imported, |c| {
+            let ext_keys: Vec<_> = c.ref_groups.keys()
+                .filter(|&&k| k >= EXTERNAL_KEY_BASE
+                    && c.ref_names.get(&k).map(|n| n == "A").unwrap_or(false))
+                .copied()
+                .collect();
+            assert_eq!(ext_keys.len(), 2,
+                "A should have two separate external groups (var + func), got {:?}",
+                ext_keys);
+
+            // One group should have 1 occurrence (the set), the other 2 (the calls)
+            let mut sizes: Vec<_> = ext_keys.iter()
+                .map(|k| c.ref_groups[k].len())
+                .collect();
+            sizes.sort();
+            assert_eq!(sizes, vec![1, 2],
+                "var group: 1 (set A=44), func group: 2 (call A() x2)");
+        });
+    }
+
+    // ── import: real ass.j scenario ──────────────────────────────────────
+
+    #[test]
+    fn link_import_real_ass_j_scenario() {
+        // Exact content of ass.j (minus directives which become SetDir)
+        let src = "\
+//set ref-tip 1
+//set type-tip 1
+
+set a = \" \\\"\"+122
+
+A = 44
+
+function B takes nothing returns nothing
+    call B1()
+endfunction
+
+function E takes nothing returns nothing
+
+    call B()
+
+endfunction
+
+call A()
+call A()
+
+call E()
+
+";
+        let origin = Url::parse("file:///test/anal.j").unwrap();
+        let imported = vec![
+            ImportedSymbol {
+                origin_uri: origin.clone(),
+                name: "A".into(),
+                kind: ImportedKind::Var,
+                origin_decl_key: None,
+            },
+            ImportedSymbol {
+                origin_uri: origin.clone(),
+                name: "A".into(),
+                kind: ImportedKind::Func,
+                origin_decl_key: None,
+            },
+        ];
+        with_cursor_imported(src, &imported, |c| {
+            let ext_keys: Vec<_> = c.ref_groups.keys()
+                .filter(|&&k| k >= EXTERNAL_KEY_BASE
+                    && c.ref_names.get(&k).map(|n| n == "A").unwrap_or(false))
+                .copied()
+                .collect();
+            assert_eq!(ext_keys.len(), 2,
+                "A should have two external groups (var + func) in real ass.j. \
+                 Groups named A: {:?}",
+                find_groups(c, "A").iter()
+                    .map(|&(&k, ref occs)| (k, k >= EXTERNAL_KEY_BASE, occs.len()))
+                    .collect::<Vec<_>>());
+
+            let mut sizes: Vec<_> = ext_keys.iter()
+                .map(|k| c.ref_groups[k].len())
+                .collect();
+            sizes.sort();
+            assert_eq!(sizes, vec![1, 2],
+                "var group: 1 (A=44), func group: 2 (call A() x2)");
+        });
+    }
+
     // ── RefMap: every identifier has a span ──────────────────────────────
 
     #[test]
@@ -1367,7 +1500,7 @@ call F()
             // Click on `F` at decl → should return 3 occurrences (decl + 2 calls)
             let byte = Position { line: 0, character: 9 }.to_byte_offset(&rope).unwrap();
             let all = rm.occurrences_at(byte);
-            assert_eq!(all.len(), 3, "F: 1 decl + 2 calls = 3 occurrences");
+            assert_eq!(all.len(), 3, "F: 1 decl + 2 calls");
             let decls: Vec<_> = all.iter().filter(|o| o.is_decl).collect();
             assert_eq!(decls.len(), 1, "exactly 1 declaration");
             let refs: Vec<_> = all.iter().filter(|o| !o.is_decl).collect();
@@ -1512,1250 +1645,429 @@ endfunction
         });
     }
 
-    // ── link: var namespace separate from func namespace ────────────────
+    // ─── TypeMap tests ──────────────────────────────────────────────────
 
     #[test]
-    fn link_namespaces_separate_for_same_name() {
-        // `X` exists as both a global variable and a function
-        let src = "\
-globals
-    integer X = 5
-endglobals
-function X takes nothing returns nothing
-endfunction
-function Main takes nothing returns nothing
-    set X = 10
-    call X()
-endfunction
-";
+    fn type_map_type_decl() {
+        use crate::lng::jass::type_map::DeclType;
+        let src = "type widget extends agent\n";
         with_cursor(src, |c| {
-            let groups = find_groups(c, "X");
-            assert_eq!(groups.len(), 2,
-                "should have 2 groups for X: var + func");
-
-            // Variable group: decl (line 1) + set (line 6)
-            let var_group = groups.iter()
-                .find(|(_, occs)| occs.iter().any(|o| o.range.start.line == 1))
-                .expect("should have X var group at line 1");
-            let var_lines: Vec<_> = var_group.1.iter().map(|o| o.range.start.line).collect();
-            assert!(var_lines.contains(&1), "var group: decl at line 1");
-            assert!(var_lines.contains(&6), "var group: set at line 6");
-
-            // Function group: decl (line 3) + call (line 7)
-            let func_group = groups.iter()
-                .find(|(_, occs)| occs.iter().any(|o| o.range.start.line == 3))
-                .expect("should have X func group at line 3");
-            let func_lines: Vec<_> = func_group.1.iter().map(|o| o.range.start.line).collect();
-            assert!(func_lines.contains(&3), "func group: decl at line 3");
-            assert!(func_lines.contains(&7), "func group: call at line 7");
-        });
-    }
-
-    // ── link: import with multiple functions ────────────────────────────
-
-    #[test]
-    fn link_import_multiple_funcs() {
-        let src = "\
-function Main takes nothing returns nothing
-    call CreateUnit()
-    call RemoveUnit()
-    call CreateUnit()
-endfunction
-";
-        let origin = Url::parse("file:///lib/common.j").unwrap();
-        let imported = vec![
-            ImportedSymbol { origin_uri: origin.clone(), name: "CreateUnit".into(), kind: ImportedKind::Func, origin_decl_key: None },
-            ImportedSymbol { origin_uri: origin.clone(), name: "RemoveUnit".into(), kind: ImportedKind::Func, origin_decl_key: None },
-        ];
-        with_cursor_imported(src, &imported, |c| {
-            // CreateUnit: external group with 2 occurrences
-            let cu_key = *c.ref_groups.keys()
-                .find(|&&k| k >= EXTERNAL_KEY_BASE
-                    && c.ref_names.get(&k).map(|n| n == "CreateUnit").unwrap_or(false))
-                .expect("CreateUnit external key");
-            assert_eq!(c.ref_groups[&cu_key].len(), 2, "CreateUnit: 2 calls");
-
-            // RemoveUnit: external group with 1 occurrence
-            let ru_key = *c.ref_groups.keys()
-                .find(|&&k| k >= EXTERNAL_KEY_BASE
-                    && c.ref_names.get(&k).map(|n| n == "RemoveUnit").unwrap_or(false))
-                .expect("RemoveUnit external key");
-            assert_eq!(c.ref_groups[&ru_key].len(), 1, "RemoveUnit: 1 call");
-        });
-    }
-
-    // ── link: import — mixed resolved + unresolved ──────────────────────
-
-    #[test]
-    fn link_import_partial() {
-        let src = "\
-function Main takes nothing returns nothing
-    call Known()
-    call Unknown()
-endfunction
-";
-        let origin = Url::parse("file:///lib/common.j").unwrap();
-        let imported = vec![
-            ImportedSymbol { origin_uri: origin.clone(), name: "Known".into(), kind: ImportedKind::Func, origin_decl_key: None },
-        ];
-        with_cursor_imported(src, &imported, |c| {
-            // Known → external
-            let ext_keys: Vec<_> = c.ref_groups.keys()
-                .filter(|&&k| k >= EXTERNAL_KEY_BASE)
+            let type_entries: Vec<_> = c.type_map.entries.values()
+                .filter(|d| matches!(d, DeclType::Type(_)))
                 .collect();
-            assert_eq!(ext_keys.len(), 1, "exactly 1 external group (Known)");
-            assert_eq!(c.ref_names[ext_keys[0]], "Known");
-
-            // Unknown → standalone local
-            let (key, occs) = find_group(c, "Unknown");
-            assert!(*key < EXTERNAL_KEY_BASE, "Unknown should be a local standalone key");
-            assert_eq!(occs.len(), 1);
-            assert!(occs[0].is_decl);
+            assert_eq!(type_entries.len(), 1, "should have one type entry");
+            if let DeclType::Type(info) = type_entries[0] {
+                assert_eq!(info.base.as_deref(), Some("agent"));
+            } else {
+                panic!("expected DeclType::Type");
+            }
         });
     }
 
-    // ── link: complex program — everything has a span ───────────────────
-
     #[test]
-    fn link_complex_program_full_coverage() {
-        let src = "\
-type handle extends agent
-type unit extends handle
-native CreateUnit takes integer id returns unit
-globals
-    constant integer FOOTMAN = 'hfoo'
-    unit array army
-endglobals
-function Spawn takes integer idx returns nothing
-    set army[idx] = CreateUnit(FOOTMAN)
-endfunction
-function Main takes nothing returns nothing
-    call Spawn(0)
-    call Spawn(1)
-endfunction
-";
-        let rope = Rope::from(src);
+    fn type_map_native() {
+        use crate::lng::jass::type_map::DeclType;
+        let src = "native CreateUnit takes player p, integer id returns unit\n";
         with_cursor(src, |c| {
-            let rm = ref_map_from(c, &rope);
-
-            // handle: 1 decl + 1 extends ref
-            let (_, h) = find_group(c, "handle");
-            assert_eq!(h.len(), 2);
-
-            // unit: 1 decl + 2 refs (native return type + globals type)
-            let (_, u) = find_group(c, "unit");
-            assert_eq!(u.len(), 3, "unit: 1 decl + 2 refs");
-
-            // CreateUnit: 1 native decl + 1 call
-            let (_, cu) = find_group(c, "CreateUnit");
-            assert_eq!(cu.len(), 2);
-
-            // FOOTMAN: 1 decl + 1 read
-            let (_, fm) = find_group(c, "FOOTMAN");
-            assert_eq!(fm.len(), 2);
-
-            // army: 1 decl + 1 set
-            let (_, army) = find_group(c, "army");
-            assert_eq!(army.len(), 2);
-
-            // Spawn: 1 decl + 2 calls
-            let (_, sp) = find_group(c, "Spawn");
-            assert_eq!(sp.len(), 3, "Spawn: 1 decl + 2 calls");
-
-            // idx: 1 param decl + 1 read (array index)
-            let (_, idx) = find_group(c, "idx");
-            assert_eq!(idx.len(), 2);
-
-            // Spot-check spans
-            assert_span_at(&rm, &rope, 0, 5,  "handle decl");
-            assert_span_at(&rm, &rope, 1, 5,  "unit decl");
-            assert_span_at(&rm, &rope, 8, 8,  "army set");
-            assert_span_at(&rm, &rope, 8, 31, "FOOTMAN read");
-            assert_span_at(&rm, &rope, 11, 9, "Spawn call 1");
-            assert_span_at(&rm, &rope, 12, 9, "Spawn call 2");
+            let func_entries: Vec<_> = c.type_map.entries.values()
+                .filter(|d| matches!(d, DeclType::Func(_)))
+                .collect();
+            assert_eq!(func_entries.len(), 1, "should have one func entry for native");
+            if let DeclType::Func(ft) = func_entries[0] {
+                assert_eq!(ft.params.len(), 2);
+                assert_eq!(ft.params[0].name, "p");
+                assert_eq!(ft.params[0].type_name, "player");
+                assert_eq!(ft.params[1].name, "id");
+                assert_eq!(ft.params[1].type_name, "integer");
+                assert_eq!(ft.return_type.as_deref(), Some("unit"));
+            } else {
+                panic!("expected DeclType::Func");
+            }
         });
     }
 
-    // ======================================================================
-    //  Multi-file import tests
-    // ======================================================================
-    //
-    //  These tests simulate parsing multiple "files" by running Cursor on
-    //  each file source independently, collecting symbols from file A,
-    //  then feeding them as `ImportedSymbol` to file B, etc.
-    //
-    //  Covers:
-    //  • two-file import (direct)
-    //  • transitive import chains (A→B→C)
-    //  • diamond imports (A→B+C, B→D, C→D)
-    //  • origin_decl_key tracking
-    //  • file deletion effects on import graph
-    //  • RefMap external_decls round-trip through build_ref_map
+    #[test]
+    fn type_map_function_with_params() {
+        use crate::lng::jass::type_map::DeclType;
+        let src = "\
+function Foo takes integer x, real y returns nothing
+endfunction
+";
+        with_cursor(src, |c| {
+            // Function itself
+            let func_entries: Vec<_> = c.type_map.entries.values()
+                .filter(|d| matches!(d, DeclType::Func(_)))
+                .collect();
+            assert_eq!(func_entries.len(), 1, "should have func entry for Foo");
 
-    /// Parse a source and return (Cursor, Rope).
-    /// Useful for collecting symbols from one file to feed into another.
-    fn parse_file(src: &str) -> (Cursor, Rope) {
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_jass::language().into())
-            .expect("Failed to set language");
-        let tree = parser.parse(src, None).expect("Failed to parse");
-        let ast = build_ast(tree.root_node());
-        let rope = Rope::from(src);
-        let cursor = Cursor::walk(&ast, &rope, &[]);
-        (cursor, rope)
+            // Parameters
+            let var_entries: Vec<_> = c.type_map.entries.values()
+                .filter(|d| matches!(d, DeclType::Var(_)))
+                .collect();
+            assert_eq!(var_entries.len(), 2, "should have var entries for x and y");
+            let types: Vec<&str> = var_entries.iter().map(|d| {
+                if let DeclType::Var(vt) = d { vt.name.as_str() } else { "" }
+            }).collect();
+            assert!(types.contains(&"integer"));
+            assert!(types.contains(&"real"));
+        });
     }
-
-    /// Parse a source with imported symbols and return (Cursor, Rope).
-    fn parse_file_with_imports(src: &str, imported: &[ImportedSymbol]) -> (Cursor, Rope) {
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_jass::language().into())
-            .expect("Failed to set language");
-        let tree = parser.parse(src, None).expect("Failed to parse");
-        let ast = build_ast(tree.root_node());
-        let rope = Rope::from(src);
-        let cursor = Cursor::walk(&ast, &rope, imported);
-        (cursor, rope)
-    }
-
-    /// Collect exported symbols from a cursor (functions, natives, globals, types)
-    /// for feeding into another file as imports.
-    fn collect_symbols(
-        cursor: &Cursor,
-        rope: &Rope,
-        origin_uri: &Url,
-    ) -> Vec<ImportedSymbol> {
-        let rm = ref_map_from(cursor, rope);
-        let mut symbols = Vec::new();
-
-        for f in &cursor.file_symbols.functions {
-            let origin_key = rm.groups.iter()
-                .find(|(_, g)| g.name == f.name && g.occurrences.iter().any(|o| o.is_decl))
-                .map(|(&k, _)| k);
-            symbols.push(ImportedSymbol {
-                origin_uri: origin_uri.clone(),
-                name: f.name.clone(),
-                kind: ImportedKind::Func,
-                origin_decl_key: origin_key,
-            });
-        }
-        for n in &cursor.file_symbols.natives {
-            let origin_key = rm.groups.iter()
-                .find(|(_, g)| g.name == n.name && g.occurrences.iter().any(|o| o.is_decl))
-                .map(|(&k, _)| k);
-            symbols.push(ImportedSymbol {
-                origin_uri: origin_uri.clone(),
-                name: n.name.clone(),
-                kind: ImportedKind::Func,
-                origin_decl_key: origin_key,
-            });
-        }
-        for g in &cursor.file_symbols.globals {
-            let origin_key = rm.groups.iter()
-                .find(|(_, grp)| grp.name == g.name && grp.occurrences.iter().any(|o| o.is_decl))
-                .map(|(&k, _)| k);
-            symbols.push(ImportedSymbol {
-                origin_uri: origin_uri.clone(),
-                name: g.name.clone(),
-                kind: ImportedKind::Var,
-                origin_decl_key: origin_key,
-            });
-        }
-        for t in &cursor.file_symbols.types {
-            let origin_key = rm.groups.iter()
-                .find(|(_, grp)| grp.name == t.name && grp.occurrences.iter().any(|o| o.is_decl))
-                .map(|(&k, _)| k);
-            symbols.push(ImportedSymbol {
-                origin_uri: origin_uri.clone(),
-                name: t.name.clone(),
-                kind: ImportedKind::Var,
-                origin_decl_key: origin_key,
-            });
-        }
-        symbols
-    }
-
-    // ── multi-file: direct import (A → B) ────────────────────────────────
 
     #[test]
-    fn multifile_direct_import() {
-        // File B: declares CreateUnit and unit type
-        let src_b = "\
-type unit extends handle
-native CreateUnit takes integer id returns unit
-";
-        let uri_b = Url::parse("file:///lib/common.j").unwrap();
-        let (cursor_b, rope_b) = parse_file(src_b);
-        let symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-
-        // Check file B exports
-        assert!(symbols_b.iter().any(|s| s.name == "CreateUnit" && s.kind == ImportedKind::Func),
-            "B should export CreateUnit");
-        assert!(symbols_b.iter().any(|s| s.name == "unit" && s.kind == ImportedKind::Var),
-            "B should export type unit");
-
-        // File A: imports from B and uses CreateUnit + unit
-        let src_a = "\
-function Main takes nothing returns nothing
-    local unit u = CreateUnit(1)
-endfunction
-";
-        let (cursor_a, rope_a) = parse_file_with_imports(src_a, &symbols_b);
-        let rm_a = ref_map_from(&cursor_a, &rope_a);
-
-        // CreateUnit should be external
-        let cu_ext = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "CreateUnit").unwrap_or(false));
-        assert!(cu_ext.is_some(), "CreateUnit should be an external ref in file A");
-        let cu_key = *cu_ext.unwrap();
-        assert_eq!(cursor_a.external_decls[&cu_key].uri, uri_b);
-        assert_eq!(cursor_a.external_decls[&cu_key].name, "CreateUnit");
-
-        // unit should be external
-        let unit_ext = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "unit").unwrap_or(false));
-        assert!(unit_ext.is_some(), "unit type should be an external ref in file A");
-        let unit_key = *unit_ext.unwrap();
-        assert_eq!(cursor_a.external_decls[&unit_key].uri, uri_b);
-
-        // RefMap should have external spans
-        let ext_spans: Vec<_> = rm_a.spans.iter().filter(|s| s.is_external).collect();
-        assert!(ext_spans.len() >= 2, "should have at least 2 external spans (unit + CreateUnit)");
-    }
-
-    // ── multi-file: origin_decl_key is propagated ────────────────────────
-
-    #[test]
-    fn multifile_origin_decl_key_tracked() {
-        // File B: declares function Foo
-        let src_b = "\
-function Foo takes nothing returns nothing
-endfunction
-";
-        let uri_b = Url::parse("file:///lib/utils.j").unwrap();
-        let (cursor_b, rope_b) = parse_file(src_b);
-        let symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-
-        // The origin_decl_key should be the start_byte of "Foo" in file B
-        let foo_sym = symbols_b.iter().find(|s| s.name == "Foo").unwrap();
-        assert!(foo_sym.origin_decl_key.is_some(),
-            "Foo should have an origin_decl_key from file B's RefMap");
-        let origin_key = foo_sym.origin_decl_key.unwrap();
-
-        // File A: calls Foo
-        let src_a = "call Foo()\n";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &symbols_b);
-
-        // Check that ExternalDecl carries the origin key
-        let ext_key = *cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "Foo").unwrap_or(false))
-            .expect("Foo should be external in A");
-        let ext_decl = &cursor_a.external_decls[&ext_key];
-        assert_eq!(ext_decl.origin_decl_key, Some(origin_key),
-            "origin_decl_key should match Foo's DeclKey in file B");
-    }
-
-    // ── multi-file: transitive import chain (A → B → C) ─────────────────
-
-    #[test]
-    fn multifile_transitive_chain() {
-        // File C: declares native GetPlayer
-        let src_c = "\
-native GetPlayer takes integer id returns handle
-";
-        let uri_c = Url::parse("file:///lib/natives.j").unwrap();
-        let (cursor_c, rope_c) = parse_file(src_c);
-        let symbols_c = collect_symbols(&cursor_c, &rope_c, &uri_c);
-
-        // File B: imports C, declares WrapPlayer that uses GetPlayer
-        let src_b = "\
-function WrapPlayer takes integer id returns handle
-    return GetPlayer(id)
-endfunction
-";
-        let uri_b = Url::parse("file:///lib/helpers.j").unwrap();
-        let (cursor_b, rope_b) = parse_file_with_imports(src_b, &symbols_c);
-        let mut symbols_for_a = collect_symbols(&cursor_b, &rope_b, &uri_b);
-        // Also include C's symbols (transitive)
-        symbols_for_a.extend(symbols_c.clone());
-
-        // File A: uses both WrapPlayer (from B) and GetPlayer (from C, transitively)
-        let src_a = "\
-function Main takes nothing returns nothing
-    call WrapPlayer(1)
-    call GetPlayer(2)
-endfunction
-";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &symbols_for_a);
-
-        // WrapPlayer → external from B
-        let wp_key = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "WrapPlayer").unwrap_or(false));
-        assert!(wp_key.is_some(), "WrapPlayer should be external in A");
-        assert_eq!(cursor_a.external_decls[wp_key.unwrap()].uri, uri_b);
-
-        // GetPlayer → external from C (transitive)
-        let gp_key = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "GetPlayer").unwrap_or(false));
-        assert!(gp_key.is_some(), "GetPlayer should be external in A (transitive)");
-        assert_eq!(cursor_a.external_decls[gp_key.unwrap()].uri, uri_c);
-    }
-
-    // ── multi-file: diamond import (A→B+C, B→D, C→D) ────────────────────
-
-    #[test]
-    fn multifile_diamond_import() {
-        // File D: declares KillUnit
-        let src_d = "native KillUnit takes handle u returns nothing\n";
-        let uri_d = Url::parse("file:///lib/core.j").unwrap();
-        let (cursor_d, rope_d) = parse_file(src_d);
-        let symbols_d = collect_symbols(&cursor_d, &rope_d, &uri_d);
-
-        // File B: imports D, declares WrapKillB
-        let src_b = "\
-function WrapKillB takes handle u returns nothing
-    call KillUnit(u)
-endfunction
-";
-        let uri_b = Url::parse("file:///lib/b.j").unwrap();
-        let (cursor_b, rope_b) = parse_file_with_imports(src_b, &symbols_d);
-        let symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-
-        // File C: imports D, declares WrapKillC
-        let src_c = "\
-function WrapKillC takes handle u returns nothing
-    call KillUnit(u)
-endfunction
-";
-        let uri_c = Url::parse("file:///lib/c.j").unwrap();
-        let (cursor_c, rope_c) = parse_file_with_imports(src_c, &symbols_d);
-        let symbols_c = collect_symbols(&cursor_c, &rope_c, &uri_c);
-
-        // File A: imports B + C + D (transitively)
-        let mut all_imports = Vec::new();
-        all_imports.extend(symbols_b.clone());
-        all_imports.extend(symbols_c.clone());
-        all_imports.extend(symbols_d.clone());
-
-        let src_a = "\
-function Main takes nothing returns nothing
-    call WrapKillB(null)
-    call WrapKillC(null)
-    call KillUnit(null)
-endfunction
-";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &all_imports);
-
-        // All 3 should be external
-        for (name, expected_uri) in &[
-            ("WrapKillB", &uri_b),
-            ("WrapKillC", &uri_c),
-            ("KillUnit", &uri_d),
-        ] {
-            let key = cursor_a.ref_groups.keys()
-                .find(|&&k| k >= EXTERNAL_KEY_BASE
-                    && cursor_a.ref_names.get(&k).map(|n| n.as_str() == *name).unwrap_or(false));
-            assert!(key.is_some(), "{} should be external in A", name);
-            assert_eq!(&cursor_a.external_decls[key.unwrap()].uri, *expected_uri,
-                "{} should come from {:?}", name, expected_uri);
-        }
-
-        // Exactly 3 external groups
-        let ext_count = cursor_a.ref_groups.keys()
-            .filter(|&&k| k >= EXTERNAL_KEY_BASE)
-            .count();
-        assert_eq!(ext_count, 3, "diamond: 3 external groups (WrapKillB, WrapKillC, KillUnit)");
-    }
-
-    // ── multi-file: local declaration shadows transitive import ──────────
-
-    #[test]
-    fn multifile_local_shadows_transitive() {
-        // File C: declares Foo
-        let src_c = "function Foo takes nothing returns nothing\nendfunction\n";
-        let uri_c = Url::parse("file:///lib/c.j").unwrap();
-        let (cursor_c, rope_c) = parse_file(src_c);
-        let symbols_c = collect_symbols(&cursor_c, &rope_c, &uri_c);
-
-        // File A: declares its own Foo AND calls Foo → should link to local, not import
-        let src_a = "\
-function Foo takes nothing returns nothing
-endfunction
-function Main takes nothing returns nothing
-    call Foo()
-endfunction
-";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &symbols_c);
-
-        // No external groups — local Foo shadows the import
-        let ext_count = cursor_a.ref_groups.keys()
-            .filter(|&&k| k >= EXTERNAL_KEY_BASE)
-            .count();
-        assert_eq!(ext_count, 0, "local Foo should shadow imported Foo");
-
-        // Both occurrences in the same local group
-        let (_, foo_occs) = find_group(&cursor_a, "Foo");
-        assert_eq!(foo_occs.len(), 2, "Foo: 1 decl + 1 call, all local");
-    }
-
-    // ── multi-file: import from multiple origins ─────────────────────────
-
-    #[test]
-    fn multifile_imports_from_multiple_origins() {
-        // File B: declares DoStuff
-        let src_b = "function DoStuff takes nothing returns nothing\nendfunction\n";
-        let uri_b = Url::parse("file:///lib/b.j").unwrap();
-        let (cursor_b, rope_b) = parse_file(src_b);
-        let symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-
-        // File C: declares DoOther
-        let src_c = "function DoOther takes nothing returns nothing\nendfunction\n";
-        let uri_c = Url::parse("file:///lib/c.j").unwrap();
-        let (cursor_c, rope_c) = parse_file(src_c);
-        let symbols_c = collect_symbols(&cursor_c, &rope_c, &uri_c);
-
-        // File A: calls both
-        let mut imports = Vec::new();
-        imports.extend(symbols_b);
-        imports.extend(symbols_c);
-
-        let src_a = "\
-function Main takes nothing returns nothing
-    call DoStuff()
-    call DoOther()
-endfunction
-";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &imports);
-
-        let stuff_key = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "DoStuff").unwrap_or(false))
-            .expect("DoStuff should be external");
-        assert_eq!(cursor_a.external_decls[stuff_key].uri, uri_b);
-
-        let other_key = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "DoOther").unwrap_or(false))
-            .expect("DoOther should be external");
-        assert_eq!(cursor_a.external_decls[other_key].uri, uri_c);
-    }
-
-    // ── multi-file: mixed resolved + unresolved + local ──────────────────
-
-    #[test]
-    fn multifile_mixed_resolution() {
-        // File B: declares only KnownFunc
-        let src_b = "function KnownFunc takes nothing returns nothing\nendfunction\n";
-        let uri_b = Url::parse("file:///lib/b.j").unwrap();
-        let (cursor_b, rope_b) = parse_file(src_b);
-        let symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-
-        // File A: has local Local, calls KnownFunc (resolved), calls Unknown (standalone)
-        let src_a = "\
-function Local takes nothing returns nothing
-endfunction
-function Main takes nothing returns nothing
-    call Local()
-    call KnownFunc()
-    call UnknownFunc()
-endfunction
-";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &symbols_b);
-
-        // Local → local group (not external)
-        let (local_key, local_occs) = find_group(&cursor_a, "Local");
-        assert!(*local_key < EXTERNAL_KEY_BASE, "Local should be a local DeclKey");
-        assert_eq!(local_occs.len(), 2, "Local: 1 decl + 1 call");
-
-        // KnownFunc → external
-        let known_key = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "KnownFunc").unwrap_or(false))
-            .expect("KnownFunc should be external");
-        assert_eq!(cursor_a.external_decls[known_key].uri, uri_b);
-
-        // UnknownFunc → standalone local (not external)
-        let (unk_key, unk_occs) = find_group(&cursor_a, "UnknownFunc");
-        assert!(*unk_key < EXTERNAL_KEY_BASE, "UnknownFunc should be standalone local");
-        assert_eq!(unk_occs.len(), 1, "UnknownFunc: 1 standalone ref");
-        assert!(unk_occs[0].is_decl, "standalone ref is its own decl");
-    }
-
-    // ── multi-file: globals + types imported ─────────────────────────────
-
-    #[test]
-    fn multifile_import_globals_and_types() {
-        // File B: declares type + global
-        let src_b = "\
-type widget extends handle
+    fn type_map_globals() {
+        use crate::lng::jass::type_map::DeclType;
+        let src = "\
 globals
-    widget lastWidget = null
+    constant integer MAX = 100
+    real x = 1.5
 endglobals
 ";
-        let uri_b = Url::parse("file:///lib/common.j").unwrap();
-        let (cursor_b, rope_b) = parse_file(src_b);
-        let symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
+        with_cursor(src, |c| {
+            let var_entries: Vec<_> = c.type_map.entries.iter()
+                .filter(|(_, d)| matches!(d, DeclType::Var(_)))
+                .collect();
+            assert_eq!(var_entries.len(), 2, "should have var entries for MAX and x");
 
-        // Check exports
-        assert!(symbols_b.iter().any(|s| s.name == "widget" && s.kind == ImportedKind::Var));
-        assert!(symbols_b.iter().any(|s| s.name == "lastWidget" && s.kind == ImportedKind::Var));
-
-        // File A: uses type and global from B
-        let src_a = "\
-function F takes nothing returns nothing
-    local widget w = lastWidget
-endfunction
-";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &symbols_b);
-
-        // widget type → external
-        let widget_key = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "widget").unwrap_or(false));
-        assert!(widget_key.is_some(), "widget type should be external in A");
-
-        // lastWidget global → external
-        let lw_key = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "lastWidget").unwrap_or(false));
-        assert!(lw_key.is_some(), "lastWidget should be external in A");
+            // Find the constant
+            let constant = var_entries.iter()
+                .find(|(_, d)| matches!(d, DeclType::Var(vt) if vt.is_constant))
+                .map(|(_, d)| d);
+            assert!(constant.is_some(), "MAX should be constant");
+            if let Some(DeclType::Var(vt)) = constant {
+                assert_eq!(vt.name, "integer");
+                assert!(vt.is_constant);
+                assert!(vt.is_comptime, "constant with literal init should be comptime");
+            }
+        });
     }
 
-    // ── multi-file: re-parse after change (symbol added) ─────────────────
-
     #[test]
-    fn multifile_reparse_after_symbol_added() {
-        // Phase 1: File B has Foo only
-        let src_b_v1 = "function Foo takes nothing returns nothing\nendfunction\n";
-        let uri_b = Url::parse("file:///lib/b.j").unwrap();
-        let (cursor_b1, rope_b1) = parse_file(src_b_v1);
-        let symbols_b1 = collect_symbols(&cursor_b1, &rope_b1, &uri_b);
-
-        // File A: calls Foo (resolved) and Bar (unresolved)
-        let src_a = "\
-function Main takes nothing returns nothing
-    call Foo()
-    call Bar()
+    fn type_map_local() {
+        use crate::lng::jass::type_map::DeclType;
+        let src = "\
+function Foo takes nothing returns nothing
+    local integer x = 5
 endfunction
 ";
-        let (cursor_a1, _rope_a1) = parse_file_with_imports(src_a, &symbols_b1);
+        with_cursor(src, |c| {
+            let local_entries: Vec<_> = c.type_map.entries.values()
+                .filter(|d| matches!(d, DeclType::Var(vt) if vt.name == "integer" && !vt.is_constant))
+                .collect();
+            assert_eq!(local_entries.len(), 1, "should have local var entry for x");
+        });
+    }
 
-        // Bar should be standalone in v1
-        let (bar_key1, _) = find_group(&cursor_a1, "Bar");
-        assert!(*bar_key1 < EXTERNAL_KEY_BASE, "Bar standalone before B adds it");
+    #[test]
+    fn type_hints_generated_for_globals() {
+        let src = "\
+globals
+    integer x = 5
+endglobals
+";
+        with_cursor(src, |c| {
+            assert!(!c.type_hints.is_empty(), "should have type hints for globals");
+            assert!(
+                c.type_hints.iter().any(|h| h.label.contains("integer")),
+                "type hint should mention 'integer'"
+            );
+        });
+    }
 
-        // Phase 2: File B is edited to also have Bar
-        let src_b_v2 = "\
+    #[test]
+    fn type_hints_generated_for_locals() {
+        let src = "\
+function Foo takes nothing returns nothing
+    local real y = 3.14
+endfunction
+";
+        with_cursor(src, |c| {
+            assert!(!c.type_hints.is_empty(), "should have type hints for locals");
+            assert!(
+                c.type_hints.iter().any(|h| h.label.contains("real")),
+                "type hint should mention 'real'"
+            );
+        });
+    }
+
+    #[test]
+    fn type_hints_generated_for_varstmt_toplevel() {
+        let src = "real A = 33\n";
+        with_cursor(src, |c| {
+            assert!(!c.type_hints.is_empty(), "should have type hints for top-level VarStmt");
+            assert!(
+                c.type_hints.iter().any(|h| h.label.contains("real")),
+                "type hint should mention 'real', hints: {:?}",
+                c.type_hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn type_hints_generated_for_varstmt_in_function() {
+        let src = "\
+function A takes nothing returns nothing
+    integer x = 33
+    unit u = null
+endfunction
+";
+        with_cursor(src, |c| {
+            let labels: Vec<&str> = c.type_hints.iter().map(|h| h.label.as_str()).collect();
+            assert!(
+                labels.iter().any(|l| l.contains("integer")),
+                "should have type hint for integer, got: {:?}", labels
+            );
+            assert!(
+                labels.iter().any(|l| l.contains("unit")),
+                "should have type hint for unit, got: {:?}", labels
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_propagation() {
+        use crate::lng::jass::type_map::DeclType;
+        let src = "\
+globals
+    constant integer A = 10
+    constant integer B = A + 5
+    constant integer C = A * B
+endglobals
+";
+        with_cursor(src, |c| {
+            let comptime_count = c.type_map.entries.values()
+                .filter(|d| matches!(d, DeclType::Var(vt) if vt.is_comptime))
+                .count();
+            assert_eq!(comptime_count, 3, "all three constants with comptime inits should be comptime");
+        });
+    }
+
+    // ─── //set directive tests ──────────────────────────────────────────
+
+    #[test]
+    fn set_type_tip_recognized() {
+        let src = "//set type-tip 1\nglobals\n    integer x = 5\nendglobals\n";
+        with_cursor(src, |c| {
+            assert_eq!(c.file_settings.get("type-tip").map(|v| v.as_str()), Some("1"));
+        });
+    }
+
+    #[test]
+    fn set_type_tip_off() {
+        let src = "//set type-tip 0\nglobals\n    integer x = 5\nendglobals\n";
+        with_cursor(src, |c| {
+            assert_eq!(c.file_settings.get("type-tip").map(|v| v.as_str()), Some("0"));
+        });
+    }
+
+    #[test]
+    fn set_bool_invalid_value_warns() {
+        let src = "//set ref-tip maybe\nglobals\n    integer x = 5\nendglobals\n";
+        with_cursor(src, |c| {
+            // The value is still stored (for forward-compat)
+            assert_eq!(c.file_settings.get("ref-tip").map(|v| v.as_str()), Some("maybe"));
+            // But a warning diagnostic should be emitted
+            let has_warning = c.diagnostics.iter().any(|d| {
+                d.message.contains("Invalid value") && d.message.contains("ref-tip")
+            });
+            assert!(has_warning, "should warn about invalid bool value, diagnostics: {:?}",
+                c.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
+        });
+    }
+
+    #[test]
+    fn set_def_registry_has_type_tip() {
+        let def = crate::lng::directive::find_set_def("type-tip");
+        assert!(def.is_some(), "type-tip should be in SET_DEFS");
+        let def = def.unwrap();
+        assert_eq!(def.kind, crate::lng::directive::SetValueKind::Bool);
+        assert_eq!(def.default, "0");
+    }
+
+    #[test]
+    fn set_def_registry_has_all_known_keys() {
+        for key in &["ref-tip", "type-tip", "build-jass", "build-as"] {
+            assert!(
+                crate::lng::directive::find_set_def(key).is_some(),
+                "SET_DEFS should contain {:?}",
+                key
+            );
+        }
+    }
+
+    #[test]
+    fn set_validate_bool_accepts_0_and_1() {
+        let def = crate::lng::directive::find_set_def("ref-tip").unwrap();
+        assert!(crate::lng::directive::validate_set_value(def, "0").is_none());
+        assert!(crate::lng::directive::validate_set_value(def, "1").is_none());
+        assert!(crate::lng::directive::validate_set_value(def, "yes").is_some());
+        assert!(crate::lng::directive::validate_set_value(def, "").is_some());
+    }
+
+    #[test]
+    fn set_validate_path_accepts_anything() {
+        let def = crate::lng::directive::find_set_def("build-jass").unwrap();
+        assert!(crate::lng::directive::validate_set_value(def, "./output.j").is_none());
+        assert!(crate::lng::directive::validate_set_value(def, "C:\\build\\out.j").is_none());
+    }
+
+    // ─── Expression-level type hint tests ──────────────────────────────
+
+    #[test]
+    fn type_hint_integer_literal() {
+        let src = "\
+globals
+    integer x = 5
+endglobals
+";
+        with_cursor(src, |c| {
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": integer" && h.position.line == 1),
+                "should have ': integer' hint for literal 5, got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn type_hint_real_literal() {
+        let src = "\
+globals
+    real y = 3.14
+endglobals
+";
+        with_cursor(src, |c| {
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": real" && h.position.line == 1
+                    && h.position.character > 10),
+                "should have ': real' hint for literal 3.14, got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn type_hint_string_literal() {
+        let src = "\
+globals
+    string s = \"hello\"
+endglobals
+";
+        with_cursor(src, |c| {
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": string" && h.position.line == 1
+                    && h.position.character > 14),
+                "should have ': string' hint for literal \"hello\", got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn type_hint_boolean_literal() {
+        let src = "\
+globals
+    boolean b = true
+endglobals
+";
+        with_cursor(src, |c| {
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": boolean" && h.position.line == 1
+                    && h.position.character > 14),
+                "should have ': boolean' hint for 'true', got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn type_hint_variable_reference() {
+        let src = "\
+globals
+    integer a = 10
+    integer b = a
+endglobals
+";
+        with_cursor(src, |c| {
+            // Line 2 is `integer b = a` — the `a` reference should get `: integer`
+            let a_hints: Vec<_> = c.type_hints.iter()
+                .filter(|h| h.position.line == 2 && h.label == ": integer")
+                .collect();
+            assert!(
+                a_hints.len() >= 2,
+                "line 2 should have ': integer' for both 'b' decl and 'a' reference, got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn type_hint_function_call() {
+        let src = "\
+function GetVal takes nothing returns integer
+endfunction
+function Foo takes nothing returns nothing
+    local integer x = GetVal()
+endfunction
+";
+        with_cursor(src, |c| {
+            // The `GetVal()` call should produce a `: integer` hint
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": integer" && h.position.line == 3),
+                "should have ': integer' hint for GetVal() call, got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn type_hint_func_ref_is_code() {
+        let src = "\
 function Foo takes nothing returns nothing
 endfunction
 function Bar takes nothing returns nothing
+    local code c = function Foo
 endfunction
 ";
-        let (cursor_b2, rope_b2) = parse_file(src_b_v2);
-        let symbols_b2 = collect_symbols(&cursor_b2, &rope_b2, &uri_b);
-
-        // Re-parse A with updated imports
-        let (cursor_a2, _rope_a2) = parse_file_with_imports(src_a, &symbols_b2);
-
-        // Now Bar should be external
-        let bar_ext = cursor_a2.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a2.ref_names.get(&k).map(|n| n == "Bar").unwrap_or(false));
-        assert!(bar_ext.is_some(), "Bar should be external after B adds it");
-        assert_eq!(cursor_a2.external_decls[bar_ext.unwrap()].uri, uri_b);
+        with_cursor(src, |c| {
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": code"),
+                "should have ': code' hint for function reference, got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
     }
 
-    // ── multi-file: re-parse after symbol removed ────────────────────────
+    #[test]
+    fn type_hint_binary_arithmetic() {
+        // 2 * 3.14 → each literal gets a hint; result type is real
+        let src = "\
+globals
+    real x = 2 * 3.14
+endglobals
+";
+        with_cursor(src, |c| {
+            let labels: Vec<_> = c.type_hints.iter()
+                .filter(|h| h.position.line == 1)
+                .map(|h| h.label.as_str())
+                .collect();
+            assert!(labels.contains(&": integer"), "should hint '2' as integer, got: {:?}", labels);
+            assert!(labels.contains(&": real"), "should hint '3.14' as real, got: {:?}", labels);
+        });
+    }
 
     #[test]
-    fn multifile_reparse_after_symbol_removed() {
-        // Phase 1: File B has both Foo and Bar
-        let src_b_v1 = "\
+    fn type_hint_null_literal() {
+        let src = "\
 function Foo takes nothing returns nothing
-endfunction
-function Bar takes nothing returns nothing
-endfunction
-";
-        let uri_b = Url::parse("file:///lib/b.j").unwrap();
-        let (cursor_b1, rope_b1) = parse_file(src_b_v1);
-        let symbols_b1 = collect_symbols(&cursor_b1, &rope_b1, &uri_b);
-
-        let src_a = "\
-function Main takes nothing returns nothing
-    call Foo()
-    call Bar()
+    local handle h = null
 endfunction
 ";
-        let (cursor_a1, _rope_a1) = parse_file_with_imports(src_a, &symbols_b1);
-
-        // Both should be external in v1
-        let ext_count1 = cursor_a1.ref_groups.keys()
-            .filter(|&&k| k >= EXTERNAL_KEY_BASE)
-            .count();
-        assert_eq!(ext_count1, 2, "v1: Foo + Bar both external");
-
-        // Phase 2: File B loses Bar
-        let src_b_v2 = "function Foo takes nothing returns nothing\nendfunction\n";
-        let (cursor_b2, rope_b2) = parse_file(src_b_v2);
-        let symbols_b2 = collect_symbols(&cursor_b2, &rope_b2, &uri_b);
-
-        let (cursor_a2, _rope_a2) = parse_file_with_imports(src_a, &symbols_b2);
-
-        // Foo still external, Bar now standalone
-        let foo_ext = cursor_a2.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a2.ref_names.get(&k).map(|n| n == "Foo").unwrap_or(false));
-        assert!(foo_ext.is_some(), "Foo should still be external");
-
-        let (bar_key, _) = find_group(&cursor_a2, "Bar");
-        assert!(*bar_key < EXTERNAL_KEY_BASE, "Bar should be standalone after removal from B");
-    }
-
-    // ── import graph: file deletion removes edges ────────────────────────
-
-    #[test]
-    fn import_graph_file_deletion() {
-        use crate::util::import_graph::ImportGraph;
-
-        let g = ImportGraph::new_empty();
-        let a = Url::parse("file:///project/a.j").unwrap();
-        let b = Url::parse("file:///project/b.j").unwrap();
-        let c = Url::parse("file:///project/c.j").unwrap();
-        let d = Url::parse("file:///project/d.j").unwrap();
-
-        // A→B→C, A→D
-        g.update(&a, std::collections::HashSet::from([b.clone(), d.clone()]));
-        g.update(&b, std::collections::HashSet::from([c.clone()]));
-
-        assert_eq!(g.node_count(), 4);
-        assert_eq!(g.edge_count(), 3);
-
-        // Delete B
-        g.remove(&b);
-
-        // B is gone
-        assert_eq!(g.node_count(), 3);
-        assert!(g.direct_imports(&b).is_empty(), "B removed: no imports");
-        assert!(g.direct_dependents(&b).is_empty(), "B removed: no dependents");
-
-        // A still has D as import, but B edge is gone
-        let a_imports = g.direct_imports(&a);
-        assert_eq!(a_imports.len(), 1, "A should have 1 import left (D)");
-        assert!(a_imports.contains(&d));
-        assert!(!a_imports.contains(&b), "B should not be in A's imports");
-
-        // C has no dependents anymore
-        assert!(g.direct_dependents(&c).is_empty(), "C should have no dependents after B removed");
-    }
-
-    // ── import graph: delete middle of chain ─────────────────────────────
-
-    #[test]
-    fn import_graph_delete_middle() {
-        use crate::util::import_graph::ImportGraph;
-
-        let g = ImportGraph::new_empty();
-        let a = Url::parse("file:///a.j").unwrap();
-        let b = Url::parse("file:///b.j").unwrap();
-        let c = Url::parse("file:///c.j").unwrap();
-
-        // Chain: A→B→C
-        g.update(&a, std::collections::HashSet::from([b.clone()]));
-        g.update(&b, std::collections::HashSet::from([c.clone()]));
-
-        // Transitive: A depends on B and C
-        let deps = g.dependencies(&a);
-        assert_eq!(deps.len(), 2);
-
-        // Delete B (middle)
-        g.remove(&b);
-
-        // A's direct import B is gone
-        assert!(g.direct_imports(&a).is_empty(),
-            "A's only import was B which is now deleted");
-
-        // Transitive deps of A are now empty
-        let deps_after = g.dependencies(&a);
-        assert!(deps_after.is_empty(),
-            "A has no transitive dependencies after B removed");
-
-        // C is isolated
-        assert!(g.direct_dependents(&c).is_empty());
-    }
-
-    // ── import graph: delete leaf (no cascading) ─────────────────────────
-
-    #[test]
-    fn import_graph_delete_leaf() {
-        use crate::util::import_graph::ImportGraph;
-
-        let g = ImportGraph::new_empty();
-        let a = Url::parse("file:///a.j").unwrap();
-        let b = Url::parse("file:///b.j").unwrap();
-        let c = Url::parse("file:///c.j").unwrap();
-
-        // A→B, A→C
-        g.update(&a, std::collections::HashSet::from([b.clone(), c.clone()]));
-
-        // Delete C (leaf)
-        g.remove(&c);
-
-        // A still imports B
-        let a_imports = g.direct_imports(&a);
-        assert_eq!(a_imports.len(), 1);
-        assert!(a_imports.contains(&b));
-    }
-
-    // ── import graph: delete root ────────────────────────────────────────
-
-    #[test]
-    fn import_graph_delete_root() {
-        use crate::util::import_graph::ImportGraph;
-
-        let g = ImportGraph::new_empty();
-        let a = Url::parse("file:///a.j").unwrap();
-        let b = Url::parse("file:///b.j").unwrap();
-
-        g.update(&a, std::collections::HashSet::from([b.clone()]));
-        g.remove(&a);
-
-        assert!(g.direct_imports(&a).is_empty());
-        assert!(g.direct_dependents(&b).is_empty());
-        assert_eq!(g.node_count(), 1, "only B remains as isolated node");
-    }
-
-    // ── import graph: diamond delete one branch ──────────────────────────
-
-    #[test]
-    fn import_graph_diamond_delete_branch() {
-        use crate::util::import_graph::ImportGraph;
-
-        let g = ImportGraph::new_empty();
-        let a = Url::parse("file:///a.j").unwrap();
-        let b = Url::parse("file:///b.j").unwrap();
-        let c = Url::parse("file:///c.j").unwrap();
-        let d = Url::parse("file:///d.j").unwrap();
-
-        // A→B, A→C, B→D, C→D (diamond)
-        g.update(&a, std::collections::HashSet::from([b.clone(), c.clone()]));
-        g.update(&b, std::collections::HashSet::from([d.clone()]));
-        g.update(&c, std::collections::HashSet::from([d.clone()]));
-
-        assert_eq!(g.node_count(), 4);
-        assert_eq!(g.edge_count(), 4);
-
-        // Delete B (one branch of diamond)
-        g.remove(&b);
-
-        // A still imports C
-        let a_imports = g.direct_imports(&a);
-        assert_eq!(a_imports.len(), 1);
-        assert!(a_imports.contains(&c));
-
-        // D still reachable from A through C
-        let a_deps = g.dependencies(&a);
-        assert!(a_deps.contains(&c));
-        assert!(a_deps.contains(&d));
-
-        // D has one dependent left (C, not B)
-        let d_dependents = g.direct_dependents(&d);
-        assert_eq!(d_dependents.len(), 1);
-        assert!(d_dependents.contains(&c));
-    }
-
-    // ── multi-file: RefMap external_decls survive build_ref_map ──────────
-
-    #[test]
-    fn multifile_refmap_external_decls_roundtrip() {
-        let src_b = "function LibFunc takes integer x returns nothing\nendfunction\n";
-        let uri_b = Url::parse("file:///lib/b.j").unwrap();
-        let (cursor_b, rope_b) = parse_file(src_b);
-        let symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-
-        let src_a = "\
-function Main takes nothing returns nothing
-    call LibFunc(42)
-    call LibFunc(99)
-endfunction
-";
-        let (cursor_a, rope_a) = parse_file_with_imports(src_a, &symbols_b);
-        let rm = ref_map_from(&cursor_a, &rope_a);
-
-        // RefMap should have LibFunc in external_decls
-        let ext_key = rm.groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && rm.groups.get(&k).map(|g| g.name == "LibFunc").unwrap_or(false))
-            .expect("LibFunc should exist in RefMap groups");
-        assert!(rm.external_decls.contains_key(ext_key),
-            "LibFunc should be in external_decls");
-        assert_eq!(rm.external_decls[ext_key].uri, uri_b);
-
-        // 2 occurrences (2 calls)
-        let grp = &rm.groups[ext_key];
-        assert_eq!(grp.occurrences.len(), 2, "LibFunc: 2 calls in A");
-        assert!(grp.occurrences.iter().all(|o| !o.is_decl),
-            "external refs should not be marked as decl");
-
-        // external_at should work through spans
-        let pos = crate::lsp::position::Position { line: 1, character: 9 };
-        let byte = pos.to_byte_offset(&rope_a).unwrap();
-        let ext = rm.external_at(byte);
-        assert!(ext.is_some(), "external_at should find LibFunc at call site");
-        assert_eq!(ext.unwrap().uri, uri_b);
-    }
-
-    // ── multi-file: RefMap cache serialization round-trip ─────────────────
-
-    #[test]
-    fn multifile_refmap_bincode_roundtrip() {
-        let src_b = "native SomeNative takes nothing returns nothing\n";
-        let uri_b = Url::parse("file:///lib/b.j").unwrap();
-        let (cursor_b, rope_b) = parse_file(src_b);
-        let symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-
-        let src_a = "call SomeNative()\ncall SomeNative()\n";
-        let (cursor_a, rope_a) = parse_file_with_imports(src_a, &symbols_b);
-        let rm_original = ref_map_from(&cursor_a, &rope_a);
-
-        // Serialize and deserialize
-        let serialized = bincode::serialize(&rm_original).expect("serialize");
-        let rm_restored: crate::lsp::ref_map::RefMap =
-            bincode::deserialize(&serialized).expect("deserialize");
-
-        // Verify groups
-        assert_eq!(rm_restored.groups.len(), rm_original.groups.len());
-        for (key, grp) in &rm_original.groups {
-            let restored_grp = rm_restored.groups.get(key)
-                .unwrap_or_else(|| panic!("key {} missing after roundtrip", key));
-            assert_eq!(restored_grp.name, grp.name);
-            assert_eq!(restored_grp.occurrences.len(), grp.occurrences.len());
-        }
-
-        // Verify spans
-        assert_eq!(rm_restored.spans.len(), rm_original.spans.len());
-        for (orig, rest) in rm_original.spans.iter().zip(rm_restored.spans.iter()) {
-            assert_eq!(orig.start_byte, rest.start_byte);
-            assert_eq!(orig.end_byte, rest.end_byte);
-            assert_eq!(orig.decl_key, rest.decl_key);
-            assert_eq!(orig.is_external, rest.is_external);
-        }
-
-        // Verify external_decls (including origin_decl_key)
-        assert_eq!(rm_restored.external_decls.len(), rm_original.external_decls.len());
-        for (key, ext) in &rm_original.external_decls {
-            let restored_ext = rm_restored.external_decls.get(key).unwrap();
-            assert_eq!(restored_ext.uri, ext.uri);
-            assert_eq!(restored_ext.name, ext.name);
-            assert_eq!(restored_ext.origin_decl_key, ext.origin_decl_key);
-        }
-    }
-
-    // ── multi-file: long chain A→B→C→D→E ─────────────────────────────────
-
-    #[test]
-    fn multifile_long_transitive_chain() {
-        // E → D → C → B → A, each file adds one function
-        let uri_e = Url::parse("file:///e.j").unwrap();
-        let uri_d = Url::parse("file:///d.j").unwrap();
-        let uri_c = Url::parse("file:///c.j").unwrap();
-        let uri_b = Url::parse("file:///b.j").unwrap();
-
-        // File E
-        let (cursor_e, rope_e) = parse_file("native FuncE takes nothing returns nothing\n");
-        let symbols_e = collect_symbols(&cursor_e, &rope_e, &uri_e);
-
-        // File D imports E
-        let (cursor_d, rope_d) = parse_file_with_imports(
-            "function FuncD takes nothing returns nothing\n    call FuncE()\nendfunction\n",
-            &symbols_e);
-        let mut symbols_d = collect_symbols(&cursor_d, &rope_d, &uri_d);
-        symbols_d.extend(symbols_e.clone());
-
-        // File C imports D (+E transitively)
-        let (cursor_c, rope_c) = parse_file_with_imports(
-            "function FuncC takes nothing returns nothing\n    call FuncD()\nendfunction\n",
-            &symbols_d);
-        let mut symbols_c = collect_symbols(&cursor_c, &rope_c, &uri_c);
-        symbols_c.extend(symbols_d.clone());
-
-        // File B imports C (+D+E transitively)
-        let (cursor_b, rope_b) = parse_file_with_imports(
-            "function FuncB takes nothing returns nothing\n    call FuncC()\nendfunction\n",
-            &symbols_c);
-        let mut symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-        symbols_b.extend(symbols_c.clone());
-
-        // File A imports B (+C+D+E transitively), calls all of them
-        let src_a = "\
-function Main takes nothing returns nothing
-    call FuncB()
-    call FuncC()
-    call FuncD()
-    call FuncE()
-endfunction
-";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &symbols_b);
-
-        // All 4 should be external
-        for (name, expected_uri) in &[
-            ("FuncB", &uri_b),
-            ("FuncC", &uri_c),
-            ("FuncD", &uri_d),
-            ("FuncE", &uri_e),
-        ] {
-            let key = cursor_a.ref_groups.keys()
-                .find(|&&k| k >= EXTERNAL_KEY_BASE
-                    && cursor_a.ref_names.get(&k).map(|n| n.as_str() == *name).unwrap_or(false));
-            assert!(key.is_some(), "{} should be external in A", name);
-            assert_eq!(&cursor_a.external_decls[key.unwrap()].uri, *expected_uri,
-                "{} should trace back to correct origin", name);
-        }
-    }
-
-    // ── multi-file: duplicate symbol in two imports (first wins) ─────────
-
-    #[test]
-    fn multifile_duplicate_import_first_wins() {
-        let uri_b = Url::parse("file:///b.j").unwrap();
-        let uri_c = Url::parse("file:///c.j").unwrap();
-
-        let imported = vec![
-            ImportedSymbol {
-                origin_uri: uri_b.clone(),
-                name: "Dup".into(),
-                kind: ImportedKind::Func,
-                origin_decl_key: Some(10),
-            },
-            ImportedSymbol {
-                origin_uri: uri_c.clone(),
-                name: "Dup".into(),
-                kind: ImportedKind::Func,
-                origin_decl_key: Some(20),
-            },
-        ];
-
-        let src_a = "call Dup()\n";
-        let (cursor_a, _rope_a) = parse_file_with_imports(src_a, &imported);
-
-        let ext_key = cursor_a.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_a.ref_names.get(&k).map(|n| n == "Dup").unwrap_or(false))
-            .expect("Dup should be external");
-
-        // First import wins (import_lookup uses or_insert)
-        let ext = &cursor_a.external_decls[ext_key];
-        assert_eq!(ext.uri, uri_b, "first import (B) should win for duplicate Dup");
-        assert_eq!(ext.origin_decl_key, Some(10));
-    }
-
-    // ── import graph: update clears old edges on re-import ───────────────
-
-    #[test]
-    fn import_graph_update_replaces_imports() {
-        use crate::util::import_graph::ImportGraph;
-
-        let g = ImportGraph::new_empty();
-        let a = Url::parse("file:///a.j").unwrap();
-        let b = Url::parse("file:///b.j").unwrap();
-        let c = Url::parse("file:///c.j").unwrap();
-        let d = Url::parse("file:///d.j").unwrap();
-
-        // Initially A→B, A→C
-        g.update(&a, std::collections::HashSet::from([b.clone(), c.clone()]));
-        assert_eq!(g.direct_imports(&a).len(), 2);
-
-        // Now A→C, A→D (B removed, D added)
-        g.update(&a, std::collections::HashSet::from([c.clone(), d.clone()]));
-        let imports = g.direct_imports(&a);
-        assert_eq!(imports.len(), 2);
-        assert!(imports.contains(&c));
-        assert!(imports.contains(&d));
-        assert!(!imports.contains(&b), "B should be removed from A's imports");
-    }
-
-    // ── two-file scenario: anal.j → ass.j (unified scope) ─────────────
-    //
-    //  anal.j imports ass.j  →  they share a single scope.
-    //
-    //  anal.j sees: function B from ass.j  (external link)
-    //  ass.j sees:  real A, function A from anal.j  (external link)
-    //               (because the connected component is {anal.j, ass.j})
-
-    #[test]
-    fn two_file_unified_scope_anal_sees_ass() {
-        // === File ass.j ===
-        let src_ass = "\
-function B takes nothing returns nothing
-endfunction
-";
-        let uri_ass = Url::parse("file:///test/ass.j").unwrap();
-        let (cursor_ass, rope_ass) = parse_file(src_ass);
-        let symbols_ass = collect_symbols(&cursor_ass, &rope_ass, &uri_ass);
-
-        // ass.j should export function B
-        assert!(
-            symbols_ass.iter().any(|s| s.name == "B" && s.kind == ImportedKind::Func),
-            "ass.j should export function B"
-        );
-
-        // === File anal.j (imports ass.j — unified scope) ===
-        let src_anal = "\
-globals
-    real A = 33
-endglobals
-
-function A takes nothing returns nothing
-    local integer A = 33
-    set A = 21
-endfunction
-
-call A(A + A(A))
-
-call B()
-";
-        let (cursor_anal, _rope_anal) = parse_file_with_imports(src_anal, &symbols_ass);
-
-        // B in anal.j should be external → ass.j
-        let b_ext = cursor_anal.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_anal.ref_names.get(&k).map(|n| n == "B").unwrap_or(false));
-        assert!(b_ext.is_some(), "B should be an external ref in anal.j");
-        assert_eq!(
-            cursor_anal.external_decls[b_ext.unwrap()].uri,
-            uri_ass,
-            "B should come from ass.j"
-        );
-
-        // A should be entirely local (global var, function, local var)
-        let a_ext = cursor_anal.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_anal.ref_names.get(&k).map(|n| n == "A").unwrap_or(false));
-        assert!(a_ext.is_none(), "A should NOT be external in anal.j — it's declared locally");
-    }
-
-    #[test]
-    fn two_file_unified_scope_ass_sees_anal() {
-        // In unified scope: when anal.j imports ass.j, ass.j should also
-        // see anal.j's symbols (because they're in the same connected component).
-
-        // === File anal.j ===
-        let src_anal = "\
-globals
-    real A = 33
-endglobals
-
-function A takes nothing returns nothing
-endfunction
-";
-        let uri_anal = Url::parse("file:///test/anal.j").unwrap();
-        let (cursor_anal, rope_anal) = parse_file(src_anal);
-        let symbols_anal = collect_symbols(&cursor_anal, &rope_anal, &uri_anal);
-
-        // anal.j exports: variable A (global), function A
-        assert!(
-            symbols_anal.iter().any(|s| s.name == "A" && s.kind == ImportedKind::Var),
-            "anal.j should export global var A"
-        );
-        assert!(
-            symbols_anal.iter().any(|s| s.name == "A" && s.kind == ImportedKind::Func),
-            "anal.j should export function A"
-        );
-
-        // === File ass.j — receives anal.j's symbols via unified scope ===
-        let src_ass = "\
-function B takes nothing returns nothing
-endfunction
-
-A = 44
-
-call A()
-call A()
-call B()
-";
-        // In unified scope, ass.j gets anal.j's symbols as imports.
-        let (cursor_ass, _rope_ass) = parse_file_with_imports(src_ass, &symbols_anal);
-
-        // B is declared locally → local group
-        let (b_key, b_occs) = find_group(&cursor_ass, "B");
-        assert!(*b_key < EXTERNAL_KEY_BASE, "B should be local in ass.j");
-        assert_eq!(b_occs.len(), 2, "B: 1 decl + 1 call");
-
-        // function A should be external → anal.j  (from "call A()")
-        let a_func_ext = cursor_ass.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_ass.ref_names.get(&k).map(|n| n == "A").unwrap_or(false)
-                && cursor_ass.external_decls.get(&k)
-                    .map(|d| d.uri == uri_anal).unwrap_or(false));
-        assert!(
-            a_func_ext.is_some(),
-            "In unified scope, ass.j should see A from anal.j as external"
-        );
-        assert_eq!(
-            cursor_ass.external_decls[a_func_ext.unwrap()].uri,
-            uri_anal,
-            "A should come from anal.j"
-        );
-    }
-
-    #[test]
-    fn two_file_without_imports_still_isolated() {
-        // If files are NOT connected via imports at all, they don't share scope.
-        let src_a = "function Foo takes nothing returns nothing\nendfunction\n";
-        let (_cursor_a, _) = parse_file(src_a);
-
-        let src_b = "call Foo()\n";
-        // No imports → Foo is unresolved
-        let (cursor_b, _) = parse_file(src_b);
-
-        let foo_ext = cursor_b.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_b.ref_names.get(&k).map(|n| n == "Foo").unwrap_or(false));
-        assert!(foo_ext.is_none(), "Without imports, Foo should be unresolved (not external)");
-
-        // Foo should be standalone
-        let foo_groups: Vec<_> = cursor_b.ref_groups.iter()
-            .filter(|(key, _)| {
-                cursor_b.ref_names.get(key).map(|n| n == "Foo").unwrap_or(false)
-            })
-            .collect();
-        assert!(!foo_groups.is_empty(), "Foo should have a standalone group");
-    }
-
-    #[test]
-    fn two_file_triangle_unified_scope() {
-        // A → B, A → C  →  B and C also see each other (unified scope).
-
-        // File B: declares FuncB
-        let src_b = "function FuncB takes nothing returns nothing\nendfunction\n";
-        let uri_b = Url::parse("file:///test/b.j").unwrap();
-        let (cursor_b, rope_b) = parse_file(src_b);
-        let _symbols_b = collect_symbols(&cursor_b, &rope_b, &uri_b);
-
-        // File C: declares FuncC
-        let src_c = "function FuncC takes nothing returns nothing\nendfunction\n";
-        let uri_c = Url::parse("file:///test/c.j").unwrap();
-        let (cursor_c, rope_c) = parse_file(src_c);
-        let symbols_c = collect_symbols(&cursor_c, &rope_c, &uri_c);
-
-        // In unified scope (A→B, A→C), B sees C's symbols and vice versa.
-        // File B uses FuncC:
-        let src_b2 = "\
-function FuncB takes nothing returns nothing
-    call FuncC()
-endfunction
-";
-        let (cursor_b2, _) = parse_file_with_imports(src_b2, &symbols_c);
-
-        let fc_ext = cursor_b2.ref_groups.keys()
-            .find(|&&k| k >= EXTERNAL_KEY_BASE
-                && cursor_b2.ref_names.get(&k).map(|n| n == "FuncC").unwrap_or(false));
-        assert!(fc_ext.is_some(), "In triangle, B should see FuncC from C");
-        assert_eq!(cursor_b2.external_decls[fc_ext.unwrap()].uri, uri_c);
+        with_cursor(src, |c| {
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": null"),
+                "should have ': null' hint for null, got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
     }
 }

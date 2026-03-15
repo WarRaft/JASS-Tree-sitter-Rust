@@ -36,9 +36,9 @@ use crate::lsp::semantic::lsp::{
 };
 use crate::lsp::semantic::send::send as semantic_send;
 use crate::lsp::send::send;
+use crate::lsp::send::send_cancelled;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::util::file_store::{diagnostic_report, FILE_STORE, LSP_WRITER};
-use crate::util::uri_lock::uri_wait;
 use crate::util::uri_map::LNG_URI_MAP;
 use log::{error, info};
 
@@ -166,6 +166,99 @@ async fn main() {
                     break;
                 }
 
+                // ─── Notifications processed inline to preserve ordering ─────
+
+                MethodCall::Cancel(params) => {
+                    params.id.mark_cancelled().await;
+                }
+
+                MethodCall::SetTrace(_) => {}
+
+                MethodCall::DidClose(_) => {}
+
+                MethodCall::DidOpen(params) => {
+                    if params.text_document.language_id == "bni" {
+                        let text = params.text_document.text;
+                        let uri = params.text_document.uri;
+                        if let Err(e) = lng::bni::open::init(&uri, &text) {
+                            error!("bni init: {}", e);
+                        } else {
+                            tokio::spawn(async move {
+                                if let Err(e) = lng::bni::parse::parse_and_notify(&uri).await {
+                                    error!("bni parse: {}", e);
+                                }
+                            });
+                        }
+                    } else if params.text_document.language_id == "jass" {
+                        let text = params.text_document.text;
+                        let uri = params.text_document.uri;
+                        if let Err(e) = lng::jass::open::init(&uri, &text) {
+                            error!("jass init: {}", e);
+                        } else {
+                            tokio::spawn(async move {
+                                if let Err(e) = lng::jass::parse::parse_and_notify(&uri).await {
+                                    error!("jass parse: {}", e);
+                                }
+                            });
+                        }
+                    } else if params.text_document.language_id == "angelscript" {
+                        let text = params.text_document.text;
+                        let uri = params.text_document.uri;
+                        if let Err(e) = lng::ass::open::init(&uri, &text) {
+                            error!("as init: {}", e);
+                        } else {
+                            tokio::spawn(async move {
+                                if let Err(e) = lng::ass::parse::parse_and_notify(&uri).await {
+                                    error!("as parse: {}", e);
+                                }
+                            });
+                        }
+                    }
+                }
+
+                MethodCall::DidChange(params) => {
+                    let uri = params.text_document.uri;
+
+                    if let Some(lng) = LNG_URI_MAP.get(&uri) {
+                        let lng_val = lng.value().clone();
+                        drop(lng); // release DashMap guard before calling apply_edits
+
+                        if lng_val == "bni" {
+                            if let Err(e) = lng::bni::change::apply_edits(&uri, params.content_changes) {
+                                error!("bni edit: {}", e);
+                            } else {
+                                tokio::spawn(async move {
+                                    if let Err(e) = lng::bni::parse::parse_and_notify(&uri).await {
+                                        error!("bni parse: {}", e);
+                                    }
+                                });
+                            }
+                        } else if lng_val == "jass" {
+                            if let Err(e) = lng::jass::change::apply_edits(&uri, params.content_changes) {
+                                error!("jass edit: {}", e);
+                            } else {
+                                tokio::spawn(async move {
+                                    if let Err(e) = lng::jass::parse::parse_and_notify(&uri).await {
+                                        error!("jass parse: {}", e);
+                                    }
+                                });
+                            }
+                        } else if lng_val == "angelscript" {
+                            if let Err(e) = lng::ass::change::apply_edits(&uri, params.content_changes) {
+                                error!("as edit: {}", e);
+                            } else {
+                                tokio::spawn(async move {
+                                    if let Err(e) = lng::ass::parse::parse_and_notify(&uri).await {
+                                        error!("as parse: {}", e);
+                                    }
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // ─── All other methods spawned as concurrent request handlers ─
+
                 other => {
                     tokio::spawn(async move {
                         match other {
@@ -183,7 +276,6 @@ async fn main() {
                                 use std::collections::HashSet;
 
                                 // ── 0. Force-load the scope resolver from disk ───────
-                                // (Lazy::force triggers ScopeResolver::load)
                                 let _ = SCOPE_RESOLVER.file_count();
 
                                 // ── 1. Load ALL cached FileSymbols from disk ─────────
@@ -241,7 +333,6 @@ async fn main() {
                                     let total = stale_uris.len();
                                     let token = "jass-rescan";
 
-                                    // Create progress token
                                     send(
                                         &writer,
                                         &json!({
@@ -252,7 +343,6 @@ async fn main() {
                                         }),
                                     ).await;
 
-                                    // Begin
                                     send(
                                         &writer,
                                         &json!({
@@ -271,7 +361,6 @@ async fn main() {
                                     ).await;
 
                                     for (i, uri) in stale_uris.iter().enumerate() {
-                                        // Report progress
                                         let pct = ((i + 1) * 100 / total) as u32;
                                         let path_str = uri.path();
                                         let fname = path_str.rsplit('/').next().unwrap_or("");
@@ -291,7 +380,6 @@ async fn main() {
                                             }),
                                         ).await;
 
-                                        // Full re-parse from disk
                                         if let Ok(path) = uri.to_file_path() {
                                             if let Ok(content) = std::fs::read_to_string(&path) {
                                                 if let Err(e) = lng::jass::open::open(uri, &content).await {
@@ -301,7 +389,6 @@ async fn main() {
                                         }
                                     }
 
-                                    // End
                                     send(
                                         &writer,
                                         &json!({
@@ -318,101 +405,32 @@ async fn main() {
                                     ).await;
                                 }
                             }
-                            MethodCall::SetTrace(_) => {}
-                            MethodCall::DidClose(_) => {}
-                            MethodCall::Cancel(params) => {
-                                params.id.mark_cancelled().await;
-                            }
-
-                            MethodCall::DidOpen(params) => {
-                                if params.text_document.language_id == "bni" {
-                                    if let Err(err) = lng::bni::open::open(
-                                        &params.text_document.uri,
-                                        &params.text_document.text,
-                                    )
-                                    .await
-                                    {
-                                        error!("Failed to apply change: {}", err);
-                                    }
-                                } else if params.text_document.language_id == "jass" {
-                                    if let Err(err) = lng::jass::open::open(
-                                        &params.text_document.uri,
-                                        &params.text_document.text,
-                                    )
-                                    .await
-                                    {
-                                        error!("Failed to apply change: {}", err);
-                                    }
-                                } else if params.text_document.language_id == "angelscript" {
-                                    if let Err(err) = lng::ass::open::open(
-                                        &params.text_document.uri,
-                                        &params.text_document.text,
-                                    )
-                                    .await
-                                    {
-                                        error!("Failed to apply change: {}", err);
-                                    }
-                                }
-                            }
-
-                            MethodCall::DidChange(params) => {
-                                let uri = &params.text_document.uri;
-
-                                if let Some(lng) = LNG_URI_MAP.get(uri) {
-                                    if lng.value() == "bni" {
-                                        if let Err(err) =
-                                            lng::bni::change::change(uri, params.content_changes)
-                                                .await
-                                        {
-                                            error!("Failed to apply change: {}", err);
-                                        }
-                                    } else if lng.value() == "jass" {
-                                        if let Err(err) =
-                                            lng::jass::change::change(uri, params.content_changes)
-                                                .await
-                                        {
-                                            error!("Failed to apply change: {}", err);
-                                        }
-                                    } else if lng.value() == "angelscript" {
-                                        if let Err(err) =
-                                            lng::ass::change::change(uri, params.content_changes)
-                                                .await
-                                        {
-                                            error!("Failed to apply change: {}", err);
-                                        }
-                                    }
-                                }
-                            }
 
                             MethodCall::SemanticFull(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-
-                                uri_wait(uri).await;
-
                                 semantic_send(&writer, call.id, uri, None).await
                             }
 
                             MethodCall::SemanticRange(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
-
                                 semantic_send(&writer, call.id, uri, Some(params.range)).await
                             }
 
                             MethodCall::Diagnostic(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
 
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
-
                                 let result = diagnostic_report(uri);
 
                                 send(
@@ -429,12 +447,11 @@ async fn main() {
 
                             MethodCall::DocumentSymbol(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
 
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
-
                                 let snapshot = FILE_STORE.get(uri);
                                 let result: Option<&Vec<_>> =
                                     snapshot.as_ref().map(|s| &s.value().symbols);
@@ -453,10 +470,10 @@ async fn main() {
 
                             MethodCall::Folding(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
 
                                 let snapshot = FILE_STORE.get(uri);
                                 let empty_vec = vec![];
@@ -479,6 +496,7 @@ async fn main() {
 
                             MethodCall::Completion(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
@@ -487,6 +505,7 @@ async fn main() {
 
                             MethodCall::Hover(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
@@ -495,19 +514,18 @@ async fn main() {
 
                             MethodCall::DocumentHighlight(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
-                                let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
                                 highlight_send(&writer, call.id, &params).await;
                             }
 
                             MethodCall::Definition(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
 
                                 let result = {
                                     use crate::lsp::ref_map::REF_URI_MAP;
@@ -560,10 +578,10 @@ async fn main() {
 
                             MethodCall::References(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
 
                                 let result = {
                                     let mut locs = Vec::new();
@@ -600,19 +618,18 @@ async fn main() {
 
                             MethodCall::InlayHint(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
-                                let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
                                 inlay_hint_send(&writer, call.id, &params).await;
                             }
 
                             MethodCall::DocumentLink(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
 
                                 let snapshot = FILE_STORE.get(uri);
                                 let empty_vec = vec![];
@@ -636,19 +653,18 @@ async fn main() {
 
                             MethodCall::Formatting(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
-                                let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
                                 send_formatting(&writer, call.id, &params).await;
                             }
 
                             MethodCall::PrepareRename(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
 
                                 let result = prepare_rename(uri, &params.position);
                                 send(
@@ -669,10 +685,10 @@ async fn main() {
 
                             MethodCall::Rename(params) => {
                                 if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                uri_wait(uri).await;
 
                                 let edit = compute_identifier_rename(
                                     uri,
@@ -761,8 +777,6 @@ async fn main() {
                             MethodCall::BuildExecute(params) => {
                                 let uri = &params.uri;
 
-                                // Try both build targets; search the entire
-                                // import tree, preferring JASS.
                                 let has_jass =
                                     crate::lng::jass::build::has_build_setting(uri, "build-jass");
                                 let has_as =

@@ -20,6 +20,106 @@ use lapce_xi_rope::Rope;
 use tree_sitter::Node;
 use std::collections::{HashMap, HashSet};
 
+// ─── Setting type system ─────────────────────────────────────────────────────
+
+/// The kind of value a `//set` key expects.
+///
+/// Used for validation, completion, hover docs, and semantic coloring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetValueKind {
+    /// `1` or `0` — a boolean toggle.
+    Bool,
+    /// A file or directory path (enables path completion).
+    Path,
+    // Future: EnumList(&'static [&'static str]),
+}
+
+/// Descriptor for a single `//set` key.
+///
+/// All known keys are registered in [`SET_DEFS`].  Unknown keys are silently
+/// accepted for forward-compatibility but don't receive validation or
+/// completion.
+#[derive(Debug, Clone)]
+pub struct SetDef {
+    /// The key name (e.g. `"ref-tip"`).
+    pub key: &'static str,
+    /// Value type.
+    pub kind: SetValueKind,
+    /// Default value (shown in docs and used when the user types the key
+    /// without a value in the completion snippet).
+    pub default: &'static str,
+    /// Short one-line description (English) — used in completion `detail`.
+    pub detail: &'static str,
+    /// Sort order in the completion list (lower = higher).
+    pub sort_order: u8,
+}
+
+/// All known `//set` keys.
+///
+/// To add a new setting:
+/// 1. Append a `SetDef` here.
+/// 2. Consume it in the appropriate handler (inlay hints, build, etc.).
+/// 3. Update `docs/jass/set/*.md`.
+pub static SET_DEFS: &[SetDef] = &[
+    SetDef {
+        key: "ref-tip",
+        kind: SetValueKind::Bool,
+        default: "0",
+        detail: "Show / hide reference-ID inlay hints (debug)",
+        sort_order: 0,
+    },
+    SetDef {
+        key: "type-tip",
+        kind: SetValueKind::Bool,
+        default: "0",
+        detail: "Show / hide type-annotation inlay hints",
+        sort_order: 1,
+    },
+    SetDef {
+        key: "build-jass",
+        kind: SetValueKind::Path,
+        default: "./",
+        detail: "Output path for the JASS build",
+        sort_order: 2,
+    },
+    SetDef {
+        key: "build-as",
+        kind: SetValueKind::Path,
+        default: "./",
+        detail: "Output path for the AngelScript build",
+        sort_order: 3,
+    },
+];
+
+/// Look up a `SetDef` by key name.
+pub fn find_set_def(key: &str) -> Option<&'static SetDef> {
+    SET_DEFS.iter().find(|d| d.key == key)
+}
+
+/// Validate a value against the expected `SetValueKind`.
+///
+/// Returns `None` if the value is valid, or `Some(message)` with an
+/// error description.
+pub fn validate_set_value(def: &SetDef, value: &str) -> Option<String> {
+    match def.kind {
+        SetValueKind::Bool => {
+            if value != "0" && value != "1" {
+                Some(format!(
+                    "Invalid value `{}` for `{}`: expected `0` or `1`",
+                    value, def.key
+                ))
+            } else {
+                None
+            }
+        }
+        SetValueKind::Path => {
+            // Paths are free-form; only empty is caught by the generic
+            // "missing value" diagnostic.
+            None
+        }
+    }
+}
+
 // ─── Directive data ──────────────────────────────────────────────────────────
 
 /// `//import path/to/file` or `//import! path/to/file`
@@ -204,18 +304,23 @@ pub fn visit_set_semantic(
             let key_offset = after_prefix_offset + ws_before_key;
             semantic.add_range(key_offset, key_len, rope, TokenKind::Property, 0u32);
 
-            // Value: String token (if present)
+            // Value: token (type-aware coloring)
             if key_len < trimmed.len() {
                 let after_key = &trimmed[key_len..];
                 let value_part = after_key.trim_start();
                 let ws_before_value = after_key.len() - value_part.len();
                 if !value_part.is_empty() {
                     let val_offset = key_offset + key_len + ws_before_value;
+                    // Pick token kind based on value type: Bool → Number, Path → String
+                    let val_token = match find_set_def(&sd.key) {
+                        Some(def) if def.kind == SetValueKind::Bool => TokenKind::Number,
+                        _ => TokenKind::String,
+                    };
                     semantic.add_range(
                         val_offset,
                         value_part.len(),
                         rope,
-                        TokenKind::String,
+                        val_token,
                         0u32,
                     );
                 }
@@ -238,6 +343,17 @@ pub fn visit_set_semantic(
             ..Default::default()
         });
     } else {
+        // Validate against the registry
+        if let Some(def) = find_set_def(&sd.key) {
+            if let Some(err_msg) = validate_set_value(def, &sd.value) {
+                diagnostics.push(Diagnostic {
+                    range: node.to_range(rope),
+                    message: err_msg,
+                    severity: Some(DiagnosticSeverity::Warning),
+                    ..Default::default()
+                });
+            }
+        }
         file_settings.insert(sd.key.clone(), sd.value.clone());
     }
 }

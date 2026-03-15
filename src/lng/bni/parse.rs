@@ -12,15 +12,19 @@ use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
 use crate::util::dfs_node::Dfs;
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::uri_lock::uri_unlock;
 use lapce_xi_rope::Rope;
 use std::error::Error;
 use url::Url;
 
 pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let result = _parse(uri);
-    uri_unlock(uri);
-    result
+    _parse(uri)
+}
+
+/// Parse + refresh all open editors.
+pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
+    parse(uri).await?;
+    crate::util::file_store::send_refresh_all().await;
+    Ok(())
 }
 
 fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {

@@ -8,14 +8,14 @@ use crate::lsp::position::Position;
 use crate::lsp::ref_map::{build_ref_map, DeclKey, RefMap, REF_URI_MAP};
 use crate::lsp::range::Range;
 use crate::util::file_store::{
-    exports_changed, new_cancel_token, ParseSnapshot, FILE_STORE,
+    exports_changed, new_cancel_token, publish_diagnostics, publish_diagnostics_many,
+    send_refresh_all, ParseSnapshot, FILE_STORE,
 };
 use crate::util::import_graph::{resolve_import, IMPORT_GRAPH};
 use crate::util::ref_cache;
 use crate::util::scope_resolver::{GlobalEntry, SymbolNS, SCOPE_RESOLVER};
 use crate::util::symbol_cache;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::uri_lock::{uri_lock, uri_unlock};
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
 use std::error::Error;
@@ -25,11 +25,25 @@ use url::Url;
 
 // ─── Main parse entry point ─────────────────────────────────────────────────
 
-/// Look up the DeclKey of a symbol by name in a RefMap.
-fn find_decl_key_by_name(ref_map: &RefMap, name: &str) -> Option<DeclKey> {
+/// Look up the DeclKey of a symbol by name **and namespace** in a RefMap.
+///
+/// `func_keys` is the set of DeclKeys known to be function declarations.
+/// A key present in `func_keys` matches `SymbolNS::Func`; otherwise `SymbolNS::Var`.
+fn find_decl_key_by_name(
+    ref_map: &RefMap,
+    name: &str,
+    ns: SymbolNS,
+    func_keys: &HashSet<DeclKey>,
+) -> Option<DeclKey> {
     for (&key, group) in &ref_map.groups {
-        if group.name == name && group.occurrences.iter().any(|o| o.is_decl) {
-            return Some(key);
+        if group.name != name || !group.occurrences.iter().any(|o| o.is_decl) {
+            continue;
+        }
+        let is_func = func_keys.contains(&key);
+        match ns {
+            SymbolNS::Func if is_func => return Some(key),
+            SymbolNS::Var if !is_func => return Some(key),
+            _ => continue,
         }
     }
     None
@@ -167,21 +181,73 @@ fn file_symbols_to_entries(
 
 /// Parse and store all LSP data for `uri`.
 ///
-/// Returns the list of **open** files that directly import `uri` and should be
-/// re-parsed to pick up the new symbols.
+/// The heavy `_parse` work runs on the blocking thread pool so that tokio
+/// worker threads stay free for I/O and other request handlers.
+///
+/// Returns the list of peer URIs that should be cascade-re-parsed.
 pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     let token = new_cancel_token(uri);
-    let result = _parse(uri, &token);
-    uri_unlock(uri);
-    result
+
+    // ── Clone owned data from DashMap guards and drop the guards immediately ──
+    let rope = ROPE_MAP
+        .get(uri)
+        .map(|r| r.value().clone())
+        .ok_or("no rope")?;
+    let tree = TREE_MAP
+        .get(uri)
+        .map(|t| t.value().clone())
+        .ok_or("no tree")?;
+
+    let uri_owned = uri.clone();
+    let cancel = token.clone();
+
+    // ── Run CPU-heavy parse on the blocking thread pool ──
+    let handle = tokio::task::spawn_blocking(move || _parse(&uri_owned, &rope, &tree, &cancel));
+
+    // ── Race the blocking work against cancellation ──
+    tokio::select! {
+        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
+        _ = token.cancelled() => Ok(vec![]),
+    }
 }
 
-fn _parse(uri: &Url, cancel: &CancellationToken) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
-    let rope_entry = ROPE_MAP.get(&uri.clone()).ok_or("no rope")?;
-    let rope = rope_entry.value();
+/// Parse + cascade re-parse + push diagnostics + refresh all open editors.
+///
+/// Intended to be called from a **spawned task** (not the main message loop).
+pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let cascade = parse(uri).await?;
 
-    let tree_entry = TREE_MAP.get(&uri.clone()).ok_or("no tree")?;
-    let root = tree_entry.value().root_node();
+    // Push diagnostics for the current file.
+    publish_diagnostics(uri).await;
+
+    // Cascade re-parse: connected peers whose scope changed.
+    let mut reparsed_peers = Vec::new();
+    for peer_uri in &cascade {
+        if ROPE_MAP.contains_key(peer_uri) && TREE_MAP.contains_key(peer_uri) {
+            if let Err(e) = parse(peer_uri).await {
+                log::error!("cascade re-parse {}: {}", peer_uri, e);
+            } else {
+                reparsed_peers.push(peer_uri.clone());
+            }
+        }
+    }
+
+    // Push diagnostics for all cascade-affected peers.
+    publish_diagnostics_many(&reparsed_peers).await;
+
+    // Tell VS Code to re-request semantic tokens / diagnostics / inlay hints.
+    send_refresh_all().await;
+
+    Ok(())
+}
+
+fn _parse(
+    uri: &Url,
+    rope: &Rope,
+    tree: &tree_sitter::Tree,
+    cancel: &CancellationToken,
+) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    let root = tree.root_node();
 
     // 1. Build AST from CST
     let mut ast = build_ast(root);
@@ -295,10 +361,15 @@ fn _parse(uri: &Url, cancel: &CancellationToken) -> Result<Vec<Url>, Box<dyn Err
             if &entry.uri == uri {
                 continue;
             }
-            let origin_ref_map = REF_URI_MAP.get(&entry.uri);
-            let origin_decl_key = origin_ref_map
-                .as_ref()
-                .and_then(|rm| find_decl_key_by_name(rm.value(), &entry.name));
+            let origin_snapshot = FILE_STORE.get(&entry.uri);
+            let origin_decl_key = origin_snapshot.as_ref().and_then(|snap| {
+                find_decl_key_by_name(
+                    &snap.ref_map,
+                    &entry.name,
+                    entry.ns,
+                    &snap.func_decl_keys,
+                )
+            });
 
             imported_symbols.push(ImportedSymbol {
                 origin_uri: entry.uri.clone(),
@@ -382,6 +453,8 @@ fn _parse(uri: &Url, cancel: &CancellationToken) -> Result<Vec<Url>, Box<dyn Err
         links,
         ref_map,
         file_symbols: cursor.file_symbols,
+        type_map: cursor.type_map,
+        type_hints: cursor.type_hints,
         func_decl_keys,
     });
 
@@ -429,6 +502,7 @@ fn _parse(uri: &Url, cancel: &CancellationToken) -> Result<Vec<Url>, Box<dyn Err
 /// Temporarily inserts the rope/tree into the global maps so that the existing
 /// `_parse` pipeline can be reused.  The entries are removed immediately after
 /// parsing — the file is not considered "open".
+#[allow(dead_code)]
 pub async fn parse_from_disk(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
     let path = uri.to_file_path().map_err(|_| "invalid file path")?;
     if !path.exists() {
@@ -441,18 +515,16 @@ pub async fn parse_from_disk(uri: &Url) -> Result<(), Box<dyn Error + Send + Syn
     parser.set_language(&tree_sitter_jass::language().into())?;
     let tree = parser.parse(&content, None).ok_or("parse failed")?;
 
-    // Temporarily insert into maps so _parse can find them.
-    ROPE_MAP.insert(uri.clone(), rope);
-    TREE_MAP.insert(uri.clone(), tree);
-
-    uri_lock(uri).await;
     let token = new_cancel_token(uri);
-    let result = _parse(uri, &token);
-    uri_unlock(uri);
+    let uri_owned = uri.clone();
+    let cancel = token.clone();
 
-    // Clean up — file is not open in the editor.
-    ROPE_MAP.remove(uri);
-    TREE_MAP.remove(uri);
+    let handle = tokio::task::spawn_blocking(move || _parse(&uri_owned, &rope, &tree, &cancel));
+
+    let result = tokio::select! {
+        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
+        _ = token.cancelled() => Ok(vec![]),
+    };
 
     result.map(|_| ())
 }

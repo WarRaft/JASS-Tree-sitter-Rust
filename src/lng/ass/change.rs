@@ -1,33 +1,21 @@
-use crate::lng::ass::parse::parse;
 use crate::lng::ass::uri_map::{PARSER_MAP, TREE_MAP};
 use crate::lsp::position::Position;
 use crate::lsp::text_document::TextDocumentContentChangeEvent;
-use crate::util::file_store::{publish_diagnostics, send_refresh_all};
+use crate::util::file_store::new_cancel_token;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::uri_lock::{uri_lock, uri_unlock};
 use std::error::Error;
 use tree_sitter::InputEdit;
 use url::Url;
 
-pub async fn change(
+/// Synchronous: cancel any in-flight parse and apply incremental edits.
+///
+/// **Must be called from the main message loop** to preserve ordering.
+pub fn apply_edits(
     uri: &Url,
     changes: Vec<TextDocumentContentChangeEvent>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    uri_lock(uri).await;
-
-    if let Err(e) = _apply_changes(uri, changes) {
-        uri_unlock(uri);
-        return Err(e);
-    }
-
-    // parse will call uri_unlock
-    parse(uri).await?;
-
-    // Push diagnostics and tell VS Code to re-request all data.
-    publish_diagnostics(uri).await;
-    send_refresh_all().await;
-
-    Ok(())
+    new_cancel_token(uri);
+    _apply_changes(uri, changes)
 }
 
 fn _apply_changes(

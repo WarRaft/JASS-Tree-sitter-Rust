@@ -2,16 +2,16 @@ use crate::lng::ass::ast::{build_ast, rewrite_directives, TopLevel};
 use crate::lng::ass::cursor::Cursor;
 use crate::lng::ass::uri_map::TREE_MAP;
 use crate::lng::jass::symbol::FileSymbols;
+use crate::lng::jass::type_map::TypeMap;
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_link::lsp::DocumentLink;
 use crate::lsp::position::Position;
 use crate::lsp::range::Range;
 use crate::lsp::ref_map::RefMap;
-use crate::util::file_store::{ParseSnapshot, FILE_STORE};
+use crate::util::file_store::{publish_diagnostics, send_refresh_all, ParseSnapshot, FILE_STORE};
 use crate::util::import_graph::{resolve_import, IMPORT_GRAPH};
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::uri_lock::uri_unlock;
 use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
@@ -20,9 +20,17 @@ use url::Url;
 // ─── Main parse entry point ─────────────────────────────────────────────────
 
 pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let result = _parse(uri);
-    uri_unlock(uri);
-    result
+    _parse(uri)
+}
+
+/// Parse + push diagnostics + refresh all open editors.
+///
+/// Intended to be called from a **spawned task** (not the main message loop).
+pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
+    parse(uri).await?;
+    publish_diagnostics(uri).await;
+    send_refresh_all().await;
+    Ok(())
 }
 
 fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -163,6 +171,8 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         links,
         ref_map: RefMap::default(),
         file_symbols,
+        type_map: TypeMap::default(),
+        type_hints: vec![],
         func_decl_keys: HashSet::new(),
     });
 

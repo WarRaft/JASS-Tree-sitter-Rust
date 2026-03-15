@@ -46,7 +46,7 @@ module.exports = {
         const binUri = Uri.file(binPath)
 
         const options = context.extensionMode === ExtensionMode.Production || true ? {
-            command: binUri.fsPath,
+            command: binUri.fsPath.toString(),
         } : {
             command: process.execPath, // node
             args: [path.join(context.extensionPath, 'lsp-proxy.js')],

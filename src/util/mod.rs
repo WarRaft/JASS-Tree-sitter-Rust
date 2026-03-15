@@ -7,7 +7,6 @@ pub(crate) mod roper;
 pub(crate) mod scope_resolver;
 pub(crate) mod symbol_cache;
 pub(crate) mod type_graph;
-pub(crate) mod uri_lock;
 pub(crate) mod uri_map;
 
 #[cfg(test)]

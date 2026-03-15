@@ -24,10 +24,12 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::lng::jass::symbol::FileSymbols;
+use crate::lng::jass::type_map::TypeMap;
 use crate::lsp::diagnostic::lsp::{DocumentDiagnosticReport, Diagnostic};
 use crate::lsp::document_link::lsp::DocumentLink;
 use crate::lsp::document_symbol::lsp::DocumentSymbol;
 use crate::lsp::folding::lsp::FoldingRange;
+use crate::lsp::inlay_hint::lsp::InlayHint;
 use crate::lsp::ref_map::{DeclKey, RefMap};
 use crate::lsp::semantic::hub::Hub;
 use std::sync::RwLock;
@@ -50,6 +52,12 @@ pub struct ParseSnapshot {
     pub links: Vec<DocumentLink>,
     pub ref_map: RefMap,
     pub file_symbols: FileSymbols,
+    /// Per-declaration resolved types — foundation for type checking,
+    /// compile-time evaluation, inlay hints, and build.
+    #[allow(dead_code)]
+    pub type_map: TypeMap,
+    /// Inlay hints for type annotations (shown when `//set type-tip 1`).
+    pub type_hints: Vec<InlayHint>,
     /// DeclKeys that belong to function / native declarations.
     #[allow(dead_code)]
     pub func_decl_keys: HashSet<DeclKey>,

@@ -5,10 +5,15 @@ use crate::lng::jass::kind::Kind;
 use crate::lng::jass::symbol::{
     FileSymbols, FunctionSym, GlobalVarSym, NativeSym, ParamSym, TypeSym,
 };
+use crate::lng::jass::type_map::{
+    DeclType, FuncType, ParamPair, TypeDeclInfo, TypeMap, VarType,
+};
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
 use crate::lsp::folding::lsp::{FoldingRange, FoldingRangeKind};
 use crate::lsp::highlight::lsp::DocumentHighlightKind;
+use crate::lsp::inlay_hint::lsp::{InlayHint, InlayHintKind};
+use crate::lsp::position::Position;
 use crate::lsp::range::Range;
 use crate::lsp::ref_map::{DeclKey, ExternalDecl, RawOccurrence, EXTERNAL_KEY_BASE};
 use crate::lsp::semantic::hub::Hub;
@@ -99,6 +104,13 @@ pub struct Cursor {
     /// Per-file settings parsed from `//set key value` directives.
     pub file_settings: HashMap<String, String>,
 
+    /// Per-declaration resolved types.
+    pub type_map: TypeMap,
+    /// Inlay hints for type annotations (shown when `//set type-tip 1`).
+    pub type_hints: Vec<InlayHint>,
+    /// Names of globals proven to be compile-time evaluable (`comptime`).
+    comptime_names: HashSet<String>,
+
     // Working state
     rope: Rope,
     id_roles: HashMap<usize, IdRole>,
@@ -157,6 +169,9 @@ impl Cursor {
             external_decls: HashMap::new(),
             func_decl_keys: HashSet::new(),
             file_settings: HashMap::new(),
+            type_map: TypeMap::default(),
+            type_hints: Vec::new(),
+            comptime_names: HashSet::new(),
             rope: rope.clone(),
             id_roles: HashMap::new(),
             directive_nodes: HashSet::new(),
@@ -277,6 +292,7 @@ impl Cursor {
             .map(|id| id.node.to_range(&self.rope))
             .unwrap_or_else(|| fallback.to_range(&self.rope))
     }
+
 
     // ─── scope helpers ───────────────────────────────────────────────────
 
@@ -593,6 +609,66 @@ impl Cursor {
         self.hl_scopes.pop();
     }
 
+    // ─── type system helpers ─────────────────────────────────────────────
+
+    /// Emit an `InlayHint` right after `node` showing `label` as a type tag.
+    fn emit_type_hint(&mut self, node: &Node, label: String) {
+        let end = node.end_position();
+        self.type_hints.push(InlayHint {
+            position: Position {
+                line: end.row,
+                character: end.column,
+            },
+            label: format!(": {}", label),
+            kind: Some(InlayHintKind::Type),
+            padding_left: Some(true),
+            padding_right: Some(false),
+        });
+    }
+
+    /// Format a human-readable type label with optional modifiers.
+    ///
+    /// Examples: `integer`, `constant real`, `comptime integer`, `integer array`.
+    fn build_type_label(
+        type_name: &str,
+        is_constant: bool,
+        is_comptime: bool,
+        is_array: bool,
+    ) -> String {
+        let mut parts = Vec::new();
+        if is_comptime {
+            parts.push("comptime");
+        } else if is_constant {
+            parts.push("constant");
+        }
+        parts.push(type_name);
+        if is_array {
+            parts.push("array");
+        }
+        parts.join(" ")
+    }
+
+    /// Check if `expr` consists exclusively of literals, other `comptime`
+    /// globals, and pure operators — i.e. it can be fully evaluated at
+    /// compile time.
+    fn is_comptime_expr(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Literal(_) => true,
+            Expr::Id(id) => {
+                let name = self.node_text(&id.node);
+                self.comptime_names.contains(&name)
+            }
+            Expr::Binary { left, right, .. } => {
+                self.is_comptime_expr(left) && self.is_comptime_expr(right)
+            }
+            Expr::Unary { operand, .. } => self.is_comptime_expr(operand),
+            Expr::Parens { inner, .. } => self.is_comptime_expr(inner),
+            // Function calls, array accesses, and function references
+            // are never comptime in JASS.
+            Expr::Call(_) | Expr::FuncRef(_) | Expr::Index { .. } => false,
+        }
+    }
+
     // ─── statement list visitor ──────────────────────────────────────────
 
     fn visit_stmts(
@@ -665,12 +741,20 @@ impl Cursor {
                 self.register_id(&t.base);
                 let name = self.id_name(&t.name);
                 let decl_index = self.next_decl_index();
-                if let Some(ref name_id) = t.name {
-                    self.hl_declare_type(&name, &name_id.node);
-                }
+                let decl_key = if let Some(ref name_id) = t.name {
+                    Some(self.hl_declare_type(&name, &name_id.node))
+                } else {
+                    None
+                };
                 if let Some(ref base_id) = t.base {
                     let bname = self.node_text(&base_id.node);
                     self.hl_reference_type(&bname, &base_id.node, DocumentHighlightKind::Read);
+                }
+                // TypeMap: record type declaration
+                if let Some(key) = decl_key {
+                    self.type_map.insert(key, DeclType::Type(TypeDeclInfo {
+                        base: t.base.as_ref().map(|id| self.node_text(&id.node)),
+                    }));
                 }
                 self.file_symbols.types.push(TypeSym {
                     name: name.clone(),
@@ -695,25 +779,39 @@ impl Cursor {
                 self.register_id(&n.return_type);
                 let name = self.id_name(&n.name);
                 let decl_index = self.next_decl_index();
-                if let Some(ref name_id) = n.name {
-                    self.hl_declare_func(&name, &name_id.node);
-                }
-                // hl: reference parameter types
+                let native_decl_key = if let Some(ref name_id) = n.name {
+                    Some(self.hl_declare_func(&name, &name_id.node))
+                } else {
+                    None
+                };
+                // hl: reference parameter types & declare param vars for TypeMap
+                let mut param_pairs = Vec::new();
                 for p in &n.params {
                     if let Some(ref tid) = p.type_id {
                         let tname = self.node_text(&tid.node);
                         self.hl_reference_type(&tname, &tid.node, DocumentHighlightKind::Read);
                     }
+                    let pname = self.id_name(&p.name);
+                    let ptype = p.type_id.as_ref().map(|id| self.node_text(&id.node)).unwrap_or_default();
+                    param_pairs.push(ParamPair { name: pname, type_name: ptype });
                 }
                 // hl: reference return type
                 if let Some(ref rt_id) = n.return_type {
                     let rt_name = self.node_text(&rt_id.node);
                     self.hl_reference_type(&rt_name, &rt_id.node, DocumentHighlightKind::Read);
                 }
+                // TypeMap: record native signature
+                let return_type = n.return_type.as_ref().map(|id| self.node_text(&id.node));
+                if let Some(key) = native_decl_key {
+                    self.type_map.insert(key, DeclType::Func(FuncType {
+                        params: param_pairs,
+                        return_type: return_type.clone(),
+                    }));
+                }
                 self.file_symbols.natives.push(NativeSym {
                     name: name.clone(),
                     params: self.params_to_sym(&n.params),
-                    return_type: n.return_type.as_ref().map(|id| self.node_text(&id.node)),
+                    return_type: return_type.clone(),
                     decl_index,
                 });
                 Some(DocumentSymbol {
@@ -736,9 +834,11 @@ impl Cursor {
                 let return_type = f.return_type.as_ref().map(|id| self.node_text(&id.node));
 
                 // hl: declare function name in the current (global) scope
-                if let Some(ref name_id) = f.name {
-                    self.hl_declare_func(&func_name, &name_id.node);
-                }
+                let func_decl_key = if let Some(ref name_id) = f.name {
+                    Some(self.hl_declare_func(&func_name, &name_id.node))
+                } else {
+                    None
+                };
                 // hl: reference return type
                 if let Some(ref rt_id) = f.return_type {
                     let rt_name = self.node_text(&rt_id.node);
@@ -753,6 +853,7 @@ impl Cursor {
 
                 let mut func_vars = HashMap::new();
                 let mut children = Vec::new();
+                let mut param_pairs = Vec::new();
 
                 for p in &f.params {
                     self.register_id(&p.type_id);
@@ -766,7 +867,18 @@ impl Cursor {
                             self.hl_reference_type(&tname, &tid.node, DocumentHighlightKind::Read);
                         }
                         // hl: declare param
-                        self.hl_declare_var(&pname, &name_id.node);
+                        let param_key = self.hl_declare_var(&pname, &name_id.node);
+                        // TypeMap: record parameter
+                        self.type_map.insert(param_key, DeclType::Var(VarType {
+                            name: type_name.clone().unwrap_or_default(),
+                            is_array: false,
+                            is_constant: false,
+                            is_comptime: false,
+                        }));
+                        param_pairs.push(ParamPair {
+                            name: pname.clone(),
+                            type_name: type_name.clone().unwrap_or_default(),
+                        });
                         Self::scope_define(
                             &mut func_vars,
                             &self.node_text(&name_id.node),
@@ -783,6 +895,14 @@ impl Cursor {
                             ..Default::default()
                         });
                     }
+                }
+
+                // TypeMap: record function signature
+                if let Some(key) = func_decl_key {
+                    self.type_map.insert(key, DeclType::Func(FuncType {
+                        params: param_pairs,
+                        return_type: return_type.clone(),
+                    }));
                 }
 
                 vars.push(func_vars);
@@ -839,9 +959,9 @@ impl Cursor {
                         }
                         let var_name = self.id_name(&d.name);
                         let decl_index = self.next_decl_index();
-                        if let Some(name_id) = &d.name {
+                        let var_decl_key = if let Some(name_id) = &d.name {
                             // hl: declare global variable
-                            self.hl_declare_var(&var_name, &name_id.node);
+                            let key = self.hl_declare_var(&var_name, &name_id.node);
                             Self::scope_define(
                                 vars.last_mut().unwrap(),
                                 &self.node_text(&name_id.node),
@@ -849,7 +969,10 @@ impl Cursor {
                                 type_name.clone(),
                                 v.is_array, v.is_constant, d.value.is_some(),
                             );
-                        }
+                            Some(key)
+                        } else {
+                            None
+                        };
                         self.file_symbols.globals.push(GlobalVarSym {
                             name: var_name.clone(),
                             type_name: type_name.clone(),
@@ -858,6 +981,29 @@ impl Cursor {
                             has_initializer: d.value.is_some(),
                             decl_index,
                         });
+                        // type-tip: show type with const/comptime/array modifiers
+                        if let Some(name_id) = &d.name {
+                            if let Some(ref tn) = type_name {
+                                let is_comptime = v.is_constant
+                                    && d.value.as_ref().map_or(false, |e| self.is_comptime_expr(e));
+                                if is_comptime {
+                                    self.comptime_names.insert(var_name.clone());
+                                }
+                                // TypeMap: record global variable type
+                                if let Some(key) = var_decl_key {
+                                    self.type_map.insert(key, DeclType::Var(VarType {
+                                        name: tn.clone(),
+                                        is_array: v.is_array,
+                                        is_constant: v.is_constant,
+                                        is_comptime,
+                                    }));
+                                }
+                                let label = Self::build_type_label(
+                                    tn, v.is_constant, is_comptime, v.is_array,
+                                );
+                                self.emit_type_hint(&name_id.node, label);
+                            }
+                        }
                         children.push(DocumentSymbol {
                             name: var_name,
                             detail: type_name.clone(),
@@ -899,7 +1045,19 @@ impl Cursor {
                 if let (Some(scope), Some(name_id)) = (vars.last_mut(), &l.name) {
                     let lname = self.node_text(&name_id.node);
                     // hl: declare local variable
-                    self.hl_declare_var(&lname, &name_id.node);
+                    let local_key = self.hl_declare_var(&lname, &name_id.node);
+                    // TypeMap: record local variable type
+                    if let Some(ref tid) = l.type_id {
+                        let tn = self.node_text(&tid.node);
+                        self.type_map.insert(local_key, DeclType::Var(VarType {
+                            name: tn.clone(),
+                            is_array: false,
+                            is_constant: false,
+                            is_comptime: false,
+                        }));
+                        // type-tip: show local type
+                        self.emit_type_hint(&name_id.node, tn);
+                    }
                     Self::scope_define(
                         scope,
                         &self.node_text(&name_id.node),
@@ -920,6 +1078,7 @@ impl Cursor {
 
             Statement::VarStmt(v) => {
                 self.register_id(&v.type_id);
+                let type_name = v.type_id.as_ref().map(|id| self.node_text(&id.node));
                 // hl: reference the type
                 if let Some(ref tid) = v.type_id {
                     let tname = self.node_text(&tid.node);
@@ -927,13 +1086,39 @@ impl Cursor {
                 }
                 for d in &v.decls {
                     self.register_id(&d.name);
-                    if let Some(ref name_id) = d.name {
-                        let vname = self.node_text(&name_id.node);
-                        // hl: declare variable
-                        self.hl_declare_var(&vname, &name_id.node);
-                    }
                     if let Some(expr) = &d.value {
                         self.visit_expr(expr);
+                    }
+                    let var_decl_key = if let Some(ref name_id) = d.name {
+                        let vname = self.node_text(&name_id.node);
+                        // hl: declare variable
+                        let key = self.hl_declare_var(&vname, &name_id.node);
+                        Some(key)
+                    } else {
+                        None
+                    };
+                    // TypeMap + type-tip
+                    if let Some(ref name_id) = d.name {
+                        if let Some(ref tn) = type_name {
+                            let is_comptime = v.is_constant
+                                && d.value.as_ref().map_or(false, |e| self.is_comptime_expr(e));
+                            if is_comptime {
+                                let vname = self.node_text(&name_id.node);
+                                self.comptime_names.insert(vname);
+                            }
+                            if let Some(key) = var_decl_key {
+                                self.type_map.insert(key, DeclType::Var(VarType {
+                                    name: tn.clone(),
+                                    is_array: v.is_array,
+                                    is_constant: v.is_constant,
+                                    is_comptime,
+                                }));
+                            }
+                            let label = Self::build_type_label(
+                                tn, v.is_constant, is_comptime, v.is_array,
+                            );
+                            self.emit_type_hint(&name_id.node, label);
+                        }
                     }
                 }
                 v.decls.first().map(|d| DocumentSymbol {
@@ -1017,47 +1202,183 @@ impl Cursor {
         }
     }
 
+    // ─── Expression type helpers ─────────────────────────────────────
+
+    /// Look up the type of a variable by name via highlight scopes + type map.
+    fn lookup_var_type(&self, name: &str) -> Option<String> {
+        let decl_key = self
+            .hl_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.vars.get(name).copied())?;
+        match self.type_map.get(&decl_key)? {
+            DeclType::Var(vt) => Some(vt.name.clone()),
+            _ => None,
+        }
+    }
+
+    /// Look up the return type of a function by name via highlight scopes + type map.
+    fn lookup_func_return_type(&self, name: &str) -> Option<String> {
+        let decl_key = self
+            .hl_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.funcs.get(name).copied())?;
+        match self.type_map.get(&decl_key)? {
+            DeclType::Func(ft) => ft.return_type.clone(),
+            _ => None,
+        }
+    }
+
+    /// Find the operator token kind inside a binary expression CST node.
+    fn binary_op_kind(node: &Node) -> Option<Kind> {
+        let count = node.child_count();
+        for i in 0..count {
+            if let Some(child) = node.child(i as u32) {
+                let k = Kind::try_from(child.grammar_id()).ok();
+                match k {
+                    Some(Kind::Plus) | Some(Kind::Minus) | Some(Kind::Star) | Some(Kind::Slash)
+                    | Some(Kind::Lt) | Some(Kind::Gt) | Some(Kind::Le) | Some(Kind::Ge)
+                    | Some(Kind::EqEq) | Some(Kind::Neq) | Some(Kind::And) | Some(Kind::Or) => {
+                        return k;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the operator token kind for a unary expression CST node.
+    fn unary_op_kind(node: &Node) -> Option<Kind> {
+        node.child(0)
+            .and_then(|c| Kind::try_from(c.grammar_id()).ok())
+    }
+
+    /// Infer the result type of a binary operation from operator and operand types.
+    fn infer_binary_type(
+        op: Option<Kind>,
+        left: Option<&str>,
+        right: Option<&str>,
+    ) -> Option<String> {
+        let op = op?;
+        match op {
+            // Comparison and logical operators always produce boolean.
+            Kind::And | Kind::Or | Kind::Lt | Kind::Gt | Kind::Le | Kind::Ge
+            | Kind::EqEq | Kind::Neq => Some("boolean".to_string()),
+
+            Kind::Plus => {
+                // string + anything ⇒ string
+                if left == Some("string") || right == Some("string") {
+                    Some("string".to_string())
+                } else if left == Some("real") || right == Some("real") {
+                    Some("real".to_string())
+                } else if left == Some("integer") && right == Some("integer") {
+                    Some("integer".to_string())
+                } else {
+                    left.or(right).map(|s| s.to_string())
+                }
+            }
+
+            Kind::Minus | Kind::Star | Kind::Slash => {
+                if left == Some("real") || right == Some("real") {
+                    Some("real".to_string())
+                } else if left == Some("integer") && right == Some("integer") {
+                    Some("integer".to_string())
+                } else {
+                    left.or(right).map(|s| s.to_string())
+                }
+            }
+
+            _ => None,
+        }
+    }
+
     // ─── Expression visitor ────────────────────────────────────────────
 
-    fn visit_expr(&mut self, expr: &Expr) {
+    /// Visit an expression, emitting type hints on leaf sub-expressions
+    /// and returning the inferred type of the whole expression.
+    fn visit_expr(&mut self, expr: &Expr) -> Option<String> {
         match expr {
             Expr::Id(id) => {
                 self.id_roles.insert(id.node.start_byte(), id.role);
                 let name = self.node_text(&id.node);
                 self.hl_reference_var(&name, &id.node, DocumentHighlightKind::Read);
+
+                // Infer type: built-in constants or variable lookup.
+                let ty = match name.as_str() {
+                    "true" | "false" => Some("boolean".to_string()),
+                    "null" => Some("null".to_string()),
+                    _ => self.lookup_var_type(&name),
+                };
+                if let Some(ref t) = ty {
+                    self.emit_type_hint(&id.node, t.clone());
+                }
+                ty
             }
             Expr::Call(fc) => {
                 self.register_id(&fc.name);
+                let mut ret_type = None;
                 if let Some(name_id) = &fc.name {
                     let fname = self.node_text(&name_id.node);
                     self.record_callee(&fname);
                     self.hl_reference_func(&fname, &name_id.node, DocumentHighlightKind::Read);
+                    ret_type = self.lookup_func_return_type(&fname);
                 }
                 for arg in &fc.args {
                     self.visit_expr(arg);
                 }
+                if let Some(ref t) = ret_type {
+                    self.emit_type_hint(&fc.node, t.clone());
+                }
+                ret_type
             }
             Expr::FuncRef(id) => {
                 self.id_roles.insert(id.node.start_byte(), id.role);
                 let fname = self.node_text(&id.node);
                 self.record_callee(&fname);
                 self.hl_reference_func(&fname, &id.node, DocumentHighlightKind::Read);
+                let ty = "code".to_string();
+                self.emit_type_hint(&id.node, ty.clone());
+                Some(ty)
             }
-            Expr::Binary { left, right, .. } => {
-                self.visit_expr(left);
-                self.visit_expr(right);
+            Expr::Binary { node, left, right } => {
+                let lt = self.visit_expr(left);
+                let rt = self.visit_expr(right);
+                let op = Self::binary_op_kind(node);
+                Self::infer_binary_type(op, lt.as_deref(), rt.as_deref())
             }
-            Expr::Unary { operand, .. } => {
-                self.visit_expr(operand);
+            Expr::Unary { node, operand, .. } => {
+                let ot = self.visit_expr(operand);
+                let op = Self::unary_op_kind(node);
+                match op {
+                    Some(Kind::Not) => Some("boolean".to_string()),
+                    Some(Kind::Minus) => ot, // negation preserves the operand type
+                    _ => ot,
+                }
             }
             Expr::Parens { inner, .. } => {
-                self.visit_expr(inner);
+                self.visit_expr(inner)
             }
             Expr::Index { array, index, .. } => {
-                self.visit_expr(array);
+                let arr_type = self.visit_expr(array);
                 self.visit_expr(index);
+                // Element type is the array variable's base type.
+                arr_type
             }
-            Expr::Literal(_) => {}
+            Expr::Literal(node) => {
+                let kind = Kind::try_from(node.kind_id()).ok();
+                let ty = match kind {
+                    Some(Kind::Number) | Some(Kind::Rawcode) => Some("integer".to_string()),
+                    Some(Kind::Float) => Some("real".to_string()),
+                    Some(Kind::StringLiteral) => Some("string".to_string()),
+                    _ => None,
+                };
+                if let Some(ref t) = ty {
+                    self.emit_type_hint(node, t.clone());
+                }
+                ty
+            }
         }
     }
 
@@ -1170,5 +1491,4 @@ impl Cursor {
         }
     }
 }
-
 

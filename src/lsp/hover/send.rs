@@ -143,9 +143,51 @@ fn compute(uri: &Url, position: &Position) -> Option<Hover> {
     let leading_ws = line_text.len() - trimmed.len();
     let prefix_start_col = leading_ws;
     let prefix_end_col = leading_ws + prefix.len();
-
-    // Only trigger hover when cursor is on the //import(!) keyword itself
     let col = position.character;
+
+    // ── Per-key hover for //set directives ─────────────────────────────
+    if prefix == "//set" {
+        let after_set = &trimmed["//set".len()..];
+        let key_part = after_set.trim_start();
+        let ws_before_key = after_set.len() - key_part.len();
+
+        // Extract key
+        let key_len = key_part
+            .find(|c: char| c == ' ' || c == '\t')
+            .unwrap_or(key_part.len());
+
+        if key_len > 0 {
+            let key_start_col = prefix_start_col + "//set".len() + ws_before_key;
+            let key_end_col = key_start_col + key_len;
+            let key = &key_part[..key_len];
+
+            // Cursor on key → show per-key docs
+            if col >= key_start_col && col <= key_end_col {
+                if let Some(def) = crate::lng::directive::find_set_def(key) {
+                    let type_label = match def.kind {
+                        crate::lng::directive::SetValueKind::Bool => "`0` | `1`",
+                        crate::lng::directive::SetValueKind::Path => "`<path>`",
+                    };
+                    let md = format!(
+                        "### `//set {}`\n\n{}\n\n**Type:** {}\\\n**Default:** `{}`",
+                        def.key, def.detail, type_label, def.default
+                    );
+                    return Some(Hover {
+                        contents: MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: md,
+                        },
+                        range: Some(Range {
+                            start: Position { line: line_idx, character: key_start_col },
+                            end: Position { line: line_idx, character: key_end_col },
+                        }),
+                    });
+                }
+            }
+        }
+    }
+
+    // Cursor on the prefix keyword → show generic doc
     if col < prefix_start_col || col > prefix_end_col {
         return None;
     }

@@ -1,26 +1,17 @@
-use crate::lng::bni::parse::parse;
 use crate::lng::bni::uri_map::{PARSER_MAP, TREE_MAP};
 use crate::lsp::position::Position;
 use crate::lsp::text_document::TextDocumentContentChangeEvent;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::uri_lock::{uri_lock, uri_unlock};
 use std::error::Error;
 use tree_sitter::InputEdit;
 use url::Url;
 
-pub async fn change(
+/// Synchronous: apply incremental edits to the rope / tree.
+pub fn apply_edits(
     uri: &Url,
     changes: Vec<TextDocumentContentChangeEvent>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    uri_lock(uri).await;
-
-    if let Err(e) = _apply_changes(uri, changes) {
-        uri_unlock(uri);
-        return Err(e);
-    }
-
-    // parse will call uri_unlock
-    parse(uri).await
+    _apply_changes(uri, changes)
 }
 
 fn _apply_changes(

@@ -1,3 +1,4 @@
+use crate::lsp::cancel::CancelId;
 use serde::Serialize;
 use serde_json::json;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -36,3 +37,20 @@ pub async fn send_request(writer: &Arc<Mutex<Stdout>>, method: &str) {
     .await;
 }
 
+/// Send a `RequestCancelled` error response (code −32800) for a cancelled request.
+///
+/// The LSP spec requires the server to always respond, even if the request was cancelled.
+pub async fn send_cancelled(writer: &Arc<Mutex<Stdout>>, id: Option<CancelId>) {
+    send(
+        writer,
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32800,
+                "message": "Request cancelled"
+            }
+        }),
+    )
+    .await;
+}

@@ -37,61 +37,81 @@ fn compute(
         None => return vec![],
     };
 
-    // Only show hints when `//set ref-tip 1` is present in the file header.
-    let enabled = snapshot
-        .file_symbols
-        .file_settings
-        .get("ref-tip")
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    if !enabled {
+    let settings = &snapshot.file_symbols.file_settings;
+    let ref_tip = settings.get("ref-tip").map(|v| v == "1").unwrap_or(false);
+    let type_tip = settings.get("type-tip").map(|v| v == "1").unwrap_or(false);
+
+    if !ref_tip && !type_tip {
         return vec![];
     }
 
-    let ref_map = &snapshot.ref_map;
     let mut hints = Vec::new();
 
-    for span in &ref_map.spans {
-        let pos = &span.range.start;
-        // Filter to requested range
-        if pos.line < range.start.line
-            || (pos.line == range.start.line && pos.character < range.start.character)
-        {
-            continue;
-        }
-        if pos.line > range.end.line
-            || (pos.line == range.end.line && pos.character > range.end.character)
-        {
-            continue;
-        }
+    // ── ref-tip: debug reference-ID hints ───────────────────────────────
+    if ref_tip {
+        let ref_map = &snapshot.ref_map;
+        for span in &ref_map.spans {
+            let pos = &span.range.start;
+            if !in_range(pos, range) {
+                continue;
+            }
 
-        let label = if span.is_external {
-            // Show origin filename + DeclKey for imported symbols
-            ref_map
-                .external_decls
-                .get(&span.decl_key)
-                .map(|ext| {
-                    let path = ext.uri.path();
-                    let fname = path.rsplit('/').next().unwrap_or(path);
-                    match ext.origin_decl_key {
-                        Some(ok) => format!("\u{2192}{}#{}", fname, ok), // →filename.j#53
-                        None => format!("\u{2192}{}", fname),            // →filename.j
-                    }
-                })
-                .unwrap_or_else(|| format!("#{}", span.decl_key))
-        } else {
-            format!("#{}", span.decl_key)
-        };
+            let label = if span.is_external {
+                ref_map
+                    .external_decls
+                    .get(&span.decl_key)
+                    .map(|ext| {
+                        let path = ext.uri.path();
+                        let fname = path.rsplit('/').next().unwrap_or(path);
+                        match ext.origin_decl_key {
+                            Some(ok) => format!("\u{2192}{}#{}", fname, ok),
+                            None => format!("\u{2192}{}", fname),
+                        }
+                    })
+                    .unwrap_or_else(|| format!("#{}", span.decl_key))
+            } else {
+                format!("#{}", span.decl_key)
+            };
 
-        hints.push(InlayHint {
-            // Place hint right after the identifier
-            position: span.range.end.clone(),
-            label,
-            kind: Some(InlayHintKind::Type),
-            padding_left: Some(true),
-            padding_right: Some(false),
-        });
+            hints.push(InlayHint {
+                position: span.range.end.clone(),
+                label,
+                kind: Some(InlayHintKind::Type),
+                padding_left: Some(true),
+                padding_right: Some(false),
+            });
+        }
+    }
+
+    // ── type-tip: type-annotation hints ─────────────────────────────────
+    if type_tip {
+        for hint in &snapshot.type_hints {
+            if in_range(&hint.position, range) {
+                hints.push(hint.clone());
+            }
+        }
     }
 
     hints
 }
+
+/// Check whether a position falls inside the requested viewport range.
+fn in_range(
+    pos: &crate::lsp::position::Position,
+    range: &crate::lsp::range::Range,
+) -> bool {
+    if pos.line < range.start.line {
+        return false;
+    }
+    if pos.line == range.start.line && pos.character < range.start.character {
+        return false;
+    }
+    if pos.line > range.end.line {
+        return false;
+    }
+    if pos.line == range.end.line && pos.character > range.end.character {
+        return false;
+    }
+    true
+}
+
