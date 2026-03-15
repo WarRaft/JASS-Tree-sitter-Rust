@@ -41,4 +41,3 @@ fn main() {
     let tree = parser.parse(src, None).unwrap();
     print_tree(tree.root_node(), src, 0);
 }
-

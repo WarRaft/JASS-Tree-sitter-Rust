@@ -18,7 +18,7 @@ pub async fn send(
     // FILE_STORE is used by both JASS and AS.
     // BNI still uses legacy SEMANTIC_URI_MAP — fall back if needed.
     let data = if let Some(snap) = FILE_STORE.get(uri) {
-        snap.value().semantic.data(range)
+        snap.value().semantic.read().unwrap().data(range)
     } else {
         use crate::lsp::semantic::uri_map::URI_MAP as SEMANTIC_URI_MAP;
         SEMANTIC_URI_MAP

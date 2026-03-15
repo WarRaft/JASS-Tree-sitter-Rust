@@ -30,6 +30,7 @@ use crate::lsp::document_symbol::lsp::DocumentSymbol;
 use crate::lsp::folding::lsp::FoldingRange;
 use crate::lsp::ref_map::{DeclKey, RefMap};
 use crate::lsp::semantic::hub::Hub;
+use std::sync::RwLock;
 
 // ─── ParseSnapshot ───────────────────────────────────────────────────────────
 
@@ -37,10 +38,14 @@ use crate::lsp::semantic::hub::Hub;
 ///
 /// Produced atomically by one successful parse.  Wrapped in `Arc` so that
 /// readers and the next parse task can coexist without locking.
+///
+/// The `semantic` field uses `RwLock` for interior mutability: formatting
+/// adjusts token column positions in-place without rebuilding the entire
+/// snapshot.
 pub struct ParseSnapshot {
     pub folding: Vec<FoldingRange>,
     pub symbols: Vec<DocumentSymbol>,
-    pub semantic: Hub,
+    pub semantic: RwLock<Hub>,
     pub diagnostics: Vec<Diagnostic>,
     pub links: Vec<DocumentLink>,
     pub ref_map: RefMap,

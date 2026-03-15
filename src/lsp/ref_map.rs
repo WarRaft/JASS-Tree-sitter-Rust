@@ -23,14 +23,15 @@ pub static REF_URI_MAP: Lazy<DashMap<Url, RefMap>> = Lazy::new(DashMap::new);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-/// Declaration key — `start_byte` of the declaring node for local symbols,
-/// or a synthetic value (>= `EXTERNAL_KEY_BASE`) for imported symbols.
-pub type DeclKey = usize;
+/// Declaration key — a sequential ordinal (0, 1, 2, …) assigned during
+/// `Cursor::walk`.  Stable across whitespace-only edits (formatting).
+/// External (imported) keys start at `EXTERNAL_KEY_BASE`.
+pub type DeclKey = u32;
 
 /// Base value for synthetic DeclKeys assigned to imported symbols.
-/// Local `start_byte` values are always smaller than any real file,
-/// so `usize::MAX / 2` provides a collision-free partition.
-pub const EXTERNAL_KEY_BASE: usize = usize::MAX / 2;
+/// Local ordinals are always much smaller, so `u32::MAX / 2` provides
+/// a collision-free partition.
+pub const EXTERNAL_KEY_BASE: u32 = u32::MAX / 2;
 
 /// An imported symbol whose declaration lives in another file.
 /// Stored in [`RefMap::external_decls`] for cross-file go-to-definition.

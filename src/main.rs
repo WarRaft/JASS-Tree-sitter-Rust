@@ -16,6 +16,8 @@ use crate::lsp::diagnostic::lsp::DiagnosticOptions;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
+use crate::lsp::formatting::lsp::DocumentFormattingOptions;
+use crate::lsp::formatting::send::send_formatting;
 use crate::lsp::highlight::send::send as highlight_send;
 use crate::lsp::hover::send::send as hover_send;
 use crate::lsp::inlay_hint::send::send as inlay_hint_send;
@@ -125,6 +127,9 @@ async fn main() {
                                     document_link_provider: Some(DocumentLinkOptions {
                                         resolve_provider: Some(false),
                                     }),
+                                    document_formatting_provider: Some(
+                                        DocumentFormattingOptions {},
+                                    ),
                                     workspace: Some(WorkspaceServerCapabilities {
                                         file_operations: Some(FileOperationOptions {
                                             will_rename: Some(FileOperationRegistrationOptions {
@@ -627,6 +632,15 @@ async fn main() {
                                     },
                                 )
                                 .await;
+                            }
+
+                            MethodCall::Formatting(params) => {
+                                if call.id.was_cancelled().await {
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                uri_wait(uri).await;
+                                send_formatting(&writer, call.id, &params).await;
                             }
 
                             MethodCall::PrepareRename(params) => {

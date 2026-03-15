@@ -4,6 +4,7 @@ pub(crate) mod diagnostic;
 pub(crate) mod document_link;
 pub(crate) mod document_symbol;
 pub(crate) mod folding;
+pub(crate) mod formatting;
 pub(crate) mod highlight;
 pub(crate) mod hover;
 pub(crate) mod inlay_hint;

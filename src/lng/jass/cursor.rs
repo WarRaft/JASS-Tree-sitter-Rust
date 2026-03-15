@@ -39,7 +39,7 @@ pub struct ImportedSymbol {
     /// Namespace — function or variable.
     pub kind: ImportedKind,
     /// DeclKey of this symbol in the origin file's RefMap (if known).
-    pub origin_decl_key: Option<usize>,
+    pub origin_decl_key: Option<DeclKey>,
 }
 
 // ─── Scope types ─────────────────────────────────────────────────────────────
@@ -49,7 +49,6 @@ pub struct ImportedSymbol {
 #[derive(Debug, Clone)]
 struct UnresolvedRef {
     name: String,
-    node_start_byte: usize,
     range: Range,
     kind: DocumentHighlightKind,
     /// Which namespace the reference lives in.
@@ -109,6 +108,8 @@ pub struct Cursor {
     comment_end: usize,
     /// Monotonically increasing counter for declaration ordering.
     decl_counter: usize,
+    /// Next ordinal DeclKey to assign (0, 1, 2, …).
+    next_decl_key: DeclKey,
     /// Callee names collected while visiting the current function body.
     /// `None` when outside a function.
     current_callees: Option<HashSet<String>>,
@@ -162,6 +163,7 @@ impl Cursor {
             comment_start: None,
             comment_end: 0,
             decl_counter: 0,
+            next_decl_key: 0,
             current_callees: None,
             bare_callees: HashSet::new(),
             hl_scopes: vec![HlScope::default()], // global scope
@@ -301,6 +303,13 @@ impl Cursor {
         idx
     }
 
+    /// Allocate the next sequential `DeclKey` (0, 1, 2, …).
+    fn alloc_key(&mut self) -> DeclKey {
+        let key = self.next_decl_key;
+        self.next_decl_key += 1;
+        key
+    }
+
     /// **Phase 2**: link unresolved references against local forward
     /// declarations, imported symbols, or standalone groups.
     ///
@@ -332,7 +341,7 @@ impl Cursor {
                 .push(uref);
         }
 
-        let mut ext_counter: usize = 0;
+        let mut ext_counter: u32 = 0;
 
         for ((name, ns), refs) in by_name {
             // 1. Check local forward declarations (global scope).
@@ -382,7 +391,7 @@ impl Cursor {
                 }
             } else {
                 // 3. No match → single standalone group per (name, ns).
-                let key = refs[0].node_start_byte;
+                let key = self.alloc_key();
                 self.ref_names
                     .entry(key)
                     .or_insert_with(|| name.clone());
@@ -424,7 +433,7 @@ impl Cursor {
 
     /// Declare a **variable** (global, local, param, constant).
     fn hl_declare_var(&mut self, name: &str, node: &Node) -> DeclKey {
-        let key = node.start_byte();
+        let key = self.alloc_key();
         let range = node.to_range(&self.rope);
 
         self.ref_groups
@@ -445,7 +454,7 @@ impl Cursor {
 
     /// Declare a **function / native**.
     fn hl_declare_func(&mut self, name: &str, node: &Node) -> DeclKey {
-        let key = node.start_byte();
+        let key = self.alloc_key();
         let range = node.to_range(&self.rope);
 
         self.ref_groups
@@ -494,7 +503,6 @@ impl Cursor {
         } else {
             self.unresolved_refs.push(UnresolvedRef {
                 name: name.to_string(),
-                node_start_byte: node.start_byte(),
                 range: node.to_range(&self.rope),
                 kind,
                 namespace: ImportedKind::Var,
@@ -537,7 +545,6 @@ impl Cursor {
             // Not a built-in primitive → push for import matching
             self.unresolved_refs.push(UnresolvedRef {
                 name: name.to_string(),
-                node_start_byte: node.start_byte(),
                 range: node.to_range(&self.rope),
                 kind,
                 namespace: ImportedKind::Var,
@@ -569,7 +576,6 @@ impl Cursor {
         } else {
             self.unresolved_refs.push(UnresolvedRef {
                 name: name.to_string(),
-                node_start_byte: node.start_byte(),
                 range: node.to_range(&self.rope),
                 kind,
                 namespace: ImportedKind::Func,

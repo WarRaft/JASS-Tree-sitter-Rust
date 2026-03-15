@@ -158,7 +158,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
     let snapshot = Arc::new(ParseSnapshot {
         folding: cursor.folding,
         symbols: cursor.symbols,
-        semantic: cursor.semantic,
+        semantic: std::sync::RwLock::new(cursor.semantic),
         diagnostics: all_diagnostics,
         links,
         ref_map: RefMap::default(),

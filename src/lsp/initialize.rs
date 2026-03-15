@@ -3,6 +3,7 @@ use crate::lsp::diagnostic::lsp::DiagnosticOptions;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
+use crate::lsp::formatting::lsp::DocumentFormattingOptions;
 use crate::lsp::inlay_hint::lsp::InlayHintOptions;
 use crate::lsp::rename::lsp::{RenameOptions, WorkspaceServerCapabilities};
 use crate::lsp::semantic::lsp::SemanticTokensOptions;
@@ -50,6 +51,8 @@ pub struct ServerCapabilities {
     pub rename_provider: Option<RenameOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document_link_provider: Option<DocumentLinkOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document_formatting_provider: Option<DocumentFormattingOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceServerCapabilities>,
 }

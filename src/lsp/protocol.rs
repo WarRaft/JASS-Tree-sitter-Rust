@@ -4,6 +4,7 @@ use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
 use crate::lsp::document_link::lsp::DocumentLinkParams;
 use crate::lsp::document_symbol::lsp::DocumentSymbolParams;
 use crate::lsp::folding::lsp::FoldingRangeParams;
+use crate::lsp::formatting::lsp::DocumentFormattingParams;
 use crate::lsp::highlight::lsp::{DefinitionParams, DocumentHighlightParams, ReferenceParams};
 use crate::lsp::hover::lsp::HoverParams;
 use crate::lsp::inlay_hint::lsp::InlayHintParams;
@@ -117,6 +118,9 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/documentLink")]
     DocumentLink(DocumentLinkParams),
+
+    #[serde(rename = "textDocument/formatting")]
+    Formatting(DocumentFormattingParams),
 
     #[serde(rename = "textDocument/prepareRename")]
     PrepareRename(PrepareRenameParams),

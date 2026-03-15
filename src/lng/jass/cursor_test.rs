@@ -908,7 +908,7 @@ endfunction
     fn find_group<'a>(
         cursor: &'a Cursor,
         name: &str,
-    ) -> (&'a usize, &'a Vec<crate::lsp::ref_map::RawOccurrence>) {
+    ) -> (&'a u32, &'a Vec<crate::lsp::ref_map::RawOccurrence>) {
         let mut found: Vec<_> = cursor.ref_groups.iter()
             .filter(|(k, _)| cursor.ref_names.get(k).map(|n| n == name).unwrap_or(false))
             .collect();
@@ -925,7 +925,7 @@ endfunction
     fn find_groups<'a>(
         cursor: &'a Cursor,
         name: &str,
-    ) -> Vec<(&'a usize, &'a Vec<crate::lsp::ref_map::RawOccurrence>)> {
+    ) -> Vec<(&'a u32, &'a Vec<crate::lsp::ref_map::RawOccurrence>)> {
         cursor.ref_groups.iter()
             .filter(|(k, _)| cursor.ref_names.get(k).map(|n| n == name).unwrap_or(false))
             .collect()

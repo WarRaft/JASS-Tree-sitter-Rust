@@ -169,6 +169,26 @@ impl Hub {
         self
     }
 
+    /// Adjust token column positions on specific lines.
+    ///
+    /// `deltas` maps **0-based line number** → signed column shift.
+    /// Positive values shift tokens to the right (indent increased);
+    /// negative values shift left (indent decreased).
+    ///
+    /// This is used after formatting: leading-whitespace edits change
+    /// the column of every token on the affected line by the same
+    /// amount.  Token `len` and `row` stay unchanged.
+    pub fn adjust_columns(&mut self, deltas: &std::collections::HashMap<usize, isize>) {
+        for (&line, line_data) in self.lines.iter_mut() {
+            if let Some(&delta) = deltas.get(&line) {
+                for token in &mut line_data.tokens {
+                    let new_col = token.col as isize + delta;
+                    token.col = new_col.max(0) as usize;
+                }
+            }
+        }
+    }
+
     pub fn data(&self, range: Option<Range>) -> Vec<usize> {
         let mut result = Vec::new();
         let mut line_last = 0;

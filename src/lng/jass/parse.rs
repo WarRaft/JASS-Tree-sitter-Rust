@@ -5,7 +5,7 @@ use crate::lng::jass::uri_map::TREE_MAP;
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_link::lsp::DocumentLink;
 use crate::lsp::position::Position;
-use crate::lsp::ref_map::{build_ref_map, RefMap, REF_URI_MAP};
+use crate::lsp::ref_map::{build_ref_map, DeclKey, RefMap, REF_URI_MAP};
 use crate::lsp::range::Range;
 use crate::util::file_store::{
     exports_changed, new_cancel_token, ParseSnapshot, FILE_STORE,
@@ -26,7 +26,7 @@ use url::Url;
 // ─── Main parse entry point ─────────────────────────────────────────────────
 
 /// Look up the DeclKey of a symbol by name in a RefMap.
-fn find_decl_key_by_name(ref_map: &RefMap, name: &str) -> Option<usize> {
+fn find_decl_key_by_name(ref_map: &RefMap, name: &str) -> Option<DeclKey> {
     for (&key, group) in &ref_map.groups {
         if group.name == name && group.occurrences.iter().any(|o| o.is_decl) {
             return Some(key);
@@ -377,7 +377,7 @@ fn _parse(uri: &Url, cancel: &CancellationToken) -> Result<Vec<Url>, Box<dyn Err
     let new_snapshot = Arc::new(ParseSnapshot {
         folding: cursor.folding,
         symbols: cursor.symbols,
-        semantic: cursor.semantic,
+        semantic: std::sync::RwLock::new(cursor.semantic),
         diagnostics: all_diagnostics,
         links,
         ref_map,
