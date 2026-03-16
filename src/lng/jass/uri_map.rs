@@ -1,8 +1,7 @@
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
-use tree_sitter::{Parser, Tree};
-use url::Url;
+//! Deprecated — use `crate::util::tree_map` instead.
+//!
+//! Kept only as re-exports so that code that hasn't been migrated yet
+//! continues to compile.
 
-pub static PARSER_MAP: Lazy<DashMap<Url, Parser>> = Lazy::new(|| DashMap::new());
-pub static TREE_MAP: Lazy<DashMap<Url, Tree>> = Lazy::new(|| DashMap::new());
-
+#[allow(unused_imports)]
+pub use crate::util::tree_map::{PARSER_MAP, TREE_MAP};

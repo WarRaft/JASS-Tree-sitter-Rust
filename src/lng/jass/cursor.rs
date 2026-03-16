@@ -148,16 +148,42 @@ struct HlScope {
 
 
 impl Cursor {
-    /// Walk the AST in two phases, collecting everything.
+    /// Walk the AST in two phases, collecting everything the LSP needs.
     ///
-    /// **Phase 1** — local-only resolution: the AST is walked with only
-    /// file-local declarations in scope.  References that cannot resolve
-    /// locally are collected in `unresolved_refs`.
+    /// ## Phase 1 — local resolution (single top-to-bottom walk)
     ///
-    /// **Phase 2** — import linking: unresolved refs are matched against
-    /// `imported` symbols.  Matched refs get synthetic `DeclKey` values
-    /// (≥ `EXTERNAL_KEY_BASE`); unmatched refs become standalone groups
-    /// keyed by their own `start_byte`.
+    /// Every AST node is visited once.  Declarations (globals, locals,
+    /// functions, natives, types, params) create [`DeclKey`] entries in
+    /// `hl_scopes` and `ref_groups`.  References that resolve within the
+    /// current file's scopes are linked immediately.  References that
+    /// **cannot** resolve locally (e.g. `B` used before `boolean B` is
+    /// declared, or a function from an imported file) are collected into
+    /// `unresolved_refs`.
+    ///
+    /// Phase 1 also computes: type inference (`visit_expr`), semantic
+    /// tokens, document symbols, folding ranges, inlay hints, and
+    /// `FileSymbols` (the file's export list).
+    ///
+    /// ## Phase 2 — import linking ([`link_imports`])
+    ///
+    /// For each `(name, namespace)` pair in `unresolved_refs`:
+    ///
+    /// 1. **Forward local declaration** — if a declaration for `name` now
+    ///    exists in the global scope (it was declared below the reference
+    ///    in Phase 1), merge into the existing group.  This covers
+    ///    `B = 3` before `boolean B` within the same file.
+    ///
+    /// 2. **Imported symbol** — if `name` matches an entry from `imported`
+    ///    (another file in the connected component), create an external
+    ///    ref group with `DeclKey ≥ EXTERNAL_KEY_BASE`.
+    ///
+    /// 3. **Truly unresolved** — emit `"Undeclared variable/function"`
+    ///    diagnostics and create a standalone group.
+    ///
+    /// This two-phase design guarantees that:
+    /// - Forward references within a file are always resolved.
+    /// - Cross-file symbols are resolved when the dependency is available.
+    /// - Only truly unknown names produce diagnostics.
     pub fn walk(ast: &Ast, rope: &Rope, imported: &[ImportedSymbol]) -> Self {
         let mut c = Self {
             diagnostics: Vec::new(),
@@ -339,7 +365,7 @@ impl Cursor {
     ///    (shared `DeclKey ≥ EXTERNAL_KEY_BASE`).
     /// 3. Otherwise → create a **single** standalone local group per
     ///    (name, namespace) pair, keyed by the first occurrence's
-    ///    `start_byte`.
+    ///    `start_byte`, **and emit "Undeclared" diagnostics**.
     fn link_imports(&mut self, imported: &[ImportedSymbol]) {
         use std::collections::HashMap as Map;
 
@@ -409,10 +435,16 @@ impl Cursor {
                 }
             } else {
                 // 3. No match → single standalone group per (name, ns).
+                //    Emit "Undeclared variable/function" diagnostics for each
+                //    occurrence.
                 let key = self.alloc_key();
                 self.ref_names
                     .entry(key)
                     .or_insert_with(|| name.clone());
+                let label = match ns {
+                    ImportedKind::Func => "function",
+                    ImportedKind::Var  => "variable",
+                };
                 for (i, uref) in refs.iter().enumerate() {
                     self.ref_groups
                         .entry(key)
@@ -422,6 +454,12 @@ impl Cursor {
                             kind: uref.kind,
                             is_decl: i == 0, // first = "declaration"
                         });
+                    self.diagnostics.push(Diagnostic {
+                        range: uref.range.clone(),
+                        message: format!("Undeclared {} `{}`", label, name),
+                        severity: Some(DiagnosticSeverity::Error),
+                        ..Default::default()
+                    });
                 }
             }
         }
@@ -497,9 +535,16 @@ impl Cursor {
         self.hl_declare_var(name, node)
     }
 
+    /// JASS built-in value literals that are not user-declared variables.
+    /// These are silently skipped by `hl_reference_var` because they
+    /// cannot be imported or renamed.
+    const BUILTIN_VALUES: &'static [&'static str] = &["true", "false", "null"];
+
     /// Record a reference to a previously-declared **variable**.
     /// If the name is not found in any local scope, the reference is
     /// collected in `unresolved_refs` for Phase 2 import linking.
+    /// Built-in value literals (`true`, `false`, `null`) are silently
+    /// skipped — they have no user declaration.
     fn hl_reference_var(&mut self, name: &str, node: &Node, kind: DocumentHighlightKind) {
         let decl_key = self
             .hl_scopes
@@ -518,7 +563,7 @@ impl Cursor {
                     is_decl: false,
                 });
             self.ref_names.entry(key).or_insert_with(|| name.to_string());
-        } else {
+        } else if !Self::BUILTIN_VALUES.contains(&name) {
             self.unresolved_refs.push(UnresolvedRef {
                 name: name.to_string(),
                 range: node.to_range(&self.rope),
@@ -1156,9 +1201,11 @@ impl Cursor {
 
                     for d in &v.decls {
                         self.register_id(&d.name);
-                        if let Some(expr) = &d.value {
-                            self.visit_expr(expr);
-                        }
+                        let expr_type = if let Some(expr) = &d.value {
+                            self.visit_expr(expr)
+                        } else {
+                            None
+                        };
                         let var_name = self.id_name(&d.name);
                         let decl_index = self.next_decl_index();
                         let var_decl_key = if let Some(name_id) = &d.name {
@@ -1175,6 +1222,10 @@ impl Cursor {
                         } else {
                             None
                         };
+                        // Type mismatch check: unknown → concrete type
+                        if let (Some(tn), Some(et)) = (&type_name, &expr_type) {
+                            self.check_type_mismatch(tn, Some(et.as_str()), &d.node.to_range(&self.rope));
+                        }
                         self.file_symbols.globals.push(GlobalVarSym {
                             name: var_name.clone(),
                             type_name: type_name.clone(),
@@ -1243,8 +1294,17 @@ impl Cursor {
                     let tname = self.node_text(&tid.node);
                     self.hl_reference_type(&tname, &tid.node, DocumentHighlightKind::Read);
                 }
-                if let Some(expr) = &l.value {
-                    self.visit_expr(expr);
+                let expr_type = if let Some(expr) = &l.value {
+                    self.visit_expr(expr)
+                } else {
+                    None
+                };
+                // Type mismatch check: unknown → concrete type
+                if let Some(ref tid) = l.type_id {
+                    let tn = self.node_text(&tid.node);
+                    if let Some(ref et) = expr_type {
+                        self.check_type_mismatch(&tn, Some(et.as_str()), &l.node.to_range(&self.rope));
+                    }
                 }
                 if let (Some(scope), Some(name_id)) = (vars.last_mut(), &l.name) {
                     let lname = self.node_text(&name_id.node);
@@ -1291,9 +1351,11 @@ impl Cursor {
                 }
                 for d in &v.decls {
                     self.register_id(&d.name);
-                    if let Some(expr) = &d.value {
-                        self.visit_expr(expr);
-                    }
+                    let expr_type = if let Some(expr) = &d.value {
+                        self.visit_expr(expr)
+                    } else {
+                        None
+                    };
                     let var_name = self.id_name(&d.name);
                     let decl_index = self.next_decl_index();
                     let var_decl_key = if let Some(ref name_id) = d.name {
@@ -1317,6 +1379,10 @@ impl Cursor {
                     // TypeMap + type-tip
                     if let Some(ref name_id) = d.name {
                         if let Some(ref tn) = type_name {
+                            // Type mismatch check: unknown → concrete type
+                            if let Some(ref et) = expr_type {
+                                self.check_type_mismatch(tn, Some(et.as_str()), &d.node.to_range(&self.rope));
+                            }
                             let cv = d.value.as_ref().and_then(|e| self.eval_expr(e));
                             let is_comptime = v.is_constant && cv.is_some();
                             if is_comptime {
@@ -1354,11 +1420,23 @@ impl Cursor {
                 if let Some(expr) = &s.index {
                     self.visit_expr(expr);
                 }
-                if let Some(expr) = &s.value {
-                    self.visit_expr(expr);
-                }
+                let value_type = if let Some(expr) = &s.value {
+                    self.visit_expr(expr)
+                } else {
+                    None
+                };
                 if let Some(var_id) = &s.variable {
                     let name = self.node_text(&var_id.node);
+                    // Type mismatch check: unknown → concrete type
+                    if let Some(ref vt) = value_type {
+                        if let Some(declared) = self.lookup_var_type(&name) {
+                            self.check_type_mismatch(
+                                &declared,
+                                Some(vt.as_str()),
+                                &s.node.to_range(&self.rope),
+                            );
+                        }
+                    }
                     // hl: reference variable as Write
                     self.hl_reference_var(&name, &var_id.node, DocumentHighlightKind::Write);
                     for scope in vars.iter_mut().rev() {
@@ -1423,6 +1501,29 @@ impl Cursor {
 
     // ─── Expression type helpers ─────────────────────────────────────
 
+    /// Emit a diagnostic when the inferred expression type is `unknown` but
+    /// the declared type is a concrete known type.
+    fn check_type_mismatch(
+        &mut self,
+        declared_type: &str,
+        expr_type: Option<&str>,
+        range: &Range,
+    ) {
+        if let Some(et) = expr_type {
+            if et == UNKNOWN_TYPE && declared_type != UNKNOWN_TYPE {
+                self.diagnostics.push(Diagnostic {
+                    range: range.clone(),
+                    message: format!(
+                        "Cannot assign type `{}` to `{}`",
+                        UNKNOWN_TYPE, declared_type,
+                    ),
+                    severity: Some(DiagnosticSeverity::Error),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
     /// Look up the type of a variable by name via highlight scopes + type map.
     fn lookup_var_type(&self, name: &str) -> Option<String> {
         let decl_key = self
@@ -1477,7 +1578,8 @@ impl Cursor {
     /// Infer the result type of a binary operation from operator and operand types.
     ///
     /// Returns `Some(UNKNOWN_TYPE)` when both operand types are known but
-    /// the combination is invalid (e.g. `string * integer`, `boolean - boolean`).
+    /// the combination is invalid (e.g. `string * integer`, `boolean - boolean`),
+    /// or when either operand is already `unknown`.
     fn infer_binary_type(
         op: Option<Kind>,
         left: Option<&str>,
@@ -1486,6 +1588,11 @@ impl Cursor {
         let op = op?;
         let l = left?;
         let r = right?;
+
+        // unknown propagates: any operation with unknown yields unknown.
+        if l == UNKNOWN_TYPE || r == UNKNOWN_TYPE {
+            return Some(UNKNOWN_TYPE.to_string());
+        }
 
         let is_numeric = |t: &str| t == "integer" || t == "real";
 
@@ -1537,10 +1644,15 @@ impl Cursor {
                 self.hl_reference_var(&name, &id.node, DocumentHighlightKind::Read);
 
                 // Infer type: built-in constants or variable lookup.
+                // If the variable is not declared locally, return `unknown`
+                // so the type propagates correctly through expressions.
+                // A diagnostic will be emitted in Phase 2 if the name
+                // is not resolved by imports either.
                 let ty = match name.as_str() {
                     "true" | "false" => Some("boolean".to_string()),
                     "null" => Some("null".to_string()),
-                    _ => self.lookup_var_type(&name),
+                    _ => self.lookup_var_type(&name)
+                        .or_else(|| Some(UNKNOWN_TYPE.to_string())),
                 };
                 if let Some(ref t) = ty {
                     self.emit_type_hint(&id.node, t, None);
@@ -1582,6 +1694,10 @@ impl Cursor {
             Expr::Unary { node, operand, .. } => {
                 let ot = self.visit_expr(operand);
                 let op = Self::unary_op_kind(node);
+                // unknown propagates through unary operations.
+                if ot.as_deref() == Some(UNKNOWN_TYPE) {
+                    return Some(UNKNOWN_TYPE.to_string());
+                }
                 match (op, ot.as_deref()) {
                     (Some(Kind::Not), Some("boolean")) => Some("boolean".to_string()),
                     (Some(Kind::Not), Some(_)) => Some(UNKNOWN_TYPE.to_string()),

@@ -16,7 +16,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use once_cell::sync::Lazy;
 use tokio::io::Stdout;
 use tokio::sync::Mutex;
@@ -70,6 +70,69 @@ pub static FILE_STORE: Lazy<DashMap<Url, Arc<ParseSnapshot>>> = Lazy::new(DashMa
 
 /// Per-URI cancellation token.
 pub static CANCEL_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(DashMap::new);
+
+/// Pending-import waiters: dependency URI → set of files waiting for it.
+///
+/// When [`ensure_file_symbols`](crate::lng::jass::parse) cannot load symbols
+/// for a dependency (file not on disk yet, still parsing, cache miss, etc.),
+/// the requesting file is registered here.  Once the dependency finishes
+/// parsing, [`drain_pending`] returns (and removes) the waiters so they can
+/// be cascade-re-parsed.
+pub static PENDING_IMPORTS: Lazy<DashMap<Url, HashSet<Url>>> = Lazy::new(DashMap::new);
+
+/// Register `waiter` as waiting for `dep` to become available.
+pub fn register_pending(dep: &Url, waiter: &Url) {
+    PENDING_IMPORTS
+        .entry(dep.clone())
+        .or_default()
+        .insert(waiter.clone());
+}
+
+/// Drain and return all files that were waiting for `dep`.
+pub fn drain_pending(dep: &Url) -> Vec<Url> {
+    PENDING_IMPORTS
+        .remove(dep)
+        .map(|(_, set)| set.into_iter().collect())
+        .unwrap_or_default()
+}
+
+/// Guard against cyclic cascade re-parses.
+///
+/// While a URI is in this set, no other task may cascade-re-parse it.
+/// Prevents the A→cascade(B)→cascade(A)→… infinite loop.
+pub static REPARSE_GUARD: Lazy<DashSet<Url>> = Lazy::new(DashSet::new);
+
+/// Maximum number of peer files re-parsed in a single cascade round.
+///
+/// Prevents unbounded work in pathological import topologies (deep chains,
+/// many-to-many).
+pub const MAX_CASCADE_PEERS: usize = 128;
+
+/// RAII guard that inserts `uri` into [`REPARSE_GUARD`] on creation and
+/// removes it on drop — even on early `?` returns or panics.
+pub struct CascadeGuard {
+    uri: Url,
+}
+
+impl CascadeGuard {
+    /// Try to enter the cascade guard.
+    ///
+    /// Returns `Some(guard)` if `uri` was **not** already in the set.
+    /// Returns `None` if another cascade is already in progress for `uri`.
+    pub fn try_enter(uri: &Url) -> Option<Self> {
+        if REPARSE_GUARD.insert(uri.clone()) {
+            Some(Self { uri: uri.clone() })
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for CascadeGuard {
+    fn drop(&mut self) {
+        REPARSE_GUARD.remove(&self.uri);
+    }
+}
 
 /// Shared writer for pushing notifications (set once from `main()`).
 pub static LSP_WRITER: once_cell::sync::OnceCell<Arc<Mutex<Stdout>>> =

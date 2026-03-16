@@ -11,7 +11,7 @@
 //!    keywords and their operands, etc.
 
 use crate::lng::jass::kind::Kind;
-use crate::lng::jass::uri_map::TREE_MAP;
+use crate::util::tree_map::TREE_MAP;
 use crate::lsp::formatting::lsp::{FormattingOptions, TextEdit};
 use crate::util::roper::uri_map::ROPE_MAP;
 use lapce_xi_rope::Rope;

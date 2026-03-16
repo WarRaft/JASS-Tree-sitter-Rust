@@ -1,5 +1,5 @@
 use crate::lng::bni::kind::Kind;
-use crate::lng::bni::uri_map::TREE_MAP;
+use crate::util::tree_map::TREE_MAP;
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity, DocumentDiagnosticReport};
 use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
 use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};

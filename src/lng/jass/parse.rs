@@ -1,21 +1,23 @@
 use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
 use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::lng::jass::symbol::FILE_SYMBOLS;
-use crate::lng::jass::uri_map::TREE_MAP;
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::document_link::lsp::DocumentLink;
-use crate::lsp::position::Position;
-use crate::lsp::ref_map::{build_ref_map, DeclKey, RefMap, REF_URI_MAP};
-use crate::lsp::range::Range;
+use crate::lsp::ref_map::{build_ref_map, RefMap, REF_URI_MAP};
 use crate::util::file_store::{
-    exports_changed, new_cancel_token, publish_diagnostics, publish_diagnostics_many,
-    send_refresh_all, ParseSnapshot, FILE_STORE,
+    exports_changed, new_cancel_token, register_pending,
+    ParseSnapshot, FILE_STORE,
 };
-use crate::util::import_graph::{resolve_import, IMPORT_GRAPH};
+use crate::util::import_graph::IMPORT_GRAPH;
+use crate::util::parse::{
+    cascade_parse_and_notify, ensure_file_symbols,
+    file_symbols_to_entries, find_decl_key_by_name, resolve_import_directive,
+    ParseFn,
+};
 use crate::util::ref_cache;
-use crate::util::scope_resolver::{GlobalEntry, SymbolNS, SCOPE_RESOLVER};
-use crate::util::symbol_cache;
 use crate::util::roper::uri_map::ROPE_MAP;
+use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
+use crate::util::symbol_cache;
+use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
 use std::error::Error;
@@ -25,159 +27,6 @@ use url::Url;
 
 // ─── Main parse entry point ─────────────────────────────────────────────────
 
-/// Look up the DeclKey of a symbol by name **and namespace** in a RefMap.
-///
-/// `func_keys` is the set of DeclKeys known to be function declarations.
-/// A key present in `func_keys` matches `SymbolNS::Func`; otherwise `SymbolNS::Var`.
-fn find_decl_key_by_name(
-    ref_map: &RefMap,
-    name: &str,
-    ns: SymbolNS,
-    func_keys: &HashSet<DeclKey>,
-) -> Option<DeclKey> {
-    for (&key, group) in &ref_map.groups {
-        if group.name != name || !group.occurrences.iter().any(|o| o.is_decl) {
-            continue;
-        }
-        let is_func = func_keys.contains(&key);
-        match ns {
-            SymbolNS::Func if is_func => return Some(key),
-            SymbolNS::Var if !is_func => return Some(key),
-            _ => continue,
-        }
-    }
-    None
-}
-
-/// Ensure that `FILE_SYMBOLS` and `SCOPE_RESOLVER` have entries for `dep_uri`.
-///
-/// **Must NOT be called for the file currently being parsed** — the caller
-/// must exclude `current_uri` from the loop to avoid clobbering in-flight data.
-fn ensure_file_symbols(dep_uri: &Url) {
-    // Already in memory — no need to reload.
-    if FILE_SYMBOLS.contains_key(dep_uri) {
-        return;
-    }
-
-    // 2. Disk cache
-    if let Some((_meta, symbols)) = symbol_cache::load(dep_uri) {
-        let entries = file_symbols_to_entries(dep_uri, &symbols);
-        let rope_hash = compute_hash_for_uri(dep_uri);
-        SCOPE_RESOLVER.update_file(dep_uri, rope_hash, entries);
-        FILE_SYMBOLS.insert(dep_uri.clone(), symbols);
-        return;
-    }
-
-    // 3. Parse from disk
-    let path = match dep_uri.to_file_path() {
-        Ok(p) if p.exists() => p,
-        _ => return,
-    };
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let mut parser = tree_sitter::Parser::new();
-    if parser
-        .set_language(&tree_sitter_jass::language().into())
-        .is_err()
-    {
-        return;
-    }
-    let tree = match parser.parse(&content, None) {
-        Some(t) => t,
-        None => return,
-    };
-    let rope = Rope::from(content.as_str());
-    let ast = build_ast(tree.root_node());
-    let cursor = Cursor::walk(&ast, &rope, &[]);
-    let file_symbols = cursor.file_symbols;
-    if let Some(meta) = symbol_cache::FileMeta::from_uri(dep_uri) {
-        symbol_cache::store(dep_uri, meta, &file_symbols);
-    }
-    let entries = file_symbols_to_entries(dep_uri, &file_symbols);
-    let hash = ref_cache::content_hash(&rope);
-    SCOPE_RESOLVER.update_file(dep_uri, hash, entries);
-    FILE_SYMBOLS.insert(dep_uri.clone(), file_symbols);
-}
-
-/// Compute content hash for a URI — reads from ROPE_MAP if available,
-/// otherwise reads from disk.
-fn compute_hash_for_uri(uri: &Url) -> [u8; 32] {
-    if let Some(rope_entry) = ROPE_MAP.get(uri) {
-        return ref_cache::content_hash(rope_entry.value());
-    }
-    if let Ok(path) = uri.to_file_path() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            let rope = Rope::from(content.as_str());
-            return ref_cache::content_hash(&rope);
-        }
-    }
-    [0u8; 32]
-}
-
-/// Convert `FileSymbols` into `GlobalEntry` items for the scope resolver.
-fn file_symbols_to_entries(
-    uri: &Url,
-    fs: &crate::lng::jass::symbol::FileSymbols,
-) -> Vec<GlobalEntry> {
-    let mut entries = Vec::new();
-
-    for f in &fs.functions {
-        entries.push(GlobalEntry {
-            uri: uri.clone(),
-            name: f.name.clone(),
-            ns: SymbolNS::Func,
-            decl_key: 0, // updated when RefMap is available
-            type_name: None,
-            params: f.params.iter().map(|p| (p.name.clone(), p.type_name.clone())).collect(),
-            return_type: f.return_type.clone(),
-            is_constant: false,
-            is_array: false,
-        });
-    }
-    for n in &fs.natives {
-        entries.push(GlobalEntry {
-            uri: uri.clone(),
-            name: n.name.clone(),
-            ns: SymbolNS::Func,
-            decl_key: 0,
-            type_name: None,
-            params: n.params.iter().map(|p| (p.name.clone(), p.type_name.clone())).collect(),
-            return_type: n.return_type.clone(),
-            is_constant: false,
-            is_array: false,
-        });
-    }
-    for g in &fs.globals {
-        entries.push(GlobalEntry {
-            uri: uri.clone(),
-            name: g.name.clone(),
-            ns: SymbolNS::Var,
-            decl_key: 0,
-            type_name: g.type_name.clone(),
-            params: vec![],
-            return_type: None,
-            is_constant: g.is_constant,
-            is_array: g.is_array,
-        });
-    }
-    for t in &fs.types {
-        entries.push(GlobalEntry {
-            uri: uri.clone(),
-            name: t.name.clone(),
-            ns: SymbolNS::Var,
-            decl_key: 0,
-            type_name: None,
-            params: vec![],
-            return_type: None,
-            is_constant: false,
-            is_array: false,
-        });
-    }
-
-    entries
-}
 
 /// Parse and store all LSP data for `uri`.
 ///
@@ -213,34 +62,60 @@ pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> 
 
 /// Parse + cascade re-parse + push diagnostics + refresh all open editors.
 ///
+/// ## Two-pass design
+///
+/// **Pass 1 — current file**: The edited file is parsed from its in-memory
+/// rope/tree (the latest snapshot from `DidChange`).  All local declarations
+/// are collected, unresolved references are queued, and the import graph is
+/// updated.  Any dependency that cannot be loaded triggers
+/// [`register_pending`] so that a cascade fires when it becomes available.
+///
+/// **Pass 2 — cascade**: If the current file's **exports** changed (names
+/// added/removed), or if the connected component changed, every peer in the
+/// component is re-parsed so its diagnostics and references reflect the new
+/// scope.  Peers that are **open** (have rope/tree) are re-parsed in-memory;
+/// **closed** peers are re-parsed from disk.
+///
+/// Cyclic cascades are prevented by [`CascadeGuard`] (RAII set guard).
+///
 /// Intended to be called from a **spawned task** (not the main message loop).
 pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let cascade = parse(uri).await?;
-
-    // Push diagnostics for the current file.
-    publish_diagnostics(uri).await;
-
-    // Cascade re-parse: connected peers whose scope changed.
-    let mut reparsed_peers = Vec::new();
-    for peer_uri in &cascade {
-        if ROPE_MAP.contains_key(peer_uri) && TREE_MAP.contains_key(peer_uri) {
-            if let Err(e) = parse(peer_uri).await {
-                log::error!("cascade re-parse {}: {}", peer_uri, e);
-            } else {
-                reparsed_peers.push(peer_uri.clone());
-            }
-        }
-    }
-
-    // Push diagnostics for all cascade-affected peers.
-    publish_diagnostics_many(&reparsed_peers).await;
-
-    // Tell VS Code to re-request semantic tokens / diagnostics / inlay hints.
-    send_refresh_all().await;
-
-    Ok(())
+    let parse_fn: ParseFn = Box::new(|u| {
+        Box::pin(async move { parse(&u).await })
+    });
+    let disk_fn: ParseFn = Box::new(|u| {
+        Box::pin(async move { parse_from_disk(&u).await })
+    });
+    cascade_parse_and_notify(uri, &parse_fn, Some(&disk_fn)).await
 }
 
+/// Core parse logic (runs on the blocking thread pool).
+///
+/// ## Two-pass reference resolution
+///
+/// ### Pass 1 — Local (inside [`Cursor::walk`])
+///
+/// The AST is walked top-to-bottom.  Every declaration creates a
+/// [`DeclKey`] in the highlight scopes.  References that resolve within
+/// the current file's scopes are linked immediately.  Those that don't
+/// (forward references like `B = 3` before `boolean B`, or cross-file
+/// symbols like `CreateUnit` from `common.j`) are collected into
+/// `unresolved_refs`.
+///
+/// ### Pass 2 — Import linking (inside [`Cursor::link_imports`])
+///
+/// Each `(name, namespace)` pair from `unresolved_refs` is matched:
+///
+/// 1. **Forward local** — if the global scope now contains a declaration
+///    for `name` (created after the reference in Phase 1), merge.
+///
+/// 2. **Imported symbol** — if `name` exists in the connected component's
+///    scope (from `imported_symbols`), create an external ref group.
+///
+/// 3. **Truly unresolved** — emit `"Undeclared"` diagnostic.
+///
+/// This guarantees exactly two passes over references, with no
+/// redundant re-scans.
 fn _parse(
     uri: &Url,
     rope: &Rope,
@@ -268,65 +143,10 @@ fn _parse(
 
     for item in &ast.items {
         if let Statement::Import(imp) = item {
-            if imp.path.is_empty() {
-                continue; // cursor already emits "Missing import path"
-            }
-
-            // Compute the range of the path portion within the import node.
-            let node = &imp.node;
-            let prefix_len = if imp.frozen {
-                "//import!".len()
-            } else {
-                "//import".len()
-            };
-            let node_text = std::str::from_utf8(
-                &src[node.start_byte()..node.end_byte()],
-            )
-            .unwrap_or("");
-            let after_prefix = &node_text[prefix_len..];
-            let ws_len = after_prefix.len() - after_prefix.trim_start().len();
-            let path_start_byte = node.start_byte() + prefix_len + ws_len;
-            let path_end_byte = node.start_byte() + prefix_len + ws_len + imp.path.len();
-
-            let path_range = Range {
-                start: Position::from_byte_offset(rope, path_start_byte)
-                    .unwrap_or_default(),
-                end: Position::from_byte_offset(rope, path_end_byte)
-                    .unwrap_or_default(),
-            };
-
-            match resolve_import(uri, &imp.path) {
-                Some(resolved) => {
-                    imports.insert(resolved.url.clone());
-
-                    if imp.frozen {
-                        frozen_imports.insert(resolved.url.clone());
-                    }
-
-                    if resolved.exists {
-                        links.push(DocumentLink {
-                            range: path_range,
-                            target: Some(resolved.url.to_string()),
-                            tooltip: Some(resolved.url.to_string()),
-                        });
-                    } else {
-                        import_diagnostics.push(Diagnostic {
-                            range: path_range,
-                            message: format!("File not found: {}", imp.path),
-                            severity: Some(DiagnosticSeverity::Error),
-                            ..Default::default()
-                        });
-                    }
-                }
-                None => {
-                    import_diagnostics.push(Diagnostic {
-                        range: path_range,
-                        message: format!("Cannot resolve import path: {}", imp.path),
-                        severity: Some(DiagnosticSeverity::Error),
-                        ..Default::default()
-                    });
-                }
-            }
+            resolve_import_directive(
+                uri, imp, &src, rope,
+                &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
+            );
         }
     }
 
@@ -349,7 +169,16 @@ fn _parse(
         // Skip `uri` itself to avoid clobbering current-file data with stale cache.
         for peer_uri in &component {
             if peer_uri != uri {
-                ensure_file_symbols(peer_uri);
+                if !ensure_file_symbols(peer_uri, tree_sitter_jass::language().into()) {
+                    // Dependency not available yet — register so that when it
+                    // finishes parsing we get a cascade re-parse.
+                    register_pending(peer_uri, uri);
+                    log::info!(
+                        "pending import: {} waits for {}",
+                        uri.path(),
+                        peer_uri.path()
+                    );
+                }
             }
         }
 
@@ -499,14 +328,11 @@ fn _parse(
 /// store it in [`FILE_STORE`].  Call [`publish_diagnostics`] afterwards to push
 /// the result to the client.
 ///
-/// Temporarily inserts the rope/tree into the global maps so that the existing
-/// `_parse` pipeline can be reused.  The entries are removed immediately after
-/// parsing — the file is not considered "open".
-#[allow(dead_code)]
-pub async fn parse_from_disk(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
+/// Returns the cascade list (peer URIs whose exports may have changed).
+pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     let path = uri.to_file_path().map_err(|_| "invalid file path")?;
     if !path.exists() {
-        return Ok(());
+        return Ok(vec![]);
     }
     let content = std::fs::read_to_string(&path)?;
     let rope = Rope::from(content.as_str());
@@ -526,6 +352,6 @@ pub async fn parse_from_disk(uri: &Url) -> Result<(), Box<dyn Error + Send + Syn
         _ = token.cancelled() => Ok(vec![]),
     };
 
-    result.map(|_| ())
+    result
 }
 

@@ -254,7 +254,13 @@ endfunction
             assert_eq!(c.symbols.len(), 4);
             assert_eq!(c.scopes.len(), 2);
             assert!(!c.semantic.data(None).is_empty());
-            assert!(c.diagnostics.is_empty());
+            // `agent` is undeclared in this isolated snippet (it would be
+            // provided by common.j via import in production).  Only that
+            // single diagnostic is expected.
+            let non_agent: Vec<_> = c.diagnostics.iter()
+                .filter(|d| !d.message.contains("`agent`"))
+                .collect();
+            assert!(non_agent.is_empty(), "Unexpected diagnostics: {:?}", non_agent);
         });
     }
 
@@ -2573,6 +2579,323 @@ endglobals
                 !h.label.contains("("),
                 "div by zero should not produce comptime value, got: {:?}", h.label
             );
+        });
+    }
+
+    // ─── Undeclared variables & unknown type propagation ────────────────
+
+    #[test]
+    fn undeclared_variable_diagnostic() {
+        // `e` and `r` are not declared anywhere.
+        let src = "boolean T = e\n";
+        with_cursor(src, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                undecl.iter().any(|d| d.message.contains("`e`")),
+                "Expected diagnostic for undeclared `e`, got: {:?}", undecl
+            );
+        });
+    }
+
+    #[test]
+    fn undeclared_variables_in_expression() {
+        // `e` and `r` are not declared — both should get diagnostics.
+        let src = "\
+boolean A = true
+boolean T = A and e or r
+";
+        with_cursor(src, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                undecl.iter().any(|d| d.message.contains("`e`")),
+                "Expected diagnostic for undeclared `e`, got: {:?}", undecl
+            );
+            assert!(
+                undecl.iter().any(|d| d.message.contains("`r`")),
+                "Expected diagnostic for undeclared `r`, got: {:?}", undecl
+            );
+        });
+    }
+
+    #[test]
+    fn unknown_propagates_through_binary() {
+        // `e` is undeclared → type `unknown`.
+        // `A and e` → unknown  (since e is unknown).
+        // `boolean T = unknown` → type mismatch diagnostic.
+        let src = "\
+boolean A = true
+boolean T = A and e or r
+";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch diagnostic for assigning unknown to boolean, got diagnostics: {:?}",
+                c.diagnostics
+            );
+            assert!(
+                mismatch.iter().any(|d| d.message.contains("`unknown`") && d.message.contains("`boolean`")),
+                "Expected mismatch message mentioning unknown→boolean, got: {:?}", mismatch
+            );
+        });
+    }
+
+    #[test]
+    fn declared_variable_no_undeclared_diagnostic() {
+        // `A` is declared — no "Undeclared" diagnostic expected.
+        let src = "\
+boolean A = true
+boolean T = A and true
+";
+        with_cursor(src, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                undecl.is_empty(),
+                "No undeclared diagnostics expected for fully declared code, got: {:?}", undecl
+            );
+        });
+    }
+
+    #[test]
+    fn unknown_type_mismatch_in_local() {
+        // Inside a function, `x` is undeclared → type unknown.
+        // `local integer y = x` → type mismatch.
+        let src = "\
+function F takes nothing returns nothing
+    local integer y = x
+endfunction
+";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch for local with undeclared init, got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn unknown_propagates_through_arithmetic() {
+        // `x` is undeclared → unknown.
+        // `1 + x` → unknown (unknown propagates).
+        // `integer a = 1 + x` → type mismatch.
+        let src = "integer a = 1 + x\n";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch for `integer a = 1 + x`, got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn no_mismatch_when_all_known() {
+        // All variables declared and types match.
+        let src = "\
+integer a = 1
+integer b = a + 2
+";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                mismatch.is_empty(),
+                "No type mismatch expected, got: {:?}", mismatch
+            );
+        });
+    }
+
+    // ─── Forward reference resolution ───────────────────────────────────
+
+    #[test]
+    fn forward_ref_set_before_declaration() {
+        // `B = 3` appears BEFORE `boolean B` declaration.
+        // Phase 2 should link B via forward local lookup — no "Undeclared".
+        let src = "\
+function F takes nothing returns nothing
+    set B = 3
+endfunction
+globals
+    integer B = 0
+endglobals
+";
+        with_cursor(src, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                undecl.is_empty(),
+                "No undeclared diagnostics expected for forward ref B, got: {:?}", undecl
+            );
+            // B should be in a single group with 2 occurrences (1 decl + 1 ref).
+            let (_, occs) = find_group(c, "B");
+            assert_eq!(occs.len(), 2, "B: 1 decl + 1 forward ref");
+        });
+    }
+
+    #[test]
+    fn forward_ref_call_before_function_decl() {
+        // `call Foo()` appears BEFORE `function Foo`.
+        // Phase 2 should resolve via forward local (global scope).
+        let src = "\
+call Foo()
+function Foo takes nothing returns nothing
+endfunction
+";
+        with_cursor(src, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                undecl.is_empty(),
+                "No undeclared diagnostics expected for forward call to Foo, got: {:?}", undecl
+            );
+            let (_, occs) = find_group(c, "Foo");
+            assert_eq!(occs.len(), 2, "Foo: 1 decl + 1 forward call");
+        });
+    }
+
+    #[test]
+    fn forward_ref_varstmt_before_use() {
+        // Top-level: `B = 3` before `boolean B`.
+        // Phase 1 sees `B = 3` first (unresolved), then declares `boolean B`.
+        // Phase 2 links B via forward local.
+        let src = "\
+set B = 3
+boolean B
+";
+        with_cursor(src, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                undecl.is_empty(),
+                "No undeclared diagnostics expected for forward ref B, got: {:?}", undecl
+            );
+        });
+    }
+
+    #[test]
+    fn cross_file_import_resolves_function() {
+        // `call CreateUnit()` where CreateUnit is an imported function.
+        // Phase 2 should resolve via imported symbols — no "Undeclared".
+        let src = "call CreateUnit()\n";
+        let origin = Url::parse("file:///common.j").unwrap();
+        let imported = vec![ImportedSymbol {
+            origin_uri: origin,
+            name: "CreateUnit".into(),
+            kind: ImportedKind::Func,
+            origin_decl_key: Some(42),
+        }];
+        with_cursor_imported(src, &imported, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                undecl.is_empty(),
+                "CreateUnit should resolve via import, got: {:?}", undecl
+            );
+            // Should have an external group for CreateUnit
+            let groups = find_groups(c, "CreateUnit");
+            assert_eq!(groups.len(), 1, "CreateUnit: exactly 1 group");
+            let (&key, _) = groups[0];
+            assert!(
+                key >= EXTERNAL_KEY_BASE,
+                "CreateUnit key should be external (>= {}), got {}",
+                EXTERNAL_KEY_BASE, key
+            );
+        });
+    }
+
+    #[test]
+    fn cross_file_import_resolves_variable() {
+        // `set x = G` where G is an imported global variable.
+        let src = "\
+integer x = G
+";
+        let origin = Url::parse("file:///globals.j").unwrap();
+        let imported = vec![ImportedSymbol {
+            origin_uri: origin,
+            name: "G".into(),
+            kind: ImportedKind::Var,
+            origin_decl_key: Some(10),
+        }];
+        with_cursor_imported(src, &imported, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared") && d.message.contains("`G`"))
+                .collect();
+            assert!(
+                undecl.is_empty(),
+                "G should resolve via import, got: {:?}", undecl
+            );
+        });
+    }
+
+    #[test]
+    fn cross_file_missing_import_emits_undeclared() {
+        // `call Missing()` with no matching import — should get "Undeclared".
+        let src = "call Missing()\n";
+        with_cursor_imported(src, &[], |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared") && d.message.contains("`Missing`"))
+                .collect();
+            assert!(
+                !undecl.is_empty(),
+                "Expected 'Undeclared function Missing' diagnostic, got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn forward_ref_and_import_coexist() {
+        // `call Foo()` appears before `function Foo` declaration.
+        // An import also provides `Bar`.
+        // Both should resolve — Foo via forward local, Bar via import.
+        let src = "\
+call Foo()
+call Bar()
+function Foo takes nothing returns nothing
+endfunction
+";
+        let origin = Url::parse("file:///lib.j").unwrap();
+        let imported = vec![ImportedSymbol {
+            origin_uri: origin,
+            name: "Bar".into(),
+            kind: ImportedKind::Func,
+            origin_decl_key: Some(99),
+        }];
+        with_cursor_imported(src, &imported, |c| {
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                undecl.is_empty(),
+                "Both Foo (forward) and Bar (import) should resolve, got: {:?}", undecl
+            );
+            // Foo should be a local group
+            let foo_groups = find_groups(c, "Foo");
+            assert_eq!(foo_groups.len(), 1);
+            let (&foo_key, _) = foo_groups[0];
+            assert!(foo_key < EXTERNAL_KEY_BASE, "Foo should be local");
+            // Bar should be an external group
+            let bar_groups = find_groups(c, "Bar");
+            assert_eq!(bar_groups.len(), 1);
+            let (&bar_key, _) = bar_groups[0];
+            assert!(bar_key >= EXTERNAL_KEY_BASE, "Bar should be external");
         });
     }
 }

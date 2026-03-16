@@ -1,11 +1,15 @@
 pub(crate) mod call_graph;
+pub(crate) mod change;
 pub(crate) mod dfs_node;
 pub(crate) mod file_store;
 pub(crate) mod import_graph;
+pub(crate) mod open;
+pub(crate) mod parse;
 pub(crate) mod ref_cache;
 pub(crate) mod roper;
 pub(crate) mod scope_resolver;
 pub(crate) mod symbol_cache;
+pub(crate) mod tree_map;
 pub(crate) mod type_graph;
 pub(crate) mod uri_map;
 

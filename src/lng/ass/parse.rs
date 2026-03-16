@@ -1,17 +1,14 @@
 use crate::lng::ass::ast::{build_ast, rewrite_directives, TopLevel};
 use crate::lng::ass::cursor::Cursor;
-use crate::lng::ass::uri_map::TREE_MAP;
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::document_link::lsp::DocumentLink;
-use crate::lsp::position::Position;
-use crate::lsp::range::Range;
 use crate::lsp::ref_map::RefMap;
 use crate::util::file_store::{publish_diagnostics, send_refresh_all, ParseSnapshot, FILE_STORE};
-use crate::util::import_graph::{resolve_import, IMPORT_GRAPH};
+use crate::util::import_graph::IMPORT_GRAPH;
+use crate::util::parse::{resolve_import_directive, resolve_path_import};
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
+use crate::util::tree_map::TREE_MAP;
 use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
@@ -60,93 +57,19 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                 let path_text = path_node.text(rope);
                 let path_range = path_node.to_range(rope);
 
-                match resolve_import(uri, &path_text) {
-                    Some(resolved) => {
-                        imports.insert(resolved.url.clone());
-
-                        if resolved.exists {
-                            links.push(DocumentLink {
-                                range: path_range,
-                                target: Some(resolved.url.to_string()),
-                                tooltip: Some(resolved.url.to_string()),
-                            });
-                        } else {
-                            import_diagnostics.push(Diagnostic {
-                                range: path_range,
-                                message: format!("File not found: {}", path_text),
-                                severity: Some(DiagnosticSeverity::Error),
-                                ..Default::default()
-                            });
-                        }
-                    }
-                    None => {
-                        import_diagnostics.push(Diagnostic {
-                            range: path_range,
-                            message: format!("Cannot resolve import path: {}", path_text),
-                            severity: Some(DiagnosticSeverity::Error),
-                            ..Default::default()
-                        });
-                    }
-                }
+                resolve_path_import(
+                    uri, &path_text, path_range,
+                    &mut imports, &mut links, &mut import_diagnostics,
+                );
             }
         }
 
         // //import / //import! directives
         if let TopLevel::ImportDir(imp) = item {
-            if imp.path.is_empty() {
-                continue; // cursor already emits "Missing import path"
-            }
-
-            let node = &imp.node;
-            let prefix_len = if imp.frozen {
-                "//import!".len()
-            } else {
-                "//import".len()
-            };
-            let node_text =
-                std::str::from_utf8(&src[node.start_byte()..node.end_byte()]).unwrap_or("");
-            let after_prefix = &node_text[prefix_len..];
-            let ws_len = after_prefix.len() - after_prefix.trim_start().len();
-            let path_start_byte = node.start_byte() + prefix_len + ws_len;
-            let path_end_byte = node.start_byte() + prefix_len + ws_len + imp.path.len();
-
-            let path_range = Range {
-                start: Position::from_byte_offset(rope, path_start_byte).unwrap_or_default(),
-                end: Position::from_byte_offset(rope, path_end_byte).unwrap_or_default(),
-            };
-
-            match resolve_import(uri, &imp.path) {
-                Some(resolved) => {
-                    imports.insert(resolved.url.clone());
-
-                    if imp.frozen {
-                        frozen_imports.insert(resolved.url.clone());
-                    }
-
-                    if resolved.exists {
-                        links.push(DocumentLink {
-                            range: path_range,
-                            target: Some(resolved.url.to_string()),
-                            tooltip: Some(resolved.url.to_string()),
-                        });
-                    } else {
-                        import_diagnostics.push(Diagnostic {
-                            range: path_range,
-                            message: format!("File not found: {}", imp.path),
-                            severity: Some(DiagnosticSeverity::Error),
-                            ..Default::default()
-                        });
-                    }
-                }
-                None => {
-                    import_diagnostics.push(Diagnostic {
-                        range: path_range,
-                        message: format!("Cannot resolve import path: {}", imp.path),
-                        severity: Some(DiagnosticSeverity::Error),
-                        ..Default::default()
-                    });
-                }
-            }
+            resolve_import_directive(
+                uri, imp, &src, rope,
+                &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
+            );
         }
     }
     IMPORT_GRAPH.update(uri, imports);

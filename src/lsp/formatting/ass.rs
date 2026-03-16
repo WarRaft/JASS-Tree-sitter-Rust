@@ -10,7 +10,7 @@
 //! and/or tabs.
 
 use crate::lng::ass::kind::Kind;
-use crate::lng::ass::uri_map::TREE_MAP;
+use crate::util::tree_map::TREE_MAP;
 use crate::lsp::formatting::lsp::{FormattingOptions, TextEdit};
 use crate::util::roper::uri_map::ROPE_MAP;
 use url::Url;
