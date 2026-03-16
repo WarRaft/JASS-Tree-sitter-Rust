@@ -32,7 +32,6 @@ use crate::lsp::folding::lsp::FoldingRange;
 use crate::lsp::inlay_hint::lsp::InlayHint;
 use crate::lsp::ref_map::{DeclKey, RefMap};
 use crate::lsp::semantic::hub::Hub;
-use crate::util::symbol_cache::FileMeta;
 use std::sync::RwLock;
 
 // ─── ParseSnapshot ───────────────────────────────────────────────────────────
@@ -55,12 +54,10 @@ pub struct ParseSnapshot {
     pub file_symbols: FileSymbols,
     /// Per-declaration resolved types — foundation for type checking,
     /// compile-time evaluation, inlay hints, and build.
-    #[allow(dead_code)]
-    pub type_map: TypeMap,
+    pub _type_map: TypeMap,
     /// Inlay hints for type annotations (shown when `//set type-tip 1`).
     pub type_hints: Vec<InlayHint>,
     /// DeclKeys that belong to function / native declarations.
-    #[allow(dead_code)]
     pub func_decl_keys: HashSet<DeclKey>,
 }
 
@@ -81,15 +78,7 @@ pub static CANCEL_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(Dash
 /// be cascade-re-parsed.
 pub static PENDING_IMPORTS: Lazy<DashMap<Url, HashSet<Url>>> = Lazy::new(DashMap::new);
 
-/// Last-known file metadata (size + mtime) per URI, updated after each
-/// successful parse.
-///
-/// Used by [`parse_from_disk`] to skip re-reading a file when its metadata
-/// hasn't changed since the last parse — a cheap `stat()` avoids an
-/// expensive `read_to_string` + tree-sitter parse.
-pub static PARSED_META: Lazy<DashMap<Url, FileMeta>> = Lazy::new(DashMap::new);
-
-/// Register `waiter` as waiting for `dep` to become available.
+/// Pending-import waiters: dependency URI → set of files waiting for it.
 pub fn register_pending(dep: &Url, waiter: &Url) {
     PENDING_IMPORTS
         .entry(dep.clone())
@@ -159,39 +148,6 @@ pub fn new_cancel_token(uri: &Url) -> CancellationToken {
     token
 }
 
-/// Push `textDocument/publishDiagnostics` to the client for `uri`.
-///
-/// Reads diagnostics from the stored snapshot.  No-op when the writer
-/// hasn't been initialised yet or when no snapshot exists for `uri`.
-pub async fn publish_diagnostics(uri: &Url) {
-    let writer = match LSP_WRITER.get() {
-        Some(w) => w,
-        None => return,
-    };
-    let diagnostics: Vec<Diagnostic> = FILE_STORE
-        .get(uri)
-        .map(|s| s.diagnostics.clone())
-        .unwrap_or_default();
-
-    let msg = serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "textDocument/publishDiagnostics",
-        "params": {
-            "uri": uri.to_string(),
-            "diagnostics": diagnostics,
-        }
-    });
-
-    crate::lsp::send::send(writer, &msg).await;
-}
-
-/// Push diagnostics for several URIs at once (after cascade).
-pub async fn publish_diagnostics_many(uris: &[Url]) {
-    for uri in uris {
-        publish_diagnostics(uri).await;
-    }
-}
-
 /// Ask the client to re-request semantic tokens, diagnostics, and inlay hints
 /// for **all** open files.
 ///
@@ -209,6 +165,15 @@ pub async fn send_refresh_all() {
     ] {
         crate::lsp::send::send_request(writer, method).await;
     }
+}
+
+/// Check if `target_uri` is considered **frozen** (imported via `//import!`
+/// by anyone in the graph).  If *any* file imports it with `//import!`, the
+/// target is frozen — even if another file imports it with plain `//import`.
+pub fn is_uri_frozen(target_uri: &Url) -> bool {
+    FILE_STORE.iter().any(|entry| {
+        entry.value().file_symbols.frozen_imports.contains(target_uri)
+    })
 }
 
 /// Convenience: build a [`DocumentDiagnosticReport`] from the snapshot.
@@ -276,4 +241,3 @@ pub fn exports_changed(old: Option<&ParseSnapshot>, new: &ParseSnapshot) -> bool
 
     false
 }
-

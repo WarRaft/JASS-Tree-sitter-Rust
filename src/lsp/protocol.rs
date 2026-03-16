@@ -142,6 +142,9 @@ pub enum MethodCall {
 
     #[serde(rename = "build/execute")]
     BuildExecute(TextDocumentIdentifier),
+
+    #[serde(rename = "rescan/execute")]
+    RescanExecute(TextDocumentIdentifier),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

@@ -12,6 +12,7 @@ mod tests {
         GlobalEntry {
             uri: uri.clone(),
             name: name.into(),
+            namespace: String::new(),
             ns: SymbolNS::Func,
             decl_key,
             type_name: None,
@@ -19,6 +20,7 @@ mod tests {
             return_type: None,
             is_constant: false,
             is_array: false,
+            doc_comment: None,
         }
     }
 
@@ -26,6 +28,7 @@ mod tests {
         GlobalEntry {
             uri: uri.clone(),
             name: name.into(),
+            namespace: String::new(),
             ns: SymbolNS::Var,
             decl_key,
             type_name: Some("integer".into()),
@@ -33,6 +36,7 @@ mod tests {
             return_type: None,
             is_constant: false,
             is_array: false,
+            doc_comment: None,
         }
     }
 
@@ -40,6 +44,7 @@ mod tests {
         GlobalEntry {
             uri: uri.clone(),
             name: name.into(),
+            namespace: String::new(),
             ns: SymbolNS::Var, // types share the var namespace in JASS
             decl_key,
             type_name: None,
@@ -47,6 +52,7 @@ mod tests {
             return_type: None,
             is_constant: false,
             is_array: false,
+            doc_comment: None,
         }
     }
 

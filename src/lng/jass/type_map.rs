@@ -114,8 +114,8 @@ pub struct TypeMap {
     pub entries: HashMap<DeclKey, DeclType>,
 }
 
+#[allow(dead_code)]
 impl TypeMap {
-    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -124,7 +124,6 @@ impl TypeMap {
         self.entries.insert(key, decl);
     }
 
-    #[allow(dead_code)]
     pub fn get(&self, key: &DeclKey) -> Option<&DeclType> {
         self.entries.get(key)
     }

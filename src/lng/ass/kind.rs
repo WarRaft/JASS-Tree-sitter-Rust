@@ -3,7 +3,6 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 /// Node type IDs from `ts_symbol_identifiers` enum in tree-sitter-as `parser.c`.
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TryFromPrimitive, IntoPrimitive)]
-#[allow(dead_code)]
 pub enum Kind {
     // ── terminal / anonymous symbols ─────────────────────────────────────
     Identifier = 1,       // sym_identifier
@@ -208,7 +207,6 @@ pub enum Kind {
 /// Field IDs from `ts_field_identifiers` enum in tree-sitter-as `parser.c`.
 #[repr(u16)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, TryFromPrimitive, IntoPrimitive)]
-#[allow(dead_code)]
 pub enum Field {
     Alias = 1,       // field_alias
     Alternative = 2, // field_alternative

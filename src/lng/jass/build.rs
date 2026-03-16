@@ -24,7 +24,7 @@ use crate::lng::jass::ast::{
     LocalDecl, ReturnStmt, SetStmt, Statement, VarStmt,
 };
 use crate::lng::jass::kind::Kind;
-use crate::lng::jass::symbol::{is_uri_frozen, FILE_SYMBOLS};
+use crate::util::file_store::{is_uri_frozen, FILE_STORE};
 use crate::util::import_graph::IMPORT_GRAPH;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -246,16 +246,16 @@ pub fn build_as(uri: &Url) -> BuildResult {
 /// The current file is checked first, then the rest of the tree.
 fn find_build_setting(uri: &Url, key: &str) -> Option<(Url, String)> {
     // Check the current file first.
-    if let Some(fs) = FILE_SYMBOLS.get(uri) {
-        if let Some(v) = fs.file_settings.get(key) {
+    if let Some(fs) = FILE_STORE.get(uri) {
+        if let Some(v) = fs.file_symbols.file_settings.get(key) {
             return Some((uri.clone(), v.clone()));
         }
     }
     // Search the entire connected component.
     let component = IMPORT_GRAPH.connected_component(uri);
     for u in &component {
-        if let Some(fs) = FILE_SYMBOLS.get(u) {
-            if let Some(v) = fs.file_settings.get(key) {
+        if let Some(fs) = FILE_STORE.get(u) {
+            if let Some(v) = fs.file_symbols.file_settings.get(key) {
                 return Some((u.clone(), v.clone()));
             }
         }
@@ -791,10 +791,10 @@ fn collect_fragments(_trigger_uri: &Url, file_order: &[Url], mode: BuildMode) ->
                         .map(|id| id_text(&src, id))
                         .unwrap_or_default();
                     if !fname.is_empty() {
-                        let callees: HashSet<String> = FILE_SYMBOLS
+                        let callees: HashSet<String> = FILE_STORE
                             .get(file_uri)
                             .map(|fs| {
-                                fs.functions
+                                fs.file_symbols.functions
                                     .iter()
                                     .find(|ff| ff.name == fname)
                                     .map(|ff| ff.callees.clone())

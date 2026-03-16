@@ -1,57 +1,33 @@
+#![allow(dead_code)]
+
 use crate::lng::ass::kind::{Field, Kind};
 use tree_sitter::Node;
 
-#[allow(dead_code)]
 const FIELD_NAME: u16 = Field::Name as u16;
-#[allow(dead_code)]
 const FIELD_TYPE: u16 = Field::Type as u16;
-#[allow(dead_code)]
 const FIELD_BASE: u16 = Field::Base as u16;
-#[allow(dead_code)]
 const FIELD_BASES: u16 = Field::Bases as u16;
-#[allow(dead_code)]
 const FIELD_RETURN_TYPE: u16 = Field::ReturnType as u16;
-#[allow(dead_code)]
 const FIELD_PARAMS: u16 = Field::Params as u16;
-#[allow(dead_code)]
 const FIELD_BODY: u16 = Field::Body as u16;
-#[allow(dead_code)]
 const FIELD_VALUE: u16 = Field::Value as u16;
-#[allow(dead_code)]
 const FIELD_CALLEE: u16 = Field::Callee as u16;
-#[allow(dead_code)]
 const FIELD_ARGS: u16 = Field::Args as u16;
-#[allow(dead_code)]
 const FIELD_CONDITION: u16 = Field::Condition as u16;
-#[allow(dead_code)]
 const FIELD_CONSEQUENCE: u16 = Field::Consequence as u16;
-#[allow(dead_code)]
 const FIELD_ALTERNATIVE: u16 = Field::Alternative as u16;
-#[allow(dead_code)]
 const FIELD_LEFT: u16 = Field::Left as u16;
-#[allow(dead_code)]
 const FIELD_RIGHT: u16 = Field::Right as u16;
-#[allow(dead_code)]
 const FIELD_OPERAND: u16 = Field::Operand as u16;
-#[allow(dead_code)]
 const FIELD_INDEX: u16 = Field::Index as u16;
-#[allow(dead_code)]
 const FIELD_OBJECT: u16 = Field::Object as u16;
-#[allow(dead_code)]
 const FIELD_MEMBER: u16 = Field::Member as u16;
-#[allow(dead_code)]
 const FIELD_PATH: u16 = Field::Path as u16;
-#[allow(dead_code)]
 const FIELD_ITERABLE: u16 = Field::Iterable as u16;
-#[allow(dead_code)]
 const FIELD_UPDATE: u16 = Field::Update as u16;
-#[allow(dead_code)]
 const FIELD_HANDLER: u16 = Field::Handler as u16;
-#[allow(dead_code)]
 const FIELD_EXCEPTION: u16 = Field::Exception as u16;
-#[allow(dead_code)]
 const FIELD_ALIAS: u16 = Field::Alias as u16;
-#[allow(dead_code)]
 const FIELD_MODULE: u16 = Field::Module as u16;
 
 // ─── Semantic role for identifiers ───────────────────────────────────────────
@@ -111,7 +87,6 @@ pub struct CstError<'tree> {
 
 /// `#include "path"`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IncludeDirective<'tree> {
     pub node: Node<'tree>,
     pub path: Option<Node<'tree>>,
@@ -119,7 +94,6 @@ pub struct IncludeDirective<'tree> {
 
 /// `import <module> [from <path>]`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ImportDecl<'tree> {
     pub node: Node<'tree>,
     pub module: Option<Id<'tree>>,
@@ -128,7 +102,6 @@ pub struct ImportDecl<'tree> {
 
 /// `namespace <name> { ... }`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct NamespaceDecl<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -137,7 +110,6 @@ pub struct NamespaceDecl<'tree> {
 
 /// `typedef <type> <alias>`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TypedefDecl<'tree> {
     pub node: Node<'tree>,
     pub type_id: Option<Id<'tree>>,
@@ -146,7 +118,6 @@ pub struct TypedefDecl<'tree> {
 
 /// `funcdef <return_type> <name>(<params>)`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FuncdefDecl<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -156,7 +127,6 @@ pub struct FuncdefDecl<'tree> {
 
 /// `<type> <name>`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Param<'tree> {
     pub node: Node<'tree>,
     pub type_id: Option<Id<'tree>>,
@@ -165,7 +135,6 @@ pub struct Param<'tree> {
 
 /// `enum <name> { members... }`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EnumDecl<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -174,7 +143,6 @@ pub struct EnumDecl<'tree> {
 
 /// Single enum member: `name [= value]`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct EnumMemberNode<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -183,7 +151,6 @@ pub struct EnumMemberNode<'tree> {
 
 /// `interface <name> [: bases] { ... }`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct InterfaceDecl<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -192,7 +159,6 @@ pub struct InterfaceDecl<'tree> {
 
 /// `mixin class <name> [: bases] { ... }`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct MixinDecl<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -201,7 +167,6 @@ pub struct MixinDecl<'tree> {
 
 /// `class <name> [: bases] { ... }`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ClassDecl<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -210,7 +175,6 @@ pub struct ClassDecl<'tree> {
 
 /// A member inside a class body.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum ClassMember<'tree> {
     Function(FunctionDecl<'tree>),
     Variable(VarDeclStmt<'tree>),
@@ -219,7 +183,6 @@ pub enum ClassMember<'tree> {
 
 /// `[modifiers] <return_type> <name>(<params>) { body }`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct FunctionDecl<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -230,7 +193,6 @@ pub struct FunctionDecl<'tree> {
 
 /// `<type> <declarators...>;`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct VarDeclStmt<'tree> {
     pub node: Node<'tree>,
     pub type_id: Option<Id<'tree>>,
@@ -239,7 +201,6 @@ pub struct VarDeclStmt<'tree> {
 
 /// Single variable declarator: `name [= value]`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Declarator<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
@@ -248,7 +209,6 @@ pub struct Declarator<'tree> {
 
 /// `if (cond) stmt [else stmt]`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct IfStmt<'tree> {
     pub node: Node<'tree>,
     pub condition: Option<Expr<'tree>>,
@@ -257,7 +217,6 @@ pub struct IfStmt<'tree> {
 
 /// `while (cond) stmt`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct WhileStmt<'tree> {
     pub node: Node<'tree>,
     pub condition: Option<Expr<'tree>>,
@@ -266,7 +225,6 @@ pub struct WhileStmt<'tree> {
 
 /// `do { body } while (cond);`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DoWhileStmt<'tree> {
     pub node: Node<'tree>,
     pub condition: Option<Expr<'tree>>,
@@ -275,7 +233,6 @@ pub struct DoWhileStmt<'tree> {
 
 /// `for (init; cond; update) stmt`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ForStmt<'tree> {
     pub node: Node<'tree>,
     pub body: Vec<Stmt<'tree>>,
@@ -283,7 +240,6 @@ pub struct ForStmt<'tree> {
 
 /// `for (var : iterable) stmt`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ForeachStmt<'tree> {
     pub node: Node<'tree>,
     pub body: Vec<Stmt<'tree>>,
@@ -291,7 +247,6 @@ pub struct ForeachStmt<'tree> {
 
 /// `switch (expr) { cases... }`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SwitchStmt<'tree> {
     pub node: Node<'tree>,
     pub body: Vec<Stmt<'tree>>,
@@ -299,7 +254,6 @@ pub struct SwitchStmt<'tree> {
 
 /// `try { body } catch (exc) { handler }`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TryStmt<'tree> {
     pub node: Node<'tree>,
     pub body: Vec<Stmt<'tree>>,
@@ -307,7 +261,6 @@ pub struct TryStmt<'tree> {
 
 /// `return [expr];`
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ReturnStmt<'tree> {
     pub node: Node<'tree>,
     pub value: Option<Expr<'tree>>,
@@ -321,7 +274,6 @@ pub struct Comment<'tree> {
 
 /// Statement in a function body.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum Stmt<'tree> {
     VarDecl(VarDeclStmt<'tree>),
     If(IfStmt<'tree>),
@@ -345,7 +297,6 @@ pub enum Stmt<'tree> {
 
 /// Expression node in the AST.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum Expr<'tree> {
     /// Plain identifier reference.
     Id(Id<'tree>),
@@ -430,7 +381,6 @@ pub use crate::lng::directive::{ImportDirective, SetDirective};
 
 /// Top-level statement (script level or inside namespace).
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum TopLevel<'tree> {
     Include(IncludeDirective<'tree>),
     Import(ImportDecl<'tree>),

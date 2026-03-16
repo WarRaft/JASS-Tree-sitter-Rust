@@ -91,13 +91,65 @@ Directives must appear at the very beginning of the file, before any language st
 //set ref-tip 1
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
+//set unused 0
 ```
 
 | Key | Values | Description |
 |-----|--------|-------------|
 | `ref-tip` | `1` / `0` | Show / hide reference-ID inlay hints next to each identifier — useful for debugging symbol resolution. |
+| `unused` | `1` / `0` | Enable / disable unused-function diagnostics for the entire file. Default `1` (enabled). |
 | `build-jass` | `<path>` | Output path for the JASS build. Merges the entire import tree into a single `.j` file. |
 | `build-as` | `<path>` | Output path for the AngelScript build. Same merge logic, but emits `.as` syntax. |
+
+---
+
+## `//*` — Doc Comments
+
+Lines starting with `//*` directly above a declaration are treated as **doc comments** (Markdown). They appear in hover tooltips and completion details.
+
+```jass
+//* Spawns a unit at the given position.
+//* Returns the created unit handle.
+function SpawnUnit takes integer id, real x, real y returns unit
+    // ...
+endfunction
+```
+
+Multiple consecutive `//*` lines are joined. The prefix `//* ` (with a trailing space) is stripped; `//*text` is also accepted.
+
+---
+
+## `//@ignore` — Per-Declaration Diagnostic Suppression
+
+A `//@ignore` comment placed directly above a function, variable, type, or native declaration suppresses the listed diagnostic tags for that specific declaration.
+
+```jass
+//@ignore unused
+function HelperFunc takes nothing returns nothing
+    // No "Unused function" diagnostic will be reported for HelperFunc.
+endfunction
+```
+
+### Syntax
+
+```jass
+//@ignore tag1 tag2 ...
+```
+
+Tags are space-separated. Currently supported tags:
+
+| Tag | Suppresses |
+|-----|-----------|
+| `unused` | "Unused function" hint |
+
+`//@ignore` can be combined with `//*` doc comments in any order:
+
+```jass
+//* Internal helper — not called directly.
+//@ignore unused
+function InternalHelper takes nothing returns nothing
+endfunction
+```
 
 ---
 

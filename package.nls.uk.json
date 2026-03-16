@@ -2,6 +2,7 @@
   "command.importGraph.show": "Показати граф імпортів",
   "command.callGraph.show": "Показати граф викликів",
   "command.typeGraph.show": "Показати граф типів",
+  "command.rescan.execute": "Перечитати всі файли",
   "command.build.execute": "Збірка"
 }
 

@@ -1,6 +1,5 @@
-use crate::lng::jass::symbol::{is_uri_frozen, FILE_SYMBOLS};
+use crate::util::file_store::{is_uri_frozen, FILE_STORE};
 use crate::lsp::position::Position;
-use crate::lsp::ref_map::REF_URI_MAP;
 use crate::lsp::rename::lsp::{PrepareRenameResult, TextEdit, WorkspaceEdit};
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
@@ -16,8 +15,8 @@ pub fn prepare_rename(uri: &Url, position: &Position) -> Option<PrepareRenameRes
         return None;
     }
 
-    let ref_entry = REF_URI_MAP.get(uri)?;
-    let ref_map = ref_entry.value();
+    let snapshot = FILE_STORE.get(uri)?;
+    let ref_map = &snapshot.ref_map;
     let rope_entry = ROPE_MAP.get(uri)?;
     let byte_offset = position.to_byte_offset(rope_entry.value())?;
 
@@ -77,9 +76,9 @@ pub fn compute_identifier_rename(
             continue;
         }
 
-        // Use RefMap to find all occurrences of the symbol in this file.
-        if let Some(ref_entry) = REF_URI_MAP.get(file_uri) {
-            let ref_map = ref_entry.value();
+        // Use RefMap from FILE_STORE to find all occurrences.
+        if let Some(snap) = FILE_STORE.get(file_uri) {
+            let ref_map = &snap.ref_map;
             let edits: Vec<TextEdit> = ref_map
                 .groups
                 .values()
@@ -109,8 +108,8 @@ pub fn compute_identifier_rename(
 
 /// Resolve the identifier at position → `(name, byte_offset)`.
 fn resolve_at(uri: &Url, position: &Position) -> Option<(String, usize)> {
-    let ref_entry = REF_URI_MAP.get(uri)?;
-    let ref_map = ref_entry.value();
+    let snapshot = FILE_STORE.get(uri)?;
+    let ref_map = &snapshot.ref_map;
     let rope_entry = ROPE_MAP.get(uri)?;
     let byte_offset = position.to_byte_offset(rope_entry.value())?;
     let name = ref_map.name_at(byte_offset)?.to_string();
@@ -122,14 +121,14 @@ fn can_see_symbol(viewer_uri: &Url, declaring_uri: &Url) -> bool {
 }
 
 fn find_declaring_file(name: &str, from_uri: &Url) -> Option<Url> {
-    if let Some(entry) = FILE_SYMBOLS.get(from_uri) {
-        if entry.value().has_symbol(name) {
+    if let Some(snap) = FILE_STORE.get(from_uri) {
+        if snap.file_symbols.has_symbol(name) {
             return Some(from_uri.clone());
         }
     }
     for dep_uri in &IMPORT_GRAPH.dependencies(from_uri) {
-        if let Some(entry) = FILE_SYMBOLS.get(dep_uri) {
-            if entry.value().has_symbol(name) {
+        if let Some(snap) = FILE_STORE.get(dep_uri) {
+            if snap.file_symbols.has_symbol(name) {
                 return Some(dep_uri.clone());
             }
         }

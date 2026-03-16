@@ -14,22 +14,21 @@
 //!   per-language parse functions.
 
 use crate::lng::directive::ImportDirective;
-use crate::lng::jass::symbol::{FileSymbols, FILE_SYMBOLS};
+use crate::lng::jass::symbol::FileSymbols;
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_link::lsp::DocumentLink;
 use crate::lsp::position::Position;
 use crate::lsp::range::Range;
 use crate::lsp::ref_map::{DeclKey, RefMap};
+use crate::util::file_cache;
 use crate::util::file_store::{
-    drain_pending, publish_diagnostics, publish_diagnostics_many,
-    send_refresh_all, CascadeGuard,
+    drain_pending,
+    send_refresh_all, CascadeGuard, FILE_STORE,
     MAX_CASCADE_PEERS, REPARSE_GUARD,
 };
 use crate::util::import_graph::resolve_import;
-use crate::util::ref_cache;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::scope_resolver::{GlobalEntry, SymbolNS, SCOPE_RESOLVER};
-use crate::util::symbol_cache;
 use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
@@ -160,6 +159,7 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
         entries.push(GlobalEntry {
             uri: uri.clone(),
             name: f.name.clone(),
+            namespace: String::new(),
             ns: SymbolNS::Func,
             decl_key: 0,
             type_name: None,
@@ -171,12 +171,14 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
             return_type: f.return_type.clone(),
             is_constant: false,
             is_array: false,
+            doc_comment: f.doc_comment.clone(),
         });
     }
     for n in &fs.natives {
         entries.push(GlobalEntry {
             uri: uri.clone(),
             name: n.name.clone(),
+            namespace: String::new(),
             ns: SymbolNS::Func,
             decl_key: 0,
             type_name: None,
@@ -188,12 +190,14 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
             return_type: n.return_type.clone(),
             is_constant: false,
             is_array: false,
+            doc_comment: n.doc_comment.clone(),
         });
     }
     for g in &fs.globals {
         entries.push(GlobalEntry {
             uri: uri.clone(),
             name: g.name.clone(),
+            namespace: String::new(),
             ns: SymbolNS::Var,
             decl_key: 0,
             type_name: g.type_name.clone(),
@@ -201,12 +205,14 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
             return_type: None,
             is_constant: g.is_constant,
             is_array: g.is_array,
+            doc_comment: g.doc_comment.clone(),
         });
     }
     for t in &fs.types {
         entries.push(GlobalEntry {
             uri: uri.clone(),
             name: t.name.clone(),
+            namespace: String::new(),
             ns: SymbolNS::Var,
             decl_key: 0,
             type_name: None,
@@ -214,27 +220,13 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
             return_type: None,
             is_constant: false,
             is_array: false,
+            doc_comment: t.doc_comment.clone(),
         });
     }
 
     entries
 }
 
-/// Compute content hash for a URI — reads from ROPE_MAP if available,
-/// otherwise reads from disk.
-#[allow(dead_code)]
-pub fn compute_hash_for_uri(uri: &Url) -> [u8; 32] {
-    if let Some(rope_entry) = ROPE_MAP.get(uri) {
-        return ref_cache::content_hash(rope_entry.value());
-    }
-    if let Ok(path) = uri.to_file_path() {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            let rope = Rope::from(content.as_str());
-            return ref_cache::content_hash(&rope);
-        }
-    }
-    [0u8; 32]
-}
 
 /// Ensure that `FILE_SYMBOLS` and `SCOPE_RESOLVER` have entries for `dep_uri`.
 ///
@@ -248,33 +240,36 @@ pub fn compute_hash_for_uri(uri: &Url) -> [u8; 32] {
 ///
 /// ## Staleness checks
 ///
-/// 1. **In-memory** (`FILE_SYMBOLS`) — cheapest, no I/O.
-/// 2. **Disk cache** (`symbol_cache`) — one `stat()` call to validate
-///    `FileMeta` (size + mtime).  If fresh, the stored `content_hash` is
-///    reused so we never read the file just for SHA-256.
+/// 1. **In-memory** (`FILE_STORE`) — cheapest, no I/O.
+/// 2. **Disk cache** (`file_cache`) — one `stat()` call to validate
+///    `FileMeta` (size + mtime).  If fresh, a partial `ParseSnapshot` is
+///    reconstructed from the cached data.
 /// 3. **Parse from disk** — last resort, reads + parses the file.
 pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) -> bool {
-    // Already in memory — no need to reload.
-    if FILE_SYMBOLS.contains_key(dep_uri) {
+    // Already fully parsed — FILE_STORE has everything.
+    if FILE_STORE.contains_key(dep_uri) {
         return true;
     }
 
-    // Disk cache — but only if the file hasn't changed since the cache was written.
-    if let Some((cached_meta, cached_hash, symbols)) = symbol_cache::load(dep_uri) {
-        let current_meta = symbol_cache::FileMeta::from_uri(dep_uri);
-        if current_meta == Some(cached_meta) {
-            // Cache is fresh — use the stored content_hash directly
-            // instead of re-reading the file for SHA-256.
-            let entries = file_symbols_to_entries(dep_uri, &symbols);
-            SCOPE_RESOLVER.update_file(dep_uri, cached_hash, entries);
-            FILE_SYMBOLS.insert(dep_uri.clone(), symbols);
-            return true;
-        }
-        // Cache is stale — fall through to parse from disk.
-        log::debug!(
-            "ensure_file_symbols: stale cache for {}",
-            dep_uri.path()
-        );
+    // Disk cache — if file metadata matches, reconstruct a partial snapshot.
+    if let Some(cached) = file_cache::load_if_fresh(dep_uri) {
+        let entries = file_symbols_to_entries(dep_uri, &cached.symbols);
+        SCOPE_RESOLVER.update_file(dep_uri, cached.content_hash, entries);
+
+        let snapshot = std::sync::Arc::new(crate::util::file_store::ParseSnapshot {
+            folding: Vec::new(),
+            symbols: Vec::new(),
+            semantic: std::sync::RwLock::new(Default::default()),
+            diagnostics: Vec::new(),
+            links: Vec::new(),
+            ref_map: cached.ref_map,
+            file_symbols: cached.symbols,
+            _type_map: Default::default(),
+            type_hints: Vec::new(),
+            func_decl_keys: cached.func_decl_keys,
+        });
+        FILE_STORE.insert(dep_uri.clone(), snapshot);
+        return true;
     }
 
     // Parse from disk.
@@ -296,21 +291,51 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
     };
 
     // Use the JASS AST builder as the default for dependency symbols.
-    // This works because cross-file dependencies are always JASS files
-    // (common.j, blizzard.j, etc.).  When AS gains its own FileSymbols
-    // builder this branch can be extended with a language check.
     let rope = Rope::from(content.as_str());
     let ast = crate::lng::jass::ast::build_ast(tree.root_node());
     let cursor = crate::lng::jass::cursor::Cursor::walk(&ast, &rope, &[]);
     let file_symbols = cursor.file_symbols;
-    let hash = ref_cache::content_hash(&rope);
+    let hash = file_cache::content_hash(&rope);
 
-    if let Some(meta) = symbol_cache::FileMeta::from_uri(dep_uri) {
-        symbol_cache::store(dep_uri, meta, hash, &file_symbols);
+    // Build a full RefMap so that go-to-definition can find declaration
+    // positions and `find_decl_key_by_name` can resolve the real DeclKey.
+    let func_decl_keys = cursor.func_decl_keys;
+    let ref_map = crate::lsp::ref_map::build_ref_map(
+        cursor.ref_groups,
+        cursor.ref_names,
+        cursor.external_decls,
+        &rope,
+    );
+
+    // Build and store a full ParseSnapshot — single source of truth.
+    let snapshot = std::sync::Arc::new(crate::util::file_store::ParseSnapshot {
+        folding: cursor.folding,
+        symbols: cursor.symbols,
+        semantic: std::sync::RwLock::new(cursor.semantic),
+        diagnostics: cursor.diagnostics,
+        links: vec![],
+        ref_map,
+        file_symbols: file_symbols.clone(),
+        _type_map: cursor.type_map,
+        type_hints: cursor.type_hints,
+        func_decl_keys: func_decl_keys.clone(),
+    });
+
+    // Persist to unified disk cache.
+    if let Some(meta) = file_cache::FileMeta::from_uri(dep_uri) {
+        file_cache::store(
+            dep_uri,
+            meta,
+            hash,
+            &file_symbols,
+            &snapshot.ref_map,
+            &func_decl_keys,
+        );
     }
+
+    FILE_STORE.insert(dep_uri.clone(), snapshot);
     let entries = file_symbols_to_entries(dep_uri, &file_symbols);
     SCOPE_RESOLVER.update_file(dep_uri, hash, entries);
-    FILE_SYMBOLS.insert(dep_uri.clone(), file_symbols);
     true
 }
 
@@ -345,7 +370,14 @@ pub type ParseFn = Box<
 >;
 
 /// Two-pass cascade: parse the current file, drain pending waiters,
-/// re-parse affected peers, push diagnostics, refresh editors.
+/// re-parse affected peers, refresh editors.
+///
+/// Diagnostics are delivered via the **pull** model: after all parsing is
+/// done, `send_refresh_all` fires `workspace/diagnostics/refresh` which
+/// tells VS Code to re-request `textDocument/diagnostic` for every open
+/// file.  No `publishDiagnostics` notifications are sent — that would
+/// duplicate diagnostics since the server also declares `diagnosticProvider`
+/// in its capabilities.
 ///
 /// # Arguments
 ///
@@ -353,7 +385,7 @@ pub type ParseFn = Box<
 /// * `parse_fn` — language-specific parse that returns the cascade peer list.
 /// * `parse_from_disk_fn` — language-specific disk parse for closed peers.
 ///
-/// The cascade logic (CascadeGuard, pending-drain, peer loop, diagnostics)
+/// The cascade logic (CascadeGuard, pending-drain, peer loop, refresh)
 /// is identical for every language.
 pub async fn cascade_parse_and_notify(
     uri: &Url,
@@ -372,9 +404,6 @@ pub async fn cascade_parse_and_notify(
     // Pass 1: parse the current file.
     let mut cascade = parse_fn(uri.clone()).await?;
 
-    // Publish diagnostics for the current file right away.
-    publish_diagnostics(uri).await;
-
     // Drain pending-import waiters.
     let pending_waiters = drain_pending(uri);
     for waiter in pending_waiters {
@@ -384,7 +413,6 @@ pub async fn cascade_parse_and_notify(
     }
 
     // Pass 2: cascade re-parse affected peers.
-    let mut all_affected: Vec<Url> = Vec::new();
     let mut count = 0usize;
 
     for peer_uri in &cascade {
@@ -423,12 +451,10 @@ pub async fn cascade_parse_and_notify(
         };
 
         if ok {
-            all_affected.push(peer_uri.clone());
             count += 1;
         }
     }
 
-    publish_diagnostics_many(&all_affected).await;
     send_refresh_all().await;
 
     Ok(())

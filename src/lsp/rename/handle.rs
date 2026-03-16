@@ -380,7 +380,7 @@ pub(crate) fn find_self_move_edits(
 }
 
 /// Backward-compatible alias used by existing tests.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn find_import_edits(
     text: &str,
     dep_uri: &Url,

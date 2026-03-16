@@ -90,13 +90,65 @@ JASS 檔案可以透過特殊的註解指令相互連結：
 //set ref-tip 1
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
+//set unused 0
 ```
 
 | 鍵 | 值 | 說明 |
 |----|-----|------|
 | `ref-tip` | `1` / `0` | 顯示/隱藏每個識別碼旁的參考 ID 內嵌提示——對偵錯符號解析很有用。 |
+| `unused` | `1` / `0` | 啟用/停用整個檔案的未使用函式診斷。預設 `1`（啟用）。 |
 | `build-jass` | `<路徑>` | JASS 建置的輸出路徑。將整個匯入樹合併為單一 `.j` 檔案。 |
 | `build-as` | `<路徑>` | AngelScript 建置的輸出路徑。相同的合併邏輯，但輸出 `.as` 語法。 |
+
+---
+
+## `//*` — 文件註解
+
+緊接在宣告之前以 `//*` 開頭的行被視為**文件註解**（Markdown）。它們會顯示在懸停提示和補全詳情中。
+
+```jass
+//* 在指定位置生成一個單位。
+//* 返回建立的單位控制代碼。
+function SpawnUnit takes integer id, real x, real y returns unit
+    // ...
+endfunction
+```
+
+多個連續的 `//*` 行會被合併。前綴 `//* `（帶尾部空格）會被去除；`//*文字` 也可以。
+
+---
+
+## `//@ignore` — 按宣告抑制診斷
+
+將 `//@ignore` 註解放在函式、變數、型別或 native 宣告之前，可以為該特定宣告抑制列出的診斷標籤。
+
+```jass
+//@ignore unused
+function HelperFunc takes nothing returns nothing
+    // 不會為 HelperFunc 回報「Unused function」診斷。
+endfunction
+```
+
+### 語法
+
+```jass
+//@ignore tag1 tag2 ...
+```
+
+標籤以空格分隔。目前支援的標籤：
+
+| 標籤 | 抑制 |
+|------|------|
+| `unused` | 「Unused function」提示 |
+
+`//@ignore` 可以與 `//*` 文件註解以任意順序組合：
+
+```jass
+//* 內部輔助函式——不直接呼叫。
+//@ignore unused
+function InternalHelper takes nothing returns nothing
+endfunction
+```
 
 ---
 

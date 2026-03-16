@@ -1,13 +1,21 @@
-//! Persistent on-disk cache for [`FileSymbols`].
+//! Unified on-disk cache — **one file = one cache entry**.
 //!
-//! Each file's symbols are stored as a bincode blob keyed by SHA-256(URI).
-//! Alongside the payload we store the file's **mtime** (seconds since epoch)
-//! and **size** (bytes) so that stale entries are detected without reading the
-//! full file content.
+//! Replaces the old `symbol_cache` + `ref_cache` split.  Each source file's
+//! parse output is stored as a single bincode blob keyed by SHA-256(URI).
 //!
-//! Cache directory: `$CACHE_DIR/jass-tree-sitter-symbols/`
+//! ## Stored data
+//!
+//! * [`FileMeta`] — `(size, mtime)` for cheap `stat()`-based staleness checks.
+//! * `content_hash` — SHA-256 of file content at parse time.
+//! * [`FileSymbols`] — exported symbols (functions, natives, globals, types).
+//! * [`RefMap`] — all references (highlight, definition, rename).
+//! * `func_decl_keys` — DeclKeys of function/native declarations (needed by
+//!   `find_decl_key_by_name`).
+//!
+//! Cache directory: `$CACHE_DIR/jass-tree-sitter-cache/`
 
 use crate::lng::jass::symbol::FileSymbols;
+use crate::lsp::ref_map::{DeclKey, RefMap};
 use log::{error, info};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -18,7 +26,7 @@ use url::Url;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const CACHE_DIR_NAME: &str = "jass-tree-sitter-symbols";
+const CACHE_DIR_NAME: &str = "jass-tree-sitter-cache";
 
 fn cache_dir() -> Option<PathBuf> {
     dirs::cache_dir().map(|d| d.join(CACHE_DIR_NAME))
@@ -37,7 +45,7 @@ fn cache_file(uri: &Url) -> Option<PathBuf> {
 
 // ─── File metadata ───────────────────────────────────────────────────────────
 
-/// Lightweight file metadata used for staleness check.
+/// Lightweight file metadata used for staleness checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FileMeta {
     /// File size in bytes.
@@ -69,9 +77,20 @@ impl FileMeta {
     }
 }
 
+// ─── Content hash ────────────────────────────────────────────────────────────
+
+/// Compute a SHA-256 hash of rope content (used as invalidation key).
+pub fn content_hash(rope: &lapce_xi_rope::Rope) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    let text = rope.slice_to_cow(0..rope.len());
+    hasher.update(text.as_bytes());
+    hasher.finalize().into()
+}
+
 // ─── On-disk format ──────────────────────────────────────────────────────────
 
-/// What gets stored on disk.
+/// What gets stored on disk — everything needed to reconstruct a partial
+/// [`ParseSnapshot`] without re-reading the source file.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheEntry {
     /// Original URI string — needed for `load_all` to map filenames back.
@@ -79,11 +98,13 @@ struct CacheEntry {
     /// Metadata at the time the cache was written.
     meta: FileMeta,
     /// SHA-256 of file content at the time the cache was written.
-    /// Stored so consumers (scope resolver) can use the hash without
-    /// re-reading the file from disk.
     content_hash: [u8; 32],
-    /// The actual symbol data.
+    /// Exported symbols.
     symbols: FileSymbols,
+    /// Reference map (highlight, definition, rename).
+    ref_map: RefMap,
+    /// DeclKeys of function/native declarations.
+    func_decl_keys: HashSet<DeclKey>,
 }
 
 /// Borrowing variant for serialization without cloning.
@@ -93,16 +114,27 @@ struct CacheEntryRef<'a> {
     meta: FileMeta,
     content_hash: [u8; 32],
     symbols: &'a FileSymbols,
+    ref_map: &'a RefMap,
+    func_decl_keys: &'a HashSet<DeclKey>,
+}
+
+/// Result of loading a cache entry.
+pub struct CacheData {
+    pub meta: FileMeta,
+    pub content_hash: [u8; 32],
+    pub symbols: FileSymbols,
+    pub ref_map: RefMap,
+    pub func_decl_keys: HashSet<DeclKey>,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/// Try to load cached symbols for `uri`.
+/// Try to load the cached entry for `uri`.
 ///
-/// Returns `Some((meta, content_hash, symbols))` only if the cache file exists.
+/// Returns the full `CacheData` if the cache file exists.
 /// The caller must compare `meta` with the current file metadata to decide
 /// whether the entry is stale.
-pub fn load(uri: &Url) -> Option<(FileMeta, [u8; 32], FileSymbols)> {
+pub fn load(uri: &Url) -> Option<CacheData> {
     let path = cache_file(uri)?;
     if !path.exists() {
         return None;
@@ -111,7 +143,7 @@ pub fn load(uri: &Url) -> Option<(FileMeta, [u8; 32], FileSymbols)> {
     let data = match fs::read(&path) {
         Ok(d) => d,
         Err(e) => {
-            error!("symbol_cache: read {:?}: {}", path, e);
+            error!("file_cache: read {:?}: {}", path, e);
             return None;
         }
     };
@@ -119,17 +151,30 @@ pub fn load(uri: &Url) -> Option<(FileMeta, [u8; 32], FileSymbols)> {
     let entry: CacheEntry = match bincode::deserialize(&data) {
         Ok(e) => e,
         Err(e) => {
-            error!("symbol_cache: deserialize {:?}: {}", path, e);
+            error!("file_cache: deserialize {:?}: {}", path, e);
             let _ = fs::remove_file(&path);
             return None;
         }
     };
 
-    Some((entry.meta, entry.content_hash, entry.symbols))
+    Some(CacheData {
+        meta: entry.meta,
+        content_hash: entry.content_hash,
+        symbols: entry.symbols,
+        ref_map: entry.ref_map,
+        func_decl_keys: entry.func_decl_keys,
+    })
 }
 
-/// Store symbols to disk for `uri` with the given file metadata and content hash.
-pub fn store(uri: &Url, meta: FileMeta, content_hash: [u8; 32], symbols: &FileSymbols) {
+/// Store a file's parse output to disk.
+pub fn store(
+    uri: &Url,
+    meta: FileMeta,
+    content_hash: [u8; 32],
+    symbols: &FileSymbols,
+    ref_map: &RefMap,
+    func_decl_keys: &HashSet<DeclKey>,
+) {
     let Some(path) = cache_file(uri) else { return };
 
     if let Some(parent) = path.parent() {
@@ -141,34 +186,25 @@ pub fn store(uri: &Url, meta: FileMeta, content_hash: [u8; 32], symbols: &FileSy
         meta,
         content_hash,
         symbols,
+        ref_map,
+        func_decl_keys,
     };
 
     match bincode::serialize(&entry) {
         Ok(data) => {
             if let Err(e) = fs::write(&path, data) {
-                error!("symbol_cache: write {:?}: {}", path, e);
+                error!("file_cache: write {:?}: {}", path, e);
             }
         }
-        Err(e) => error!("symbol_cache: serialize {:?}: {}", path, e),
-    }
-}
-
-/// Remove the cache file for a single URI.
-#[allow(dead_code)]
-pub fn evict(uri: &Url) {
-    if let Some(path) = cache_file(uri) {
-        if path.exists() {
-            let _ = fs::remove_file(&path);
-            info!("symbol_cache: evicted {}", uri);
-        }
+        Err(e) => error!("file_cache: serialize {:?}: {}", path, e),
     }
 }
 
 /// Load **all** cached entries from the cache directory.
 ///
-/// Returns `(uri, meta, content_hash, symbols)` for every valid `.bin` file.
+/// Returns `(uri, CacheData)` for every valid `.bin` file.
 /// Corrupted entries are deleted silently.
-pub fn load_all() -> Vec<(Url, FileMeta, [u8; 32], FileSymbols)> {
+pub fn load_all() -> Vec<(Url, CacheData)> {
     let Some(dir) = cache_dir() else {
         return vec![];
     };
@@ -194,7 +230,16 @@ pub fn load_all() -> Vec<(Url, FileMeta, [u8; 32], FileSymbols)> {
         match bincode::deserialize::<CacheEntry>(&data) {
             Ok(ce) => {
                 if let Ok(uri) = Url::parse(&ce.uri) {
-                    result.push((uri, ce.meta, ce.content_hash, ce.symbols));
+                    result.push((
+                        uri,
+                        CacheData {
+                            meta: ce.meta,
+                            content_hash: ce.content_hash,
+                            symbols: ce.symbols,
+                            ref_map: ce.ref_map,
+                            func_decl_keys: ce.func_decl_keys,
+                        },
+                    ));
                 }
             }
             Err(_) => {
@@ -205,7 +250,31 @@ pub fn load_all() -> Vec<(Url, FileMeta, [u8; 32], FileSymbols)> {
     result
 }
 
+/// Delete **all** cache files — used by the forced rescan command.
+pub fn purge_all() {
+    let Some(dir) = cache_dir() else { return };
+    if !dir.exists() {
+        return;
+    }
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("bin") {
+            let _ = fs::remove_file(&path);
+            removed += 1;
+        }
+    }
+    info!("file_cache: purge_all removed {} entries", removed);
+}
+
 /// Remove cache files for all URIs **not** in `keep`.
+///
+/// Call on startup after loading the import graph to garbage-collect
+/// entries for files no longer in the project.
 pub fn gc(keep: &HashSet<String>) {
     let Some(dir) = cache_dir() else { return };
     if !dir.exists() {
@@ -237,7 +306,20 @@ pub fn gc(keep: &HashSet<String>) {
     }
 
     if removed > 0 {
-        info!("symbol_cache: gc removed {} stale entries", removed);
+        info!("file_cache: gc removed {} stale entries", removed);
     }
+}
+
+/// Try to load the cached entry for `uri` only if it's fresh (stat-based).
+///
+/// Compares the stored `FileMeta` (size + mtime) against the current file.
+/// Returns `Some(CacheData)` without reading the source file content.
+pub fn load_if_fresh(uri: &Url) -> Option<CacheData> {
+    let cached = load(uri)?;
+    let current_meta = FileMeta::from_uri(uri)?;
+    if current_meta != cached.meta {
+        return None;
+    }
+    Some(cached)
 }
 

@@ -6,7 +6,7 @@
 //! Types with no explicit base (or with base `handle`) are children of
 //! the root `handle` node.
 
-use crate::lng::jass::symbol::FILE_SYMBOLS;
+use crate::util::file_store::FILE_STORE;
 use crate::util::import_graph::IMPORT_GRAPH;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -43,8 +43,8 @@ pub fn build_type_graph(uri: &Url) -> TypeGraphResult {
     // Frozen URIs.
     let mut frozen_uris: HashSet<Url> = HashSet::new();
     for peer in &component {
-        if let Some(fs) = FILE_SYMBOLS.get(peer) {
-            for fu in &fs.frozen_imports {
+        if let Some(fs) = FILE_STORE.get(peer) {
+            for fu in &fs.file_symbols.frozen_imports {
                 frozen_uris.insert(fu.clone());
             }
         }
@@ -54,13 +54,13 @@ pub fn build_type_graph(uri: &Url) -> TypeGraphResult {
     let mut type_map: HashMap<String, (Option<String>, String, bool)> = HashMap::new();
 
     for peer_uri in &component {
-        let fs = match FILE_SYMBOLS.get(peer_uri) {
+        let fs = match FILE_STORE.get(peer_uri) {
             Some(fs) => fs,
             None => continue,
         };
         let is_frozen = frozen_uris.contains(peer_uri);
 
-        for t in &fs.types {
+        for t in &fs.file_symbols.types {
             type_map.entry(t.name.clone()).or_insert_with(|| {
                 (t.base.clone(), peer_uri.to_string(), is_frozen)
             });

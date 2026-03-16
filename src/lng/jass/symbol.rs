@@ -1,29 +1,12 @@
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
-// ─── Global storage ──────────────────────────────────────────────────────────
-
-/// Per-file symbol table.  Populated during `Cursor::walk`, stored from
-/// `parse.rs` in the same pattern as `FOLDING_URI_MAP` etc.
-pub static FILE_SYMBOLS: Lazy<DashMap<Url, FileSymbols>> = Lazy::new(DashMap::new);
-
-/// Check if `target_uri` is considered **frozen** (imported via `//import!`
-/// by anyone in the graph).  If *any* file imports it with `//import!`, the
-/// target is frozen — even if another file imports it with plain `//import`.
-pub fn is_uri_frozen(target_uri: &Url) -> bool {
-    FILE_SYMBOLS.iter().any(|entry| {
-        entry.value().frozen_imports.contains(target_uri)
-    })
-}
 
 // ─── Owned (lifetime-free) symbol types ──────────────────────────────────────
 
 /// A parameter: `type name`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct ParamSym {
     pub name: String,
     pub type_name: String,
@@ -31,28 +14,35 @@ pub struct ParamSym {
 
 /// A `type X extends Y` declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct TypeSym {
     pub name: String,
     pub base: Option<String>,
     /// Declaration order inside the file (0-based, across all top-level items).
     pub decl_index: usize,
+    /// `//*` doc comment (markdown) attached to this declaration.
+    pub doc_comment: Option<String>,
+    /// Diagnostic tags suppressed via `//@ignore tag1 tag2` above this declaration.
+    #[serde(default)]
+    pub ignore_tags: HashSet<String>,
 }
 
 /// A `native` declaration — callable but has no body.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct NativeSym {
     pub name: String,
     pub params: Vec<ParamSym>,
     pub return_type: Option<String>,
     /// Declaration order inside the file.
     pub decl_index: usize,
+    /// `//*` doc comment (markdown) attached to this declaration.
+    pub doc_comment: Option<String>,
+    /// Diagnostic tags suppressed via `//@ignore tag1 tag2` above this declaration.
+    #[serde(default)]
+    pub ignore_tags: HashSet<String>,
 }
 
 /// A `function … endfunction` declaration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct FunctionSym {
     pub name: String,
     pub params: Vec<ParamSym>,
@@ -63,11 +53,15 @@ pub struct FunctionSym {
     /// statements, expressions like `foo(…)`, and `function foo` references).
     /// Used for topological sorting and reachability analysis.
     pub callees: HashSet<String>,
+    /// `//*` doc comment (markdown) attached to this declaration.
+    pub doc_comment: Option<String>,
+    /// Diagnostic tags suppressed via `//@ignore tag1 tag2` above this declaration.
+    #[serde(default)]
+    pub ignore_tags: HashSet<String>,
 }
 
 /// A single global variable declaration (one name inside a `globals` block).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct GlobalVarSym {
     pub name: String,
     pub type_name: Option<String>,
@@ -76,6 +70,11 @@ pub struct GlobalVarSym {
     pub has_initializer: bool,
     /// Declaration order inside the file.
     pub decl_index: usize,
+    /// `//*` doc comment (markdown) attached to this declaration.
+    pub doc_comment: Option<String>,
+    /// Diagnostic tags suppressed via `//@ignore tag1 tag2` above this declaration.
+    #[serde(default)]
+    pub ignore_tags: HashSet<String>,
 }
 
 // ─── File-level symbol table ─────────────────────────────────────────────────
@@ -101,25 +100,23 @@ pub struct FileSymbols {
     pub bare_callees: HashSet<String>,
 }
 
+#[allow(dead_code)]
 impl FileSymbols {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Find a function by name.
-    #[allow(dead_code)]
     pub fn find_function(&self, name: &str) -> Option<&FunctionSym> {
         self.functions.iter().find(|f| f.name == name)
     }
 
     /// Find a native by name.
-    #[allow(dead_code)]
     pub fn find_native(&self, name: &str) -> Option<&NativeSym> {
         self.natives.iter().find(|n| n.name == name)
     }
 
     /// Find any callable (function or native) by name.
-    #[allow(dead_code)]
     pub fn find_callable(&self, name: &str) -> Option<CallableRef<'_>> {
         if let Some(f) = self.find_function(name) {
             Some(CallableRef::Function(f))
@@ -129,13 +126,11 @@ impl FileSymbols {
     }
 
     /// Find a global variable by name.
-    #[allow(dead_code)]
     pub fn find_global(&self, name: &str) -> Option<&GlobalVarSym> {
         self.globals.iter().find(|g| g.name == name)
     }
 
     /// Find a type by name.
-    #[allow(dead_code)]
     pub fn find_type(&self, name: &str) -> Option<&TypeSym> {
         self.types.iter().find(|t| t.name == name)
     }
@@ -163,12 +158,10 @@ pub enum CallableRef<'a> {
 /// Generates short identifiers: `a`, `b`, …, `z`, `A`, …, `Z`,
 /// `aa`, `ab`, …  Skips JASS reserved words.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ShortNameGen {
     counter: usize,
 }
 
-#[allow(dead_code)]
 const JASS_RESERVED: &[&str] = &[
     "and", "array", "call", "constant", "debug", "else", "elseif",
     "endfunction", "endglobals", "endif", "endloop", "extends", "false",

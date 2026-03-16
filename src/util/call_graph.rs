@@ -11,7 +11,7 @@
 //! * **Unused detection** — functions with zero incoming edges (nobody calls them).
 //! * **Recursion detection** — self-edges (allowed, but flagged).
 
-use crate::lng::jass::symbol::FILE_SYMBOLS;
+use crate::util::file_store::FILE_STORE;
 use crate::util::import_graph::IMPORT_GRAPH;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -36,7 +36,7 @@ pub struct FuncDiagnostics {
 
 /// Lightweight analysis: return unused / cyclic function names declared in `uri`.
 ///
-/// Reads `FILE_SYMBOLS` for every file in the connected component that
+/// Reads `FILE_STORE` for every file in the connected component that
 /// contains `uri` (must already be populated).
 pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     let mut result = FuncDiagnostics::default();
@@ -47,44 +47,43 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     // Frozen URIs.
     let mut frozen_uris: HashSet<Url> = HashSet::new();
     for peer in &component {
-        if let Some(fs) = FILE_SYMBOLS.get(peer) {
-            for fu in &fs.frozen_imports {
+        if let Some(fs) = FILE_STORE.get(peer) {
+            for fu in &fs.file_symbols.frozen_imports {
                 frozen_uris.insert(fu.clone());
             }
         }
     }
 
     // Collect all functions/natives.
-    #[allow(dead_code)]
     struct Info {
         uri: Url,
         is_native: bool,
-        is_frozen: bool,
+        _is_frozen: bool,
         callees: HashSet<String>,
     }
 
     let mut func_map: HashMap<String, Info> = HashMap::new();
 
     for peer_uri in &component {
-        let fs = match FILE_SYMBOLS.get(peer_uri) {
+        let fs = match FILE_STORE.get(peer_uri) {
             Some(fs) => fs,
             None => continue,
         };
         let is_frozen = frozen_uris.contains(peer_uri);
 
-        for f in &fs.functions {
+        for f in &fs.file_symbols.functions {
             func_map.insert(f.name.clone(), Info {
                 uri: peer_uri.clone(),
                 is_native: false,
-                is_frozen,
+                _is_frozen: is_frozen,
                 callees: f.callees.clone(),
             });
         }
-        for n in &fs.natives {
+        for n in &fs.file_symbols.natives {
             func_map.insert(n.name.clone(), Info {
                 uri: peer_uri.clone(),
                 is_native: true,
-                is_frozen,
+                _is_frozen: is_frozen,
                 callees: HashSet::new(),
             });
         }
@@ -95,8 +94,8 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     // otherwise a virtual `main` node is created.
     let mut all_bare: HashSet<String> = HashSet::new();
     for peer_uri in &component {
-        if let Some(fs) = FILE_SYMBOLS.get(peer_uri) {
-            all_bare.extend(fs.bare_callees.iter().cloned());
+        if let Some(fs) = FILE_STORE.get(peer_uri) {
+            all_bare.extend(fs.file_symbols.bare_callees.iter().cloned());
         }
     }
     if !all_bare.is_empty() {
@@ -106,7 +105,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
             func_map.insert("main".to_string(), Info {
                 uri: uri.clone(),
                 is_native: false,
-                is_frozen: false,
+                _is_frozen: false,
                 callees: all_bare,
             });
         }
@@ -221,8 +220,8 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
     // Frozen URIs — any file imported via `//import!` by anyone in component.
     let mut frozen_uris: HashSet<Url> = HashSet::new();
     for peer in &component {
-        if let Some(fs) = FILE_SYMBOLS.get(peer) {
-            for fu in &fs.frozen_imports {
+        if let Some(fs) = FILE_STORE.get(peer) {
+            for fu in &fs.file_symbols.frozen_imports {
                 frozen_uris.insert(fu.clone());
             }
         }
@@ -239,13 +238,13 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
     let mut func_map: HashMap<String, FuncInfo> = HashMap::new();
 
     for peer_uri in &component {
-        let fs = match FILE_SYMBOLS.get(peer_uri) {
+        let fs = match FILE_STORE.get(peer_uri) {
             Some(fs) => fs,
             None => continue,
         };
         let is_frozen = frozen_uris.contains(peer_uri);
 
-        for f in &fs.functions {
+        for f in &fs.file_symbols.functions {
             func_map.insert(
                 f.name.clone(),
                 FuncInfo {
@@ -256,7 +255,7 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
                 },
             );
         }
-        for n in &fs.natives {
+        for n in &fs.file_symbols.natives {
             func_map.insert(
                 n.name.clone(),
                 FuncInfo {
@@ -272,8 +271,8 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
     // Merge bare top-level callees into `main`.
     let mut all_bare: HashSet<String> = HashSet::new();
     for peer_uri in &component {
-        if let Some(fs) = FILE_SYMBOLS.get(peer_uri) {
-            all_bare.extend(fs.bare_callees.iter().cloned());
+        if let Some(fs) = FILE_STORE.get(peer_uri) {
+            all_bare.extend(fs.file_symbols.bare_callees.iter().cloned());
         }
     }
     if !all_bare.is_empty() {

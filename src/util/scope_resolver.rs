@@ -52,6 +52,9 @@ pub struct GlobalEntry {
     pub uri: Url,
     /// Symbol name.
     pub name: String,
+    /// Namespace — JASS always uses `""` (global scope).
+    /// AngelScript will use the enclosing `namespace Foo { … }` name.
+    pub namespace: String,
     /// Namespace.
     pub ns: SymbolNS,
     /// `start_byte` of the declaring node in the origin file.
@@ -70,6 +73,8 @@ pub struct GlobalEntry {
     pub is_constant: bool,
     /// `true` for `array` global variables.
     pub is_array: bool,
+    /// `//*` doc comment (markdown) attached to this declaration.
+    pub doc_comment: Option<String>,
 }
 
 // ─── Inner storage ───────────────────────────────────────────────────────────
@@ -99,6 +104,7 @@ pub struct ScopeResolver {
     inner: RwLock<ScopeInner>,
 }
 
+#[allow(dead_code)]
 impl ScopeResolver {
     // ─── Construction ────────────────────────────────────────────────────
 
@@ -222,7 +228,6 @@ impl ScopeResolver {
     }
 
     /// Remove all entries for `uri`.
-    #[allow(dead_code)]
     pub fn remove_file(&self, uri: &Url) {
         let mut inner = self.inner.write().unwrap();
         if let Some(old_names) = inner.by_uri.remove(uri) {
@@ -245,7 +250,6 @@ impl ScopeResolver {
     /// declarations from `visible_uris`.
     ///
     /// Returns an empty vec if no matches.
-    #[allow(dead_code)]
     pub fn resolve(
         &self,
         name: &str,
@@ -288,7 +292,6 @@ impl ScopeResolver {
     /// Returns `true` if:
     /// - `uri` is not in the index, or
     /// - the stored hash differs from `current_hash`.
-    #[allow(dead_code)]
     pub fn is_stale(&self, uri: &Url, current_hash: &[u8; 32]) -> bool {
         let inner = self.inner.read().unwrap();
         match inner.hashes.get(uri) {
@@ -304,7 +307,6 @@ impl ScopeResolver {
     /// fingerprint, so the caller can skip cascade re-parses.
     ///
     /// Returns `None` if `uri` is unknown.
-    #[allow(dead_code)]
     pub fn export_fingerprint(&self, uri: &Url) -> Option<u64> {
         use std::hash::{Hash, Hasher};
         let inner = self.inner.read().unwrap();
@@ -330,31 +332,38 @@ impl ScopeResolver {
     }
 
     /// Get the content hash for `uri`, if known.
-    #[allow(dead_code)]
     pub fn content_hash(&self, uri: &Url) -> Option<[u8; 32]> {
         let inner = self.inner.read().unwrap();
         inner.hashes.get(uri).copied()
     }
 
     /// All URIs known to the resolver.
-    #[allow(dead_code)]
     pub fn all_uris(&self) -> Vec<Url> {
         let inner = self.inner.read().unwrap();
         inner.by_uri.keys().cloned().collect()
     }
 
     /// Total number of indexed symbols.
-    #[allow(dead_code)]
     pub fn symbol_count(&self) -> usize {
         let inner = self.inner.read().unwrap();
         inner.by_name.values().map(|v| v.len()).sum()
     }
 
     /// Number of indexed files.
-    #[allow(dead_code)]
     pub fn file_count(&self) -> usize {
         let inner = self.inner.read().unwrap();
         inner.by_uri.len()
+    }
+
+    /// Remove **all** entries and persisted cache — used by the forced rescan.
+    pub fn clear_all(&self) {
+        let mut inner = self.inner.write().unwrap();
+        let count = inner.by_uri.len();
+        inner.by_name.clear();
+        inner.by_uri.clear();
+        inner.hashes.clear();
+        Self::save(&inner);
+        info!("scope_resolver: clear_all removed {} files", count);
     }
 
     /// Remove entries for all URIs **not** in `keep`.

@@ -14,7 +14,7 @@ use crate::lng::jass::kind::Kind;
 use crate::util::tree_map::TREE_MAP;
 use crate::lsp::formatting::lsp::{FormattingOptions, TextEdit};
 use crate::util::roper::uri_map::ROPE_MAP;
-use lapce_xi_rope::Rope;
+
 use url::Url;
 
 /// Compute formatting edits for a JASS file.
@@ -434,11 +434,6 @@ fn collect_inline_edits(
     }
 }
 
-/// Helper to get the Rope text content as a String.
-#[allow(dead_code)]
-fn rope_to_string(rope: &Rope) -> String {
-    rope.slice_to_cow(0..rope.len()).to_string()
-}
 
 #[cfg(test)]
 mod tests {

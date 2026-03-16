@@ -90,13 +90,65 @@ JASS 文件可以通过特殊的注释指令相互链接：
 //set ref-tip 1
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
+//set unused 0
 ```
 
 | 键 | 值 | 说明 |
 |----|-----|------|
 | `ref-tip` | `1` / `0` | 显示/隐藏每个标识符旁的引用 ID 内联提示——对调试符号解析很有用。 |
+| `unused` | `1` / `0` | 启用/禁用整个文件的未使用函数诊断。默认 `1`（启用）。 |
 | `build-jass` | `<路径>` | JASS 构建的输出路径。将整个导入树合并为单个 `.j` 文件。 |
 | `build-as` | `<路径>` | AngelScript 构建的输出路径。相同的合并逻辑，但输出 `.as` 语法。 |
+
+---
+
+## `//*` — 文档注释
+
+紧接在声明之前以 `//*` 开头的行被视为**文档注释**（Markdown）。它们会显示在悬停提示和补全详情中。
+
+```jass
+//* 在指定位置生成一个单位。
+//* 返回创建的单位句柄。
+function SpawnUnit takes integer id, real x, real y returns unit
+    // ...
+endfunction
+```
+
+多个连续的 `//*` 行会被合并。前缀 `//* `（带尾部空格）会被去除；`//*文本` 也可以。
+
+---
+
+## `//@ignore` — 按声明抑制诊断
+
+将 `//@ignore` 注释放在函数、变量、类型或 native 声明之前，可以为该特定声明抑制列出的诊断标签。
+
+```jass
+//@ignore unused
+function HelperFunc takes nothing returns nothing
+    // 不会为 HelperFunc 报告「Unused function」诊断。
+endfunction
+```
+
+### 语法
+
+```jass
+//@ignore tag1 tag2 ...
+```
+
+标签以空格分隔。当前支持的标签：
+
+| 标签 | 抑制 |
+|------|------|
+| `unused` | 「Unused function」提示 |
+
+`//@ignore` 可以与 `//*` 文档注释以任意顺序组合：
+
+```jass
+//* 内部辅助函数——不直接调用。
+//@ignore unused
+function InternalHelper takes nothing returns nothing
+endfunction
+```
 
 ---
 

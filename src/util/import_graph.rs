@@ -85,6 +85,7 @@ impl GraphInner {
     }
 }
 
+#[allow(dead_code)]
 impl ImportGraph {
     /// Create an empty in-memory graph (for tests).
     #[cfg(test)]
@@ -181,17 +182,44 @@ impl ImportGraph {
             return;
         }
 
+        // Targets that are being removed — candidates for GC.
+        let removed_targets: Vec<Url> = old.difference(&new_imports).cloned().collect();
+
         inner.clear_outgoing(node);
         for imp in &new_imports {
             let to = inner.ensure_node(imp);
             inner.graph.update_edge(node, to, ());
         }
 
+        // Garbage-collect removed targets that are now isolated
+        // (zero in-degree AND zero out-degree).
+        for target_uri in &removed_targets {
+            if let Some(&idx) = inner.index.get(target_uri) {
+                let in_deg = inner
+                    .graph
+                    .neighbors_directed(idx, Direction::Incoming)
+                    .count();
+                let out_deg = inner
+                    .graph
+                    .neighbors_directed(idx, Direction::Outgoing)
+                    .count();
+                if in_deg == 0 && out_deg == 0 {
+                    inner.graph.remove_node(idx);
+                    inner.index.remove(target_uri);
+                    inner.index = inner
+                        .graph
+                        .node_indices()
+                        .map(|i| (inner.graph[i].clone(), i))
+                        .collect();
+                    crate::util::file_store::FILE_STORE.remove(target_uri);
+                }
+            }
+        }
+
         Self::save(&inner);
     }
 
     /// Remove a file node and all its edges (e.g. file deleted from disk).
-    #[allow(dead_code)]
     pub fn remove(&self, uri: &Url) {
         let mut inner = self.inner.write().unwrap();
         if let Some(&idx) = inner.index.get(uri) {
@@ -206,8 +234,82 @@ impl ImportGraph {
             inner.index = rebuilt;
             Self::save(&inner);
             // Evict cached RefMap for the removed file.
-            crate::util::ref_cache::evict(uri);
+            crate::util::file_store::FILE_STORE.remove(uri);
         }
+    }
+
+    /// Remove stale nodes from the graph.
+    ///
+    /// Two passes:
+    /// 1. **Dead files** — nodes whose file no longer exists on disk.
+    ///    Removing these first breaks cycles between deleted files
+    ///    (e.g. `b.j ↔ c.j` where both were deleted).
+    /// 2. **Orphans** — nodes with zero in-degree AND zero out-degree.
+    ///    These are leftover phantoms after edges were removed.
+    ///
+    /// Returns the list of URIs that were garbage-collected.
+    pub fn gc_orphans(&self) -> Vec<Url> {
+        let mut inner = self.inner.write().unwrap();
+        let mut removed = Vec::new();
+
+        // ── Pass 1: remove nodes whose file doesn't exist on disk ────────
+        let dead_uris: Vec<Url> = inner
+            .index
+            .keys()
+            .filter(|uri| {
+                uri.to_file_path()
+                    .map(|p| !p.exists())
+                    .unwrap_or(true) // non-file URI → treat as dead
+            })
+            .cloned()
+            .collect();
+
+        for uri in dead_uris {
+            if let Some(&idx) = inner.index.get(&uri) {
+                inner.graph.remove_node(idx);
+                inner.index.remove(&uri);
+                // petgraph swaps the last node into the removed slot —
+                // rebuild the entire index to stay consistent.
+                inner.index = inner
+                    .graph
+                    .node_indices()
+                    .map(|i| (inner.graph[i].clone(), i))
+                    .collect();
+                crate::util::file_store::FILE_STORE.remove(&uri);
+                removed.push(uri);
+            }
+        }
+
+        // ── Pass 2: remove orphan nodes (zero in + zero out) ─────────────
+        loop {
+            let orphan = inner.graph.node_indices().find(|&idx| {
+                let in_deg = inner.graph.neighbors_directed(idx, Direction::Incoming).count();
+                let out_deg = inner.graph.neighbors_directed(idx, Direction::Outgoing).count();
+                in_deg == 0 && out_deg == 0
+            });
+
+            match orphan {
+                Some(idx) => {
+                    let uri = inner.graph[idx].clone();
+                    inner.graph.remove_node(idx);
+                    inner.index.remove(&uri);
+                    inner.index = inner
+                        .graph
+                        .node_indices()
+                        .map(|i| (inner.graph[i].clone(), i))
+                        .collect();
+                    crate::util::file_store::FILE_STORE.remove(&uri);
+                    removed.push(uri);
+                }
+                None => break,
+            }
+        }
+
+        if !removed.is_empty() {
+            Self::save(&inner);
+            info!("import_graph: gc removed {} node(s)", removed.len());
+        }
+        removed
     }
 
     /// Rename a node from `old_uri` to `new_uri`, preserving all edges.
@@ -228,7 +330,7 @@ impl ImportGraph {
         Self::save(&inner);
 
         // Evict stale cache for the old URI.
-        crate::util::ref_cache::evict(old_uri);
+        crate::util::file_store::FILE_STORE.remove(old_uri);
     }
 
     // ─── Queries (read lock) ─────────────────────────────────────────────
@@ -236,7 +338,6 @@ impl ImportGraph {
     /// All files that **transitively** import `uri` (walk incoming edges).
     ///
     /// If A→B→C, then `dependents(C) = [B, A]`.
-    #[allow(dead_code)]
     pub fn dependents(&self, uri: &Url) -> Vec<Url> {
         let inner = self.inner.read().unwrap();
         let Some(&idx) = inner.index.get(uri) else {
@@ -257,7 +358,6 @@ impl ImportGraph {
     /// All files that `uri` **transitively** imports (walk outgoing edges).
     ///
     /// If A→B→C, then `dependencies(A) = [B, C]`.
-    #[allow(dead_code)]
     pub fn dependencies(&self, uri: &Url) -> Vec<Url> {
         let inner = self.inner.read().unwrap();
         let Some(&idx) = inner.index.get(uri) else {
@@ -273,7 +373,6 @@ impl ImportGraph {
     }
 
     /// Direct (non-transitive) imports of `uri`.
-    #[allow(dead_code)]
     pub fn direct_imports(&self, uri: &Url) -> Vec<Url> {
         let inner = self.inner.read().unwrap();
         let Some(&idx) = inner.index.get(uri) else {
@@ -287,7 +386,6 @@ impl ImportGraph {
     }
 
     /// Direct (non-transitive) dependents of `uri`.
-    #[allow(dead_code)]
     pub fn direct_dependents(&self, uri: &Url) -> Vec<Url> {
         let inner = self.inner.read().unwrap();
         let Some(&idx) = inner.index.get(uri) else {
@@ -301,7 +399,6 @@ impl ImportGraph {
     }
 
     /// Detect if the graph contains any cycle.
-    #[allow(dead_code)]
     pub fn has_cycle(&self) -> bool {
         let inner = self.inner.read().unwrap();
         is_cyclic_directed(&inner.graph)
@@ -315,7 +412,6 @@ impl ImportGraph {
 
     /// Find all cycles that `uri` participates in.
     /// Returns a list of cycles, each cycle is a Vec<Url>.
-    #[allow(dead_code)]
     pub fn cycles_for(&self, uri: &Url) -> Vec<Vec<Url>> {
         let inner = self.inner.read().unwrap();
         let Some(&start) = inner.index.get(uri) else {
@@ -355,7 +451,6 @@ impl ImportGraph {
     }
 
     /// Topological sort of all nodes. Returns `None` if the graph has a cycle.
-    #[allow(dead_code)]
     pub fn toposort(&self) -> Option<Vec<Url>> {
         let inner = self.inner.read().unwrap();
         petgraph::algo::toposort(&inner.graph, None)
@@ -364,13 +459,11 @@ impl ImportGraph {
     }
 
     /// Number of files in the graph.
-    #[allow(dead_code)]
     pub fn node_count(&self) -> usize {
         self.inner.read().unwrap().graph.node_count()
     }
 
     /// Number of import edges in the graph.
-    #[allow(dead_code)]
     pub fn edge_count(&self) -> usize {
         self.inner.read().unwrap().graph.edge_count()
     }

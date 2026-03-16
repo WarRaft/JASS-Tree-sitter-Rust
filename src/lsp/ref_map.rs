@@ -10,16 +10,10 @@
 
 use crate::lsp::highlight::lsp::DocumentHighlightKind;
 use crate::lsp::range::Range;
-use dashmap::DashMap;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use url::Url;
 
-// ─── Global storage ──────────────────────────────────────────────────────────
-
-/// Per-file reference map.  Populated from `Cursor` in `parse.rs`.
-pub static REF_URI_MAP: Lazy<DashMap<Url, RefMap>> = Lazy::new(DashMap::new);
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

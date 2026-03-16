@@ -45,6 +45,10 @@ pub struct ImportedSymbol {
     pub kind: ImportedKind,
     /// DeclKey of this symbol in the origin file's RefMap (if known).
     pub origin_decl_key: Option<DeclKey>,
+    /// Return type for functions/natives (e.g. `"unit"`); `None` for variables.
+    pub return_type: Option<String>,
+    /// Type name for variables (e.g. `"integer"`); `None` for functions.
+    pub type_name: Option<String>,
 }
 
 // ─── Scope types ─────────────────────────────────────────────────────────────
@@ -135,6 +139,11 @@ pub struct Cursor {
     /// Unresolved references collected during Phase 1.
     /// Linked to imports in Phase 2 via `link_imports()`.
     unresolved_refs: Vec<UnresolvedRef>,
+    /// Imported function return types: name → return_type.
+    /// Populated from `ImportedSymbol` at the start of `walk`.
+    imported_func_returns: HashMap<String, Option<String>>,
+    /// Imported variable types: name → type_name.
+    imported_var_types: HashMap<String, Option<String>>,
 }
 
 /// Two-namespace scope: JASS separates variables and functions by name.
@@ -145,6 +154,100 @@ struct HlScope {
     vars: HashMap<String, DeclKey>,
     funcs: HashMap<String, DeclKey>,
 }
+
+/// Strip the `//*` prefix from a single comment line and return the doc text.
+///
+/// Rules:
+/// - `//* foo` → `foo`   (strip `//*` + one trailing space)
+/// - `//*foo`  → `foo`   (strip `//*` only, no space to remove)
+/// - `//*`     → ``      (empty line)
+fn strip_doc_prefix(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("//*") {
+        return None;
+    }
+    let after = &trimmed[3..];
+    if after.starts_with(' ') {
+        Some(&after[1..])
+    } else {
+        Some(after)
+    }
+}
+
+/// Strip the `//@ignore` prefix and return the list of tags.
+///
+/// Rules:
+/// - `//@ignore unused cycle` → `["unused", "cycle"]`
+/// - `//@ignore unused`       → `["unused"]`
+/// - `//@ignore`              → `[]` (no tags)
+fn strip_ignore_prefix(line: &str) -> Option<Vec<&str>> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("//@ignore") {
+        return None;
+    }
+    let after = &trimmed["//@ignore".len()..];
+    if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
+        let tags: Vec<&str> = after.split_whitespace().collect();
+        Some(tags)
+    } else {
+        None
+    }
+}
+
+/// Annotations extracted from the comment block above a declaration.
+struct CommentAnnotations {
+    doc_comment: Option<String>,
+    ignore_tags: HashSet<String>,
+}
+
+/// Extract annotations (`//*` doc comment and `//@ignore` tags) from the
+/// comment block directly above a declaration at `row`.
+///
+/// Walks upward from `row - 1` collecting consecutive lines that start with
+/// `//*` or `//@ignore`.  Stops at the first line that matches neither.
+fn extract_annotations(rope: &Rope, row: usize) -> CommentAnnotations {
+    let mut doc_lines = Vec::new();
+    let mut ignore_tags = HashSet::new();
+
+    if row == 0 {
+        return CommentAnnotations { doc_comment: None, ignore_tags };
+    }
+    let line_count = rope.line_of_offset(rope.len()) + 1;
+    let mut r = row;
+    while r > 0 {
+        r -= 1;
+        if r >= line_count {
+            break;
+        }
+        let line_start = rope.offset_of_line(r);
+        let line_end = if r + 1 < line_count {
+            rope.offset_of_line(r + 1)
+        } else {
+            rope.len()
+        };
+        let text = rope.slice_to_cow(line_start..line_end);
+        let text = text.trim_end_matches('\n').trim_end_matches('\r');
+        if let Some(doc) = strip_doc_prefix(text) {
+            doc_lines.push(doc.to_string());
+        } else if let Some(tags) = strip_ignore_prefix(text) {
+            for tag in tags {
+                ignore_tags.insert(tag.to_string());
+            }
+        } else {
+            break;
+        }
+    }
+
+    let doc_comment = if doc_lines.is_empty() {
+        None
+    } else {
+        doc_lines.reverse();
+        Some(doc_lines.join("\n"))
+    };
+
+    CommentAnnotations { doc_comment, ignore_tags }
+}
+
 
 
 impl Cursor {
@@ -211,7 +314,25 @@ impl Cursor {
             bare_callees: HashSet::new(),
             hl_scopes: vec![HlScope::default()], // global scope
             unresolved_refs: Vec::new(),
+            imported_func_returns: HashMap::new(),
+            imported_var_types: HashMap::new(),
         };
+
+        // Pre-populate imported type lookup maps for Phase 1 type inference.
+        for sym in imported {
+            match sym.kind {
+                ImportedKind::Func => {
+                    c.imported_func_returns
+                        .entry(sym.name.clone())
+                        .or_insert_with(|| sym.return_type.clone());
+                }
+                ImportedKind::Var => {
+                    c.imported_var_types
+                        .entry(sym.name.clone())
+                        .or_insert_with(|| sym.type_name.clone());
+                }
+            }
+        }
 
         // CST errors → diagnostics
         for e in &ast.errors {
@@ -1003,10 +1124,13 @@ impl Cursor {
                         base: t.base.as_ref().map(|id| self.node_text(&id.node)),
                     }));
                 }
+                let ann = extract_annotations(&self.rope, t.node.start_position().row);
                 self.file_symbols.types.push(TypeSym {
                     name: name.clone(),
                     base: t.base.as_ref().map(|id| self.node_text(&id.node)),
                     decl_index,
+                    doc_comment: ann.doc_comment,
+                    ignore_tags: ann.ignore_tags,
                 });
                 Some(DocumentSymbol {
                     name,
@@ -1055,11 +1179,14 @@ impl Cursor {
                         return_type: return_type.clone(),
                     }));
                 }
+                let ann = extract_annotations(&self.rope, n.node.start_position().row);
                 self.file_symbols.natives.push(NativeSym {
                     name: name.clone(),
                     params: self.params_to_sym(&n.params),
                     return_type: return_type.clone(),
                     decl_index,
+                    doc_comment: ann.doc_comment,
+                    ignore_tags: ann.ignore_tags,
                 });
                 Some(DocumentSymbol {
                     name,
@@ -1162,12 +1289,15 @@ impl Cursor {
                 // Finalize callee collection.
                 let callees = self.current_callees.take().unwrap_or_default();
 
+                let ann = extract_annotations(&self.rope, f.node.start_position().row);
                 self.file_symbols.functions.push(FunctionSym {
                     name: func_name.clone(),
                     params: param_syms,
                     return_type,
                     decl_index,
                     callees,
+                    doc_comment: ann.doc_comment,
+                    ignore_tags: ann.ignore_tags,
                 });
 
                 self.scopes.push(Scope {
@@ -1226,6 +1356,7 @@ impl Cursor {
                         if let (Some(tn), Some(et)) = (&type_name, &expr_type) {
                             self.check_type_mismatch(tn, Some(et.as_str()), &d.node.to_range(&self.rope));
                         }
+                        let ann = extract_annotations(&self.rope, v.node.start_position().row);
                         self.file_symbols.globals.push(GlobalVarSym {
                             name: var_name.clone(),
                             type_name: type_name.clone(),
@@ -1233,6 +1364,8 @@ impl Cursor {
                             is_array: v.is_array,
                             has_initializer: d.value.is_some(),
                             decl_index,
+                            doc_comment: ann.doc_comment,
+                            ignore_tags: ann.ignore_tags,
                         });
                         // type-tip: show type with const/comptime/array modifiers
                         if let Some(name_id) = &d.name {
@@ -1368,6 +1501,7 @@ impl Cursor {
                     };
                     // Export to file_symbols so the scope resolver makes
                     // this variable visible to importing files.
+                    let ann = extract_annotations(&self.rope, v.node.start_position().row);
                     self.file_symbols.globals.push(GlobalVarSym {
                         name: var_name.clone(),
                         type_name: type_name.clone(),
@@ -1375,6 +1509,8 @@ impl Cursor {
                         is_array: v.is_array,
                         has_initializer: d.value.is_some(),
                         decl_index,
+                        doc_comment: ann.doc_comment,
+                        ignore_tags: ann.ignore_tags,
                     });
                     // TypeMap + type-tip
                     if let Some(ref name_id) = d.name {
@@ -1524,30 +1660,44 @@ impl Cursor {
         }
     }
 
-    /// Look up the type of a variable by name via highlight scopes + type map.
+    /// Look up the type of a variable by name via highlight scopes + type map,
+    /// falling back to imported variable types.
     fn lookup_var_type(&self, name: &str) -> Option<String> {
+        // Local scope lookup
         let decl_key = self
             .hl_scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.vars.get(name).copied())?;
-        match self.type_map.get(&decl_key)? {
-            DeclType::Var(vt) => Some(vt.name.clone()),
-            _ => None,
+            .find_map(|scope| scope.vars.get(name).copied());
+        if let Some(key) = decl_key {
+            if let Some(DeclType::Var(vt)) = self.type_map.get(&key) {
+                return Some(vt.name.clone());
+            }
         }
+        // Imported variable fallback
+        self.imported_var_types
+            .get(name)
+            .and_then(|t| t.clone())
     }
 
-    /// Look up the return type of a function by name via highlight scopes + type map.
+    /// Look up the return type of a function by name via highlight scopes + type map,
+    /// falling back to imported function return types.
     fn lookup_func_return_type(&self, name: &str) -> Option<String> {
+        // Local scope lookup
         let decl_key = self
             .hl_scopes
             .iter()
             .rev()
-            .find_map(|scope| scope.funcs.get(name).copied())?;
-        match self.type_map.get(&decl_key)? {
-            DeclType::Func(ft) => ft.return_type.clone(),
-            _ => None,
+            .find_map(|scope| scope.funcs.get(name).copied());
+        if let Some(key) = decl_key {
+            if let Some(DeclType::Func(ft)) = self.type_map.get(&key) {
+                return ft.return_type.clone();
+            }
         }
+        // Imported function fallback
+        self.imported_func_returns
+            .get(name)
+            .and_then(|t| t.clone())
     }
 
     /// Find the operator token kind inside a binary expression CST node.

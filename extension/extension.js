@@ -2,7 +2,7 @@
 // noinspection NpmUsedModulesInstalled
 const {
     window,
-    Uri, ExtensionMode, commands
+    Uri, ExtensionMode, commands, ProgressLocation
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
@@ -121,6 +121,47 @@ module.exports = {
             // Type Graph panel
             commands.registerCommand('typeGraph.show', () => {
                 showTypeGraph(client, context.extensionUri, context)
+            }),
+
+            // Rescan all files
+            commands.registerCommand('rescan.execute', async () => {
+                const editor = window.activeTextEditor
+                if (!editor) {
+                    window.showWarningMessage('No active editor.')
+                    return
+                }
+                const uri = editor.document.uri.toString()
+                await window.withProgress(
+                    {
+                        location: ProgressLocation.Notification,
+                        title: 'Rescanning all files…',
+                        cancellable: false
+                    },
+                    async () => {
+                        try {
+                            const result = await client.sendRequest('rescan/execute', {uri})
+                            if (result && result.ok) {
+                                window.showInformationMessage(`↻ ${result.message}`)
+                            } else if (result && result.errors && result.errors.length > 0) {
+                                const summary = `✗ Rescanned ${result.message.split('\n')[0]}`
+                                const action = await window.showErrorMessage(summary, 'Show Details')
+                                if (action === 'Show Details') {
+                                    const ch = window.createOutputChannel('JASS Rescan')
+                                    ch.clear()
+                                    ch.appendLine('Rescan errors:')
+                                    for (const e of result.errors) {
+                                        ch.appendLine(`  • ${e}`)
+                                    }
+                                    ch.show()
+                                }
+                            } else {
+                                window.showErrorMessage(`✗ ${result ? result.message : 'Rescan failed'}`)
+                            }
+                        } catch (e) {
+                            window.showErrorMessage(`Rescan error: ${e.message}`)
+                        }
+                    }
+                )
             }),
 
             // Build

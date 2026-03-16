@@ -487,4 +487,85 @@ mod tests {
         let ca = g.connected_component(&a);
         assert!(!ca.contains(&a), "connected_component should exclude self");
     }
+
+    #[test]
+    fn update_removes_orphan_target() {
+        // When A imports B, then A stops importing B,
+        // B should be removed from the graph (orphan GC in update).
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+
+        g.update(&a, HashSet::from([b.clone()]));
+        assert!(g.all_uris().contains(&b));
+
+        // A no longer imports B → B becomes orphan and is GC'd inline.
+        g.update(&a, HashSet::new());
+        assert!(
+            !g.all_uris().contains(&b),
+            "orphan B should be GC'd after update"
+        );
+        // A itself still exists — update only GC's removed *targets*,
+        // not the source node itself.
+        assert!(g.all_uris().contains(&a));
+    }
+
+    #[test]
+    fn update_keeps_target_with_other_dependents() {
+        // B is imported by both A and C.  Removing A→B should NOT GC B.
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+
+        g.update(&a, HashSet::from([b.clone()]));
+        g.update(&c, HashSet::from([b.clone()]));
+
+        // Remove A's import of B
+        g.update(&a, HashSet::new());
+        assert!(
+            g.all_uris().contains(&b),
+            "B still has incoming edge from C, must NOT be GC'd"
+        );
+    }
+
+    #[test]
+    fn gc_orphans_cleans_isolated_nodes() {
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+
+        g.update(&a, HashSet::from([b.clone(), c.clone()]));
+        assert_eq!(g.all_uris().len(), 3);
+
+        // A stops importing everything — b and c are GC'd inline,
+        // but A itself stays as an orphan source node.
+        g.update(&a, HashSet::new());
+        assert_eq!(g.all_uris().len(), 1);
+        assert!(g.all_uris().contains(&a));
+
+        // gc_orphans should collect the remaining orphan A.
+        let removed = g.gc_orphans();
+        assert_eq!(removed.len(), 1);
+        assert!(removed.contains(&a));
+        assert!(g.all_uris().is_empty());
+    }
+
+    #[test]
+    fn gc_orphans_removes_dead_file_cycle() {
+        // b.j and c.j form a cycle but neither exists on disk.
+        // gc_orphans should remove both even though they have edges.
+        let g = new_graph();
+        let b = u("file:///nonexistent_gc_test_b.j");
+        let c = u("file:///nonexistent_gc_test_c.j");
+
+        g.update(&b, HashSet::from([c.clone()]));
+        g.update(&c, HashSet::from([b.clone()]));
+        assert_eq!(g.all_uris().len(), 2);
+
+        let removed = g.gc_orphans();
+        assert_eq!(removed.len(), 2, "both dead cyclic nodes should be GC'd");
+        assert!(g.all_uris().is_empty());
+    }
 }

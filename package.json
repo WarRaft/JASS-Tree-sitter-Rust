@@ -144,6 +144,11 @@
         "icon": "$(symbol-class)"
       },
       {
+        "command": "rescan.execute",
+        "title": "%command.rescan.execute%",
+        "icon": "$(refresh)"
+      },
+      {
         "command": "build.execute",
         "title": "%command.build.execute%",
         "icon": "$(play)"
@@ -163,6 +168,11 @@
         },
         {
           "command": "typeGraph.show",
+          "when": "resourceLangId == jass || resourceLangId == angelscript",
+          "group": "navigation"
+        },
+        {
+          "command": "rescan.execute",
           "when": "resourceLangId == jass || resourceLangId == angelscript",
           "group": "navigation"
         },

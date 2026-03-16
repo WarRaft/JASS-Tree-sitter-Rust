@@ -1197,7 +1197,7 @@ endfunction
         let imported = vec![ImportedSymbol {
             origin_uri: origin.clone(),
             name: "Bar".into(),
-            kind: ImportedKind::Func, origin_decl_key: None,
+            kind: ImportedKind::Func, origin_decl_key: None, return_type: None, type_name: None,
         }];
         with_cursor_imported(src, &imported, |c| {
             let ext_key = *c.ref_groups.keys()
@@ -1225,7 +1225,7 @@ endfunction
         let imported = vec![ImportedSymbol {
             origin_uri: origin.clone(),
             name: "bj_lastCreatedUnit".into(),
-            kind: ImportedKind::Var, origin_decl_key: None,
+            kind: ImportedKind::Var, origin_decl_key: None, return_type: None, type_name: None,
         }];
         with_cursor_imported(src, &imported, |c| {
             let ext_key = *c.ref_groups.keys()
@@ -1248,8 +1248,8 @@ endfunction
 ";
         let origin = Url::parse("file:///lib/common.j").unwrap();
         let imported = vec![
-            ImportedSymbol { origin_uri: origin.clone(), name: "group".into(), kind: ImportedKind::Var, origin_decl_key: None },
-            ImportedSymbol { origin_uri: origin.clone(), name: "unit".into(),  kind: ImportedKind::Var, origin_decl_key: None },
+            ImportedSymbol { origin_uri: origin.clone(), name: "group".into(), kind: ImportedKind::Var, origin_decl_key: None, return_type: None, type_name: None },
+            ImportedSymbol { origin_uri: origin.clone(), name: "unit".into(),  kind: ImportedKind::Var, origin_decl_key: None, return_type: None, type_name: None },
         ];
         with_cursor_imported(src, &imported, |c| {
             for type_name in &["group", "unit"] {
@@ -1298,7 +1298,7 @@ call A()
         let imported = vec![ImportedSymbol {
             origin_uri: origin,
             name: "A".into(),
-            kind: ImportedKind::Func, origin_decl_key: None,
+            kind: ImportedKind::Func, origin_decl_key: None, return_type: None, type_name: None,
         }];
         with_cursor_imported(src, &imported, |c| {
             let ext_count = c.ref_groups.keys().filter(|&&k| k >= EXTERNAL_KEY_BASE).count();
@@ -1325,13 +1325,13 @@ call A()
                 origin_uri: origin.clone(),
                 name: "A".into(),
                 kind: ImportedKind::Var,
-                origin_decl_key: None,
+                origin_decl_key: None, return_type: None, type_name: None,
             },
             ImportedSymbol {
                 origin_uri: origin.clone(),
                 name: "A".into(),
                 kind: ImportedKind::Func,
-                origin_decl_key: None,
+                origin_decl_key: None, return_type: None, type_name: None,
             },
         ];
         with_cursor_imported(src, &imported, |c| {
@@ -1389,13 +1389,13 @@ call E()
                 origin_uri: origin.clone(),
                 name: "A".into(),
                 kind: ImportedKind::Var,
-                origin_decl_key: None,
+                origin_decl_key: None, return_type: None, type_name: None,
             },
             ImportedSymbol {
                 origin_uri: origin.clone(),
                 name: "A".into(),
                 kind: ImportedKind::Func,
-                origin_decl_key: None,
+                origin_decl_key: None, return_type: None, type_name: None,
             },
         ];
         with_cursor_imported(src, &imported, |c| {
@@ -2097,7 +2097,7 @@ endfunction
             origin_uri: origin.clone(),
             name: "A".into(),
             kind: ImportedKind::Var,
-            origin_decl_key: None,
+            origin_decl_key: None, return_type: None, type_name: None,
         }];
         with_cursor_imported(src, &imported, |c| {
             // `A` should resolve to the external group
@@ -2146,7 +2146,7 @@ endfunction
             origin_uri: origin.clone(),
             name: "A".into(),
             kind: ImportedKind::Func,
-            origin_decl_key: None,
+            origin_decl_key: None, return_type: None, type_name: None,
         }];
         with_cursor_imported(src, &imported, |c| {
             let ext_keys: Vec<_> = c
@@ -2192,13 +2192,13 @@ call A()
                 origin_uri: origin.clone(),
                 name: "A".into(),
                 kind: ImportedKind::Var,
-                origin_decl_key: Some(0),
+                origin_decl_key: Some(0), return_type: None, type_name: None,
             },
             ImportedSymbol {
                 origin_uri: origin.clone(),
                 name: "A".into(),
                 kind: ImportedKind::Func,
-                origin_decl_key: Some(1),
+                origin_decl_key: Some(1), return_type: None, type_name: None,
             },
         ];
         with_cursor_imported(src, &imported, |c| {
@@ -2799,7 +2799,7 @@ boolean B
             origin_uri: origin,
             name: "CreateUnit".into(),
             kind: ImportedKind::Func,
-            origin_decl_key: Some(42),
+            origin_decl_key: Some(42), return_type: None, type_name: None,
         }];
         with_cursor_imported(src, &imported, |c| {
             let undecl: Vec<_> = c.diagnostics.iter()
@@ -2832,7 +2832,7 @@ integer x = G
             origin_uri: origin,
             name: "G".into(),
             kind: ImportedKind::Var,
-            origin_decl_key: Some(10),
+            origin_decl_key: Some(10), return_type: None, type_name: None,
         }];
         with_cursor_imported(src, &imported, |c| {
             let undecl: Vec<_> = c.diagnostics.iter()
@@ -2876,7 +2876,7 @@ endfunction
             origin_uri: origin,
             name: "Bar".into(),
             kind: ImportedKind::Func,
-            origin_decl_key: Some(99),
+            origin_decl_key: Some(99), return_type: None, type_name: None,
         }];
         with_cursor_imported(src, &imported, |c| {
             let undecl: Vec<_> = c.diagnostics.iter()

@@ -1,11 +1,11 @@
 use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
 use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
-use crate::lng::jass::symbol::FILE_SYMBOLS;
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::ref_map::{build_ref_map, RefMap, REF_URI_MAP};
+use crate::lsp::ref_map::{build_ref_map, DeclKey, RefMap};
+use crate::util::file_cache;
 use crate::util::file_store::{
     exports_changed, new_cancel_token, register_pending,
-    ParseSnapshot, FILE_STORE, PARSED_META,
+    ParseSnapshot, FILE_STORE,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
@@ -13,10 +13,8 @@ use crate::util::parse::{
     file_symbols_to_entries, find_decl_key_by_name, resolve_import_directive,
     ParseFn,
 };
-use crate::util::ref_cache;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
-use crate::util::symbol_cache;
 use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
@@ -190,15 +188,21 @@ fn _parse(
             if &entry.uri == uri {
                 continue;
             }
+            // Try to get the precise DeclKey from FILE_STORE; fall back to
+            // the scope resolver's `decl_key` (which is always available,
+            // even when the origin file hasn't been fully parsed into FILE_STORE yet).
             let origin_snapshot = FILE_STORE.get(&entry.uri);
-            let origin_decl_key = origin_snapshot.as_ref().and_then(|snap| {
-                find_decl_key_by_name(
-                    &snap.ref_map,
-                    &entry.name,
-                    entry.ns,
-                    &snap.func_decl_keys,
-                )
-            });
+            let origin_decl_key = origin_snapshot
+                .as_ref()
+                .and_then(|snap| {
+                    find_decl_key_by_name(
+                        &snap.ref_map,
+                        &entry.name,
+                        entry.ns,
+                        &snap.func_decl_keys,
+                    )
+                })
+                .or(Some(entry.decl_key as DeclKey));
 
             imported_symbols.push(ImportedSymbol {
                 origin_uri: entry.uri.clone(),
@@ -208,6 +212,8 @@ fn _parse(
                     SymbolNS::Var => ImportedKind::Var,
                 },
                 origin_decl_key,
+                return_type: entry.return_type.clone(),
+                type_name: entry.type_name.clone(),
             });
         }
     }
@@ -225,21 +231,36 @@ fn _parse(
     let mut all_diagnostics = cursor.diagnostics;
     all_diagnostics.extend(import_diagnostics);
 
-    // 7. Build ref_map + persist to disk cache.
+    // 7. Build ref_map.
     let func_decl_keys = cursor.func_decl_keys;
     let ref_map = build_ref_map(cursor.ref_groups, cursor.ref_names, cursor.external_decls, rope);
-    let hash = ref_cache::content_hash(rope);
-    if let Some(meta) = symbol_cache::FileMeta::from_uri(uri) {
-        ref_cache::store(uri, &hash, meta, &ref_map);
-    }
+    let hash = file_cache::content_hash(rope);
 
     // 8. Call-graph diagnostics: unused functions & cyclic calls.
-    //    We need FILE_SYMBOLS populated for the current file, so write it first.
-    FILE_SYMBOLS.insert(uri.clone(), cursor.file_symbols.clone());
+    //    We need FILE_STORE populated for the current file, so write a
+    //    preliminary snapshot first (it will be replaced below).
+    let preliminary = Arc::new(ParseSnapshot {
+        folding: Vec::new(),
+        symbols: Vec::new(),
+        semantic: std::sync::RwLock::new(Default::default()),
+        diagnostics: Vec::new(),
+        links: Vec::new(),
+        ref_map: RefMap::default(),
+        file_symbols: cursor.file_symbols.clone(),
+        _type_map: Default::default(),
+        type_hints: Vec::new(),
+        func_decl_keys: func_decl_keys.clone(),
+    });
+    FILE_STORE.insert(uri.clone(), preliminary);
     {
         use crate::util::call_graph::diagnose_functions;
 
         let func_diag = diagnose_functions(uri);
+
+        // File-level `//set unused 0` suppresses all unused-function diagnostics.
+        let file_unused_enabled = cursor.file_settings
+            .get("unused")
+            .map_or(true, |v| v != "0");
 
         for (&key, group) in &ref_map.groups {
             if !func_decl_keys.contains(&key) {
@@ -247,13 +268,19 @@ fn _parse(
             }
             if let Some(decl_occ) = group.occurrences.iter().find(|o| o.is_decl) {
                 if func_diag.unused.contains(&group.name) {
-                    all_diagnostics.push(Diagnostic {
-                        range: decl_occ.range.clone(),
-                        message: format!("Unused function `{}`", group.name),
-                        severity: Some(DiagnosticSeverity::Hint),
-                        tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
-                        ..Default::default()
-                    });
+                    // Check file-level suppression and per-declaration //@ignore unused
+                    let per_decl_suppressed = cursor.file_symbols.functions
+                        .iter()
+                        .any(|f| f.name == group.name && f.ignore_tags.contains("unused"));
+                    if file_unused_enabled && !per_decl_suppressed {
+                        all_diagnostics.push(Diagnostic {
+                            range: decl_occ.range.clone(),
+                            message: format!("Unused function `{}`", group.name),
+                            severity: Some(DiagnosticSeverity::Hint),
+                            tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                            ..Default::default()
+                        });
+                    }
                 }
                 if func_diag.in_cycle.contains(&group.name) {
                     all_diagnostics.push(Diagnostic {
@@ -284,25 +311,24 @@ fn _parse(
         links,
         ref_map,
         file_symbols: cursor.file_symbols,
-        type_map: cursor.type_map,
+        _type_map: cursor.type_map,
         type_hints: cursor.type_hints,
         func_decl_keys,
     });
 
-    // Persist to disk cache.
-    if let Some(meta) = symbol_cache::FileMeta::from_uri(uri) {
-        symbol_cache::store(uri, meta, hash, &new_snapshot.file_symbols);
+    // Persist to unified disk cache.
+    if let Some(meta) = file_cache::FileMeta::from_uri(uri) {
+        file_cache::store(
+            uri,
+            meta,
+            hash,
+            &new_snapshot.file_symbols,
+            &new_snapshot.ref_map,
+            &new_snapshot.func_decl_keys,
+        );
     }
 
-    // Keep FILE_SYMBOLS / REF_URI_MAP in sync for cross-file consumers.
-    FILE_SYMBOLS.insert(uri.clone(), new_snapshot.file_symbols.clone());
-    REF_URI_MAP.insert(uri.clone(), RefMap {
-        groups: new_snapshot.ref_map.groups.clone(),
-        spans: new_snapshot.ref_map.spans.clone(),
-        external_decls: new_snapshot.ref_map.external_decls.clone(),
-    });
-
-    // ── Atomic store ──
+    // ── Atomic store — single source of truth ──
     FILE_STORE.insert(uri.clone(), new_snapshot.clone());
 
     // 10. Export diff — decide on cascade.
@@ -327,8 +353,8 @@ fn _parse(
 }
 
 /// Parse a **closed** file from disk, produce a full [`ParseSnapshot`], and
-/// store it in [`FILE_STORE`].  Call [`publish_diagnostics`] afterwards to push
-/// the result to the client.
+/// store it in [`FILE_STORE`].  Diagnostics are delivered via the pull model
+/// when the client re-requests them after `workspace/diagnostics/refresh`.
 ///
 /// **Fast path:** if the file's metadata (size + mtime) hasn't changed since
 /// the last successful parse AND we already have a snapshot in [`FILE_STORE`],
@@ -343,9 +369,9 @@ pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send
     }
 
     // Cheap stat()-based skip: if file unchanged and we have results, skip.
-    if let Some(current_meta) = symbol_cache::FileMeta::from_path(&path) {
-        if let Some(stored) = PARSED_META.get(uri) {
-            if *stored.value() == current_meta && FILE_STORE.contains_key(uri) {
+    if let Some(current_meta) = file_cache::FileMeta::from_path(&path) {
+        if let Some(cached) = file_cache::load(uri) {
+            if cached.meta == current_meta && FILE_STORE.contains_key(uri) {
                 return Ok(vec![]);
             }
         }
@@ -364,16 +390,9 @@ pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send
 
     let handle = tokio::task::spawn_blocking(move || _parse(&uri_owned, &rope, &tree, &cancel));
 
-    let result = tokio::select! {
+    tokio::select! {
         res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
         _ = token.cancelled() => Ok(vec![]),
-    };
-
-    // Record current metadata so the next call can skip if unchanged.
-    if let Some(meta) = symbol_cache::FileMeta::from_path(&path) {
-        PARSED_META.insert(uri.clone(), meta);
     }
-
-    result
 }
 

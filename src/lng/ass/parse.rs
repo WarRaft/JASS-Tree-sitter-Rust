@@ -3,7 +3,7 @@ use crate::lng::ass::cursor::Cursor;
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
 use crate::lsp::ref_map::RefMap;
-use crate::util::file_store::{publish_diagnostics, send_refresh_all, ParseSnapshot, FILE_STORE};
+use crate::util::file_store::{send_refresh_all, ParseSnapshot, FILE_STORE};
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{resolve_import_directive, resolve_path_import};
 use crate::util::roper::node::NodeExt;
@@ -25,7 +25,6 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
 /// Intended to be called from a **spawned task** (not the main message loop).
 pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
     parse(uri).await?;
-    publish_diagnostics(uri).await;
     send_refresh_all().await;
     Ok(())
 }
@@ -94,7 +93,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         links,
         ref_map: RefMap::default(),
         file_symbols,
-        type_map: TypeMap::default(),
+        _type_map: TypeMap::default(),
         type_hints: vec![],
         func_decl_keys: HashSet::new(),
     });

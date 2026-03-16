@@ -267,26 +267,43 @@ async fn main() {
                             }
 
                             MethodCall::Initialized(_) => {
-                                use crate::lng::jass::symbol::FILE_SYMBOLS;
+                                use crate::util::file_cache;
                                 use crate::util::import_graph::IMPORT_GRAPH;
-                                use crate::util::ref_cache;
-                                use crate::util::symbol_cache;
                                 use crate::util::scope_resolver::SCOPE_RESOLVER;
-                                use crate::lsp::ref_map::REF_URI_MAP;
                                 use std::collections::HashSet;
 
                                 // ── 0. Force-load the scope resolver from disk ───────
                                 let _ = SCOPE_RESOLVER.file_count();
 
-                                // ── 1. Load ALL cached FileSymbols from disk ─────────
-                                let cached_entries = symbol_cache::load_all();
+                                // ── 1. Load ALL cached data from unified disk cache ──
+                                let cached_entries = file_cache::load_all();
                                 let mut stale_uris: Vec<url::Url> = Vec::new();
+                                let mut fresh_count = 0usize;
 
-                                for (uri, cached_meta, _cached_hash, symbols) in &cached_entries {
-                                    let current_meta = symbol_cache::FileMeta::from_uri(uri);
-                                    if current_meta == Some(*cached_meta) {
-                                        // Fresh — load into memory immediately.
-                                        FILE_SYMBOLS.insert(uri.clone(), symbols.clone());
+                                for (uri, cached) in &cached_entries {
+                                    let current_meta = file_cache::FileMeta::from_uri(uri);
+                                    if current_meta == Some(cached.meta) {
+                                        // Fresh — reconstruct partial snapshot.
+                                        let snapshot = std::sync::Arc::new(
+                                            crate::util::file_store::ParseSnapshot {
+                                                folding: Vec::new(),
+                                                symbols: Vec::new(),
+                                                semantic: std::sync::RwLock::new(Default::default()),
+                                                diagnostics: Vec::new(),
+                                                links: Vec::new(),
+                                                ref_map: crate::lsp::ref_map::RefMap {
+                                                    groups: cached.ref_map.groups.clone(),
+                                                    spans: cached.ref_map.spans.clone(),
+                                                    external_decls: cached.ref_map.external_decls.clone(),
+                                                },
+                                                file_symbols: cached.symbols.clone(),
+                                                _type_map: Default::default(),
+                                                type_hints: Vec::new(),
+                                                func_decl_keys: cached.func_decl_keys.clone(),
+                                            },
+                                        );
+                                        FILE_STORE.insert(uri.clone(), snapshot);
+                                        fresh_count += 1;
                                     } else if current_meta.is_some() {
                                         // File exists but changed — needs re-parse.
                                         stale_uris.push(uri.clone());
@@ -295,36 +312,25 @@ async fn main() {
                                 }
 
                                 info!(
-                                    "symbol_cache: loaded {} fresh, {} stale",
-                                    cached_entries.len() - stale_uris.len(),
+                                    "file_cache: loaded {} fresh, {} stale",
+                                    fresh_count,
                                     stale_uris.len()
                                 );
 
-                                // ── 2. GC orphaned caches ────────────────────────────
+                                // ── 2. GC orphaned graph nodes + caches ─────────────
+                                let gc_removed = IMPORT_GRAPH.gc_orphans();
+                                for orphan_uri in &gc_removed {
+                                    SCOPE_RESOLVER.remove_file(orphan_uri);
+                                }
                                 let all = IMPORT_GRAPH.all_uris();
                                 let keep: HashSet<String> =
                                     all.iter().map(|u| u.as_str().to_string()).collect();
                                 let keep_urls: HashSet<url::Url> =
                                     all.iter().cloned().collect();
-                                ref_cache::gc(&keep);
-                                symbol_cache::gc(&keep);
+                                file_cache::gc(&keep);
                                 SCOPE_RESOLVER.gc(&keep_urls);
 
-                                // ── 3. Load cached RefMaps for fresh files ───────────
-                                //
-                                // Uses `load_if_fresh` which does a cheap `stat()` to
-                                // compare stored FileMeta (size + mtime) against the
-                                // current file — no `read_to_string` needed.
-                                for uri in &all {
-                                    if REF_URI_MAP.contains_key(uri) {
-                                        continue;
-                                    }
-                                    if let Some(ref_map) = ref_cache::load_if_fresh(uri) {
-                                        REF_URI_MAP.insert(uri.clone(), ref_map);
-                                    }
-                                }
-
-                                // ── 4. Re-parse stale files with progress ────────────
+                                // ── 3. Re-parse stale files with progress ────────────
                                 if !stale_uris.is_empty() {
                                     let total = stale_uris.len();
                                     let token = "jass-rescan";
@@ -524,15 +530,15 @@ async fn main() {
                                 let uri = &params.text_document.uri;
 
                                 let result = {
-                                    use crate::lsp::ref_map::REF_URI_MAP;
                                     let mut locs = Vec::new();
                                     if let Some(snapshot) = FILE_STORE.get(uri) {
                                         if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
                                             if let Some(byte) = params.position.to_byte_offset(rope_entry.value()) {
                                                 let ref_map = &snapshot.ref_map;
                                                 if let Some(ext) = ref_map.external_at(byte) {
-                                                    if let Some(ext_ref_entry) = REF_URI_MAP.get(&ext.uri) {
-                                                        let ext_ref_map = ext_ref_entry.value();
+                                                    // Cross-file: look up declaration in the external file's FILE_STORE.
+                                                    if let Some(ext_snap) = FILE_STORE.get(&ext.uri) {
+                                                        let ext_ref_map = &ext_snap.ref_map;
                                                         for group in ext_ref_map.groups.values() {
                                                             if group.name == ext.name {
                                                                 for occ in &group.occurrences {
@@ -768,6 +774,168 @@ async fn main() {
                                     },
                                 )
                                 .await;
+                            }
+
+                            MethodCall::RescanExecute(_params) => {
+                                use crate::util::file_cache;
+                                use crate::util::import_graph::IMPORT_GRAPH;
+                                use crate::util::scope_resolver::SCOPE_RESOLVER;
+
+                                info!("rescan: starting forced full rescan");
+
+                                // ── 1. GC orphan nodes, then collect all known URIs ──
+                                let gc_removed = IMPORT_GRAPH.gc_orphans();
+                                for orphan_uri in &gc_removed {
+                                    SCOPE_RESOLVER.remove_file(orphan_uri);
+                                }
+                                let all_uris = IMPORT_GRAPH.all_uris();
+                                let total = all_uris.len();
+
+                                if total == 0 {
+                                    send(
+                                        &writer,
+                                        &ResponseMessage {
+                                            jsonrpc: "2.0".into(),
+                                            id: call.id,
+                                            result: Some(json!({
+                                                "ok": false,
+                                                "message": "No files in import graph"
+                                            })),
+                                            error: None,
+                                        },
+                                    ).await;
+                                    return;
+                                }
+
+                                // ── 2. Purge ALL caches ──────────────────────────────
+                                file_cache::purge_all();
+                                SCOPE_RESOLVER.clear_all();
+                                FILE_STORE.clear();
+
+                                // ── 3. Re-parse every file with progress ────────────
+                                let token = "jass-rescan-full";
+
+                                send(
+                                    &writer,
+                                    &json!({
+                                        "jsonrpc": "2.0",
+                                        "id": 99998,
+                                        "method": "window/workDoneProgress/create",
+                                        "params": { "token": token }
+                                    }),
+                                ).await;
+
+                                send(
+                                    &writer,
+                                    &json!({
+                                        "jsonrpc": "2.0",
+                                        "method": "$/progress",
+                                        "params": {
+                                            "token": token,
+                                            "value": {
+                                                "kind": "begin",
+                                                "title": "JASS: Full rescan",
+                                                "cancellable": false,
+                                                "percentage": 0
+                                            }
+                                        }
+                                    }),
+                                ).await;
+
+                                let mut ok_count = 0usize;
+                                let mut errors: Vec<String> = Vec::new();
+
+                                for (i, uri) in all_uris.iter().enumerate() {
+                                    let fname = uri.path().rsplit('/').next().unwrap_or("");
+                                    let pct = ((i + 1) * 100 / total) as u32;
+                                    info!("rescan {}/{} {}", i + 1, total, fname);
+
+                                    send(
+                                        &writer,
+                                        &json!({
+                                            "jsonrpc": "2.0",
+                                            "method": "$/progress",
+                                            "params": {
+                                                "token": token,
+                                                "value": {
+                                                    "kind": "report",
+                                                    "message": format!("{}/{} {}", i + 1, total, fname),
+                                                    "percentage": pct
+                                                }
+                                            }
+                                        }),
+                                    ).await;
+
+                                    match uri.to_file_path() {
+                                        Ok(path) => match std::fs::read_to_string(&path) {
+                                            Ok(content) => {
+                                                if let Err(e) = lng::jass::open::open(uri, &content).await {
+                                                    let msg = format!("{}: {}", fname, e);
+                                                    error!("rescan {}", msg);
+                                                    errors.push(msg);
+                                                } else {
+                                                    ok_count += 1;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let msg = format!("{}: cannot read — {}", fname, e);
+                                                error!("rescan {}", msg);
+                                                errors.push(msg);
+                                            }
+                                        },
+                                        Err(_) => {
+                                            let msg = format!("{}: invalid file path", fname);
+                                            error!("rescan {}", msg);
+                                            errors.push(msg);
+                                        }
+                                    }
+                                }
+
+                                send(
+                                    &writer,
+                                    &json!({
+                                        "jsonrpc": "2.0",
+                                        "method": "$/progress",
+                                        "params": {
+                                            "token": token,
+                                            "value": {
+                                                "kind": "end",
+                                                "message": format!("Done — {} files", total)
+                                            }
+                                        }
+                                    }),
+                                ).await;
+
+                                // ── 4. Refresh all editors ───────────────────────────
+                                crate::util::file_store::send_refresh_all().await;
+
+                                let err_count = errors.len();
+                                let msg = if err_count == 0 {
+                                    format!("Rescanned {} files", ok_count)
+                                } else {
+                                    format!(
+                                        "Rescanned {} files ({} errors)\n{}",
+                                        ok_count,
+                                        err_count,
+                                        errors.join("\n")
+                                    )
+                                };
+
+                                info!("rescan: {}", msg);
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(json!({
+                                            "ok": err_count == 0,
+                                            "message": msg,
+                                            "errors": errors
+                                        })),
+                                        error: None,
+                                    },
+                                ).await;
                             }
 
                             MethodCall::BuildExecute(params) => {

@@ -89,6 +89,13 @@ pub static SET_DEFS: &[SetDef] = &[
         detail: "Output path for the AngelScript build",
         sort_order: 3,
     },
+    SetDef {
+        key: "unused",
+        kind: SetValueKind::Bool,
+        default: "1",
+        detail: "Enable / disable unused-function diagnostics for this file",
+        sort_order: 4,
+    },
 ];
 
 /// Look up a `SetDef` by key name.
