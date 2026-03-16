@@ -1354,7 +1354,7 @@ impl Cursor {
                         };
                         // Type mismatch check: unknown → concrete type
                         if let (Some(tn), Some(et)) = (&type_name, &expr_type) {
-                            self.check_type_mismatch(tn, Some(et.as_str()), &d.node.to_range(&self.rope));
+                            self.check_type_mismatch(tn, Some(et.as_str()), &d.node);
                         }
                         let ann = extract_annotations(&self.rope, v.node.start_position().row);
                         self.file_symbols.globals.push(GlobalVarSym {
@@ -1436,7 +1436,7 @@ impl Cursor {
                 if let Some(ref tid) = l.type_id {
                     let tn = self.node_text(&tid.node);
                     if let Some(ref et) = expr_type {
-                        self.check_type_mismatch(&tn, Some(et.as_str()), &l.node.to_range(&self.rope));
+                        self.check_type_mismatch(&tn, Some(et.as_str()), &l.node);
                     }
                 }
                 if let (Some(scope), Some(name_id)) = (vars.last_mut(), &l.name) {
@@ -1517,7 +1517,7 @@ impl Cursor {
                         if let Some(ref tn) = type_name {
                             // Type mismatch check: unknown → concrete type
                             if let Some(ref et) = expr_type {
-                                self.check_type_mismatch(tn, Some(et.as_str()), &d.node.to_range(&self.rope));
+                                self.check_type_mismatch(tn, Some(et.as_str()), &d.node);
                             }
                             let cv = d.value.as_ref().and_then(|e| self.eval_expr(e));
                             let is_comptime = v.is_constant && cv.is_some();
@@ -1569,7 +1569,7 @@ impl Cursor {
                             self.check_type_mismatch(
                                 &declared,
                                 Some(vt.as_str()),
-                                &s.node.to_range(&self.rope),
+                                &s.node,
                             );
                         }
                     }
@@ -1637,18 +1637,20 @@ impl Cursor {
 
     // ─── Expression type helpers ─────────────────────────────────────
 
-    /// Emit a diagnostic when the inferred expression type is `unknown` but
-    /// the declared type is a concrete known type.
+    /// Emit a diagnostic on the `=` operator when the inferred expression
+    /// type is `unknown` but the declared type is a concrete known type.
     fn check_type_mismatch(
         &mut self,
         declared_type: &str,
         expr_type: Option<&str>,
-        range: &Range,
+        stmt_node: &Node,
     ) {
         if let Some(et) = expr_type {
             if et == UNKNOWN_TYPE && declared_type != UNKNOWN_TYPE {
+                let range = Self::find_equal_range(stmt_node, &self.rope)
+                    .unwrap_or_else(|| stmt_node.to_range(&self.rope));
                 self.diagnostics.push(Diagnostic {
-                    range: range.clone(),
+                    range,
                     message: format!(
                         "Cannot assign type `{}` to `{}`",
                         UNKNOWN_TYPE, declared_type,
@@ -1713,6 +1715,39 @@ impl Cursor {
                         return k;
                     }
                     _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the operator **node** inside a binary expression CST node.
+    fn binary_op_range(node: &Node, rope: &Rope) -> Option<(Kind, Range, String)> {
+        let count = node.child_count();
+        for i in 0..count {
+            if let Some(child) = node.child(i as u32) {
+                let k = Kind::try_from(child.grammar_id()).ok();
+                match k {
+                    Some(Kind::Plus) | Some(Kind::Minus) | Some(Kind::Star) | Some(Kind::Slash)
+                    | Some(Kind::Lt) | Some(Kind::Gt) | Some(Kind::Le) | Some(Kind::Ge)
+                    | Some(Kind::EqEq) | Some(Kind::Neq) | Some(Kind::And) | Some(Kind::Or) => {
+                        let text_bytes = &rope.slice_to_cow(child.start_byte()..child.end_byte());
+                        return Some((k.unwrap(), child.to_range(rope), text_bytes.to_string()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the `=` token range inside a CST node (declaration / set statement).
+    fn find_equal_range(node: &Node, rope: &Rope) -> Option<Range> {
+        let count = node.child_count();
+        for i in 0..count {
+            if let Some(child) = node.child(i as u32) {
+                if Kind::try_from(child.grammar_id()).ok() == Some(Kind::Equal) {
+                    return Some(child.to_range(rope));
                 }
             }
         }
@@ -1839,22 +1874,64 @@ impl Cursor {
                 let lt = self.visit_expr(left);
                 let rt = self.visit_expr(right);
                 let op = Self::binary_op_kind(node);
-                Self::infer_binary_type(op, lt.as_deref(), rt.as_deref())
+                let result = Self::infer_binary_type(op, lt.as_deref(), rt.as_deref());
+
+                // Type error → diagnostic on the operator token
+                if result.as_deref() == Some(UNKNOWN_TYPE) {
+                    if let (Some(l), Some(r)) = (&lt, &rt) {
+                        if let Some((_kind, op_range, op_text)) = Self::binary_op_range(node, &self.rope) {
+                            self.diagnostics.push(Diagnostic {
+                                range: op_range,
+                                message: format!(
+                                    "Operator `{}` cannot be applied to `{}` and `{}`",
+                                    op_text, l, r
+                                ),
+                                severity: Some(DiagnosticSeverity::Error),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+
+                result
             }
             Expr::Unary { node, operand, .. } => {
                 let ot = self.visit_expr(operand);
                 let op = Self::unary_op_kind(node);
+                let ot_type = ot.as_deref().map(|s| s.to_string());
+
                 // unknown propagates through unary operations.
-                if ot.as_deref() == Some(UNKNOWN_TYPE) {
-                    return Some(UNKNOWN_TYPE.to_string());
+                let result = if ot.as_deref() == Some(UNKNOWN_TYPE) {
+                    Some(UNKNOWN_TYPE.to_string())
+                } else {
+                    match (op, ot.as_deref()) {
+                        (Some(Kind::Not), Some("boolean")) => Some("boolean".to_string()),
+                        (Some(Kind::Not), Some(_)) => Some(UNKNOWN_TYPE.to_string()),
+                        (Some(Kind::Minus), Some(t)) if t == "integer" || t == "real" => Some(t.to_string()),
+                        (Some(Kind::Minus), Some(_)) => Some(UNKNOWN_TYPE.to_string()),
+                        _ => ot,
+                    }
+                };
+
+                // Type error → diagnostic on the operator token
+                if result.as_deref() == Some(UNKNOWN_TYPE) {
+                    if let Some(ref t) = ot_type {
+                        if let Some(op_n) = node.child(0) {
+                            let op_text = self.node_text(&op_n);
+                            self.diagnostics.push(Diagnostic {
+                                range: op_n.to_range(&self.rope),
+                                message: format!(
+                                    "Operator `{}` cannot be applied to `{}`",
+                                    op_text, t
+                                ),
+                                severity: Some(DiagnosticSeverity::Error),
+                                ..Default::default()
+                            });
+                        }
+                    }
                 }
-                match (op, ot.as_deref()) {
-                    (Some(Kind::Not), Some("boolean")) => Some("boolean".to_string()),
-                    (Some(Kind::Not), Some(_)) => Some(UNKNOWN_TYPE.to_string()),
-                    (Some(Kind::Minus), Some(t)) if t == "integer" || t == "real" => Some(t.to_string()),
-                    (Some(Kind::Minus), Some(_)) => Some(UNKNOWN_TYPE.to_string()),
-                    _ => ot,
-                }
+
+                result
             }
             Expr::Parens { inner, .. } => {
                 self.visit_expr(inner)
@@ -1943,10 +2020,10 @@ impl Cursor {
                             | Kind::If | Kind::Then | Kind::Elseif | Kind::Else | Kind::Endif
                             | Kind::Loop | Kind::Endloop | Kind::Exitwhen
                             | Kind::Globals | Kind::Endglobals
-                            | Kind::Constant | Kind::Array
-                            | Kind::And | Kind::Or | Kind::Not => TokenKind::Keyword,
+                            | Kind::Constant | Kind::Array => TokenKind::Keyword,
 
-                            Kind::Equal | Kind::Comma
+                            Kind::And | Kind::Or | Kind::Not
+                            | Kind::Equal | Kind::Comma
                             | Kind::LeftParen | Kind::RightParen
                             | Kind::LeftBracket | Kind::RightBracket
                             | Kind::Plus | Kind::Minus | Kind::Star | Kind::Slash
@@ -1978,10 +2055,18 @@ impl Cursor {
                                 } else if trimmed.starts_with("//@ignore") {
                                     let prefix_len = "//@ignore".len();
                                     let ws_before = text.len() - trimmed.len();
-                                    self.semantic.add_range(sb + ws_before, prefix_len, &self.rope, TokenKind::Comment, 0u32);
-                                    let rest_start = sb + ws_before + prefix_len;
-                                    if rest_start < eb {
-                                        self.semantic.add_range(rest_start, eb - rest_start, &self.rope, TokenKind::String, 0u32);
+                                    let abs_prefix = sb + ws_before;
+                                    // Macro token for the "//@ignore" prefix (same as //set)
+                                    self.semantic.add_range(abs_prefix, prefix_len, &self.rope, TokenKind::Macro, 0u32);
+                                    // Each tag word as Property token (same as //set key)
+                                    let after = &trimmed[prefix_len..];
+                                    let mut byte_off = 0usize;
+                                    for word in after.split_whitespace() {
+                                        // find word start relative to `after`
+                                        let wstart = after[byte_off..].find(word).unwrap() + byte_off;
+                                        let abs_pos = abs_prefix + prefix_len + wstart;
+                                        self.semantic.add_range(abs_pos, word.len(), &self.rope, TokenKind::Property, 0u32);
+                                        byte_off = wstart + word.len();
                                     }
                                     if cursor.goto_next_sibling() { continue; }
                                     while !cursor.goto_next_sibling() {

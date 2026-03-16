@@ -628,10 +628,15 @@ impl Cursor {
                                 } else if trimmed.starts_with("//@ignore") {
                                     let prefix_len = "//@ignore".len();
                                     let ws_before = text.len() - trimmed.len();
-                                    self.semantic.add_range(sb + ws_before, prefix_len, &self.rope, TokenKind::Comment, 0u32);
-                                    let rest_start = sb + ws_before + prefix_len;
-                                    if rest_start < eb {
-                                        self.semantic.add_range(rest_start, eb - rest_start, &self.rope, TokenKind::String, 0u32);
+                                    let abs_prefix = sb + ws_before;
+                                    self.semantic.add_range(abs_prefix, prefix_len, &self.rope, TokenKind::Macro, 0u32);
+                                    let after = &trimmed[prefix_len..];
+                                    let mut byte_off = 0usize;
+                                    for word in after.split_whitespace() {
+                                        let wstart = after[byte_off..].find(word).unwrap() + byte_off;
+                                        let abs_pos = abs_prefix + prefix_len + wstart;
+                                        self.semantic.add_range(abs_pos, word.len(), &self.rope, TokenKind::Property, 0u32);
+                                        byte_off = wstart + word.len();
                                     }
                                     if cursor.goto_next_sibling() { continue; }
                                     while !cursor.goto_next_sibling() {

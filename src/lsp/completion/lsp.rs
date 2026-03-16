@@ -42,9 +42,20 @@ pub struct CompletionItem {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub insert_text: Option<String>,
 
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub insert_text_format: Option<InsertTextFormat>,
+
     /// When true, `label` is used for display and `insert_text` for insertion.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_text: Option<String>,
+}
+
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#insertTextFormat
+#[derive(Debug, PartialEq, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum InsertTextFormat {
+    PlainText = 1,
+    Snippet = 2,
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#completionItemKind

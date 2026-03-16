@@ -15,11 +15,12 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use dashmap::{DashMap, DashSet};
 use once_cell::sync::Lazy;
 use tokio::io::Stdout;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -241,3 +242,91 @@ pub fn exports_changed(old: Option<&ParseSnapshot>, new: &ParseSnapshot) -> bool
 
     false
 }
+
+// ─── Parse synchronisation ──────────────────────────────────────────────────
+//
+// After `DidChange` applies edits to the rope/tree it spawns a background
+// parse task.  Request handlers (Diagnostic, SemanticTokens, …) that read
+// from `FILE_STORE` may fire **before** that task finishes, returning stale
+// data with positions that no longer match the buffer.
+//
+// The solution is a lightweight per-URI generation counter paired with a
+// `tokio::sync::watch` channel.  `DidChange` bumps the desired generation;
+// the spawned task signals completion.  Handlers call `wait_for_parse`
+// which returns immediately if no parse is in-flight, or awaits the watch
+// channel (with a bounded timeout) otherwise.
+
+/// Per-URI *desired* parse generation (monotonically increasing).
+static PARSE_DESIRED: Lazy<DashMap<Url, u64>> = Lazy::new(DashMap::new);
+
+/// Per-URI watch sender; the value is the last *completed* generation.
+static PARSE_DONE_TX: Lazy<DashMap<Url, watch::Sender<u64>>> = Lazy::new(DashMap::new);
+
+/// Called from the main message loop **before** spawning `parse_and_notify`.
+///
+/// Returns the new desired generation number that must later be passed to
+/// [`mark_parse_done`].
+pub fn mark_parse_pending(uri: &Url) -> u64 {
+    let mut entry = PARSE_DESIRED.entry(uri.clone()).or_insert(0);
+    *entry += 1;
+    let generation = *entry;
+    drop(entry);
+
+    // Ensure the watch channel exists.
+    PARSE_DONE_TX
+        .entry(uri.clone())
+        .or_insert_with(|| watch::channel(0).0);
+    generation
+}
+
+/// Called from the spawned parse task when it finishes (success **or** cancel).
+///
+/// Only advances the completed generation forward so that out-of-order
+/// completions cannot regress the counter.
+pub fn mark_parse_done(uri: &Url, generation: u64) {
+    if let Some(tx) = PARSE_DONE_TX.get(uri) {
+        tx.send_if_modified(|current| {
+            if generation > *current {
+                *current = generation;
+                true
+            } else {
+                false
+            }
+        });
+    }
+}
+
+/// Wait until the latest desired parse for `uri` has completed.
+///
+/// Returns immediately if there is no in-flight parse.  Otherwise blocks
+/// (up to `timeout`) until the watch channel signals that the completed
+/// generation has caught up with (or exceeded) the desired generation.
+pub async fn wait_for_parse(uri: &Url, timeout: Duration) {
+    let desired = match PARSE_DESIRED.get(uri) {
+        Some(v) => *v,
+        None => return,
+    };
+
+    let mut rx = match PARSE_DONE_TX.get(uri) {
+        Some(tx) => tx.subscribe(),
+        None => return,
+    };
+
+    // Already caught up?
+    if *rx.borrow() >= desired {
+        return;
+    }
+
+    let _ = tokio::time::timeout(timeout, async {
+        loop {
+            if rx.changed().await.is_err() {
+                break;
+            }
+            if *rx.borrow() >= desired {
+                break;
+            }
+        }
+    })
+    .await;
+}
+

@@ -2623,25 +2623,38 @@ boolean T = A and e or r
 
     #[test]
     fn unknown_propagates_through_binary() {
-        // `e` is undeclared → type `unknown`.
-        // `A and e` → unknown  (since e is unknown).
-        // `boolean T = unknown` → type mismatch diagnostic.
+        // `e` and `r` are undeclared → type `unknown`.
+        // Diagnostics on operators: `and` (boolean × unknown), `or` (unknown × unknown).
+        // Diagnostic on `=` (unknown → boolean).
+        // Phase 2: "Undeclared" for `e` and `r`.
         let src = "\
 boolean A = true
 boolean T = A and e or r
 ";
         with_cursor(src, |c| {
-            let mismatch: Vec<_> = c.diagnostics.iter()
+            let op_err: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Operator"))
+                .collect();
+            assert!(
+                !op_err.is_empty(),
+                "Expected operator diagnostics for `and`/`or`, got: {:?}",
+                c.diagnostics
+            );
+            let assign_err: Vec<_> = c.diagnostics.iter()
                 .filter(|d| d.message.contains("Cannot assign"))
                 .collect();
             assert!(
-                !mismatch.is_empty(),
-                "Expected type mismatch diagnostic for assigning unknown to boolean, got diagnostics: {:?}",
+                !assign_err.is_empty(),
+                "Expected assignment mismatch on `=`, got: {:?}",
                 c.diagnostics
             );
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
             assert!(
-                mismatch.iter().any(|d| d.message.contains("`unknown`") && d.message.contains("`boolean`")),
-                "Expected mismatch message mentioning unknown→boolean, got: {:?}", mismatch
+                !undecl.is_empty(),
+                "Expected Undeclared diagnostics for `e` and `r`, got: {:?}",
+                c.diagnostics
             );
         });
     }
@@ -2667,19 +2680,27 @@ boolean T = A and true
     #[test]
     fn unknown_type_mismatch_in_local() {
         // Inside a function, `x` is undeclared → type unknown.
-        // `local integer y = x` → type mismatch.
+        // Diagnostic on `=` (unknown → integer).
+        // Phase 2: "Undeclared" for `x`.
         let src = "\
 function F takes nothing returns nothing
     local integer y = x
 endfunction
 ";
         with_cursor(src, |c| {
-            let mismatch: Vec<_> = c.diagnostics.iter()
+            let assign_err: Vec<_> = c.diagnostics.iter()
                 .filter(|d| d.message.contains("Cannot assign"))
                 .collect();
             assert!(
-                !mismatch.is_empty(),
-                "Expected type mismatch for local with undeclared init, got: {:?}", c.diagnostics
+                !assign_err.is_empty(),
+                "Expected assignment mismatch on `=`, got: {:?}", c.diagnostics
+            );
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                !undecl.is_empty(),
+                "Expected Undeclared diagnostic for `x`, got: {:?}", c.diagnostics
             );
         });
     }
@@ -2687,16 +2708,31 @@ endfunction
     #[test]
     fn unknown_propagates_through_arithmetic() {
         // `x` is undeclared → unknown.
-        // `1 + x` → unknown (unknown propagates).
-        // `integer a = 1 + x` → type mismatch.
+        // `1 + x` → operator `+` error (integer × unknown).
+        // `integer a = unknown` → assignment error on `=`.
+        // Phase 2: "Undeclared" for `x`.
         let src = "integer a = 1 + x\n";
         with_cursor(src, |c| {
-            let mismatch: Vec<_> = c.diagnostics.iter()
+            let op_err: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Operator"))
+                .collect();
+            assert!(
+                !op_err.is_empty(),
+                "Expected operator diagnostic for `+`, got: {:?}", c.diagnostics
+            );
+            let assign_err: Vec<_> = c.diagnostics.iter()
                 .filter(|d| d.message.contains("Cannot assign"))
                 .collect();
             assert!(
-                !mismatch.is_empty(),
-                "Expected type mismatch for `integer a = 1 + x`, got: {:?}", c.diagnostics
+                !assign_err.is_empty(),
+                "Expected assignment mismatch on `=`, got: {:?}", c.diagnostics
+            );
+            let undecl: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Undeclared"))
+                .collect();
+            assert!(
+                !undecl.is_empty(),
+                "Expected Undeclared diagnostic for `x`, got: {:?}", c.diagnostics
             );
         });
     }

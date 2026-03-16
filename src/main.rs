@@ -5,6 +5,7 @@ pub(crate) mod lng;
 
 use serde_json::json;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{self, BufReader, Stdout};
 use tokio::sync::Mutex;
 
@@ -38,7 +39,7 @@ use crate::lsp::semantic::send::send as semantic_send;
 use crate::lsp::send::send;
 use crate::lsp::send::send_cancelled;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
-use crate::util::file_store::{diagnostic_report, FILE_STORE, LSP_WRITER};
+use crate::util::file_store::{diagnostic_report, mark_parse_pending, mark_parse_done, wait_for_parse, FILE_STORE, LSP_WRITER};
 use crate::util::uri_map::LNG_URI_MAP;
 use log::{error, info};
 
@@ -183,10 +184,12 @@ async fn main() {
                         if let Err(e) = lng::bni::open::init(&uri, &text) {
                             error!("bni init: {}", e);
                         } else {
+                            let parse_gen = mark_parse_pending(&uri);
                             tokio::spawn(async move {
                                 if let Err(e) = lng::bni::parse::parse_and_notify(&uri).await {
                                     error!("bni parse: {}", e);
                                 }
+                                mark_parse_done(&uri, parse_gen);
                             });
                         }
                     } else if params.text_document.language_id == "jass" {
@@ -195,10 +198,12 @@ async fn main() {
                         if let Err(e) = lng::jass::open::init(&uri, &text) {
                             error!("jass init: {}", e);
                         } else {
+                            let parse_gen = mark_parse_pending(&uri);
                             tokio::spawn(async move {
                                 if let Err(e) = lng::jass::parse::parse_and_notify(&uri).await {
                                     error!("jass parse: {}", e);
                                 }
+                                mark_parse_done(&uri, parse_gen);
                             });
                         }
                     } else if params.text_document.language_id == "angelscript" {
@@ -207,10 +212,12 @@ async fn main() {
                         if let Err(e) = lng::ass::open::init(&uri, &text) {
                             error!("as init: {}", e);
                         } else {
+                            let parse_gen = mark_parse_pending(&uri);
                             tokio::spawn(async move {
                                 if let Err(e) = lng::ass::parse::parse_and_notify(&uri).await {
                                     error!("as parse: {}", e);
                                 }
+                                mark_parse_done(&uri, parse_gen);
                             });
                         }
                     }
@@ -227,30 +234,36 @@ async fn main() {
                             if let Err(e) = lng::bni::change::apply_edits(&uri, params.content_changes) {
                                 error!("bni edit: {}", e);
                             } else {
+                                let parse_gen = mark_parse_pending(&uri);
                                 tokio::spawn(async move {
                                     if let Err(e) = lng::bni::parse::parse_and_notify(&uri).await {
                                         error!("bni parse: {}", e);
                                     }
+                                    mark_parse_done(&uri, parse_gen);
                                 });
                             }
                         } else if lng_val == "jass" {
                             if let Err(e) = lng::jass::change::apply_edits(&uri, params.content_changes) {
                                 error!("jass edit: {}", e);
                             } else {
+                                let parse_gen = mark_parse_pending(&uri);
                                 tokio::spawn(async move {
                                     if let Err(e) = lng::jass::parse::parse_and_notify(&uri).await {
                                         error!("jass parse: {}", e);
                                     }
+                                    mark_parse_done(&uri, parse_gen);
                                 });
                             }
                         } else if lng_val == "angelscript" {
                             if let Err(e) = lng::ass::change::apply_edits(&uri, params.content_changes) {
                                 error!("as edit: {}", e);
                             } else {
+                                let parse_gen = mark_parse_pending(&uri);
                                 tokio::spawn(async move {
                                     if let Err(e) = lng::ass::parse::parse_and_notify(&uri).await {
                                         error!("as parse: {}", e);
                                     }
+                                    mark_parse_done(&uri, parse_gen);
                                 });
                             }
                         }
@@ -414,6 +427,11 @@ async fn main() {
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
+                                wait_for_parse(uri, Duration::from_secs(5)).await;
+                                if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
                                 semantic_send(&writer, call.id, uri, None).await
                             }
 
@@ -423,6 +441,11 @@ async fn main() {
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
+                                wait_for_parse(uri, Duration::from_secs(5)).await;
+                                if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
                                 semantic_send(&writer, call.id, uri, Some(params.range)).await
                             }
 
@@ -433,6 +456,16 @@ async fn main() {
                                 }
 
                                 let uri = &params.text_document.uri;
+
+                                // Wait for any in-flight parse spawned by DidChange
+                                // to finish so that FILE_STORE has up-to-date data.
+                                wait_for_parse(uri, Duration::from_secs(5)).await;
+
+                                if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+
                                 let result = diagnostic_report(uri);
 
                                 send(
