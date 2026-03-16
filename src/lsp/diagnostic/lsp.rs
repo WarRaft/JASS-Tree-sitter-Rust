@@ -5,16 +5,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#diagnosticOptions
-#[derive(Default, Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagnosticOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub identifier: Option<String>,
-    pub inter_file_dependencies: bool,
-    pub workspace_diagnostics: bool,
-}
-
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentDiagnosticParams
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

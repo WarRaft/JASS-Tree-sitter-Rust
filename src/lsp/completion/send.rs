@@ -421,6 +421,11 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
                 if g.is_array {
                     detail_parts.push("array");
                 }
+                let (insert_text, insert_text_format) = if g.is_array {
+                    (Some(format!("{}[$1]$0", g.name)), Some(InsertTextFormat::Snippet))
+                } else {
+                    (None, None)
+                };
                 items.push(CompletionItem {
                     label: g.name.clone(),
                     kind: Some(if g.is_constant {
@@ -429,9 +434,9 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
                         CompletionItemKind::Variable
                     }),
                     detail: Some(detail_parts.join(" ")),
-                    insert_text: None,
+                    insert_text,
+                    insert_text_format,
                     sort_text: Some(format!("1{}", g.name)),
-                    ..Default::default()
                 });
             }
         }
@@ -498,6 +503,11 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
                         }
                         // Check if this is actually a type declaration
                         let detail_str = detail_parts.join(" ");
+                        let (insert_text, insert_text_format) = if entry.is_array {
+                            (Some(format!("{}[$1]$0", entry.name)), Some(InsertTextFormat::Snippet))
+                        } else {
+                            (None, None)
+                        };
                         items.push(CompletionItem {
                             label: entry.name.clone(),
                             kind: Some(if entry.is_constant {
@@ -515,9 +525,9 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
                             } else {
                                 Some(detail_str)
                             },
-                            insert_text: None,
+                            insert_text,
+                            insert_text_format,
                             sort_text: Some(format!("1{}", entry.name)),
-                            ..Default::default()
                         });
                     }
                 }
@@ -563,19 +573,43 @@ fn collect_locals(
                     let lname = node_text_from_rope(rope, &nn);
                     let ltype = node_text_from_rope(rope, &tn);
                     if !lname.is_empty() && seen.insert(lname.clone()) {
+                        let is_array = has_array_keyword(&child);
+                        let (insert_text, insert_text_format) = if is_array {
+                            (Some(format!("{}[$1]$0", lname)), Some(InsertTextFormat::Snippet))
+                        } else {
+                            (None, None)
+                        };
+                        let detail = if is_array {
+                            format!("local {} array", ltype)
+                        } else {
+                            format!("local {}", ltype)
+                        };
                         items.push(CompletionItem {
                             label: lname.clone(),
                             kind: Some(CompletionItemKind::Variable),
-                            detail: Some(format!("local {}", ltype)),
-                            insert_text: None,
+                            detail: Some(detail),
+                            insert_text,
+                            insert_text_format,
                             sort_text: Some(format!("0{}", lname)),
-                            ..Default::default()
                         });
                     }
                 }
             }
         }
     }
+}
+
+/// Check whether a tree-sitter node contains an `array` keyword child.
+fn has_array_keyword(node: &tree_sitter::Node) -> bool {
+    let count = node.child_count();
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if child.grammar_id() == Kind::Array as u16 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Extract the text of a tree-sitter node from a Rope.

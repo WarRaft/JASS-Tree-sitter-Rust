@@ -13,7 +13,6 @@ use crate::lng::blp::send::send as blp_send;
 use crate::lsp::cancel::CancelCheck;
 use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::completion::send::send as completion_send;
-use crate::lsp::diagnostic::lsp::DiagnosticOptions;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
@@ -39,7 +38,7 @@ use crate::lsp::semantic::send::send as semantic_send;
 use crate::lsp::send::send;
 use crate::lsp::send::send_cancelled;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
-use crate::util::file_store::{diagnostic_report, mark_parse_pending, mark_parse_done, wait_for_parse, FILE_STORE, LSP_WRITER};
+use crate::util::file_store::{mark_parse_pending, mark_parse_done, wait_for_parse, FILE_STORE, LSP_WRITER};
 use crate::util::uri_map::LNG_URI_MAP;
 use log::{error, info};
 
@@ -95,11 +94,6 @@ async fn main() {
                                         full: Some(SemanticTokensFullOptions::Options(
                                             SemanticTokensFullOptionsObject { delta: Some(false) },
                                         )),
-                                    }),
-                                    diagnostic_provider: Some(DiagnosticOptions {
-                                        inter_file_dependencies: true,
-                                        workspace_diagnostics: false,
-                                        ..Default::default()
                                     }),
                                     document_symbol_provider: Some(DocumentSymbolOptions {
                                         label: None,
@@ -449,36 +443,6 @@ async fn main() {
                                 semantic_send(&writer, call.id, uri, Some(params.range)).await
                             }
 
-                            MethodCall::Diagnostic(params) => {
-                                if call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-
-                                let uri = &params.text_document.uri;
-
-                                // Wait for any in-flight parse spawned by DidChange
-                                // to finish so that FILE_STORE has up-to-date data.
-                                wait_for_parse(uri, Duration::from_secs(5)).await;
-
-                                if call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-
-                                let result = diagnostic_report(uri);
-
-                                send(
-                                    &writer,
-                                    &ResponseMessage {
-                                        jsonrpc: "2.0".into(),
-                                        id: call.id,
-                                        result: Some(&result),
-                                        error: None,
-                                    },
-                                )
-                                .await;
-                            }
 
                             MethodCall::DocumentSymbol(params) => {
                                 if call.id.was_cancelled().await {

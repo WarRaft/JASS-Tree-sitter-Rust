@@ -1,5 +1,4 @@
 use crate::lsp::completion::lsp::CompletionOptions;
-use crate::lsp::diagnostic::lsp::DiagnosticOptions;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
@@ -33,7 +32,6 @@ pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_document_sync: Option<TextDocumentSyncOptions>,
     pub semantic_tokens_provider: Option<SemanticTokensOptions>,
-    pub diagnostic_provider: Option<DiagnosticOptions>,
     pub document_symbol_provider: Option<DocumentSymbolOptions>,
     pub folding_range_provider: Option<FoldingRangeOptions>,
     pub completion_provider: Option<CompletionOptions>,

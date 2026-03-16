@@ -106,6 +106,7 @@ pub struct VarStmt<'tree> {
 #[derive(Debug, Clone)]
 pub struct LocalDecl<'tree> {
     pub node: Node<'tree>,
+    pub is_array: bool,
     pub type_id: Option<Id<'tree>>,
     pub name: Option<Id<'tree>>,
     pub value: Option<Expr<'tree>>,
@@ -149,12 +150,27 @@ pub struct ExitwhenStmt<'tree> {
     pub condition: Option<Expr<'tree>>,
 }
 
+/// One branch of an `if`/`elseif`/`else` block.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct ElseBranch<'tree> {
+    pub node: Node<'tree>,
+    /// `Some` for `if`/`elseif` branches, `None` for `else`.
+    pub condition: Option<Expr<'tree>>,
+    pub body: Vec<Statement<'tree>>,
+}
+
 /// `if <cond> then ... [elseif ...] [else ...] endif`
 #[derive(Debug, Clone)]
 pub struct IfStmt<'tree> {
     pub node: Node<'tree>,
+    /// The first branch's condition (`if <cond>`).
     pub condition: Option<Expr<'tree>>,
+    /// The first branch's body (statements between `then` and the next
+    /// `elseif`/`else`/`endif`).
     pub body: Vec<Statement<'tree>>,
+    /// `elseif` and `else` branches (in source order).
+    pub branches: Vec<ElseBranch<'tree>>,
 }
 
 /// `loop ... endloop`
@@ -583,6 +599,7 @@ fn build_var_stmt<'tree>(node: &Node<'tree>) -> VarStmt<'tree> {
 fn build_local_decl<'tree>(node: &Node<'tree>) -> LocalDecl<'tree> {
     LocalDecl {
         node: *node,
+        is_array: has_keyword(node, Kind::Array),
         type_id: maybe_id(node, FIELD_TYPE, IdRole::TypeRef),
         name: maybe_id(node, FIELD_NAME, IdRole::Variable),
         value: node.child_by_field_id(FIELD_VALUE).and_then(|n| build_expr(&n)),
@@ -678,10 +695,129 @@ fn build_if_stmt<'tree>(
     node: &Node<'tree>,
     errors: &mut Vec<CstError<'tree>>,
 ) -> IfStmt<'tree> {
+    let condition = node.child_by_field_id(FIELD_CONDITION).and_then(|n| build_expr(&n));
+
+    // Walk CST children to split statements into branches.
+    //
+    // CST structure:
+    //   if COND then STMTS [elseif COND then STMTS]* [else STMTS] endif
+    //
+    // We collect the first branch's body separately, and subsequent
+    // elseif/else branches into `branches`.
+    let mut first_body: Vec<Statement<'tree>> = Vec::new();
+    let mut branches: Vec<ElseBranch<'tree>> = Vec::new();
+
+    // State machine: which section are we collecting into?
+    enum Phase { SkipToThen, FirstBody, ElseifCond, ElseifBody, ElseBody }
+    let mut phase = Phase::SkipToThen;
+    let mut pending_cond: Option<Expr<'tree>> = None;
+    let mut pending_stmts: Vec<Statement<'tree>> = Vec::new();
+    let mut branch_node: Option<Node<'tree>> = None;
+
+    let count = node.child_count();
+    for i in 0..count {
+        let child = match node.child(i as u32) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        if child.is_error() || child.is_missing() {
+            collect_errors(&child, errors);
+        }
+
+        let kind = Kind::try_from(child.grammar_id()).ok();
+        match (&phase, kind) {
+            // Skip past `if` and condition until we see `then`.
+            (Phase::SkipToThen, Some(Kind::Then)) => {
+                phase = Phase::FirstBody;
+            }
+            (Phase::SkipToThen, _) => { /* skip if keyword + condition */ }
+
+            // First branch body — collect statements until elseif/else/endif.
+            (Phase::FirstBody, Some(Kind::Elseif)) => {
+                branch_node = Some(child);
+                pending_cond = None;
+                pending_stmts = Vec::new();
+                phase = Phase::ElseifCond;
+            }
+            (Phase::FirstBody, Some(Kind::Else)) => {
+                branch_node = Some(child);
+                pending_stmts = Vec::new();
+                phase = Phase::ElseBody;
+            }
+            (Phase::FirstBody, Some(Kind::Endif)) => { /* done */ }
+            (Phase::FirstBody, _) => {
+                if let Some(stmt) = build_statement(&child, errors) {
+                    first_body.push(stmt);
+                }
+            }
+
+            // Elseif condition — collect the condition expression.
+            (Phase::ElseifCond, Some(Kind::Then)) => {
+                phase = Phase::ElseifBody;
+            }
+            (Phase::ElseifCond, _) => {
+                if child.is_named() && pending_cond.is_none() {
+                    pending_cond = build_expr(&child);
+                }
+            }
+
+            // Elseif body — collect statements.
+            (Phase::ElseifBody, Some(Kind::Elseif)) => {
+                // Flush current elseif branch.
+                branches.push(ElseBranch {
+                    node: branch_node.unwrap_or(child),
+                    condition: pending_cond.take(),
+                    body: std::mem::take(&mut pending_stmts),
+                });
+                branch_node = Some(child);
+                phase = Phase::ElseifCond;
+            }
+            (Phase::ElseifBody, Some(Kind::Else)) => {
+                // Flush current elseif branch.
+                branches.push(ElseBranch {
+                    node: branch_node.unwrap_or(child),
+                    condition: pending_cond.take(),
+                    body: std::mem::take(&mut pending_stmts),
+                });
+                branch_node = Some(child);
+                phase = Phase::ElseBody;
+            }
+            (Phase::ElseifBody, Some(Kind::Endif)) => {
+                // Flush last elseif branch.
+                branches.push(ElseBranch {
+                    node: branch_node.unwrap_or(child),
+                    condition: pending_cond.take(),
+                    body: std::mem::take(&mut pending_stmts),
+                });
+            }
+            (Phase::ElseifBody, _) => {
+                if let Some(stmt) = build_statement(&child, errors) {
+                    pending_stmts.push(stmt);
+                }
+            }
+
+            // Else body — collect statements.
+            (Phase::ElseBody, Some(Kind::Endif)) => {
+                branches.push(ElseBranch {
+                    node: branch_node.unwrap_or(child),
+                    condition: None, // else has no condition
+                    body: std::mem::take(&mut pending_stmts),
+                });
+            }
+            (Phase::ElseBody, _) => {
+                if let Some(stmt) = build_statement(&child, errors) {
+                    pending_stmts.push(stmt);
+                }
+            }
+        }
+    }
+
     IfStmt {
         node: *node,
-        condition: node.child_by_field_id(FIELD_CONDITION).and_then(|n| build_expr(&n)),
-        body: build_children(node, errors, false),
+        condition,
+        body: first_body,
+        branches,
     }
 }
 

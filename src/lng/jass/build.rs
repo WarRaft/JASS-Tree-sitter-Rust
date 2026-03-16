@@ -21,7 +21,7 @@
 
 use crate::lng::jass::ast::{
     build_ast, rewrite_imports, CallStmt, Expr, ExitwhenStmt, FunctionDecl, Id,
-    LocalDecl, ReturnStmt, SetStmt, Statement, VarStmt,
+    IfStmt, LocalDecl, ReturnStmt, SetStmt, Statement, VarStmt,
 };
 use crate::lng::jass::kind::Kind;
 use crate::util::file_store::{is_uri_frozen, FILE_STORE};
@@ -512,7 +512,7 @@ fn emit_body(src: &str, stmts: &[Statement], indent: &str, for_as: bool) -> Vec<
             Statement::Exitwhen(e) => lines.push(format!("{}{}", indent, emit_exitwhen(src, e, for_as))),
             Statement::Local(l) => lines.push(format!("{}{}", indent, emit_local(src, l, for_as))),
             Statement::VarStmt(v) => lines.push(format!("{}local {}", indent, emit_var(src, v, for_as))),
-            Statement::If(i) => lines.extend(emit_if_cst(src, &i.node, indent, for_as)),
+            Statement::If(i) => lines.extend(emit_if(src, i, indent, for_as)),
             Statement::Loop(l) => {
                 let inner = format!("{}    ", indent);
                 lines.push(format!("{}loop", indent));
@@ -538,71 +538,29 @@ fn emit_cst_node(src: &str, node: &tree_sitter::Node, kind: Kind, indent: &str, 
     }
 }
 
-/// Walk an `if_statement` CST node and emit properly formatted lines.
-///
-/// The AST's `IfStmt` doesn't separate `elseif`/`else` branches, so we
-/// walk the CST directly to reconstruct the full block structure.
-///
-/// When `for_as` is `true`, condition expressions are rebuilt via
-/// [`build_expr`] and emitted with AS-safe precedence parenthesization.
-fn emit_if_cst(src: &str, node: &tree_sitter::Node, indent: &str, for_as: bool) -> Vec<String> {
-    use crate::lng::jass::ast::build_expr;
-
-    let mut lines = Vec::new();
+/// Emit an `if`/`elseif`/`else`/`endif` block from the AST.
+fn emit_if(src: &str, i: &IfStmt, indent: &str, for_as: bool) -> Vec<String> {
     let inner = format!("{}    ", indent);
-    let count = node.child_count();
-    let mut awaiting_cond = false;
-    let mut keyword = String::new();
-    let mut cond = String::new();
+    let mut lines = Vec::new();
 
-    for idx in 0..count as u32 {
-        let child = match node.child(idx) {
-            Some(c) => c,
-            None => continue,
-        };
+    // First branch: `if COND then ...`
+    let cond = i.condition.as_ref()
+        .map(|c| emit_expr(src, c, for_as))
+        .unwrap_or_default();
+    lines.push(format!("{}if {} then", indent, cond));
+    lines.extend(emit_body(src, &i.body, &inner, for_as));
 
-        if !child.is_named() {
-            match Kind::try_from(child.grammar_id()) {
-                Ok(Kind::If) => {
-                    keyword = "if".into();
-                    cond.clear();
-                    awaiting_cond = true;
-                }
-                Ok(Kind::Elseif) => {
-                    keyword = "elseif".into();
-                    cond.clear();
-                    awaiting_cond = true;
-                }
-                Ok(Kind::Then) => {
-                    lines.push(format!("{}{} {} then", indent, keyword, cond.trim()));
-                    awaiting_cond = false;
-                }
-                Ok(Kind::Else) => {
-                    lines.push(format!("{}else", indent));
-                }
-                Ok(Kind::Endif) => {
-                    lines.push(format!("{}endif", indent));
-                }
-                _ => {}
-            }
-        } else if awaiting_cond {
-            if !cond.is_empty() {
-                cond.push(' ');
-            }
-            if for_as {
-                if let Some(expr) = build_expr(&child) {
-                    cond.push_str(&emit_expr(src, &expr, true));
-                } else {
-                    cond.push_str(&flatten(src, &child));
-                }
-            } else {
-                cond.push_str(&flatten(src, &child));
-            }
-        } else if let Ok(nk) = Kind::try_from(child.kind_id()) {
-            lines.extend(emit_cst_node(src, &child, nk, &inner, for_as));
+    // Subsequent branches: `elseif COND then ...` / `else ...`
+    for branch in &i.branches {
+        if let Some(ref cond) = branch.condition {
+            lines.push(format!("{}elseif {} then", indent, emit_expr(src, cond, for_as)));
+        } else {
+            lines.push(format!("{}else", indent));
         }
+        lines.extend(emit_body(src, &branch.body, &inner, for_as));
     }
 
+    lines.push(format!("{}endif", indent));
     lines
 }
 
@@ -627,6 +585,113 @@ fn emit_loop_cst(src: &str, node: &tree_sitter::Node, indent: &str, for_as: bool
     }
 
     lines.push(format!("{}endloop", indent));
+    lines
+}
+
+/// Walk an `if_statement` CST node and emit properly formatted lines.
+///
+/// CST structure (flat children):
+///   `if` COND `then` STMTS [`elseif` COND `then` STMTS]* [`else` STMTS] `endif`
+fn emit_if_cst(src: &str, node: &tree_sitter::Node, indent: &str, for_as: bool) -> Vec<String> {
+    let inner = format!("{}    ", indent);
+    let mut lines = Vec::new();
+
+    // State machine phases matching the CST layout.
+    enum Phase { IfCond, FirstBody, ElseifCond, ElseifBody, ElseBody }
+    let mut phase = Phase::IfCond;
+    let mut cond_parts: Vec<String> = Vec::new();
+
+    for idx in 0..node.child_count() as u32 {
+        let child = match node.child(idx) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        let kind = Kind::try_from(child.kind_id()).ok();
+
+        match (&phase, kind) {
+            // `if` keyword — skip.
+            (Phase::IfCond, Some(Kind::If)) => {}
+            // Condition expression(s) before `then`.
+            (Phase::IfCond, Some(Kind::Then)) => {
+                let cond = cond_parts.join(" ");
+                lines.push(format!("{}if {} then", indent, cond));
+                cond_parts.clear();
+                phase = Phase::FirstBody;
+            }
+            (Phase::IfCond, _) => {
+                if child.is_named() {
+                    cond_parts.push(flatten(src, &child));
+                }
+            }
+
+            // First body — statements between `then` and `elseif`/`else`/`endif`.
+            (Phase::FirstBody, Some(Kind::Elseif)) => {
+                cond_parts.clear();
+                phase = Phase::ElseifCond;
+            }
+            (Phase::FirstBody, Some(Kind::Else)) => {
+                lines.push(format!("{}else", indent));
+                phase = Phase::ElseBody;
+            }
+            (Phase::FirstBody, Some(Kind::Endif)) => {
+                lines.push(format!("{}endif", indent));
+            }
+            (Phase::FirstBody, _) => {
+                if child.is_named() {
+                    if let Ok(nk) = Kind::try_from(child.kind_id()) {
+                        lines.extend(emit_cst_node(src, &child, nk, &inner, for_as));
+                    }
+                }
+            }
+
+            // `elseif` condition.
+            (Phase::ElseifCond, Some(Kind::Then)) => {
+                let cond = cond_parts.join(" ");
+                lines.push(format!("{}elseif {} then", indent, cond));
+                cond_parts.clear();
+                phase = Phase::ElseifBody;
+            }
+            (Phase::ElseifCond, _) => {
+                if child.is_named() {
+                    cond_parts.push(flatten(src, &child));
+                }
+            }
+
+            // Elseif body.
+            (Phase::ElseifBody, Some(Kind::Elseif)) => {
+                cond_parts.clear();
+                phase = Phase::ElseifCond;
+            }
+            (Phase::ElseifBody, Some(Kind::Else)) => {
+                lines.push(format!("{}else", indent));
+                phase = Phase::ElseBody;
+            }
+            (Phase::ElseifBody, Some(Kind::Endif)) => {
+                lines.push(format!("{}endif", indent));
+            }
+            (Phase::ElseifBody, _) => {
+                if child.is_named() {
+                    if let Ok(nk) = Kind::try_from(child.kind_id()) {
+                        lines.extend(emit_cst_node(src, &child, nk, &inner, for_as));
+                    }
+                }
+            }
+
+            // Else body.
+            (Phase::ElseBody, Some(Kind::Endif)) => {
+                lines.push(format!("{}endif", indent));
+            }
+            (Phase::ElseBody, _) => {
+                if child.is_named() {
+                    if let Ok(nk) = Kind::try_from(child.kind_id()) {
+                        lines.extend(emit_cst_node(src, &child, nk, &inner, for_as));
+                    }
+                }
+            }
+        }
+    }
+
     lines
 }
 

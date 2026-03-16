@@ -372,12 +372,9 @@ pub type ParseFn = Box<
 /// Two-pass cascade: parse the current file, drain pending waiters,
 /// re-parse affected peers, refresh editors.
 ///
-/// Diagnostics are delivered via the **pull** model: after all parsing is
-/// done, `send_refresh_all` fires `workspace/diagnostics/refresh` which
-/// tells VS Code to re-request `textDocument/diagnostic` for every open
-/// file.  No `publishDiagnostics` notifications are sent — that would
-/// duplicate diagnostics since the server also declares `diagnosticProvider`
-/// in its capabilities.
+/// Diagnostics use the **push** model: after all parsing is done,
+/// `send_refresh_all` sends `textDocument/publishDiagnostics` for every
+/// file in `FILE_STORE` — both open and closed tabs see errors immediately.
 ///
 /// # Arguments
 ///

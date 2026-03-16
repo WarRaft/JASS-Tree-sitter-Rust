@@ -26,7 +26,7 @@ use url::Url;
 
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
-use crate::lsp::diagnostic::lsp::{DocumentDiagnosticReport, Diagnostic};
+use crate::lsp::diagnostic::lsp::Diagnostic;
 use crate::lsp::document_link::lsp::DocumentLink;
 use crate::lsp::document_symbol::lsp::DocumentSymbol;
 use crate::lsp::folding::lsp::FoldingRange;
@@ -66,6 +66,7 @@ pub struct ParseSnapshot {
 
 /// Per-URI last-good parse snapshot.
 pub static FILE_STORE: Lazy<DashMap<Url, Arc<ParseSnapshot>>> = Lazy::new(DashMap::new);
+
 
 /// Per-URI cancellation token.
 pub static CANCEL_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(DashMap::new);
@@ -149,11 +150,12 @@ pub fn new_cancel_token(uri: &Url) -> CancellationToken {
     token
 }
 
-/// Ask the client to re-request semantic tokens, diagnostics, and inlay hints
-/// for **all** open files.
+/// Ask the client to re-request semantic tokens and inlay hints for all open
+/// files, and **push** diagnostics for every known file.
 ///
-/// These are server→client **requests** (not notifications) and require a
-/// unique `id` — without it VS Code silently ignores them.
+/// Diagnostics use the push model (`textDocument/publishDiagnostics`) so
+/// they are visible for both open and closed files.  Semantic tokens and
+/// inlay hints still use the pull/refresh model.
 pub async fn send_refresh_all() {
     let writer = match LSP_WRITER.get() {
         Some(w) => w,
@@ -161,10 +163,58 @@ pub async fn send_refresh_all() {
     };
     for method in [
         "workspace/semanticTokens/refresh",
-        "workspace/diagnostics/refresh",
         "workspace/inlayHint/refresh",
     ] {
         crate::lsp::send::send_request(writer, method).await;
+    }
+
+    push_diagnostics(writer).await;
+}
+
+/// Send `textDocument/publishDiagnostics` for every file in `FILE_STORE`
+/// and the legacy `DIAGNOSTIC_URI_MAP` (BNI).
+async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
+    use serde_json::json;
+
+    // Files from FILE_STORE (JASS, AngelScript).
+    for entry in FILE_STORE.iter() {
+        let uri = entry.key();
+        let diagnostics = &entry.value().diagnostics;
+        crate::lsp::send::send(
+            writer,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": uri,
+                    "diagnostics": diagnostics
+                }
+            }),
+        )
+        .await;
+    }
+
+    // Legacy fallback (BNI).
+    use crate::lsp::diagnostic::lsp::DocumentDiagnosticReport;
+    use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
+    for entry in DIAGNOSTIC_URI_MAP.iter() {
+        let uri = entry.key();
+        let items = match entry.value() {
+            DocumentDiagnosticReport::Full { items, .. } => items.clone(),
+            _ => vec![],
+        };
+        crate::lsp::send::send(
+            writer,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/publishDiagnostics",
+                "params": {
+                    "uri": uri,
+                    "diagnostics": items
+                }
+            }),
+        )
+        .await;
     }
 }
 
@@ -177,31 +227,6 @@ pub fn is_uri_frozen(target_uri: &Url) -> bool {
     })
 }
 
-/// Convenience: build a [`DocumentDiagnosticReport`] from the snapshot.
-///
-/// Falls back to the legacy `DIAGNOSTIC_URI_MAP` for languages (AngelScript,
-/// BNI) that don't use `FILE_STORE` yet.
-pub fn diagnostic_report(uri: &Url) -> DocumentDiagnosticReport {
-    if let Some(snap) = FILE_STORE.get(uri) {
-        return DocumentDiagnosticReport::Full {
-            result_id: None,
-            items: snap.diagnostics.clone(),
-            related_documents: None,
-        };
-    }
-
-    // Fallback: legacy per-feature DashMap (AngelScript / BNI).
-    use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
-    if let Some(report) = DIAGNOSTIC_URI_MAP.get(uri) {
-        return report.value().clone();
-    }
-
-    DocumentDiagnosticReport::Full {
-        result_id: None,
-        items: vec![],
-        related_documents: None,
-    }
-}
 
 /// Export diff: compare the old and new exported symbol names.
 ///
@@ -246,7 +271,7 @@ pub fn exports_changed(old: Option<&ParseSnapshot>, new: &ParseSnapshot) -> bool
 // ─── Parse synchronisation ──────────────────────────────────────────────────
 //
 // After `DidChange` applies edits to the rope/tree it spawns a background
-// parse task.  Request handlers (Diagnostic, SemanticTokens, …) that read
+// parse task.  Request handlers (SemanticTokens, InlayHint, …) that read
 // from `FILE_STORE` may fire **before** that task finishes, returning stale
 // data with positions that no longer match the buffer.
 //

@@ -3156,4 +3156,364 @@ endfunction
             assert!(bar_key >= EXTERNAL_KEY_BASE, "Bar should be external");
         });
     }
+
+    // ─── Handle leak detection tests ─────────────────────────────────────
+
+    #[test]
+    fn handle_leak_basic() {
+        // Handle local not set to null → warning at endfunction.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert_eq!(leaks.len(), 1, "Expected 1 leak warning, got: {:?}", leaks);
+            assert!(leaks[0].message.contains("`u`"), "Should mention var name: {}", leaks[0].message);
+            assert!(leaks[0].message.contains("function end"), "Should warn at function end: {}", leaks[0].message);
+        });
+    }
+
+    #[test]
+    fn handle_leak_nullified_no_warning() {
+        // Handle local set to null before endfunction → no warning.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+    set u = null
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "No leak expected after nullification, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_early_return() {
+        // Handle local not nullified before early return → warning at return.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+native GetRandomInt takes integer lo, integer hi returns integer
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+    if GetRandomInt(0, 100) < 50 then
+        return
+    endif
+    set u = null
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert_eq!(leaks.len(), 1, "Expected 1 leak at early return, got: {:?}", leaks);
+            assert!(leaks[0].message.contains("before `return`"), "Should warn at return: {}", leaks[0].message);
+        });
+    }
+
+    #[test]
+    fn handle_leak_uninit_no_warning() {
+        // Uninitialized handle local starts as null → no warning.
+        let src = "\
+type unit extends handle
+function A1 takes nothing returns nothing
+    local unit u
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "Uninitialized local should not leak, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_if_else_all_nullified() {
+        // Nullified in all branches (if + else) → no leak.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+native GetRandomInt takes integer lo, integer hi returns integer
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+    if GetRandomInt(0, 100) < 50 then
+        set u = null
+    else
+        set u = null
+    endif
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "No leak expected when all branches nullify, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_if_no_else() {
+        // Nullified only in `if` branch, no `else` → still leaks (conservative).
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+native GetRandomInt takes integer lo, integer hi returns integer
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+    if GetRandomInt(0, 100) < 50 then
+        set u = null
+    endif
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert_eq!(leaks.len(), 1, "Without else, nullification is not guaranteed, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_multiple_vars() {
+        // Two handle locals: one nullified, one not → one warning.
+        let src = "\
+type unit extends handle
+type widget extends handle
+native CreateUnit takes nothing returns unit
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+    local widget w = null
+    set u = null
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "Both should be clean, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_reassigned_after_null() {
+        // Set to null then reassigned → leaks.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+    set u = null
+    set u = CreateUnit()
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert_eq!(leaks.len(), 1, "Reassigned after null should leak, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_integer_no_warning() {
+        // Non-handle types should not trigger leak warnings.
+        let src = "\
+function A1 takes nothing returns nothing
+    local integer x = 42
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "Integer should not have leak warning, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_param_no_warning() {
+        // Parameters should not trigger leak warnings (caller manages them).
+        let src = "\
+type unit extends handle
+function A1 takes unit u returns nothing
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "Params should not have leak warning, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_all_branches_return() {
+        // If all branches return and handle is nulled before each → no leak at endfunction.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+native GetRandomInt takes integer lo, integer hi returns integer
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+    if GetRandomInt(0, 100) < 50 then
+        set u = null
+        return
+    else
+        set u = null
+        return
+    endif
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "All branches return after nulling → no leak, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn handle_leak_return_without_null_in_branch() {
+        // One branch returns without nullifying → leak at return.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+native GetRandomInt takes integer lo, integer hi returns integer
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+    if GetRandomInt(0, 100) < 50 then
+        return
+    else
+        set u = null
+    endif
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert_eq!(leaks.len(), 1, "Branch returns without null → 1 leak, got: {:?}", leaks);
+            assert!(leaks[0].message.contains("before `return`"), "Leak at return: {}", leaks[0].message);
+        });
+    }
+
+    // ─── VarStmt scope tests ─────────────────────────────────────────
+
+    #[test]
+    fn varstmt_in_function_is_local_not_global() {
+        // `widget u` inside a function body should be treated as a local
+        // variable and NOT exported to file_symbols.globals.
+        let src = "\
+function A takes nothing returns nothing
+    widget u
+endfunction
+";
+        with_cursor(src, |c| {
+            // No globals should be exported
+            assert!(
+                c.file_symbols.globals.is_empty(),
+                "VarStmt inside function should not be exported as global, got: {:?}",
+                c.file_symbols.globals.iter().map(|g| &g.name).collect::<Vec<_>>()
+            );
+            // The variable should appear as a child symbol of the function
+            assert_eq!(c.symbols.len(), 1);
+            let children = c.symbols[0].children.as_ref().unwrap();
+            assert!(
+                children.iter().any(|ch| ch.name == "u"),
+                "VarStmt inside function should appear as child symbol"
+            );
+        });
+    }
+
+    #[test]
+    fn varstmt_at_top_level_is_global() {
+        // `widget u` at top level (outside any function) should be exported
+        // as a global variable.
+        let src = "widget u\n";
+        with_cursor(src, |c| {
+            assert_eq!(
+                c.file_symbols.globals.len(), 1,
+                "VarStmt at top level should be exported as global"
+            );
+            assert_eq!(c.file_symbols.globals[0].name, "u");
+        });
+    }
+
+    #[test]
+    fn varstmt_in_function_registered_in_local_scope() {
+        // `integer A = 33` inside a function should be a local variable
+        // accessible by later `set A = 21`.
+        let src = "\
+function A takes nothing returns nothing
+    integer A = 33
+    A = 21
+endfunction
+";
+        with_cursor(src, |c| {
+            assert!(c.file_symbols.globals.is_empty());
+            let scope = c.scopes.iter().find(|s| s.name == "A").unwrap();
+            assert!(scope.vars.contains_key("A"), "VarStmt local should be in scope");
+        });
+    }
+
+    // ─── Return diagnostic range test ────────────────────────────────
+
+    #[test]
+    fn return_diagnostic_highlights_only_keyword() {
+        // The handle-leak diagnostic on `return` should highlight only the
+        // `return` keyword (6 chars), not the entire `return expr` statement.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function F takes nothing returns nothing
+    local unit u = CreateUnit()
+    return
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(!leaks.is_empty(), "Expected handle leak diagnostic");
+            for d in &leaks {
+                let start = d.range.start.character;
+                let end = d.range.end.character;
+                let width = end - start;
+                assert_eq!(
+                    width, 6,
+                    "Return diagnostic should span 6 chars (the keyword `return`), got {}",
+                    width
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn handle_leak_local_array_no_warning() {
+        // Local array variables do not leak — they are cleaned up automatically.
+        let src = "\
+type unit extends handle
+function A1 takes nothing returns nothing
+    local unit array u
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "Local array should not produce leak warning, got: {:?}", leaks);
+        });
+    }
 }

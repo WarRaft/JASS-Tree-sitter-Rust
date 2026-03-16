@@ -62,7 +62,56 @@ struct UnresolvedRef {
     kind: DocumentHighlightKind,
     /// Which namespace the reference lives in.
     namespace: ImportedKind,
+    /// `true` when this reference comes from a **type** position
+    /// (e.g. `local MyType x`).  Used only for the diagnostic label:
+    /// "Undeclared type" vs "Undeclared variable".
+    is_type_ref: bool,
 }
+
+/// A handle-type local variable that needs leak checking.
+#[allow(dead_code)]
+struct HandleLocal {
+    name: String,
+    type_name: String,
+    range: Range,
+    has_value: bool,
+}
+
+// ─── Flow-sensitive nullability ──────────────────────────────────────────────
+
+/// Three-value nullability lattice for handle leak analysis.
+///
+/// Tracks whether a handle-type local variable is definitely null,
+/// definitely non-null, or could be either at a given program point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NullState {
+    /// Definitely `null` (e.g. uninitialized or `set x = null`).
+    Null,
+    /// Definitely not `null` (e.g. `set x = CreateUnit()`).
+    NonNull,
+    /// Could be either — divergent branches merged.
+    MaybeNull,
+}
+
+impl NullState {
+    /// Lattice merge: same→same, different→MaybeNull.
+    fn join(a: NullState, b: NullState) -> NullState {
+        if a == b { a } else { NullState::MaybeNull }
+    }
+}
+
+/// Per-variable null state map used during flow analysis.
+type NullMap = HashMap<String, NullState>;
+
+/// Result of inspecting an if-condition for `var == null` / `var != null`.
+struct NullGuard {
+    /// The variable name mentioned in the null check.
+    var_name: String,
+    /// `true`  → condition is `var != null` (then-branch implies non-null).
+    /// `false` → condition is `var == null` (then-branch implies null).
+    is_neq: bool,
+}
+
 
 /// Info about a variable inside a scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +121,7 @@ pub struct VarInfo {
     pub is_array: bool,
     pub is_constant: bool,
     pub is_initialized: bool,
+    pub is_param: bool,
 }
 
 /// A completed scope snapshot.
@@ -453,10 +503,11 @@ impl Cursor {
         is_array: bool,
         is_constant: bool,
         is_initialized: bool,
+        is_param: bool,
     ) {
         vars.insert(
             name.to_string(),
-            VarInfo { start_byte, type_name, is_array, is_constant, is_initialized },
+            VarInfo { start_byte, type_name, is_array, is_constant, is_initialized, is_param },
         );
     }
 
@@ -556,16 +607,12 @@ impl Cursor {
                 }
             } else {
                 // 3. No match → single standalone group per (name, ns).
-                //    Emit "Undeclared variable/function" diagnostics for each
-                //    occurrence.
+                //    Emit "Undeclared type/variable/function" diagnostics for
+                //    each occurrence.
                 let key = self.alloc_key();
                 self.ref_names
                     .entry(key)
                     .or_insert_with(|| name.clone());
-                let label = match ns {
-                    ImportedKind::Func => "function",
-                    ImportedKind::Var  => "variable",
-                };
                 for (i, uref) in refs.iter().enumerate() {
                     self.ref_groups
                         .entry(key)
@@ -575,6 +622,14 @@ impl Cursor {
                             kind: uref.kind,
                             is_decl: i == 0, // first = "declaration"
                         });
+                    let label = if uref.is_type_ref {
+                        "type"
+                    } else {
+                        match ns {
+                            ImportedKind::Func => "function",
+                            ImportedKind::Var  => "variable",
+                        }
+                    };
                     self.diagnostics.push(Diagnostic {
                         range: uref.range.clone(),
                         message: format!("Undeclared {} `{}`", label, name),
@@ -690,6 +745,7 @@ impl Cursor {
                 range: node.to_range(&self.rope),
                 kind,
                 namespace: ImportedKind::Var,
+                is_type_ref: false,
             });
         }
     }
@@ -732,6 +788,7 @@ impl Cursor {
                 range: node.to_range(&self.rope),
                 kind,
                 namespace: ImportedKind::Var,
+                is_type_ref: true,
             });
         }
     }
@@ -763,6 +820,7 @@ impl Cursor {
                 range: node.to_range(&self.rope),
                 kind,
                 namespace: ImportedKind::Func,
+                is_type_ref: false,
             });
         }
     }
@@ -1258,7 +1316,7 @@ impl Cursor {
                             &self.node_text(&name_id.node),
                             name_id.node.start_byte(),
                             type_name.clone(),
-                            false, false, true,
+                            false, false, true, true,
                         );
                         children.push(DocumentSymbol {
                             name: self.node_text(&name_id.node),
@@ -1282,6 +1340,9 @@ impl Cursor {
                 vars.push(func_vars);
                 children.extend(self.visit_stmts(&f.body, vars));
                 let func_vars = vars.pop().unwrap_or_default();
+
+                // Handle leak detection
+                self.check_handle_leaks(&f.body, &func_vars, &f.node);
 
                 // hl: pop function scope
                 self.hl_pop_scope();
@@ -1346,7 +1407,7 @@ impl Cursor {
                                 &self.node_text(&name_id.node),
                                 name_id.node.start_byte(),
                                 type_name.clone(),
-                                v.is_array, v.is_constant, d.value.is_some(),
+                                v.is_array, v.is_constant, d.value.is_some(), false,
                             );
                             Some(key)
                         } else {
@@ -1448,7 +1509,7 @@ impl Cursor {
                         let tn = self.node_text(&tid.node);
                         self.type_map.insert(local_key, DeclType::Var(VarType {
                             name: tn.clone(),
-                            is_array: false,
+                            is_array: l.is_array,
                             is_constant: false,
                             is_comptime: false,
                         }));
@@ -1461,7 +1522,7 @@ impl Cursor {
                         &self.node_text(&name_id.node),
                         name_id.node.start_byte(),
                         l.type_id.as_ref().map(|id| self.node_text(&id.node)),
-                        false, false, l.value.is_some(),
+                        l.is_array, false, l.value.is_some(), false,
                     );
                 }
                 Some(DocumentSymbol {
@@ -1475,6 +1536,10 @@ impl Cursor {
             }
 
             Statement::VarStmt(v) => {
+                // Inside a function body → treat as local variable declaration
+                // (no `local` keyword required). In global scope → global variable.
+                let in_function = self.current_callees.is_some();
+
                 self.register_id(&v.type_id);
                 let type_name = v.type_id.as_ref().map(|id| self.node_text(&id.node));
                 // hl: reference the type
@@ -1495,23 +1560,37 @@ impl Cursor {
                         let vname = self.node_text(&name_id.node);
                         // hl: declare variable
                         let key = self.hl_declare_var(&vname, &name_id.node);
+                        // If inside a function, register in the local scope vars map
+                        if in_function {
+                            if let Some(scope) = vars.last_mut() {
+                                Self::scope_define(
+                                    scope,
+                                    &vname,
+                                    name_id.node.start_byte(),
+                                    type_name.clone(),
+                                    v.is_array, v.is_constant, d.value.is_some(), false,
+                                );
+                            }
+                        }
                         Some(key)
                     } else {
                         None
                     };
-                    // Export to file_symbols so the scope resolver makes
-                    // this variable visible to importing files.
-                    let ann = extract_annotations(&self.rope, v.node.start_position().row);
-                    self.file_symbols.globals.push(GlobalVarSym {
-                        name: var_name.clone(),
-                        type_name: type_name.clone(),
-                        is_constant: v.is_constant,
-                        is_array: v.is_array,
-                        has_initializer: d.value.is_some(),
-                        decl_index,
-                        doc_comment: ann.doc_comment,
-                        ignore_tags: ann.ignore_tags,
-                    });
+                    if !in_function {
+                        // Export to file_symbols so the scope resolver makes
+                        // this variable visible to importing files.
+                        let ann = extract_annotations(&self.rope, v.node.start_position().row);
+                        self.file_symbols.globals.push(GlobalVarSym {
+                            name: var_name.clone(),
+                            type_name: type_name.clone(),
+                            is_constant: v.is_constant,
+                            is_array: v.is_array,
+                            has_initializer: d.value.is_some(),
+                            decl_index,
+                            doc_comment: ann.doc_comment,
+                            ignore_tags: ann.ignore_tags,
+                        });
+                    }
                     // TypeMap + type-tip
                     if let Some(ref name_id) = d.name {
                         if let Some(ref tn) = type_name {
@@ -1607,6 +1686,12 @@ impl Cursor {
                     self.visit_expr(cond);
                 }
                 let _body = self.visit_stmts(&i.body, vars);
+                for branch in &i.branches {
+                    if let Some(cond) = &branch.condition {
+                        self.visit_expr(cond);
+                    }
+                    let _body = self.visit_stmts(&branch.body, vars);
+                }
                 None
             }
 
@@ -2059,7 +2144,7 @@ impl Cursor {
                 if node.child_count() == 0 {
                     if let Some(kind) = Kind::try_from(node.grammar_id()).ok() {
                         let token_kind = match kind {
-                            Kind::IdToken | Kind::Id => {
+                            Kind::Id => {
                                 if let Some(&role) = self.id_roles.get(&node.start_byte()) {
                                     match role {
                                         IdRole::FunctionDecl | IdRole::FunctionRef => TokenKind::Function,
@@ -2165,6 +2250,425 @@ impl Cursor {
                 }
             }
         }
+    }
+
+    // ─── Handle leak detection ────────────────────────────────────────
+
+    /// Check a function body for handle leaks.
+    ///
+    /// A **handle leak** occurs when a local variable of a handle type
+    /// holds a non-null reference when the function exits.  JASS does not
+    /// run destructors on local variables, so the reference count on the
+    /// underlying handle is never decremented and the object lives forever.
+    ///
+    /// The analysis walks the function body and tracks a "nullified" set —
+    /// variables known to be `null` at each point.  At every `return` and
+    /// at the implicit return at `endfunction`, any handle local NOT in the
+    /// set produces a warning.
+    ///
+    /// Control flow through `if` blocks is handled conservatively:
+    /// a variable is considered nullified after an `if` only when it was
+    /// nullified in **every** branch (if/elseif/else).  Without an `else`
+    /// the `if` body's nullifications are not trusted.
+    fn check_handle_leaks(
+        &mut self,
+        body: &[Statement],
+        func_vars: &HashMap<String, VarInfo>,
+        func_node: &Node,
+    ) {
+        // 1. Collect handle-type locals (not arrays — arrays don't leak).
+        let mut handle_locals: Vec<HandleLocal> = Vec::new();
+        for (name, info) in func_vars {
+            if info.is_array || info.is_param {
+                continue;
+            }
+            if let Some(ref tn) = info.type_name {
+                if Self::is_handle_type(tn) {
+                    let range = self.find_local_name_range(body, name)
+                        .unwrap_or_else(|| func_node.to_range(&self.rope));
+                    handle_locals.push(HandleLocal {
+                        name: name.clone(),
+                        type_name: tn.clone(),
+                        range,
+                        has_value: info.is_initialized,
+                    });
+                }
+            }
+        }
+
+        if handle_locals.is_empty() {
+            return;
+        }
+
+        // 2. Build initial null state map.
+        //
+        // ALL handle locals start as Null — even those with an initializer.
+        // JASS hoists locals to the top of the function: at runtime,
+        //   `local unit u = CreateUnit()`
+        // becomes
+        //   `local unit u`        (top, null)
+        //   `set u = CreateUnit()` (at the original position)
+        //
+        // If there is a `return` before the local's source position, the
+        // variable is still null there.  Starting with NonNull would be a
+        // false negative — a missed leak.
+        let mut null_map: NullMap = HashMap::new();
+        for hl in &handle_locals {
+            null_map.insert(hl.name.clone(), NullState::Null);
+        }
+
+        // 3. Walk the body tracking nullability at each exit point.
+        let mut top_exits = Vec::new(); // exitwhen at top level is a syntax error
+        let returned = self.walk_body_for_leaks(
+            body,
+            &mut null_map,
+            &handle_locals,
+            &mut top_exits,
+        );
+
+        // 4. If the function can fall through (no unconditional return),
+        //    check for leaks at the implicit exit (endfunction).
+        if !returned {
+            let end_range = Self::endfunction_range(func_node, &self.rope);
+            for hl in &handle_locals {
+                let state = null_map.get(&hl.name).copied().unwrap_or(NullState::Null);
+                if state != NullState::Null {
+                    self.diagnostics.push(Diagnostic {
+                        range: end_range.clone(),
+                        message: format!(
+                            "Handle leak: local `{}` (`{}`) is not set to `null` before function end",
+                            hl.name, hl.type_name,
+                        ),
+                        severity: Some(DiagnosticSeverity::Warning),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+
+    /// Walk statements tracking nullability state of handle locals.
+    /// Returns `true` if every code path ends with a `return`.
+    ///
+    /// `exit_collector` accumulates null-map snapshots at each `exitwhen`
+    /// statement.  The caller (loop handler) uses them to compute the
+    /// post-loop state — an `exitwhen` can leave the loop at a point
+    /// where a variable is still non-null.
+    ///
+    /// ## Strict philosophy
+    ///
+    /// Any doubt is resolved toward "possibly non-null" → warning.
+    /// Function calls cannot mutate locals (no pass-by-reference in JASS),
+    /// so only explicit `set var = null` marks a variable as null.
+    fn walk_body_for_leaks(
+        &mut self,
+        stmts: &[Statement],
+        null_map: &mut NullMap,
+        handle_locals: &[HandleLocal],
+        exit_collector: &mut Vec<NullMap>,
+    ) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Statement::Local(l) => {
+                    if let Some(name_id) = &l.name {
+                        let name = self.node_text(&name_id.node);
+                        if handle_locals.iter().any(|hl| hl.name == name) {
+                            if let Some(ref val) = l.value {
+                                if Self::is_null_expr(val, &self.rope) {
+                                    null_map.insert(name, NullState::Null);
+                                } else {
+                                    null_map.insert(name, NullState::NonNull);
+                                }
+                            } else {
+                                // No initializer → local starts as null.
+                                null_map.insert(name, NullState::Null);
+                            }
+                        }
+                    }
+                }
+                Statement::Set(s) => {
+                    if let Some(var_id) = &s.variable {
+                        let name = self.node_text(&var_id.node);
+                        if handle_locals.iter().any(|hl| hl.name == name) {
+                            if let Some(ref val) = s.value {
+                                if Self::is_null_expr(val, &self.rope) {
+                                    null_map.insert(name, NullState::Null);
+                                } else {
+                                    null_map.insert(name, NullState::NonNull);
+                                }
+                            }
+                        }
+                    }
+                }
+                Statement::Exitwhen(_) => {
+                    // Record the current state as a potential loop exit point.
+                    // The enclosing loop handler will merge these with the
+                    // pre-loop state.  We do NOT analyse the exitwhen condition
+                    // (e.g. `exitwhen u == null`) — that would weaken the
+                    // analysis.  Saving the full pre-exitwhen state is strict:
+                    // any variable that is NonNull here will propagate to the
+                    // post-loop state.
+                    exit_collector.push(null_map.clone());
+                }
+                Statement::Return(r) => {
+                    // Emit leak warnings for any handle local that isn't
+                    // definitely null at this return statement.
+                    let ret_range = Self::return_keyword_range(&r.node, &self.rope);
+                    for hl in handle_locals {
+                        let state = null_map.get(&hl.name).copied().unwrap_or(NullState::Null);
+                        if state != NullState::Null {
+                            self.diagnostics.push(Diagnostic {
+                                range: ret_range.clone(),
+                                message: format!(
+                                    "Handle leak: local `{}` (`{}`) is not set to `null` before `return`",
+                                    hl.name, hl.type_name,
+                                ),
+                                severity: Some(DiagnosticSeverity::Warning),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    return true;
+                }
+                Statement::If(i) => {
+                    let has_else = i.branches.iter().any(|b| b.condition.is_none());
+
+                    let mut all_return = true;
+                    let mut merged: Option<NullMap> = None;
+                    let mut returning_guards: Vec<NullGuard> = Vec::new();
+
+                    // Helper: process one branch (condition + body).
+                    let mut process_branch = |cond: Option<&Expr>,
+                                               body: &[Statement],
+                                               null_map: &NullMap,
+                                               this: &mut Self|
+                     -> (bool, NullMap, Option<NullGuard>) {
+                        let mut branch_map = null_map.clone();
+                        let guard = cond.and_then(|c| Self::extract_null_guard(c, &this.rope));
+                        if let Some(ref g) = guard {
+                            if handle_locals.iter().any(|hl| hl.name == g.var_name) {
+                                let state = if g.is_neq { NullState::NonNull } else { NullState::Null };
+                                branch_map.insert(g.var_name.clone(), state);
+                            }
+                        }
+                        let returned = this.walk_body_for_leaks(
+                            body, &mut branch_map, handle_locals, exit_collector,
+                        );
+                        (returned, branch_map, guard)
+                    };
+
+                    // First branch (if ... then ...).
+                    {
+                        let (returned, branch_map, guard) =
+                            process_branch(i.condition.as_ref(), &i.body, null_map, self);
+                        if returned {
+                            if let Some(g) = guard { returning_guards.push(g); }
+                        } else {
+                            all_return = false;
+                            merged = Some(branch_map);
+                        }
+                    }
+
+                    // Subsequent branches (elseif / else).
+                    for branch in &i.branches {
+                        let (returned, branch_map, guard) =
+                            process_branch(branch.condition.as_ref(), &branch.body, null_map, self);
+                        if returned {
+                            if let Some(g) = guard { returning_guards.push(g); }
+                        } else {
+                            all_return = false;
+                            merged = Some(match merged {
+                                Some(acc) => Self::join_null_maps(&acc, &branch_map),
+                                None => branch_map,
+                            });
+                        }
+                    }
+
+                    if all_return && has_else {
+                        return true;
+                    }
+
+                    // Without `else` the `if` could be skipped entirely, so
+                    // the pre-if state is another "non-returning path".
+                    if !has_else {
+                        merged = Some(match merged {
+                            Some(acc) => Self::join_null_maps(&acc, null_map),
+                            None => null_map.clone(),
+                        });
+                    }
+
+                    // Apply continuation state from merged branches.
+                    if let Some(ref m) = merged {
+                        for (name, state) in m {
+                            null_map.insert(name.clone(), *state);
+                        }
+                    }
+
+                    // Apply negation of guards from returning branches.
+                    for guard in &returning_guards {
+                        if handle_locals.iter().any(|hl| hl.name == guard.var_name) {
+                            let negated = if guard.is_neq {
+                                NullState::Null
+                            } else {
+                                NullState::NonNull
+                            };
+                            null_map.insert(guard.var_name.clone(), negated);
+                        }
+                    }
+                }
+                Statement::Loop(l) => {
+                    // Fresh collector for this loop's exitwhen states.
+                    let mut loop_exits: Vec<NullMap> = Vec::new();
+                    let mut loop_map = null_map.clone();
+                    let loop_returned = self.walk_body_for_leaks(
+                        &l.body,
+                        &mut loop_map,
+                        handle_locals,
+                        &mut loop_exits,
+                    );
+
+                    // After the loop, the state is the merge of ALL possible
+                    // exit paths:
+                    //
+                    //  1. pre-loop — the loop might not execute at all
+                    //     (e.g. `exitwhen true` as first statement)
+                    //  2. each exitwhen snapshot — the loop exits mid-body,
+                    //     variables may still be non-null
+                    //  3. post-body fall-through (if the body doesn't always
+                    //     return) — represents exitwhen at the TOP of the
+                    //     next iteration
+                    //
+                    // This is strict: any variable that is NonNull at ANY
+                    // potential exit point becomes at least MaybeNull.
+                    let mut result = null_map.clone(); // (1) pre-loop
+                    for exit_map in &loop_exits {      // (2) exitwhen snapshots
+                        result = Self::join_null_maps(&result, exit_map);
+                    }
+                    if !loop_returned {                // (3) post-body
+                        result = Self::join_null_maps(&result, &loop_map);
+                    }
+                    for (name, state) in result {
+                        null_map.insert(name, state);
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Merge two null maps: for each variable, join their states.
+    fn join_null_maps(a: &NullMap, b: &NullMap) -> NullMap {
+        let mut result = a.clone();
+        for (name, b_state) in b {
+            let a_state = a.get(name).copied().unwrap_or(NullState::Null);
+            result.insert(name.clone(), NullState::join(a_state, *b_state));
+        }
+        result
+    }
+
+    /// Extract the range of only the `return` keyword from a `return_statement` node.
+    /// Falls back to the entire node range if the keyword child is not found.
+    fn return_keyword_range(node: &Node, rope: &Rope) -> Range {
+        let count = node.child_count();
+        for i in 0..count {
+            if let Some(child) = node.child(i as u32) {
+                if Kind::try_from(child.grammar_id()) == Ok(Kind::Return) {
+                    return child.to_range(rope);
+                }
+            }
+        }
+        node.to_range(rope)
+    }
+
+    /// Check if an expression is literally `null`.
+    fn is_null_expr(expr: &Expr, rope: &Rope) -> bool {
+        match expr {
+            Expr::Id(id) => {
+                let text = id.node.text(rope);
+                text == "null"
+            }
+            _ => false,
+        }
+    }
+
+
+    /// Try to extract a `var == null` or `var != null` pattern from an expression.
+    fn extract_null_guard(expr: &Expr, rope: &Rope) -> Option<NullGuard> {
+        match expr {
+            Expr::Binary { node, left, right } => {
+                let op = Self::binary_op_kind(node)?;
+                let (var_name, is_neq) = match op {
+                    Kind::Neq => {
+                        // `var != null` or `null != var`
+                        if Self::is_null_expr(right, rope) {
+                            if let Expr::Id(id) = left.as_ref() {
+                                (id.node.text(rope).to_string(), true)
+                            } else {
+                                return None;
+                            }
+                        } else if Self::is_null_expr(left, rope) {
+                            if let Expr::Id(id) = right.as_ref() {
+                                (id.node.text(rope).to_string(), true)
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    Kind::EqEq => {
+                        // `var == null` or `null == var`
+                        if Self::is_null_expr(right, rope) {
+                            if let Expr::Id(id) = left.as_ref() {
+                                (id.node.text(rope).to_string(), false)
+                            } else {
+                                return None;
+                            }
+                        } else if Self::is_null_expr(left, rope) {
+                            if let Expr::Id(id) = right.as_ref() {
+                                (id.node.text(rope).to_string(), false)
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => return None,
+                };
+                Some(NullGuard { var_name, is_neq })
+            }
+            Expr::Parens { inner, .. } => Self::extract_null_guard(inner, rope),
+            _ => None,
+        }
+    }
+
+    /// Find the range of a local variable's name identifier in the function body.
+    fn find_local_name_range(&self, body: &[Statement], name: &str) -> Option<Range> {
+        for stmt in body {
+            if let Statement::Local(l) = stmt {
+                if let Some(name_id) = &l.name {
+                    if self.node_text(&name_id.node) == name {
+                        return Some(name_id.node.to_range(&self.rope));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Get the range of the `endfunction` keyword for a FunctionStatement CST node.
+    fn endfunction_range(func_node: &Node, rope: &Rope) -> Range {
+        let count = func_node.child_count();
+        for i in (0..count).rev() {
+            if let Some(child) = func_node.child(i as u32) {
+                if Kind::try_from(child.grammar_id()).ok() == Some(Kind::Endfunction) {
+                    return child.to_range(rope);
+                }
+            }
+        }
+        func_node.to_range(rope)
     }
 }
 
