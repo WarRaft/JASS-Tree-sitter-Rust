@@ -7,15 +7,15 @@ use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
 use crate::util::roper::uri_map::ROPE_MAP;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::io::Stdout;
 use tokio::sync::Mutex;
-use std::sync::Arc;
 use url::Url;
 
 use crate::lng::jass::kind::{Field, Kind};
 use crate::util::file_store::FILE_STORE;
 use crate::util::import_graph::IMPORT_GRAPH;
-use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
+use crate::util::scope_resolver::{SCOPE_RESOLVER, SymbolNS};
 use crate::util::tree_map::TREE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
 
@@ -34,7 +34,9 @@ pub async fn send(
             jsonrpc: "2.0".into(),
             id,
             result: Some(CompletionList {
-                is_incomplete: items.iter().any(|i| i.kind == Some(CompletionItemKind::Folder)),
+                is_incomplete: items
+                    .iter()
+                    .any(|i| i.kind == Some(CompletionItemKind::Folder)),
                 items,
             }),
             error: None,
@@ -73,7 +75,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 detail: Some("Import a file".into()),
                 insert_text: Some("import ".into()),
                 sort_text: Some("0".into()),
-            ..Default::default()
+                ..Default::default()
             },
             CompletionItem {
                 label: "import!".into(),
@@ -81,7 +83,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 detail: Some("Import a frozen (read-only) file".into()),
                 insert_text: Some("import! ".into()),
                 sort_text: Some("1".into()),
-            ..Default::default()
+                ..Default::default()
             },
             CompletionItem {
                 label: "set".into(),
@@ -89,7 +91,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 detail: Some("Set a file-local configuration value".into()),
                 insert_text: Some("set ".into()),
                 sort_text: Some("2".into()),
-            ..Default::default()
+                ..Default::default()
             },
             CompletionItem {
                 label: "@ignore".into(),
@@ -97,23 +99,21 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 detail: Some("Suppress diagnostics for the next declaration".into()),
                 insert_text: Some("@ignore ".into()),
                 sort_text: Some("3".into()),
-            ..Default::default()
+                ..Default::default()
             },
         ];
     }
 
     // ── Case 1b: cursor after "//@" → suggest `ignore` ──────────────────────────
     if prefix.trim_start() == "//@" {
-        return vec![
-            CompletionItem {
-                label: "ignore".into(),
-                kind: Some(CompletionItemKind::Keyword),
-                detail: Some("Suppress diagnostics for the next declaration".into()),
-                insert_text: Some("ignore ".into()),
-                sort_text: Some("0".into()),
+        return vec![CompletionItem {
+            label: "ignore".into(),
+            kind: Some(CompletionItemKind::Keyword),
+            detail: Some("Suppress diagnostics for the next declaration".into()),
+            insert_text: Some("ignore ".into()),
+            sort_text: Some("0".into()),
             ..Default::default()
-            },
-        ];
+        }];
     }
 
     // ── Case 2: cursor after "//set " → suggest known setting keys ─────────────
@@ -139,7 +139,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                     detail: Some((*detail).into()),
                     insert_text: None,
                     sort_text: Some(i.to_string()),
-                ..Default::default()
+                    ..Default::default()
                 })
                 .collect();
         }
@@ -161,7 +161,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                                 detail: Some("Enable".into()),
                                 insert_text: Some("1".into()),
                                 sort_text: Some("0".into()),
-                            ..Default::default()
+                                ..Default::default()
                             },
                             CompletionItem {
                                 label: "0".into(),
@@ -169,7 +169,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                                 detail: Some("Disable".into()),
                                 insert_text: Some("0".into()),
                                 sort_text: Some("1".into()),
-                            ..Default::default()
+                                ..Default::default()
                             },
                         ],
                         crate::lng::directive::SetValueKind::Path => {
@@ -185,20 +185,23 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
             // Sub-case B: user is typing the key → suggest all known keys
             if !typed.contains(' ') && !typed.contains('\t') {
                 use crate::lng::directive::{SET_DEFS, SetValueKind};
-                return SET_DEFS.iter().map(|def| {
-                    let insert = match def.kind {
-                        SetValueKind::Bool => format!("{} {}", def.key, def.default),
-                        SetValueKind::Path => format!("{} {}", def.key, def.default),
-                    };
-                    CompletionItem {
-                        label: def.key.into(),
-                        kind: Some(CompletionItemKind::Property),
-                        detail: Some(def.detail.into()),
-                        insert_text: Some(insert),
-                        sort_text: Some(def.sort_order.to_string()),
-                    ..Default::default()
-                    }
-                }).collect();
+                return SET_DEFS
+                    .iter()
+                    .map(|def| {
+                        let insert = match def.kind {
+                            SetValueKind::Bool => format!("{} {}", def.key, def.default),
+                            SetValueKind::Path => format!("{} {}", def.key, def.default),
+                        };
+                        CompletionItem {
+                            label: def.key.into(),
+                            kind: Some(CompletionItemKind::Property),
+                            detail: Some(def.detail.into()),
+                            insert_text: Some(insert),
+                            sort_text: Some(def.sort_order.to_string()),
+                            ..Default::default()
+                        }
+                    })
+                    .collect();
             }
             return vec![];
         }
@@ -251,9 +254,7 @@ fn build_call_snippet(name: &str, params: &[(String, String)]) -> String {
         let args: Vec<String> = params
             .iter()
             .enumerate()
-            .map(|(i, (_pname, ptype))| {
-                format!("${{{}:{}}}", i + 1, default_value_for_type(ptype))
-            })
+            .map(|(i, (_pname, ptype))| format!("${{{}:{}}}", i + 1, default_value_for_type(ptype)))
             .collect();
         format!("{}({})", name, args.join(", "))
     }
@@ -332,7 +333,7 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
                                             detail: Some(ptype),
                                             insert_text: None,
                                             sort_text: Some(format!("0{}", pname)),
-                                        ..Default::default()
+                                            ..Default::default()
                                         });
                                     }
                                 }
@@ -376,7 +377,8 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
         // Functions
         for f in &fs.functions {
             if seen.insert(f.name.clone()) {
-                let params: Vec<(String, String)> = f.params
+                let params: Vec<(String, String)> = f
+                    .params
                     .iter()
                     .map(|p| (p.name.clone(), p.type_name.clone()))
                     .collect();
@@ -392,7 +394,8 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
         // Natives
         for n in &fs.natives {
             if seen.insert(n.name.clone()) {
-                let params: Vec<(String, String)> = n.params
+                let params: Vec<(String, String)> = n
+                    .params
                     .iter()
                     .map(|p| (p.name.clone(), p.type_name.clone()))
                     .collect();
@@ -428,7 +431,7 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
                     detail: Some(detail_parts.join(" ")),
                     insert_text: None,
                     sort_text: Some(format!("1{}", g.name)),
-                ..Default::default()
+                    ..Default::default()
                 });
             }
         }
@@ -444,10 +447,14 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
                 items.push(CompletionItem {
                     label: t.name.clone(),
                     kind: Some(CompletionItemKind::Class),
-                    detail: if detail.is_empty() { None } else { Some(detail) },
+                    detail: if detail.is_empty() {
+                        None
+                    } else {
+                        Some(detail)
+                    },
                     insert_text: None,
                     sort_text: Some(format!("2{}", t.name)),
-                ..Default::default()
+                    ..Default::default()
                 });
             }
         }
@@ -510,7 +517,7 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
                             },
                             insert_text: None,
                             sort_text: Some(format!("1{}", entry.name)),
-                        ..Default::default()
+                            ..Default::default()
                         });
                     }
                 }
@@ -523,10 +530,10 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
 
 /// Walk tree-sitter nodes up from the deepest node at `point` to find an
 /// enclosing `FunctionStatement`.
-fn find_enclosing_function<'a>(
-    root: tree_sitter::Node<'a>,
+fn find_enclosing_function(
+    root: tree_sitter::Node,
     point: tree_sitter::Point,
-) -> Option<tree_sitter::Node<'a>> {
+) -> Option<tree_sitter::Node> {
     let mut node = root.descendant_for_point_range(point, point)?;
     loop {
         if node.kind_id() == Kind::FunctionStatement as u16 {
@@ -562,7 +569,7 @@ fn collect_locals(
                             detail: Some(format!("local {}", ltype)),
                             insert_text: None,
                             sort_text: Some(format!("0{}", lname)),
-                        ..Default::default()
+                            ..Default::default()
                         });
                     }
                 }
@@ -626,10 +633,7 @@ fn complete_path(uri: &Url, path_typed: &str) -> Vec<CompletionItem> {
             continue;
         }
 
-        let is_dir = entry
-            .file_type()
-            .map(|ft| ft.is_dir())
-            .unwrap_or(false);
+        let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
 
         items.push(CompletionItem {
             label: if is_dir {
@@ -643,14 +647,14 @@ fn complete_path(uri: &Url, path_typed: &str) -> Vec<CompletionItem> {
                 CompletionItemKind::File
             }),
             detail: None,
-            insert_text: Some(if is_dir {
-                format!("{}/", name)
-            } else {
-                name
-            }),
+            insert_text: Some(if is_dir { format!("{}/", name) } else { name }),
             // Sort folders before files.
-            sort_text: Some(format!("{}{}", if is_dir { "0" } else { "1" }, entry.file_name().to_string_lossy())),
-        ..Default::default()
+            sort_text: Some(format!(
+                "{}{}",
+                if is_dir { "0" } else { "1" },
+                entry.file_name().to_string_lossy()
+            )),
+            ..Default::default()
         });
     }
 

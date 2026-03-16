@@ -15,5 +15,9 @@
         ["[", "]"],
         ["(", ")"],
         ["'", "'"]
-    ]
+    ],
+    "indentationRules": {
+        "increaseIndentPattern": "^\\s*(function|if|else|elseif|loop|globals)\\b",
+        "decreaseIndentPattern": "^\\s*(endfunction|endif|else|elseif|endloop|endglobals)\\b"
+    }
 }

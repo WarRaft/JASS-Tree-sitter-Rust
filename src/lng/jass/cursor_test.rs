@@ -2625,7 +2625,8 @@ boolean T = A and e or r
     fn unknown_propagates_through_binary() {
         // `e` and `r` are undeclared → type `unknown`.
         // Diagnostics on operators: `and` (boolean × unknown), `or` (unknown × unknown).
-        // Diagnostic on `=` (unknown → boolean).
+        // No "Cannot assign" on `=` — `unknown` is tolerated so that the
+        // more precise operator / undeclared diagnostics are not doubled.
         // Phase 2: "Undeclared" for `e` and `r`.
         let src = "\
 boolean A = true
@@ -2644,8 +2645,8 @@ boolean T = A and e or r
                 .filter(|d| d.message.contains("Cannot assign"))
                 .collect();
             assert!(
-                !assign_err.is_empty(),
-                "Expected assignment mismatch on `=`, got: {:?}",
+                assign_err.is_empty(),
+                "No assignment mismatch expected for `unknown` (error already on operator), got: {:?}",
                 c.diagnostics
             );
             let undecl: Vec<_> = c.diagnostics.iter()
@@ -2680,7 +2681,7 @@ boolean T = A and true
     #[test]
     fn unknown_type_mismatch_in_local() {
         // Inside a function, `x` is undeclared → type unknown.
-        // Diagnostic on `=` (unknown → integer).
+        // No "Cannot assign" on `=` — `unknown` is tolerated.
         // Phase 2: "Undeclared" for `x`.
         let src = "\
 function F takes nothing returns nothing
@@ -2692,8 +2693,8 @@ endfunction
                 .filter(|d| d.message.contains("Cannot assign"))
                 .collect();
             assert!(
-                !assign_err.is_empty(),
-                "Expected assignment mismatch on `=`, got: {:?}", c.diagnostics
+                assign_err.is_empty(),
+                "No assignment mismatch expected for `unknown`, got: {:?}", c.diagnostics
             );
             let undecl: Vec<_> = c.diagnostics.iter()
                 .filter(|d| d.message.contains("Undeclared"))
@@ -2709,7 +2710,7 @@ endfunction
     fn unknown_propagates_through_arithmetic() {
         // `x` is undeclared → unknown.
         // `1 + x` → operator `+` error (integer × unknown).
-        // `integer a = unknown` → assignment error on `=`.
+        // No "Cannot assign" on `=` — `unknown` is tolerated.
         // Phase 2: "Undeclared" for `x`.
         let src = "integer a = 1 + x\n";
         with_cursor(src, |c| {
@@ -2724,8 +2725,8 @@ endfunction
                 .filter(|d| d.message.contains("Cannot assign"))
                 .collect();
             assert!(
-                !assign_err.is_empty(),
-                "Expected assignment mismatch on `=`, got: {:?}", c.diagnostics
+                assign_err.is_empty(),
+                "No assignment mismatch expected for `unknown`, got: {:?}", c.diagnostics
             );
             let undecl: Vec<_> = c.diagnostics.iter()
                 .filter(|d| d.message.contains("Undeclared"))
@@ -2751,6 +2752,227 @@ integer b = a + 2
             assert!(
                 mismatch.is_empty(),
                 "No type mismatch expected, got: {:?}", mismatch
+            );
+        });
+    }
+
+    // ─── Concrete type mismatch detection ─────────────────────────────────
+
+    #[test]
+    fn type_mismatch_handle_to_real() {
+        // `CreateUnit` returns `unit` (handle subtype) → assigning to `real` is an error.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function A1 takes nothing returns nothing
+    local real u = CreateUnit()
+endfunction
+";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch (unit → real), got: {:?}", c.diagnostics
+            );
+            assert!(
+                mismatch[0].message.contains("`unit`") && mismatch[0].message.contains("`real`"),
+                "Message should mention both types, got: {}", mismatch[0].message
+            );
+        });
+    }
+
+    #[test]
+    fn type_mismatch_boolean_to_integer() {
+        let src = "integer a = true\n";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch (boolean → integer), got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn type_mismatch_string_to_integer() {
+        let src = "integer a = \"hello\"\n";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch (string → integer), got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn type_mismatch_real_to_integer() {
+        // real → integer is NOT allowed (no implicit R2I).
+        let src = "integer a = 1.5\n";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch (real → integer), got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn no_mismatch_integer_to_real() {
+        // integer → real is OK (implicit I2R).
+        let src = "real a = 1\n";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                mismatch.is_empty(),
+                "No mismatch expected for integer → real, got: {:?}", mismatch
+            );
+        });
+    }
+
+    #[test]
+    fn no_mismatch_null_to_handle() {
+        // null → handle-derived type is OK.
+        let src = "\
+globals
+    unit u = null
+endglobals
+";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                mismatch.is_empty(),
+                "No mismatch expected for null → handle type, got: {:?}", mismatch
+            );
+        });
+    }
+
+    #[test]
+    fn no_mismatch_null_to_string() {
+        // null → string is OK.
+        let src = "string s = null\n";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                mismatch.is_empty(),
+                "No mismatch expected for null → string, got: {:?}", mismatch
+            );
+        });
+    }
+
+    #[test]
+    fn type_mismatch_null_to_integer() {
+        // null → integer is NOT allowed.
+        let src = "integer a = null\n";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch (null → integer), got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn type_mismatch_null_to_boolean() {
+        // null → boolean is NOT allowed.
+        let src = "boolean b = null\n";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch (null → boolean), got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn no_mismatch_handle_subtypes() {
+        // Both handle-derived → JASS allows implicit handle casts.
+        let src = "\
+native GetTriggerUnit takes nothing returns unit
+globals
+    handle h = GetTriggerUnit()
+endglobals
+";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                mismatch.is_empty(),
+                "No mismatch expected between handle subtypes, got: {:?}", mismatch
+            );
+        });
+    }
+
+    #[test]
+    fn type_mismatch_in_set_statement() {
+        // `set` statement: assigning boolean to an integer variable.
+        let src = "\
+globals
+    integer x = 0
+endglobals
+function F takes nothing returns nothing
+    set x = true
+endfunction
+";
+        with_cursor(src, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch in set statement (boolean → integer), got: {:?}", c.diagnostics
+            );
+        });
+    }
+
+    #[test]
+    fn type_mismatch_imported_func_return() {
+        // Imported `CreateUnit` returns `unit` — assigning to `real` is an error.
+        let origin = Url::parse("file:///common.j").unwrap();
+        let imported = vec![
+            ImportedSymbol {
+                origin_uri: origin.clone(),
+                name: "CreateUnit".into(),
+                kind: ImportedKind::Func,
+                origin_decl_key: Some(0),
+                return_type: Some("unit".into()),
+                type_name: None,
+            },
+        ];
+        let src = "\
+function A1 takes nothing returns nothing
+    local real u = CreateUnit()
+endfunction
+";
+        with_cursor_imported(src, &imported, |c| {
+            let mismatch: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Cannot assign"))
+                .collect();
+            assert!(
+                !mismatch.is_empty(),
+                "Expected type mismatch (unit → real) from imported function, got: {:?}", c.diagnostics
             );
         });
     }

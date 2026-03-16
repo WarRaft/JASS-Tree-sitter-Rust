@@ -1637,8 +1637,65 @@ impl Cursor {
 
     // ─── Expression type helpers ─────────────────────────────────────
 
+    /// Check if a type name belongs to the handle family.
+    ///
+    /// Handle family = `handle` itself + any custom type that is not a
+    /// built-in primitive (`integer`, `real`, `boolean`, `string`, `code`,
+    /// `nothing`, `null`, `unknown`).
+    fn is_handle_type(type_name: &str) -> bool {
+        !matches!(
+            type_name,
+            "integer" | "real" | "boolean" | "string" | "code" | "nothing" | "null" | "unknown"
+        )
+    }
+
+    /// Check if `expr_type` can be assigned to a variable of `declared_type`
+    /// according to JASS type rules.
+    ///
+    /// Allowed implicit conversions:
+    /// - same type → OK
+    /// - `integer` → `real` (I2R)
+    /// - `null` → any handle-based type, `string`, or `code`
+    /// - any handle subtype → any other handle subtype (JASS allows implicit
+    ///   handle casts)
+    fn is_type_assignable(declared: &str, expr: &str) -> bool {
+        // Same type is always OK.
+        if declared == expr {
+            return true;
+        }
+
+        // Unknown on either side → can't determine, assume OK.
+        // The relevant "Undeclared" or operator diagnostics are emitted elsewhere.
+        if declared == UNKNOWN_TYPE || expr == UNKNOWN_TYPE {
+            return true;
+        }
+
+        // `nothing` is not assignable to/from anything.
+        if expr == "nothing" || declared == "nothing" {
+            return false;
+        }
+
+        // integer → real: OK (implicit I2R conversion).
+        if expr == "integer" && declared == "real" {
+            return true;
+        }
+
+        // null → string, code, or handle-based type: OK.
+        if expr == "null" {
+            return declared != "integer" && declared != "real" && declared != "boolean";
+        }
+
+        // Both handle-based → OK (JASS allows implicit handle casts).
+        if Self::is_handle_type(declared) && Self::is_handle_type(expr) {
+            return true;
+        }
+
+        // Everything else is a mismatch.
+        false
+    }
+
     /// Emit a diagnostic on the `=` operator when the inferred expression
-    /// type is `unknown` but the declared type is a concrete known type.
+    /// type is incompatible with the declared variable type.
     fn check_type_mismatch(
         &mut self,
         declared_type: &str,
@@ -1646,14 +1703,14 @@ impl Cursor {
         stmt_node: &Node,
     ) {
         if let Some(et) = expr_type {
-            if et == UNKNOWN_TYPE && declared_type != UNKNOWN_TYPE {
+            if !Self::is_type_assignable(declared_type, et) {
                 let range = Self::find_equal_range(stmt_node, &self.rope)
                     .unwrap_or_else(|| stmt_node.to_range(&self.rope));
                 self.diagnostics.push(Diagnostic {
                     range,
                     message: format!(
                         "Cannot assign type `{}` to `{}`",
-                        UNKNOWN_TYPE, declared_type,
+                        et, declared_type,
                     ),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
