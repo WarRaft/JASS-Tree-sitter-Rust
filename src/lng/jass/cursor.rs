@@ -157,6 +157,8 @@ pub struct Cursor {
 
     /// Per-file settings parsed from `//set key value` directives.
     pub file_settings: HashMap<String, String>,
+    /// File-level diagnostic suppression tags from `//ignore tag` directives.
+    pub file_ignore_tags: HashSet<String>,
 
     /// Per-declaration resolved types.
     pub type_map: TypeMap,
@@ -350,6 +352,7 @@ impl Cursor {
             external_decls: HashMap::new(),
             func_decl_keys: HashSet::new(),
             file_settings: HashMap::new(),
+            file_ignore_tags: HashSet::new(),
             type_map: TypeMap::default(),
             type_hints: Vec::new(),
             comptime_values: HashMap::new(),
@@ -437,6 +440,7 @@ impl Cursor {
             Statement::Comment(c) => c.node,
             Statement::Import(i) => i.node,
             Statement::SetDir(s) => s.node,
+            Statement::IgnoreDir(ig) => ig.node,
             Statement::Error(e) => e.node,
         }
     }
@@ -1147,6 +1151,20 @@ impl Cursor {
             return None;
         }
 
+        // IgnoreDir directives — skip comment tracking, add dedicated semantic
+        if let Statement::IgnoreDir(ig) = stmt {
+            self.flush_comment_run();
+            self.directive_nodes.insert(ig.node.start_byte());
+            crate::lng::directive::visit_ignore_semantic(
+                ig,
+                &mut self.semantic,
+                &mut self.diagnostics,
+                &mut self.file_ignore_tags,
+                &self.rope,
+            );
+            return None;
+        }
+
         // Comment tracking
         if let Statement::Comment(c) = stmt {
             let row = c.node.start_position().row;
@@ -1341,8 +1359,12 @@ impl Cursor {
                 children.extend(self.visit_stmts(&f.body, vars));
                 let func_vars = vars.pop().unwrap_or_default();
 
-                // Handle leak detection
-                self.check_handle_leaks(&f.body, &func_vars, &f.node);
+                let ann = extract_annotations(&self.rope, f.node.start_position().row);
+
+                // Handle leak detection (respects //@ignore leak on the function)
+                if !ann.ignore_tags.contains("leak") {
+                    self.check_handle_leaks(&f.body, &func_vars, &f.node);
+                }
 
                 // hl: pop function scope
                 self.hl_pop_scope();
@@ -1350,7 +1372,6 @@ impl Cursor {
                 // Finalize callee collection.
                 let callees = self.current_callees.take().unwrap_or_default();
 
-                let ann = extract_annotations(&self.rope, f.node.start_position().row);
                 self.file_symbols.functions.push(FunctionSym {
                     name: func_name.clone(),
                     params: param_syms,
@@ -1716,6 +1737,7 @@ impl Cursor {
             Statement::Comment(_) => unreachable!("handled above"),
             Statement::Import(_) => unreachable!("handled above"),
             Statement::SetDir(_) => unreachable!("handled above"),
+            Statement::IgnoreDir(_) => unreachable!("handled above"),
             Statement::Error(_) => None, // diagnostics already collected from ast.errors
         }
     }
@@ -2276,6 +2298,11 @@ impl Cursor {
         func_vars: &HashMap<String, VarInfo>,
         func_node: &Node,
     ) {
+        // File-level `//ignore leak` suppresses all handle-leak diagnostics.
+        if self.file_ignore_tags.contains("leak") {
+            return;
+        }
+
         // 1. Collect handle-type locals (not arrays — arrays don't leak).
         let mut handle_locals: Vec<HandleLocal> = Vec::new();
         for (name, info) in func_vars {
@@ -2284,6 +2311,14 @@ impl Cursor {
             }
             if let Some(ref tn) = info.type_name {
                 if Self::is_handle_type(tn) {
+                    // Per-variable `//@ignore leak` — check annotation above the local declaration.
+                    let local_row = self.find_local_row(body, name);
+                    if let Some(row) = local_row {
+                        let ann = extract_annotations(&self.rope, row);
+                        if ann.ignore_tags.contains("leak") {
+                            continue;
+                        }
+                    }
                     let range = self.find_local_name_range(body, name)
                         .unwrap_or_else(|| func_node.to_range(&self.rope));
                     handle_locals.push(HandleLocal {
@@ -2651,6 +2686,20 @@ impl Cursor {
                 if let Some(name_id) = &l.name {
                     if self.node_text(&name_id.node) == name {
                         return Some(name_id.node.to_range(&self.rope));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the CST row of a local variable declaration in the function body.
+    fn find_local_row(&self, body: &[Statement], name: &str) -> Option<usize> {
+        for stmt in body {
+            if let Statement::Local(l) = stmt {
+                if let Some(name_id) = &l.name {
+                    if self.node_text(&name_id.node) == name {
+                        return Some(l.node.start_position().row);
                     }
                 }
             }

@@ -21,6 +21,8 @@ pub struct Cursor {
     pub semantic: Hub,
     /// Per-file settings parsed from `//set key value` directives.
     pub file_settings: HashMap<String, String>,
+    /// File-level diagnostic suppression tags from `//ignore tag` directives.
+    pub file_ignore_tags: HashSet<String>,
 
     rope: Rope,
     id_roles: HashMap<usize, IdRole>,
@@ -39,6 +41,7 @@ impl Cursor {
             folding: Vec::new(),
             semantic: Hub::default(),
             file_settings: HashMap::new(),
+            file_ignore_tags: HashSet::new(),
             rope: rope.clone(),
             id_roles: HashMap::new(),
             directive_nodes: HashSet::new(),
@@ -95,6 +98,7 @@ impl Cursor {
             TopLevel::Comment(n) => n.node,
             TopLevel::ImportDir(n) => n.node,
             TopLevel::SetDir(n) => n.node,
+            TopLevel::IgnoreDir(n) => n.node,
             TopLevel::Other(n) => *n,
         }
     }
@@ -185,6 +189,20 @@ impl Cursor {
                 &mut self.semantic,
                 &mut self.diagnostics,
                 &mut self.file_settings,
+                &self.rope,
+            );
+            return None;
+        }
+
+        // IgnoreDir directives — skip comment tracking, add dedicated semantic
+        if let TopLevel::IgnoreDir(ig) = item {
+            self.flush_comment_run();
+            self.directive_nodes.insert(ig.node.start_byte());
+            crate::lng::directive::visit_ignore_semantic(
+                ig,
+                &mut self.semantic,
+                &mut self.diagnostics,
+                &mut self.file_ignore_tags,
                 &self.rope,
             );
             return None;
@@ -324,6 +342,7 @@ impl Cursor {
             TopLevel::Comment(_) => unreachable!("handled above"),
             TopLevel::ImportDir(_) => unreachable!("handled above"),
             TopLevel::SetDir(_) => unreachable!("handled above"),
+            TopLevel::IgnoreDir(_) => unreachable!("handled above"),
             TopLevel::Other(_) => None,
         }
     }

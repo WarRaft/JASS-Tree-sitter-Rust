@@ -89,13 +89,6 @@ pub static SET_DEFS: &[SetDef] = &[
         detail: "Output path for the AngelScript build",
         sort_order: 3,
     },
-    SetDef {
-        key: "unused",
-        kind: SetValueKind::Bool,
-        default: "1",
-        detail: "Enable / disable unused-function diagnostics for this file",
-        sort_order: 4,
-    },
 ];
 
 /// Look up a `SetDef` by key name.
@@ -163,6 +156,44 @@ pub struct SetDirective<'tree> {
     pub value: String,
 }
 
+/// `//ignore <tag…>` — file-level diagnostic suppression directive.
+///
+/// Recognized only at the root level, before the first language statement
+/// (alongside `//import` and `//set`).  The `//ignore` prefix must start at
+/// column 0 with no space after `//`.
+///
+/// Multiple tags can be listed on one line: `//ignore unused leak`.
+#[derive(Debug, Clone)]
+pub struct IgnoreDirective<'tree> {
+    /// The original comment CST node.
+    pub node: Node<'tree>,
+    /// Suppression tags (e.g. `["unused", "leak"]`).
+    pub tags: Vec<String>,
+}
+
+// ─── Known ignore tags ──────────────────────────────────────────────────────
+
+/// Descriptor for a known `//ignore` / `//@ignore` tag.
+#[derive(Debug, Clone)]
+pub struct IgnoreTagDef {
+    /// Tag name (e.g. `"unused"`).
+    pub tag: &'static str,
+    /// Short one-line description (English).
+    pub detail: &'static str,
+}
+
+/// All recognized suppression tags for `//ignore` and `//@ignore`.
+pub static IGNORE_TAGS: &[IgnoreTagDef] = &[
+    IgnoreTagDef { tag: "unused", detail: "Suppress unused-function diagnostic" },
+    IgnoreTagDef { tag: "leak",   detail: "Suppress handle-leak diagnostic" },
+    IgnoreTagDef { tag: "cycle",  detail: "Suppress cyclic-call-chain diagnostic" },
+];
+
+/// Look up an `IgnoreTagDef` by name.
+pub fn find_ignore_tag(tag: &str) -> Option<&'static IgnoreTagDef> {
+    IGNORE_TAGS.iter().find(|d| d.tag == tag)
+}
+
 // ─── Directive enum (language-agnostic) ──────────────────────────────────────
 
 /// Result of trying to parse a leading comment as a directive.
@@ -170,12 +201,13 @@ pub struct SetDirective<'tree> {
 pub enum Directive<'tree> {
     Import(ImportDirective<'tree>),
     Set(SetDirective<'tree>),
+    Ignore(IgnoreDirective<'tree>),
 }
 
 /// Try to parse a comment CST node as a directive.
 ///
 /// Returns `Some(Directive)` if the node is a line comment at column 0 that
-/// matches `//import`, `//import!`, or `//set`.
+/// matches `//import`, `//import!`, `//set`, or `//ignore`.
 pub fn try_parse_directive<'tree>(node: &Node<'tree>, src: &[u8]) -> Option<Directive<'tree>> {
     if node.start_position().column != 0 {
         return None;
@@ -218,6 +250,16 @@ pub fn try_parse_directive<'tree>(node: &Node<'tree>, src: &[u8]) -> Option<Dire
                 node: *node,
                 key,
                 value,
+            }));
+        }
+    }
+    // ── //ignore ─────────────────────────────────────────────────
+    if let Some(rest) = text.strip_prefix("//ignore") {
+        if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+            let tags: Vec<String> = rest.split_whitespace().map(|s| s.to_string()).collect();
+            return Some(Directive::Ignore(IgnoreDirective {
+                node: *node,
+                tags,
             }));
         }
     }
@@ -362,6 +404,53 @@ pub fn visit_set_semantic(
             }
         }
         file_settings.insert(sd.key.clone(), sd.value.clone());
+    }
+}
+
+/// Emit semantic tokens for an `//ignore tag1 tag2` directive and collect
+/// the tags into `file_ignore_tags`.
+pub fn visit_ignore_semantic(
+    ig: &IgnoreDirective,
+    semantic: &mut Hub,
+    diagnostics: &mut Vec<Diagnostic>,
+    file_ignore_tags: &mut HashSet<String>,
+    rope: &Rope,
+) {
+    let node = &ig.node;
+    let prefix_len = "//ignore".len();
+    let start_byte = node.start_byte();
+
+    // Macro token for the "//ignore" prefix
+    semantic.add_range(start_byte, prefix_len, rope, TokenKind::Macro, 0u32);
+
+    // Color each tag as EnumMember
+    let full_text_bytes = node.end_byte() - node.start_byte();
+    if full_text_bytes > prefix_len {
+        let after_offset = start_byte + prefix_len;
+        let after_raw = rope
+            .slice_to_cow(after_offset..start_byte + full_text_bytes)
+            .to_string();
+        let mut cursor = 0usize;
+        for tag in after_raw.split_whitespace() {
+            if let Some(pos) = after_raw[cursor..].find(tag) {
+                let tag_offset = after_offset + cursor + pos;
+                semantic.add_range(tag_offset, tag.len(), rope, TokenKind::EnumMember, 0u32);
+                cursor += pos + tag.len();
+            }
+        }
+    }
+
+    if ig.tags.is_empty() {
+        diagnostics.push(Diagnostic {
+            range: node.to_range(rope),
+            message: "Missing ignore tag (e.g. `unused`, `leak`)".into(),
+            severity: Some(DiagnosticSeverity::Warning),
+            ..Default::default()
+        });
+    } else {
+        for tag in &ig.tags {
+            file_ignore_tags.insert(tag.clone());
+        }
     }
 }
 

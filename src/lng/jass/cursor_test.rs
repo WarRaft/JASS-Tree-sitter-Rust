@@ -3516,4 +3516,115 @@ endfunction
             assert!(leaks.is_empty(), "Local array should not produce leak warning, got: {:?}", leaks);
         });
     }
+
+    // ─── //ignore directive tests ─────────────────────────────────────
+
+    #[test]
+    fn ignore_file_level_leak_suppresses_all_leaks() {
+        let src = "\
+//ignore leak
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "File-level //ignore leak should suppress all leak warnings, got: {:?}", leaks);
+        });
+    }
+
+    #[test]
+    fn ignore_file_level_multiple_tags() {
+        // //ignore unused leak — both tags should be collected.
+        let src = "\
+//ignore unused leak
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+endfunction
+";
+        with_cursor(src, |c| {
+            assert!(c.file_ignore_tags.contains("unused"), "Should contain 'unused'");
+            assert!(c.file_ignore_tags.contains("leak"), "Should contain 'leak'");
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert!(leaks.is_empty(), "File-level //ignore leak should suppress leak warnings");
+        });
+    }
+
+    #[test]
+    fn ignore_per_function_leak_suppresses_that_function() {
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+//@ignore leak
+function A1 takes nothing returns nothing
+    local unit u = CreateUnit()
+endfunction
+function A2 takes nothing returns nothing
+    local unit v = CreateUnit()
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            // A1 is suppressed, A2 should still warn
+            assert_eq!(leaks.len(), 1, "Only A2 should leak, got: {:?}", leaks);
+            assert!(leaks[0].message.contains("`v`"), "Should mention var v: {}", leaks[0].message);
+        });
+    }
+
+    #[test]
+    fn ignore_per_variable_leak_suppresses_that_variable() {
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function A1 takes nothing returns nothing
+    //@ignore leak
+    local unit u = CreateUnit()
+    local unit v = CreateUnit()
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            // u is suppressed, v should still warn
+            assert_eq!(leaks.len(), 1, "Only v should leak, got: {:?}", leaks);
+            assert!(leaks[0].message.contains("`v`"), "Should mention var v: {}", leaks[0].message);
+        });
+    }
+
+    #[test]
+    fn ignore_missing_tag_warns() {
+        let src = "\
+//ignore
+function A1 takes nothing returns nothing
+endfunction
+";
+        with_cursor(src, |c| {
+            let warns: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Missing ignore tag"))
+                .collect();
+            assert_eq!(warns.len(), 1, "Missing tag should produce a warning, got: {:?}", warns);
+        });
+    }
+
+    #[test]
+    fn ignore_tag_registry_has_all_known_tags() {
+        for tag in &["unused", "leak", "cycle"] {
+            assert!(
+                crate::lng::directive::find_ignore_tag(tag).is_some(),
+                "IGNORE_TAGS should contain {:?}",
+                tag
+            );
+        }
+    }
 }

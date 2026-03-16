@@ -66,7 +66,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
     let byte_col = utf16_to_byte_offset(&line_text, position.character);
     let prefix = &line_text[..byte_col.min(line_text.len())];
 
-    // ── Case 1: cursor right after "//" → suggest `import`, `import!`, `set`, `@ignore` ──
+    // ── Case 1: cursor right after "//" → suggest `import`, `import!`, `set`, `ignore`, `@ignore` ──
     if prefix.trim_start() == "//" {
         return vec![
             CompletionItem {
@@ -94,11 +94,19 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 ..Default::default()
             },
             CompletionItem {
+                label: "ignore".into(),
+                kind: Some(CompletionItemKind::Keyword),
+                detail: Some("Suppress diagnostics for the entire file".into()),
+                insert_text: Some("ignore ".into()),
+                sort_text: Some("3".into()),
+                ..Default::default()
+            },
+            CompletionItem {
                 label: "@ignore".into(),
                 kind: Some(CompletionItemKind::Keyword),
                 detail: Some("Suppress diagnostics for the next declaration".into()),
                 insert_text: Some("@ignore ".into()),
-                sort_text: Some("3".into()),
+                sort_text: Some("4".into()),
                 ..Default::default()
             },
         ];
@@ -123,20 +131,36 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
     if let Some(rest) = trimmed.strip_prefix("//@ignore") {
         if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
             let typed = rest.trim_start();
-            // Collect already-typed tags so we don't suggest them again.
             let used: std::collections::HashSet<&str> = typed.split_whitespace().collect();
-            let tags: &[(&str, &str)] = &[
-                ("unused", "Suppress unused-function diagnostic"),
-                ("cycle", "Suppress cyclic-call-chain diagnostic"),
-            ];
-            return tags
+            return crate::lng::directive::IGNORE_TAGS
                 .iter()
-                .filter(|(tag, _)| !used.contains(tag))
+                .filter(|def| !used.contains(def.tag))
                 .enumerate()
-                .map(|(i, (tag, detail))| CompletionItem {
-                    label: (*tag).into(),
+                .map(|(i, def)| CompletionItem {
+                    label: def.tag.into(),
                     kind: Some(CompletionItemKind::EnumMember),
-                    detail: Some((*detail).into()),
+                    detail: Some(def.detail.into()),
+                    insert_text: None,
+                    sort_text: Some(i.to_string()),
+                    ..Default::default()
+                })
+                .collect();
+        }
+    }
+
+    // ── Case 2c: cursor after "//ignore " → suggest known tags ─────────────────
+    if let Some(rest) = trimmed.strip_prefix("//ignore") {
+        if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+            let typed = rest.trim_start();
+            let used: std::collections::HashSet<&str> = typed.split_whitespace().collect();
+            return crate::lng::directive::IGNORE_TAGS
+                .iter()
+                .filter(|def| !used.contains(def.tag))
+                .enumerate()
+                .map(|(i, def)| CompletionItem {
+                    label: def.tag.into(),
+                    kind: Some(CompletionItemKind::EnumMember),
+                    detail: Some(def.detail.into()),
                     insert_text: None,
                     sort_text: Some(i.to_string()),
                     ..Default::default()

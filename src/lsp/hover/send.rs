@@ -28,6 +28,12 @@ const SET_UK: &str = include_str!("../../../docs/jass/set/uk.md");
 const SET_ZH: &str = include_str!("../../../docs/jass/set/zh.md");
 const SET_TC: &str = include_str!("../../../docs/jass/set/tc.md");
 
+const IGNORE_EN: &str = include_str!("../../../docs/jass/ignore/en.md");
+const IGNORE_RU: &str = include_str!("../../../docs/jass/ignore/ru.md");
+const IGNORE_UK: &str = include_str!("../../../docs/jass/ignore/uk.md");
+const IGNORE_ZH: &str = include_str!("../../../docs/jass/ignore/zh.md");
+const IGNORE_TC: &str = include_str!("../../../docs/jass/ignore/tc.md");
+
 /// Pick the best doc by the system locale env vars.
 /// Falls back to English.
 fn pick_locale<F: Fn(&str) -> &'static str>(picker: F) -> &'static str {
@@ -68,6 +74,16 @@ fn set_doc() -> &'static str {
         "zh" => SET_ZH,
         "tc" => SET_TC,
         _ => SET_EN,
+    })
+}
+
+fn ignore_doc() -> &'static str {
+    pick_locale(|l| match l {
+        "ru" => IGNORE_RU,
+        "uk" => IGNORE_UK,
+        "zh" => IGNORE_ZH,
+        "tc" => IGNORE_TC,
+        _ => IGNORE_EN,
     })
 }
 
@@ -129,7 +145,7 @@ fn compute(uri: &Url, position: &Position) -> Option<Hover> {
     compute_symbol_hover(uri, position)
 }
 
-/// Try directive hover for `//import` and `//set` directives.
+/// Try directive hover for `//import`, `//set`, and `//ignore` directives.
 fn compute_directive_hover(
     trimmed: &str,
     line_text: &str,
@@ -145,6 +161,12 @@ fn compute_directive_hover(
                 || trimmed.as_bytes()[8] == b'\t')
         {
             ("//import", import_doc as fn() -> &'static str)
+        } else if trimmed.starts_with("//ignore")
+            && (trimmed.len() == 8
+                || trimmed.as_bytes()[8] == b' '
+                || trimmed.as_bytes()[8] == b'\t')
+        {
+            ("//ignore", ignore_doc as fn() -> &'static str)
         } else if trimmed.starts_with("//set")
             && (trimmed.len() == 5
                 || trimmed.as_bytes()[5] == b' '
@@ -194,6 +216,35 @@ fn compute_directive_hover(
                             end: Position { line: line_idx, character: key_end_col },
                         }),
                     });
+                }
+            }
+        }
+    }
+
+    // ── Per-tag hover for //ignore directives ──────────────────────────
+    if prefix == "//ignore" {
+        let after_ignore = &trimmed["//ignore".len()..];
+        // Walk each word-token, find which one the cursor is on
+        let mut cursor_pos = 0usize;
+        for tag_str in after_ignore.split_whitespace() {
+            if let Some(pos) = after_ignore[cursor_pos..].find(tag_str) {
+                let tag_start_col = prefix_start_col + "//ignore".len() + cursor_pos + pos;
+                let tag_end_col = tag_start_col + tag_str.len();
+                cursor_pos += pos + tag_str.len();
+                if col >= tag_start_col && col <= tag_end_col {
+                    if let Some(def) = crate::lng::directive::find_ignore_tag(tag_str) {
+                        let md = format!("### `//ignore {}`\n\n{}", def.tag, def.detail);
+                        return Some(Hover {
+                            contents: MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: md,
+                            },
+                            range: Some(Range {
+                                start: Position { line: line_idx, character: tag_start_col },
+                                end: Position { line: line_idx, character: tag_end_col },
+                            }),
+                        });
+                    }
                 }
             }
         }

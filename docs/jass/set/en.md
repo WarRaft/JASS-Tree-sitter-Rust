@@ -31,7 +31,6 @@ endglobals
 |-----|------|---------|-------------|
 | `ref-tip` | `0 \| 1` | `0` | Show / hide reference ID inlay hints next to each identifier. Useful for debugging symbol resolution and rename refactoring. |
 | `type-tip` | `0 \| 1` | `0` | Show / hide type-annotation inlay hints for variables and parameters (e.g. `: integer`, `: constant real array`). |
-| `unused` | `0 \| 1` | `1` | Enable / disable unused-function diagnostics for the entire file. Set to `0` to suppress all "Unused function" hints. |
 | `build-jass` | `<path>` | `./` | Output path for the JASS build. Merges the entire import tree into a single `.j` file: types → natives → globals → functions (topologically sorted) → `main`. If the path is a directory, `war3map.j` is appended. |
 | `build-as` | `<path>` | `./` | Output path for the AngelScript build. Same merge logic, but emits `.as` syntax. Reserved-word conflicts are resolved by appending a numeric suffix. |
 

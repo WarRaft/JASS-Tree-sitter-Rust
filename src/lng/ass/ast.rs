@@ -377,7 +377,7 @@ pub enum Expr<'tree> {
 }
 
 // Re-export shared directive types for convenience.
-pub use crate::lng::directive::{ImportDirective, SetDirective};
+pub use crate::lng::directive::{IgnoreDirective, ImportDirective, SetDirective};
 
 /// Top-level statement (script level or inside namespace).
 #[derive(Debug, Clone)]
@@ -398,6 +398,8 @@ pub enum TopLevel<'tree> {
     ImportDir(ImportDirective<'tree>),
     /// `//set key value` directive (shared with JASS).
     SetDir(SetDirective<'tree>),
+    /// `//ignore tag…` directive (shared with JASS).
+    IgnoreDir(IgnoreDirective<'tree>),
     Other(Node<'tree>),
 }
 
@@ -434,7 +436,7 @@ pub fn rewrite_directives(ast: &mut Ast, src: &[u8]) {
     while i < ast.items.len() {
         match &ast.items[i] {
             TopLevel::Comment(_) => {}
-            TopLevel::ImportDir(_) | TopLevel::SetDir(_) => {
+            TopLevel::ImportDir(_) | TopLevel::SetDir(_) | TopLevel::IgnoreDir(_) => {
                 i += 1;
                 continue;
             }
@@ -446,6 +448,7 @@ pub fn rewrite_directives(ast: &mut Ast, src: &[u8]) {
                 ast.items[i] = match dir {
                     Directive::Import(imp) => TopLevel::ImportDir(imp),
                     Directive::Set(sd) => TopLevel::SetDir(sd),
+                    Directive::Ignore(ig) => TopLevel::IgnoreDir(ig),
                 };
                 i += 1;
                 continue;

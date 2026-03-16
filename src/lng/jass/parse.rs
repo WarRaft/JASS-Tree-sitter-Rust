@@ -225,6 +225,7 @@ fn _parse(
     let mut cursor = Cursor::walk(&ast, rope, &imported_symbols);
     cursor.file_symbols.frozen_imports = frozen_imports;
     cursor.file_symbols.file_settings = cursor.file_settings.clone();
+    cursor.file_symbols.file_ignore_tags = cursor.file_ignore_tags.clone();
     cursor.file_symbols.bare_callees = cursor.bare_callees.clone();
 
     // 6. Merge import diagnostics with cursor diagnostics
@@ -257,10 +258,10 @@ fn _parse(
 
         let func_diag = diagnose_functions(uri);
 
-        // File-level `//set unused 0` suppresses all unused-function diagnostics.
-        let file_unused_enabled = cursor.file_settings
-            .get("unused")
-            .map_or(true, |v| v != "0");
+        // File-level `//ignore unused` suppresses all unused-function diagnostics.
+        let file_unused_suppressed = cursor.file_ignore_tags.contains("unused");
+        // File-level `//ignore cycle` suppresses all cyclic-call diagnostics.
+        let file_cycle_suppressed = cursor.file_ignore_tags.contains("cycle");
 
         for (&key, group) in &ref_map.groups {
             if !func_decl_keys.contains(&key) {
@@ -272,7 +273,7 @@ fn _parse(
                     let per_decl_suppressed = cursor.file_symbols.functions
                         .iter()
                         .any(|f| f.name == group.name && f.ignore_tags.contains("unused"));
-                    if file_unused_enabled && !per_decl_suppressed {
+                    if !file_unused_suppressed && !per_decl_suppressed {
                         all_diagnostics.push(Diagnostic {
                             range: decl_occ.range.clone(),
                             message: format!("Unused function `{}`", group.name),
@@ -283,15 +284,20 @@ fn _parse(
                     }
                 }
                 if func_diag.in_cycle.contains(&group.name) {
-                    all_diagnostics.push(Diagnostic {
-                        range: decl_occ.range.clone(),
-                        message: format!(
-                            "Function `{}` is part of a cyclic call chain — cannot be ordered",
-                            group.name
-                        ),
-                        severity: Some(DiagnosticSeverity::Warning),
-                        ..Default::default()
-                    });
+                    let per_decl_suppressed = cursor.file_symbols.functions
+                        .iter()
+                        .any(|f| f.name == group.name && f.ignore_tags.contains("cycle"));
+                    if !file_cycle_suppressed && !per_decl_suppressed {
+                        all_diagnostics.push(Diagnostic {
+                            range: decl_occ.range.clone(),
+                            message: format!(
+                                "Function `{}` is part of a cyclic call chain — cannot be ordered",
+                                group.name
+                            ),
+                            severity: Some(DiagnosticSeverity::Warning),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         }
