@@ -1955,7 +1955,42 @@ impl Cursor {
                             | Kind::EqEq | Kind::Neq => TokenKind::Operator,
 
                             Kind::Number | Kind::Float | Kind::Rawcode => TokenKind::Number,
-                            Kind::Comment => TokenKind::Comment,
+                            Kind::Comment => {
+                                // //* doc comment and //@ignore: prefix as Comment, body as String
+                                let sb = node.start_byte();
+                                let eb = node.end_byte();
+                                let text = self.rope.slice_to_cow(sb..eb);
+                                let trimmed = text.trim_start();
+                                if trimmed.starts_with("//*") {
+                                    let prefix_len = 3; // "//*"
+                                    let ws_before = text.len() - trimmed.len();
+                                    self.semantic.add_range(sb + ws_before, prefix_len, &self.rope, TokenKind::Comment, 0u32);
+                                    let rest_start = sb + ws_before + prefix_len;
+                                    if rest_start < eb {
+                                        self.semantic.add_range(rest_start, eb - rest_start, &self.rope, TokenKind::String, 0u32);
+                                    }
+                                    // skip the default add_node below
+                                    if cursor.goto_next_sibling() { continue; }
+                                    while !cursor.goto_next_sibling() {
+                                        if !cursor.goto_parent() { return; }
+                                    }
+                                    continue;
+                                } else if trimmed.starts_with("//@ignore") {
+                                    let prefix_len = "//@ignore".len();
+                                    let ws_before = text.len() - trimmed.len();
+                                    self.semantic.add_range(sb + ws_before, prefix_len, &self.rope, TokenKind::Comment, 0u32);
+                                    let rest_start = sb + ws_before + prefix_len;
+                                    if rest_start < eb {
+                                        self.semantic.add_range(rest_start, eb - rest_start, &self.rope, TokenKind::String, 0u32);
+                                    }
+                                    if cursor.goto_next_sibling() { continue; }
+                                    while !cursor.goto_next_sibling() {
+                                        if !cursor.goto_parent() { return; }
+                                    }
+                                    continue;
+                                }
+                                TokenKind::Comment
+                            }
                             _ => {
                                 // Descend
                                 if cursor.goto_first_child() { continue; }

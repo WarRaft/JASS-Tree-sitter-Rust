@@ -112,6 +112,18 @@
         "editor.selectionHighlight": false
       }
     },
+    "grammars": [
+      {
+        "language": "jass",
+        "scopeName": "source.jass",
+        "path": "./syntaxes/jass.tmLanguage.json"
+      },
+      {
+        "language": "angelscript",
+        "scopeName": "source.angelscript",
+        "path": "./syntaxes/as.tmLanguage.json"
+      }
+    ],
     "customEditors": [
       {
         "viewType": "blp.preview",

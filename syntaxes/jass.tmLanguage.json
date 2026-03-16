@@ -1,0 +1,27 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "JASS",
+    "scopeName": "source.jass",
+    "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" }
+    ],
+    "repository": {
+        "comment": {
+            "name": "comment.line.double-slash.jass",
+            "match": "//.*$"
+        },
+        "string": {
+            "name": "string.quoted.single.jass",
+            "begin": "'",
+            "end": "'|$",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.jass",
+                    "match": "\\\\."
+                }
+            ]
+        }
+    }
+}
+
