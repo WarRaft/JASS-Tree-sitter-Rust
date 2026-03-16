@@ -8,6 +8,46 @@
 use crate::lsp::ref_map::DeclKey;
 use std::collections::HashMap;
 
+// ─── Virtual / special type names ───────────────────────────────────────────
+
+/// Name of the virtual type used when type inference fails
+/// (e.g. `"hello" * 3`, `false - true`).
+pub const UNKNOWN_TYPE: &str = "unknown";
+
+// ─── Compile-time value ─────────────────────────────────────────────────────
+
+/// A value fully evaluated at compile time.
+///
+/// Produced by `Cursor::eval_expr` for expressions built exclusively from
+/// literals, other `comptime` globals, and pure operators.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ComptimeValue {
+    Integer(i64),
+    Real(f64),
+    Str(String),
+    Bool(bool),
+    Null,
+}
+
+impl std::fmt::Display for ComptimeValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Integer(v) => write!(f, "{}", v),
+            Self::Real(v) => {
+                // Ensure at least one decimal place so it reads as a real.
+                if v.fract() == 0.0 {
+                    write!(f, "{:.1}", v)
+                } else {
+                    write!(f, "{}", v)
+                }
+            }
+            Self::Str(v) => write!(f, "{}", v),
+            Self::Bool(v) => write!(f, "{}", v),
+            Self::Null => write!(f, "null"),
+        }
+    }
+}
+
 // ─── Atomic type descriptors ────────────────────────────────────────────────
 
 /// Type of a variable, parameter, or global.

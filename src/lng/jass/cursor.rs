@@ -6,7 +6,7 @@ use crate::lng::jass::symbol::{
     FileSymbols, FunctionSym, GlobalVarSym, NativeSym, ParamSym, TypeSym,
 };
 use crate::lng::jass::type_map::{
-    DeclType, FuncType, ParamPair, TypeDeclInfo, TypeMap, VarType,
+    ComptimeValue, DeclType, FuncType, ParamPair, TypeDeclInfo, TypeMap, VarType, UNKNOWN_TYPE,
 };
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
@@ -108,8 +108,10 @@ pub struct Cursor {
     pub type_map: TypeMap,
     /// Inlay hints for type annotations (shown when `//set type-tip 1`).
     pub type_hints: Vec<InlayHint>,
-    /// Names of globals proven to be compile-time evaluable (`comptime`).
-    comptime_names: HashSet<String>,
+    /// Compile-time evaluated values of `constant` globals.
+    /// Keyed by variable name; used by `eval_expr` to propagate values
+    /// and by type hints to display `type(value)`.
+    comptime_values: HashMap<String, ComptimeValue>,
 
     // Working state
     rope: Rope,
@@ -171,7 +173,7 @@ impl Cursor {
             file_settings: HashMap::new(),
             type_map: TypeMap::default(),
             type_hints: Vec::new(),
-            comptime_names: HashSet::new(),
+            comptime_values: HashMap::new(),
             rope: rope.clone(),
             id_roles: HashMap::new(),
             directive_nodes: HashSet::new(),
@@ -612,14 +614,20 @@ impl Cursor {
     // ─── type system helpers ─────────────────────────────────────────────
 
     /// Emit an `InlayHint` right after `node` showing `label` as a type tag.
-    fn emit_type_hint(&mut self, node: &Node, label: String) {
+    ///
+    /// When `value` is `Some`, the hint is formatted as `: type(value)`.
+    fn emit_type_hint(&mut self, node: &Node, label: &str, value: Option<&ComptimeValue>) {
         let end = node.end_position();
+        let display = match value {
+            Some(v) => format!(": {}({})", label, v),
+            None => format!(": {}", label),
+        };
         self.type_hints.push(InlayHint {
             position: Position {
                 line: end.row,
                 character: end.column,
             },
-            label: format!(": {}", label),
+            label: display,
             kind: Some(InlayHintKind::Type),
             padding_left: Some(true),
             padding_right: Some(false),
@@ -648,24 +656,218 @@ impl Cursor {
         parts.join(" ")
     }
 
-    /// Check if `expr` consists exclusively of literals, other `comptime`
-    /// globals, and pure operators — i.e. it can be fully evaluated at
-    /// compile time.
-    fn is_comptime_expr(&self, expr: &Expr) -> bool {
+    /// Evaluate an expression at compile time, returning the computed value
+    /// if the expression consists exclusively of literals, `comptime` globals,
+    /// and pure operators.
+    fn eval_expr(&self, expr: &Expr) -> Option<ComptimeValue> {
         match expr {
-            Expr::Literal(_) => true,
+            Expr::Literal(node) => self.eval_literal(node),
             Expr::Id(id) => {
                 let name = self.node_text(&id.node);
-                self.comptime_names.contains(&name)
+                match name.as_str() {
+                    "true" => Some(ComptimeValue::Bool(true)),
+                    "false" => Some(ComptimeValue::Bool(false)),
+                    "null" => Some(ComptimeValue::Null),
+                    _ => self.comptime_values.get(&name).cloned(),
+                }
             }
-            Expr::Binary { left, right, .. } => {
-                self.is_comptime_expr(left) && self.is_comptime_expr(right)
+            Expr::Binary { node, left, right } => {
+                let lv = self.eval_expr(left)?;
+                let rv = self.eval_expr(right)?;
+                let op = Self::binary_op_kind(node)?;
+                Self::eval_binary_comptime(op, &lv, &rv)
             }
-            Expr::Unary { operand, .. } => self.is_comptime_expr(operand),
-            Expr::Parens { inner, .. } => self.is_comptime_expr(inner),
+            Expr::Unary { node, operand } => {
+                let v = self.eval_expr(operand)?;
+                let op = Self::unary_op_kind(node)?;
+                Self::eval_unary_comptime(op, &v)
+            }
+            Expr::Parens { inner, .. } => self.eval_expr(inner),
             // Function calls, array accesses, and function references
             // are never comptime in JASS.
-            Expr::Call(_) | Expr::FuncRef(_) | Expr::Index { .. } => false,
+            Expr::Call(_) | Expr::FuncRef(_) | Expr::Index { .. } => None,
+        }
+    }
+
+    /// Evaluate a literal CST node at compile time.
+    fn eval_literal(&self, node: &Node) -> Option<ComptimeValue> {
+        let kind = Kind::try_from(node.kind_id()).ok()?;
+        match kind {
+            Kind::Number => {
+                let text = self.node_text(node);
+                Self::parse_integer_literal(&text).map(ComptimeValue::Integer)
+            }
+            Kind::Float => {
+                let text = self.node_text(node);
+                text.parse::<f64>().ok().map(ComptimeValue::Real)
+            }
+            Kind::StringLiteral => {
+                let text = self.node_text(node);
+                let inner = if text.len() >= 2 {
+                    &text[1..text.len() - 1]
+                } else {
+                    ""
+                };
+                Some(ComptimeValue::Str(Self::unescape_jass_string(inner)))
+            }
+            Kind::Rawcode => {
+                let text = self.node_text(node);
+                let inner = if text.len() >= 2 {
+                    &text[1..text.len() - 1]
+                } else {
+                    ""
+                };
+                let mut val: i64 = 0;
+                for b in inner.bytes() {
+                    val = (val << 8) | (b as i64);
+                }
+                Some(ComptimeValue::Integer(val))
+            }
+            _ => None,
+        }
+    }
+
+    /// Parse a JASS integer literal (decimal, hex `0x…`, octal `0…`).
+    fn parse_integer_literal(text: &str) -> Option<i64> {
+        if text.len() > 2 && (text.starts_with("0x") || text.starts_with("0X")) {
+            i64::from_str_radix(&text[2..], 16).ok()
+        } else if text.starts_with('$') && text.len() > 1 {
+            // Alternate hex prefix used in some JASS dialects
+            i64::from_str_radix(&text[1..], 16).ok()
+        } else if text.starts_with('0') && text.len() > 1 && text.chars().all(|c| c.is_ascii_digit()) {
+            i64::from_str_radix(&text[1..], 8).ok()
+        } else {
+            text.parse::<i64>().ok()
+        }
+    }
+
+    /// Basic JASS string unescape: `\\` → `\`, `\"` → `"`, `\n` → newline.
+    fn unescape_jass_string(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                match chars.next() {
+                    Some('\\') => out.push('\\'),
+                    Some('"') => out.push('"'),
+                    Some('n') => out.push('\n'),
+                    Some('r') => out.push('\r'),
+                    Some('t') => out.push('\t'),
+                    Some(other) => {
+                        out.push('\\');
+                        out.push(other);
+                    }
+                    None => out.push('\\'),
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// Evaluate a binary operation on two compile-time values.
+    fn eval_binary_comptime(op: Kind, left: &ComptimeValue, right: &ComptimeValue) -> Option<ComptimeValue> {
+        use ComptimeValue::*;
+        match op {
+            Kind::Plus => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Integer(a.wrapping_add(*b))),
+                (Real(a), Real(b)) => Some(Real(a + b)),
+                (Integer(a), Real(b)) => Some(Real(*a as f64 + b)),
+                (Real(a), Integer(b)) => Some(Real(a + *b as f64)),
+                // String concatenation — JASS converts the other operand.
+                (Str(a), Str(b)) => Some(Str(format!("{}{}", a, b))),
+                (Str(a), Integer(b)) => Some(Str(format!("{}{}", a, b))),
+                (Str(a), Real(b)) => Some(Str(format!("{}{}", a, b))),
+                (Integer(a), Str(b)) => Some(Str(format!("{}{}", a, b))),
+                (Real(a), Str(b)) => Some(Str(format!("{}{}", a, b))),
+                _ => None,
+            },
+            Kind::Minus => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Integer(a.wrapping_sub(*b))),
+                (Real(a), Real(b)) => Some(Real(a - b)),
+                (Integer(a), Real(b)) => Some(Real(*a as f64 - b)),
+                (Real(a), Integer(b)) => Some(Real(a - *b as f64)),
+                _ => None,
+            },
+            Kind::Star => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Integer(a.wrapping_mul(*b))),
+                (Real(a), Real(b)) => Some(Real(a * b)),
+                (Integer(a), Real(b)) => Some(Real(*a as f64 * b)),
+                (Real(a), Integer(b)) => Some(Real(a * *b as f64)),
+                _ => None,
+            },
+            Kind::Slash => match (left, right) {
+                (Integer(a), Integer(b)) if *b != 0 => Some(Integer(a / b)),
+                (Real(a), Real(b)) if *b != 0.0 => Some(Real(a / b)),
+                (Integer(a), Real(b)) if *b != 0.0 => Some(Real(*a as f64 / b)),
+                (Real(a), Integer(b)) if *b != 0 => Some(Real(a / *b as f64)),
+                _ => None,
+            },
+            Kind::And => match (left, right) {
+                (Bool(a), Bool(b)) => Some(Bool(*a && *b)),
+                _ => None,
+            },
+            Kind::Or => match (left, right) {
+                (Bool(a), Bool(b)) => Some(Bool(*a || *b)),
+                _ => None,
+            },
+            Kind::EqEq => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Bool(a == b)),
+                (Real(a), Real(b)) => Some(Bool(a == b)),
+                (Str(a), Str(b)) => Some(Bool(a == b)),
+                (Bool(a), Bool(b)) => Some(Bool(a == b)),
+                _ => None,
+            },
+            Kind::Neq => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Bool(a != b)),
+                (Real(a), Real(b)) => Some(Bool(a != b)),
+                (Str(a), Str(b)) => Some(Bool(a != b)),
+                (Bool(a), Bool(b)) => Some(Bool(a != b)),
+                _ => None,
+            },
+            Kind::Lt => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Bool(a < b)),
+                (Real(a), Real(b)) => Some(Bool(a < b)),
+                (Str(a), Str(b)) => Some(Bool(a < b)),
+                _ => None,
+            },
+            Kind::Gt => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Bool(a > b)),
+                (Real(a), Real(b)) => Some(Bool(a > b)),
+                (Str(a), Str(b)) => Some(Bool(a > b)),
+                _ => None,
+            },
+            Kind::Le => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Bool(a <= b)),
+                (Real(a), Real(b)) => Some(Bool(a <= b)),
+                (Str(a), Str(b)) => Some(Bool(a <= b)),
+                _ => None,
+            },
+            Kind::Ge => match (left, right) {
+                (Integer(a), Integer(b)) => Some(Bool(a >= b)),
+                (Real(a), Real(b)) => Some(Bool(a >= b)),
+                (Str(a), Str(b)) => Some(Bool(a >= b)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Evaluate a unary operation on a compile-time value.
+    fn eval_unary_comptime(op: Kind, val: &ComptimeValue) -> Option<ComptimeValue> {
+        use ComptimeValue::*;
+        match op {
+            Kind::Minus => match val {
+                Integer(v) => Some(Integer(-v)),
+                Real(v) => Some(Real(-v)),
+                _ => None,
+            },
+            Kind::Not => match val {
+                Bool(v) => Some(Bool(!v)),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -984,10 +1186,12 @@ impl Cursor {
                         // type-tip: show type with const/comptime/array modifiers
                         if let Some(name_id) = &d.name {
                             if let Some(ref tn) = type_name {
-                                let is_comptime = v.is_constant
-                                    && d.value.as_ref().map_or(false, |e| self.is_comptime_expr(e));
+                                let cv = d.value.as_ref().and_then(|e| self.eval_expr(e));
+                                let is_comptime = v.is_constant && cv.is_some();
                                 if is_comptime {
-                                    self.comptime_names.insert(var_name.clone());
+                                    if let Some(ref val) = cv {
+                                        self.comptime_values.insert(var_name.clone(), val.clone());
+                                    }
                                 }
                                 // TypeMap: record global variable type
                                 if let Some(key) = var_decl_key {
@@ -1001,7 +1205,7 @@ impl Cursor {
                                 let label = Self::build_type_label(
                                     tn, v.is_constant, is_comptime, v.is_array,
                                 );
-                                self.emit_type_hint(&name_id.node, label);
+                                self.emit_type_hint(&name_id.node, &label, cv.as_ref());
                             }
                         }
                         children.push(DocumentSymbol {
@@ -1055,8 +1259,9 @@ impl Cursor {
                             is_constant: false,
                             is_comptime: false,
                         }));
-                        // type-tip: show local type
-                        self.emit_type_hint(&name_id.node, tn);
+                        // type-tip: show local type + comptime value of initializer
+                        let cv = l.value.as_ref().and_then(|e| self.eval_expr(e));
+                        self.emit_type_hint(&name_id.node, &tn, cv.as_ref());
                     }
                     Self::scope_define(
                         scope,
@@ -1089,6 +1294,8 @@ impl Cursor {
                     if let Some(expr) = &d.value {
                         self.visit_expr(expr);
                     }
+                    let var_name = self.id_name(&d.name);
+                    let decl_index = self.next_decl_index();
                     let var_decl_key = if let Some(ref name_id) = d.name {
                         let vname = self.node_text(&name_id.node);
                         // hl: declare variable
@@ -1097,14 +1304,26 @@ impl Cursor {
                     } else {
                         None
                     };
+                    // Export to file_symbols so the scope resolver makes
+                    // this variable visible to importing files.
+                    self.file_symbols.globals.push(GlobalVarSym {
+                        name: var_name.clone(),
+                        type_name: type_name.clone(),
+                        is_constant: v.is_constant,
+                        is_array: v.is_array,
+                        has_initializer: d.value.is_some(),
+                        decl_index,
+                    });
                     // TypeMap + type-tip
                     if let Some(ref name_id) = d.name {
                         if let Some(ref tn) = type_name {
-                            let is_comptime = v.is_constant
-                                && d.value.as_ref().map_or(false, |e| self.is_comptime_expr(e));
+                            let cv = d.value.as_ref().and_then(|e| self.eval_expr(e));
+                            let is_comptime = v.is_constant && cv.is_some();
                             if is_comptime {
                                 let vname = self.node_text(&name_id.node);
-                                self.comptime_names.insert(vname);
+                                if let Some(ref val) = cv {
+                                    self.comptime_values.insert(vname, val.clone());
+                                }
                             }
                             if let Some(key) = var_decl_key {
                                 self.type_map.insert(key, DeclType::Var(VarType {
@@ -1117,7 +1336,7 @@ impl Cursor {
                             let label = Self::build_type_label(
                                 tn, v.is_constant, is_comptime, v.is_array,
                             );
-                            self.emit_type_hint(&name_id.node, label);
+                            self.emit_type_hint(&name_id.node, &label, cv.as_ref());
                         }
                     }
                 }
@@ -1256,37 +1475,49 @@ impl Cursor {
     }
 
     /// Infer the result type of a binary operation from operator and operand types.
+    ///
+    /// Returns `Some(UNKNOWN_TYPE)` when both operand types are known but
+    /// the combination is invalid (e.g. `string * integer`, `boolean - boolean`).
     fn infer_binary_type(
         op: Option<Kind>,
         left: Option<&str>,
         right: Option<&str>,
     ) -> Option<String> {
         let op = op?;
+        let l = left?;
+        let r = right?;
+
+        let is_numeric = |t: &str| t == "integer" || t == "real";
+
         match op {
             // Comparison and logical operators always produce boolean.
             Kind::And | Kind::Or | Kind::Lt | Kind::Gt | Kind::Le | Kind::Ge
             | Kind::EqEq | Kind::Neq => Some("boolean".to_string()),
 
             Kind::Plus => {
-                // string + anything ⇒ string
-                if left == Some("string") || right == Some("string") {
+                // string + anything ⇒ string (concatenation via I2S/R2S)
+                if l == "string" || r == "string" {
                     Some("string".to_string())
-                } else if left == Some("real") || right == Some("real") {
-                    Some("real".to_string())
-                } else if left == Some("integer") && right == Some("integer") {
-                    Some("integer".to_string())
+                } else if is_numeric(l) && is_numeric(r) {
+                    if l == "real" || r == "real" {
+                        Some("real".to_string())
+                    } else {
+                        Some("integer".to_string())
+                    }
                 } else {
-                    left.or(right).map(|s| s.to_string())
+                    Some(UNKNOWN_TYPE.to_string())
                 }
             }
 
             Kind::Minus | Kind::Star | Kind::Slash => {
-                if left == Some("real") || right == Some("real") {
-                    Some("real".to_string())
-                } else if left == Some("integer") && right == Some("integer") {
-                    Some("integer".to_string())
+                if is_numeric(l) && is_numeric(r) {
+                    if l == "real" || r == "real" {
+                        Some("real".to_string())
+                    } else {
+                        Some("integer".to_string())
+                    }
                 } else {
-                    left.or(right).map(|s| s.to_string())
+                    Some(UNKNOWN_TYPE.to_string())
                 }
             }
 
@@ -1312,7 +1543,7 @@ impl Cursor {
                     _ => self.lookup_var_type(&name),
                 };
                 if let Some(ref t) = ty {
-                    self.emit_type_hint(&id.node, t.clone());
+                    self.emit_type_hint(&id.node, t, None);
                 }
                 ty
             }
@@ -1329,7 +1560,7 @@ impl Cursor {
                     self.visit_expr(arg);
                 }
                 if let Some(ref t) = ret_type {
-                    self.emit_type_hint(&fc.node, t.clone());
+                    self.emit_type_hint(&fc.node, t, None);
                 }
                 ret_type
             }
@@ -1339,7 +1570,7 @@ impl Cursor {
                 self.record_callee(&fname);
                 self.hl_reference_func(&fname, &id.node, DocumentHighlightKind::Read);
                 let ty = "code".to_string();
-                self.emit_type_hint(&id.node, ty.clone());
+                self.emit_type_hint(&id.node, &ty, None);
                 Some(ty)
             }
             Expr::Binary { node, left, right } => {
@@ -1351,9 +1582,11 @@ impl Cursor {
             Expr::Unary { node, operand, .. } => {
                 let ot = self.visit_expr(operand);
                 let op = Self::unary_op_kind(node);
-                match op {
-                    Some(Kind::Not) => Some("boolean".to_string()),
-                    Some(Kind::Minus) => ot, // negation preserves the operand type
+                match (op, ot.as_deref()) {
+                    (Some(Kind::Not), Some("boolean")) => Some("boolean".to_string()),
+                    (Some(Kind::Not), Some(_)) => Some(UNKNOWN_TYPE.to_string()),
+                    (Some(Kind::Minus), Some(t)) if t == "integer" || t == "real" => Some(t.to_string()),
+                    (Some(Kind::Minus), Some(_)) => Some(UNKNOWN_TYPE.to_string()),
                     _ => ot,
                 }
             }
@@ -1375,7 +1608,7 @@ impl Cursor {
                     _ => None,
                 };
                 if let Some(ref t) = ty {
-                    self.emit_type_hint(node, t.clone());
+                    self.emit_type_hint(node, t, None);
                 }
                 ty
             }

@@ -1072,7 +1072,7 @@ endfunction
             let local_lines: Vec<_> = local_group.1.iter().map(|o| o.range.start.line).collect();
             assert!(local_lines.contains(&4), "local group should contain decl (line 4)");
             assert!(local_lines.contains(&5), "local group should contain set (line 5)");
-            assert!(!local_lines.contains(&1), "local group should NOT contain global (line 1)");
+            assert!(!local_lines.contains(&1), "local group should NOT contain line 1 (global)");
         });
     }
 
@@ -2067,6 +2067,511 @@ endfunction
                 c.type_hints.iter().any(|h| h.label == ": null"),
                 "should have ': null' hint for null, got: {:?}",
                 c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    // ======================================================================
+    //  Cross-file variable linking (ass.j → anal.j)
+    // ======================================================================
+    //
+    //  anal.j declares `real A = 33` + `function A`.
+    //  ass.j uses `A = 44` (bare set) and `call A()`.
+    //
+    //  When parsing ass.j with `A` imported as both Var and Func,
+    //  the bare-set `A` must resolve to the imported *variable* and
+    //  `call A()` must resolve to the imported *function*.
+
+    #[test]
+    fn cross_file_imported_var_bare_set() {
+        // ass.j: top-level bare assignment to imported variable
+        let src = "A = 44\n";
+        let origin = Url::parse("file:///test/anal.j").unwrap();
+        let imported = vec![ImportedSymbol {
+            origin_uri: origin.clone(),
+            name: "A".into(),
+            kind: ImportedKind::Var,
+            origin_decl_key: None,
+        }];
+        with_cursor_imported(src, &imported, |c| {
+            // `A` should resolve to the external group
+            let ext_keys: Vec<_> = c
+                .ref_groups
+                .keys()
+                .filter(|&&k| k >= EXTERNAL_KEY_BASE)
+                .copied()
+                .collect();
+            assert!(
+                !ext_keys.is_empty(),
+                "bare `A = 44` should produce an external ref group for imported var A.\n\
+                 ref_names: {:?}\n\
+                 groups: {:?}",
+                c.ref_names,
+                c.ref_groups
+                    .iter()
+                    .map(|(k, v)| (k, c.ref_names.get(k), v.len()))
+                    .collect::<Vec<_>>()
+            );
+            let ext_a = ext_keys
+                .iter()
+                .find(|k| c.ref_names.get(k).map(|n| n == "A").unwrap_or(false));
+            assert!(
+                ext_a.is_some(),
+                "expected external group named 'A', got names: {:?}",
+                ext_keys
+                    .iter()
+                    .map(|k| c.ref_names.get(k))
+                    .collect::<Vec<_>>()
+            );
+            let key = *ext_a.unwrap();
+            assert_eq!(c.external_decls[&key].uri, origin);
+            let occs = &c.ref_groups[&key];
+            assert_eq!(occs.len(), 1, "1 ref (the bare set)");
+            assert!(!occs[0].is_decl, "external ref should not be a declaration");
+        });
+    }
+
+    #[test]
+    fn cross_file_imported_func_call() {
+        // ass.j: call to imported function
+        let src = "call A()\n";
+        let origin = Url::parse("file:///test/anal.j").unwrap();
+        let imported = vec![ImportedSymbol {
+            origin_uri: origin.clone(),
+            name: "A".into(),
+            kind: ImportedKind::Func,
+            origin_decl_key: None,
+        }];
+        with_cursor_imported(src, &imported, |c| {
+            let ext_keys: Vec<_> = c
+                .ref_groups
+                .keys()
+                .filter(|&&k| k >= EXTERNAL_KEY_BASE)
+                .copied()
+                .collect();
+            assert!(
+                !ext_keys.is_empty(),
+                "`call A()` should produce an external ref group for imported func A.\n\
+                 ref_names: {:?}\n\
+                 groups: {:?}",
+                c.ref_names,
+                c.ref_groups
+                    .iter()
+                    .map(|(k, v)| (k, c.ref_names.get(k), v.len()))
+                    .collect::<Vec<_>>()
+            );
+            let ext_a = ext_keys
+                .iter()
+                .find(|k| c.ref_names.get(k).map(|n| n == "A").unwrap_or(false));
+            assert!(
+                ext_a.is_some(),
+                "expected external group named 'A'"
+            );
+            let key = *ext_a.unwrap();
+            assert_eq!(c.external_decls[&key].uri, origin);
+        });
+    }
+
+    #[test]
+    fn cross_file_both_var_and_func() {
+        // ass.j: uses A as both a variable and a function
+        let src = "\
+A = 44
+call A()
+call A()
+";
+        let origin = Url::parse("file:///test/anal.j").unwrap();
+        let imported = vec![
+            ImportedSymbol {
+                origin_uri: origin.clone(),
+                name: "A".into(),
+                kind: ImportedKind::Var,
+                origin_decl_key: Some(0),
+            },
+            ImportedSymbol {
+                origin_uri: origin.clone(),
+                name: "A".into(),
+                kind: ImportedKind::Func,
+                origin_decl_key: Some(1),
+            },
+        ];
+        with_cursor_imported(src, &imported, |c| {
+            // There should be TWO external groups for A:
+            // one for the Var namespace, one for the Func namespace.
+            let ext_a_keys: Vec<_> = c
+                .ref_groups
+                .keys()
+                .filter(|&&k| k >= EXTERNAL_KEY_BASE
+                    && c.ref_names.get(&k).map(|n| n == "A").unwrap_or(false))
+                .copied()
+                .collect();
+            assert_eq!(
+                ext_a_keys.len(),
+                2,
+                "expected 2 external groups for 'A' (var + func), got {}.\n\
+                 all ref_names: {:?}\n\
+                 all groups: {:?}",
+                ext_a_keys.len(),
+                c.ref_names,
+                c.ref_groups
+                    .iter()
+                    .map(|(k, v)| (k, c.ref_names.get(k), v.len()))
+                    .collect::<Vec<_>>()
+            );
+
+            // The var group should have 1 occurrence (A = 44)
+            // The func group should have 2 occurrences (call A() × 2)
+            let mut occ_counts: Vec<usize> = ext_a_keys.iter()
+                .map(|k| c.ref_groups[k].len())
+                .collect();
+            occ_counts.sort();
+            assert_eq!(
+                occ_counts,
+                vec![1, 2],
+                "var group: 1 (set A=44), func group: 2 (call A() x2)");
+        });
+    }
+
+    // ── VarStmt at top-level must export to file_symbols.globals ──────────
+    //
+    //  `real A = 33` at top level (VarStmt, NOT inside `globals` block)
+    //  should appear in `file_symbols.globals` so the scope resolver
+    //  exports it to importing files.
+
+    #[test]
+    fn varstmt_top_level_exports_to_file_symbols() {
+        let src = "real A = 33\n";
+        with_cursor(src, |c| {
+            let found = c.file_symbols.globals.iter().find(|g| g.name == "A");
+            assert!(
+                found.is_some(),
+                "top-level `real A = 33` (VarStmt) should appear in file_symbols.globals.\n\
+                 globals: {:?}",
+                c.file_symbols.globals.iter().map(|g| &g.name).collect::<Vec<_>>()
+            );
+            let sym = found.unwrap();
+            assert_eq!(sym.type_name.as_deref(), Some("real"));
+            assert!(!sym.is_constant);
+            assert!(!sym.is_array);
+            assert!(sym.has_initializer);
+        });
+    }
+
+    #[test]
+    fn varstmt_top_level_constant_exports_to_file_symbols() {
+        let src = "constant integer MAX = 100\n";
+        with_cursor(src, |c| {
+            let found = c.file_symbols.globals.iter().find(|g| g.name == "MAX");
+            assert!(
+                found.is_some(),
+                "top-level `constant integer MAX = 100` (VarStmt) should appear in file_symbols.globals.\n\
+                 globals: {:?}",
+                c.file_symbols.globals.iter().map(|g| &g.name).collect::<Vec<_>>()
+            );
+            let sym = found.unwrap();
+            assert_eq!(sym.type_name.as_deref(), Some("integer"));
+            assert!(sym.is_constant);
+        });
+    }
+
+    // ======================================================================
+    //  Unknown type — impossible type combinations
+    // ======================================================================
+
+    #[test]
+    fn unknown_type_string_times_integer() {
+        // `"hello" * 3` → type `unknown`
+        let src = "\
+globals
+    integer x = \"hello\" * 3
+endglobals
+";
+        with_cursor(src, |c| {
+            // The declaration hint on `x` should show `unknown` because
+            // the initialiser expression "hello" * 3 is not valid.
+            let decl_hint = c.type_hints.iter()
+                .find(|h| h.position.line == 1 && h.label.contains("integer"));
+            assert!(
+                decl_hint.is_some(),
+                "should have a type hint for variable x, got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line)).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn unknown_type_boolean_minus_boolean() {
+        // `false - true` → both operands are boolean, minus is invalid → unknown
+        let src = "\
+function Foo takes nothing returns nothing
+    local integer x = false - true
+endfunction
+";
+        with_cursor(src, |c| {
+            // The expression `false - true` type should be unknown.
+            // We check that `false` gets `: boolean` and `true` gets `: boolean`
+            let bool_hints: Vec<_> = c.type_hints.iter()
+                .filter(|h| h.label == ": boolean")
+                .collect();
+            assert!(bool_hints.len() >= 2, "both `false` and `true` should get `: boolean`, got: {:?}",
+                c.type_hints.iter().map(|h| (&h.label, h.position.line, h.position.character)).collect::<Vec<_>>());
+        });
+    }
+
+    #[test]
+    fn unknown_type_negate_string() {
+        // `-"hello"` → unary minus on string → unknown
+        let src = "\
+globals
+    integer x = -\"hello\"
+endglobals
+";
+        with_cursor(src, |c| {
+            // The string literal should still get `: string`
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": string"),
+                "string literal should get `: string`"
+            );
+        });
+    }
+
+    #[test]
+    fn unknown_type_not_integer() {
+        // `not 5` → `not` on non-boolean → unknown
+        let src = "\
+globals
+    boolean b = not 5
+endglobals
+";
+        with_cursor(src, |c| {
+            assert!(
+                c.type_hints.iter().any(|h| h.label == ": integer"),
+                "literal 5 should get `: integer`"
+            );
+        });
+    }
+
+    // ======================================================================
+    //  Compile-time value display on declaration hints
+    // ======================================================================
+
+    #[test]
+    fn comptime_value_integer_on_global() {
+        let src = "\
+globals
+    constant integer A = 10
+endglobals
+";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.label.contains("comptime") && h.label.contains("integer"));
+            assert!(
+                hint.is_some(),
+                "constant integer global should get comptime hint, got: {:?}",
+                c.type_hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+            );
+            let h = hint.unwrap();
+            assert!(
+                h.label.contains("(10)"),
+                "hint should contain comptime value (10), got: {:?}", h.label
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_string_concat() {
+        let src = "\
+globals
+    constant string S = \"a\" + \"b\"
+endglobals
+";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.label.contains("comptime") && h.label.contains("string"));
+            assert!(
+                hint.is_some(),
+                "constant string concat should get comptime hint, got: {:?}",
+                c.type_hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+            );
+            let h = hint.unwrap();
+            assert!(
+                h.label.contains("(ab)"),
+                "hint should contain comptime value (ab), got: {:?}", h.label
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_string_plus_integer() {
+        // "a" + 1 → comptime value "a1"
+        let src = "\
+globals
+    constant string S = \"a\" + 1
+endglobals
+";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.label.contains("string") && h.label.contains("(a1)"));
+            assert!(
+                hint.is_some(),
+                "constant string + int should give comptime value (a1), got: {:?}",
+                c.type_hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_propagates_through_globals() {
+        let src = "\
+globals
+    constant integer A = 10
+    constant integer B = A + 5
+endglobals
+";
+        with_cursor(src, |c| {
+            // B = A + 5 = 15
+            let hint = c.type_hints.iter()
+                .find(|h| h.position.line == 2 && h.label.contains("(15)"));
+            assert!(
+                hint.is_some(),
+                "B should have comptime value (15), got: {:?}",
+                c.type_hints.iter()
+                    .filter(|h| h.position.line == 2)
+                    .map(|h| &h.label)
+                    .collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_real_arithmetic() {
+        let src = "\
+globals
+    constant real R = 2.5 * 4.0
+endglobals
+";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.label.contains("real") && h.label.contains("(10"));
+            assert!(
+                hint.is_some(),
+                "constant real should have comptime value ≈10, got: {:?}",
+                c.type_hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_boolean_logic() {
+        let src = "\
+globals
+    constant boolean B = true and false
+endglobals
+";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.label.contains("boolean") && h.label.contains("(false)"));
+            assert!(
+                hint.is_some(),
+                "constant boolean `true and false` should give comptime value (false), got: {:?}",
+                c.type_hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_not_shown_on_non_constant() {
+        // Non-constant globals should NOT show comptime value (they're mutable)
+        let src = "\
+globals
+    integer X = 42
+endglobals
+";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.position.line == 1 && h.label.contains("integer"));
+            assert!(hint.is_some());
+            let h = hint.unwrap();
+            assert!(
+                !h.label.contains("(42)"),
+                "non-constant global should NOT show comptime value, got: {:?}", h.label
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_local_shows_value() {
+        // Locals CAN show comptime value of the initialiser
+        let src = "\
+function Foo takes nothing returns nothing
+    local integer x = 7 + 3
+endfunction
+";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.position.line == 1 && h.label.contains("integer") && h.label.contains("(10)"));
+            assert!(
+                hint.is_some(),
+                "local x should show comptime value (10), got: {:?}",
+                c.type_hints.iter()
+                    .filter(|h| h.position.line == 1)
+                    .map(|h| &h.label)
+                    .collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_varstmt_toplevel() {
+        // Top-level VarStmt also shows comptime value
+        let src = "constant integer MAX = 100\n";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.label.contains("comptime") && h.label.contains("(100)"));
+            assert!(
+                hint.is_some(),
+                "top-level constant should show comptime value (100), got: {:?}",
+                c.type_hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_hex_literal() {
+        let src = "\
+globals
+    constant integer H = 0xFF
+endglobals
+";
+        with_cursor(src, |c| {
+            let hint = c.type_hints.iter()
+                .find(|h| h.label.contains("(255)"));
+            assert!(
+                hint.is_some(),
+                "hex literal 0xFF should evaluate to 255, got: {:?}",
+                c.type_hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+            );
+        });
+    }
+
+    #[test]
+    fn comptime_value_division_by_zero_no_value() {
+        // Division by zero should not produce a comptime value
+        let src = "\
+globals
+    constant integer D = 10 / 0
+endglobals
+";
+        with_cursor(src, |c| {
+            // Should still have a hint but without comptime value
+            let hint = c.type_hints.iter()
+                .find(|h| h.position.line == 1 && h.label.contains("integer"));
+            assert!(hint.is_some());
+            let h = hint.unwrap();
+            // The label should NOT have a parenthesised value
+            assert!(
+                !h.label.contains("("),
+                "div by zero should not produce comptime value, got: {:?}", h.label
             );
         });
     }
