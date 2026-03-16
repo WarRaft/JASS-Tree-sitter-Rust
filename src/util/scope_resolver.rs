@@ -171,6 +171,10 @@ impl ScopeResolver {
     /// `content_hash` is the SHA-256 of the file content at parse time;
     /// used by [`is_stale`] to detect changes without re-reading the file.
     ///
+    /// **Fast path:** if the stored hash already matches `content_hash`,
+    /// the entries are assumed unchanged and the function returns immediately
+    /// — no write lock, no serialization, no disk I/O.
+    ///
     /// Automatically persists to disk.
     pub fn update_file(
         &self,
@@ -178,6 +182,15 @@ impl ScopeResolver {
         content_hash: [u8; 32],
         entries: Vec<GlobalEntry>,
     ) {
+        // Fast path: if the hash is unchanged, the entries haven't changed
+        // either (they're derived deterministically from the same content).
+        {
+            let inner = self.inner.read().unwrap();
+            if inner.hashes.get(uri) == Some(&content_hash) {
+                return;
+            }
+        }
+
         let mut inner = self.inner.write().unwrap();
 
         // 1. Remove old entries for this URI.

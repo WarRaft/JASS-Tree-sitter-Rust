@@ -78,6 +78,10 @@ struct CacheEntry {
     uri: String,
     /// Metadata at the time the cache was written.
     meta: FileMeta,
+    /// SHA-256 of file content at the time the cache was written.
+    /// Stored so consumers (scope resolver) can use the hash without
+    /// re-reading the file from disk.
+    content_hash: [u8; 32],
     /// The actual symbol data.
     symbols: FileSymbols,
 }
@@ -87,6 +91,7 @@ struct CacheEntry {
 struct CacheEntryRef<'a> {
     uri: &'a str,
     meta: FileMeta,
+    content_hash: [u8; 32],
     symbols: &'a FileSymbols,
 }
 
@@ -94,10 +99,10 @@ struct CacheEntryRef<'a> {
 
 /// Try to load cached symbols for `uri`.
 ///
-/// Returns `Some((meta, symbols))` only if the cache file exists.
+/// Returns `Some((meta, content_hash, symbols))` only if the cache file exists.
 /// The caller must compare `meta` with the current file metadata to decide
 /// whether the entry is stale.
-pub fn load(uri: &Url) -> Option<(FileMeta, FileSymbols)> {
+pub fn load(uri: &Url) -> Option<(FileMeta, [u8; 32], FileSymbols)> {
     let path = cache_file(uri)?;
     if !path.exists() {
         return None;
@@ -120,11 +125,11 @@ pub fn load(uri: &Url) -> Option<(FileMeta, FileSymbols)> {
         }
     };
 
-    Some((entry.meta, entry.symbols))
+    Some((entry.meta, entry.content_hash, entry.symbols))
 }
 
-/// Store symbols to disk for `uri` with the given file metadata.
-pub fn store(uri: &Url, meta: FileMeta, symbols: &FileSymbols) {
+/// Store symbols to disk for `uri` with the given file metadata and content hash.
+pub fn store(uri: &Url, meta: FileMeta, content_hash: [u8; 32], symbols: &FileSymbols) {
     let Some(path) = cache_file(uri) else { return };
 
     if let Some(parent) = path.parent() {
@@ -134,6 +139,7 @@ pub fn store(uri: &Url, meta: FileMeta, symbols: &FileSymbols) {
     let entry = CacheEntryRef {
         uri: uri.as_str(),
         meta,
+        content_hash,
         symbols,
     };
 
@@ -160,9 +166,9 @@ pub fn evict(uri: &Url) {
 
 /// Load **all** cached entries from the cache directory.
 ///
-/// Returns `(uri, meta, symbols)` for every valid `.bin` file.
+/// Returns `(uri, meta, content_hash, symbols)` for every valid `.bin` file.
 /// Corrupted entries are deleted silently.
-pub fn load_all() -> Vec<(Url, FileMeta, FileSymbols)> {
+pub fn load_all() -> Vec<(Url, FileMeta, [u8; 32], FileSymbols)> {
     let Some(dir) = cache_dir() else {
         return vec![];
     };
@@ -188,7 +194,7 @@ pub fn load_all() -> Vec<(Url, FileMeta, FileSymbols)> {
         match bincode::deserialize::<CacheEntry>(&data) {
             Ok(ce) => {
                 if let Ok(uri) = Url::parse(&ce.uri) {
-                    result.push((uri, ce.meta, ce.symbols));
+                    result.push((uri, ce.meta, ce.content_hash, ce.symbols));
                 }
             }
             Err(_) => {

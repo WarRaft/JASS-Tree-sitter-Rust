@@ -222,6 +222,7 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
 
 /// Compute content hash for a URI — reads from ROPE_MAP if available,
 /// otherwise reads from disk.
+#[allow(dead_code)]
 pub fn compute_hash_for_uri(uri: &Url) -> [u8; 32] {
     if let Some(rope_entry) = ROPE_MAP.get(uri) {
         return ref_cache::content_hash(rope_entry.value());
@@ -244,19 +245,36 @@ pub fn compute_hash_for_uri(uri: &Url) -> [u8; 32] {
 /// when it must be read from disk (e.g. `tree_sitter_jass::language()`).
 ///
 /// Returns `true` if symbols were successfully loaded, `false` otherwise.
+///
+/// ## Staleness checks
+///
+/// 1. **In-memory** (`FILE_SYMBOLS`) — cheapest, no I/O.
+/// 2. **Disk cache** (`symbol_cache`) — one `stat()` call to validate
+///    `FileMeta` (size + mtime).  If fresh, the stored `content_hash` is
+///    reused so we never read the file just for SHA-256.
+/// 3. **Parse from disk** — last resort, reads + parses the file.
 pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) -> bool {
     // Already in memory — no need to reload.
     if FILE_SYMBOLS.contains_key(dep_uri) {
         return true;
     }
 
-    // Disk cache.
-    if let Some((_meta, symbols)) = symbol_cache::load(dep_uri) {
-        let entries = file_symbols_to_entries(dep_uri, &symbols);
-        let rope_hash = compute_hash_for_uri(dep_uri);
-        SCOPE_RESOLVER.update_file(dep_uri, rope_hash, entries);
-        FILE_SYMBOLS.insert(dep_uri.clone(), symbols);
-        return true;
+    // Disk cache — but only if the file hasn't changed since the cache was written.
+    if let Some((cached_meta, cached_hash, symbols)) = symbol_cache::load(dep_uri) {
+        let current_meta = symbol_cache::FileMeta::from_uri(dep_uri);
+        if current_meta == Some(cached_meta) {
+            // Cache is fresh — use the stored content_hash directly
+            // instead of re-reading the file for SHA-256.
+            let entries = file_symbols_to_entries(dep_uri, &symbols);
+            SCOPE_RESOLVER.update_file(dep_uri, cached_hash, entries);
+            FILE_SYMBOLS.insert(dep_uri.clone(), symbols);
+            return true;
+        }
+        // Cache is stale — fall through to parse from disk.
+        log::debug!(
+            "ensure_file_symbols: stale cache for {}",
+            dep_uri.path()
+        );
     }
 
     // Parse from disk.
@@ -285,12 +303,12 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
     let ast = crate::lng::jass::ast::build_ast(tree.root_node());
     let cursor = crate::lng::jass::cursor::Cursor::walk(&ast, &rope, &[]);
     let file_symbols = cursor.file_symbols;
+    let hash = ref_cache::content_hash(&rope);
 
     if let Some(meta) = symbol_cache::FileMeta::from_uri(dep_uri) {
-        symbol_cache::store(dep_uri, meta, &file_symbols);
+        symbol_cache::store(dep_uri, meta, hash, &file_symbols);
     }
     let entries = file_symbols_to_entries(dep_uri, &file_symbols);
-    let hash = ref_cache::content_hash(&rope);
     SCOPE_RESOLVER.update_file(dep_uri, hash, entries);
     FILE_SYMBOLS.insert(dep_uri.clone(), file_symbols);
     true

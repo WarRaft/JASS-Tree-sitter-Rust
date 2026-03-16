@@ -5,7 +5,7 @@ use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::ref_map::{build_ref_map, RefMap, REF_URI_MAP};
 use crate::util::file_store::{
     exports_changed, new_cancel_token, register_pending,
-    ParseSnapshot, FILE_STORE,
+    ParseSnapshot, FILE_STORE, PARSED_META,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
@@ -229,7 +229,9 @@ fn _parse(
     let func_decl_keys = cursor.func_decl_keys;
     let ref_map = build_ref_map(cursor.ref_groups, cursor.ref_names, cursor.external_decls, rope);
     let hash = ref_cache::content_hash(rope);
-    ref_cache::store(uri, &hash, &ref_map);
+    if let Some(meta) = symbol_cache::FileMeta::from_uri(uri) {
+        ref_cache::store(uri, &hash, meta, &ref_map);
+    }
 
     // 8. Call-graph diagnostics: unused functions & cyclic calls.
     //    We need FILE_SYMBOLS populated for the current file, so write it first.
@@ -289,7 +291,7 @@ fn _parse(
 
     // Persist to disk cache.
     if let Some(meta) = symbol_cache::FileMeta::from_uri(uri) {
-        symbol_cache::store(uri, meta, &new_snapshot.file_symbols);
+        symbol_cache::store(uri, meta, hash, &new_snapshot.file_symbols);
     }
 
     // Keep FILE_SYMBOLS / REF_URI_MAP in sync for cross-file consumers.
@@ -328,12 +330,27 @@ fn _parse(
 /// store it in [`FILE_STORE`].  Call [`publish_diagnostics`] afterwards to push
 /// the result to the client.
 ///
+/// **Fast path:** if the file's metadata (size + mtime) hasn't changed since
+/// the last successful parse AND we already have a snapshot in [`FILE_STORE`],
+/// the function returns immediately — no `read_to_string`, no tree-sitter
+/// parse, no cursor walk.
+///
 /// Returns the cascade list (peer URIs whose exports may have changed).
 pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     let path = uri.to_file_path().map_err(|_| "invalid file path")?;
     if !path.exists() {
         return Ok(vec![]);
     }
+
+    // Cheap stat()-based skip: if file unchanged and we have results, skip.
+    if let Some(current_meta) = symbol_cache::FileMeta::from_path(&path) {
+        if let Some(stored) = PARSED_META.get(uri) {
+            if *stored.value() == current_meta && FILE_STORE.contains_key(uri) {
+                return Ok(vec![]);
+            }
+        }
+    }
+
     let content = std::fs::read_to_string(&path)?;
     let rope = Rope::from(content.as_str());
 
@@ -351,6 +368,11 @@ pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send
         res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
         _ = token.cancelled() => Ok(vec![]),
     };
+
+    // Record current metadata so the next call can skip if unchanged.
+    if let Some(meta) = symbol_cache::FileMeta::from_path(&path) {
+        PARSED_META.insert(uri.clone(), meta);
+    }
 
     result
 }

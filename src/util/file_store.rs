@@ -32,6 +32,7 @@ use crate::lsp::folding::lsp::FoldingRange;
 use crate::lsp::inlay_hint::lsp::InlayHint;
 use crate::lsp::ref_map::{DeclKey, RefMap};
 use crate::lsp::semantic::hub::Hub;
+use crate::util::symbol_cache::FileMeta;
 use std::sync::RwLock;
 
 // ─── ParseSnapshot ───────────────────────────────────────────────────────────
@@ -79,6 +80,14 @@ pub static CANCEL_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(Dash
 /// parsing, [`drain_pending`] returns (and removes) the waiters so they can
 /// be cascade-re-parsed.
 pub static PENDING_IMPORTS: Lazy<DashMap<Url, HashSet<Url>>> = Lazy::new(DashMap::new);
+
+/// Last-known file metadata (size + mtime) per URI, updated after each
+/// successful parse.
+///
+/// Used by [`parse_from_disk`] to skip re-reading a file when its metadata
+/// hasn't changed since the last parse — a cheap `stat()` avoids an
+/// expensive `read_to_string` + tree-sitter parse.
+pub static PARSED_META: Lazy<DashMap<Url, FileMeta>> = Lazy::new(DashMap::new);
 
 /// Register `waiter` as waiting for `dep` to become available.
 pub fn register_pending(dep: &Url, waiter: &Url) {

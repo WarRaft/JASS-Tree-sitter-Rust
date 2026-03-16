@@ -7,6 +7,7 @@
 //! Cache directory: `$CACHE_DIR/jass-tree-sitter-refs/`
 
 use crate::lsp::ref_map::RefMap;
+use crate::util::symbol_cache::FileMeta;
 use log::{error, info};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -38,11 +39,14 @@ fn cache_file(uri: &Url) -> Option<PathBuf> {
 
 // ─── On-disk format ──────────────────────────────────────────────────────────
 
-/// Wrapper stored on disk: content hash + serialized RefMap.
+/// Wrapper stored on disk: content hash + file metadata + serialized RefMap.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheEntry {
     /// SHA-256 of the file *content* at the time RefMap was built.
     content_hash: [u8; 32],
+    /// File size + mtime at the time the cache was written.
+    /// Allows cheap stat()-based freshness check without reading file content.
+    file_meta: FileMeta,
     /// The actual reference data.
     ref_map: RefMap,
 }
@@ -51,6 +55,7 @@ struct CacheEntry {
 #[derive(serde::Serialize)]
 struct CacheEntryRef<'a> {
     content_hash: [u8; 32],
+    file_meta: FileMeta,
     ref_map: &'a RefMap,
 }
 
@@ -68,6 +73,7 @@ pub fn content_hash(rope: &lapce_xi_rope::Rope) -> [u8; 32] {
 ///
 /// Returns `Some(ref_map)` only if a cache file exists **and** the stored
 /// content hash matches `current_hash` (i.e. the file hasn't changed).
+#[allow(dead_code)]
 pub fn load(uri: &Url, current_hash: &[u8; 32]) -> Option<RefMap> {
     let path = cache_file(uri)?;
     if !path.exists() {
@@ -100,8 +106,8 @@ pub fn load(uri: &Url, current_hash: &[u8; 32]) -> Option<RefMap> {
     Some(entry.ref_map)
 }
 
-/// Store a `RefMap` to disk for `uri` with the given content hash.
-pub fn store(uri: &Url, current_hash: &[u8; 32], ref_map: &RefMap) {
+/// Store a `RefMap` to disk for `uri` with the given content hash and file metadata.
+pub fn store(uri: &Url, current_hash: &[u8; 32], file_meta: FileMeta, ref_map: &RefMap) {
     let Some(path) = cache_file(uri) else { return };
 
     if let Some(parent) = path.parent() {
@@ -110,6 +116,7 @@ pub fn store(uri: &Url, current_hash: &[u8; 32], ref_map: &RefMap) {
 
     let entry = CacheEntryRef {
         content_hash: *current_hash,
+        file_meta,
         ref_map,
     };
 
@@ -121,6 +128,45 @@ pub fn store(uri: &Url, current_hash: &[u8; 32], ref_map: &RefMap) {
         }
         Err(e) => error!("ref_cache: serialize {:?}: {}", path, e),
     }
+}
+
+/// Try to load a cached `RefMap` using only a cheap `stat()` call.
+///
+/// Compares the stored `FileMeta` (size + mtime) against the current file.
+/// If they match, returns the `RefMap` without reading the file content.
+///
+/// This is the preferred entry point at startup — avoids reading every file
+/// just to compute a SHA-256 hash.
+pub fn load_if_fresh(uri: &Url) -> Option<RefMap> {
+    let path = cache_file(uri)?;
+    if !path.exists() {
+        return None;
+    }
+
+    let data = match fs::read(&path) {
+        Ok(d) => d,
+        Err(e) => {
+            error!("ref_cache: read {:?}: {}", path, e);
+            return None;
+        }
+    };
+
+    let entry: CacheEntry = match bincode::deserialize(&data) {
+        Ok(e) => e,
+        Err(e) => {
+            error!("ref_cache: deserialize {:?}: {}", path, e);
+            let _ = fs::remove_file(&path);
+            return None;
+        }
+    };
+
+    // Cheap stat-based freshness check.
+    let current_meta = FileMeta::from_uri(uri)?;
+    if current_meta != entry.file_meta {
+        return None; // File changed since cache was written.
+    }
+
+    Some(entry.ref_map)
 }
 
 /// Remove the cache file for a single URI.

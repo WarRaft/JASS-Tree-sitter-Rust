@@ -322,12 +322,12 @@ mod tests {
         let sr = ScopeResolver::new_empty();
         let a = u("file:///a.j");
 
-        sr.update_file(&a, [0u8; 32], vec![func_entry(&a, "Foo", 0)]);
+        sr.update_file(&a, [1u8; 32], vec![func_entry(&a, "Foo", 0)]);
         let fp1 = sr.export_fingerprint(&a).unwrap();
 
         sr.update_file(
             &a,
-            [0u8; 32],
+            [2u8; 32],
             vec![func_entry(&a, "Foo", 0), func_entry(&a, "Bar", 10)],
         );
         let fp2 = sr.export_fingerprint(&a).unwrap();
@@ -341,12 +341,12 @@ mod tests {
 
         sr.update_file(
             &a,
-            [0u8; 32],
+            [1u8; 32],
             vec![func_entry(&a, "Foo", 0), func_entry(&a, "Bar", 10)],
         );
         let fp1 = sr.export_fingerprint(&a).unwrap();
 
-        sr.update_file(&a, [0u8; 32], vec![func_entry(&a, "Foo", 0)]);
+        sr.update_file(&a, [2u8; 32], vec![func_entry(&a, "Foo", 0)]);
         let fp2 = sr.export_fingerprint(&a).unwrap();
         assert_ne!(fp1, fp2, "removing a symbol should change fingerprint");
     }
@@ -356,10 +356,10 @@ mod tests {
         let sr = ScopeResolver::new_empty();
         let a = u("file:///a.j");
 
-        sr.update_file(&a, [0u8; 32], vec![func_entry(&a, "A", 0)]);
+        sr.update_file(&a, [1u8; 32], vec![func_entry(&a, "A", 0)]);
         let fp1 = sr.export_fingerprint(&a).unwrap();
 
-        sr.update_file(&a, [0u8; 32], vec![var_entry(&a, "A", 0)]);
+        sr.update_file(&a, [2u8; 32], vec![var_entry(&a, "A", 0)]);
         let fp2 = sr.export_fingerprint(&a).unwrap();
         assert_ne!(fp1, fp2, "changing namespace should change fingerprint");
     }

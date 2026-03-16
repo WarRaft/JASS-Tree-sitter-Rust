@@ -282,7 +282,7 @@ async fn main() {
                                 let cached_entries = symbol_cache::load_all();
                                 let mut stale_uris: Vec<url::Url> = Vec::new();
 
-                                for (uri, cached_meta, symbols) in &cached_entries {
+                                for (uri, cached_meta, _cached_hash, symbols) in &cached_entries {
                                     let current_meta = symbol_cache::FileMeta::from_uri(uri);
                                     if current_meta == Some(*cached_meta) {
                                         // Fresh — load into memory immediately.
@@ -311,20 +311,16 @@ async fn main() {
                                 SCOPE_RESOLVER.gc(&keep_urls);
 
                                 // ── 3. Load cached RefMaps for fresh files ───────────
+                                //
+                                // Uses `load_if_fresh` which does a cheap `stat()` to
+                                // compare stored FileMeta (size + mtime) against the
+                                // current file — no `read_to_string` needed.
                                 for uri in &all {
                                     if REF_URI_MAP.contains_key(uri) {
                                         continue;
                                     }
-                                    if let Ok(path) = uri.to_file_path() {
-                                        if path.exists() {
-                                            if let Ok(content) = std::fs::read_to_string(&path) {
-                                                let rope = lapce_xi_rope::Rope::from(content.as_str());
-                                                let hash = ref_cache::content_hash(&rope);
-                                                if let Some(ref_map) = ref_cache::load(uri, &hash) {
-                                                    REF_URI_MAP.insert(uri.clone(), ref_map);
-                                                }
-                                            }
-                                        }
+                                    if let Some(ref_map) = ref_cache::load_if_fresh(uri) {
+                                        REF_URI_MAP.insert(uri.clone(), ref_map);
                                     }
                                 }
 
