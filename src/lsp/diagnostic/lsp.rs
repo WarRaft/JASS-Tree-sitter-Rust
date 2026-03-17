@@ -3,6 +3,7 @@ use crate::lsp::range::Range;
 use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::collections::HashMap;
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentDiagnosticParams
@@ -98,24 +99,17 @@ pub struct Diagnostic {
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#diagnosticSeverity
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum DiagnosticSeverity {
-    #[serde(rename = "1")]
     Error = 1,
-
-    #[serde(rename = "2")]
     Warning = 2,
-
-    #[serde(rename = "3")]
     Information = 3,
-
-    #[serde(rename = "4")]
     Hint = 4,
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#diagnosticTag
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum DiagnosticTag {
     Unnecessary = 1,

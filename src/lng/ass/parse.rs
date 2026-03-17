@@ -95,6 +95,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         file_symbols,
         _type_map: TypeMap::default(),
         type_hints: vec![],
+        ujapi_hints: vec![],
         func_decl_keys: HashSet::new(),
     });
 

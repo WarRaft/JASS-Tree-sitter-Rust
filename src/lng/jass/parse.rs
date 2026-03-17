@@ -138,6 +138,7 @@ fn _parse(
     let mut frozen_imports = HashSet::new();
     let mut links = Vec::new();
     let mut import_diagnostics = Vec::new();
+    let mut ujapi_hints = Vec::new();
 
     for item in &ast.items {
         if let Statement::Import(imp) = item {
@@ -150,6 +151,7 @@ fn _parse(
             crate::util::parse::resolve_ujapi_directive(
                 uri, ud, &src, rope,
                 &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
+                &mut ujapi_hints,
             );
         }
     }
@@ -256,6 +258,7 @@ fn _parse(
         file_symbols: cursor.file_symbols.clone(),
         _type_map: Default::default(),
         type_hints: Vec::new(),
+        ujapi_hints: Vec::new(),
         func_decl_keys: func_decl_keys.clone(),
     });
     FILE_STORE.insert(uri.clone(), preliminary);
@@ -325,6 +328,7 @@ fn _parse(
         file_symbols: cursor.file_symbols,
         _type_map: cursor.type_map,
         type_hints: cursor.type_hints,
+        ujapi_hints,
         func_decl_keys,
     });
 

@@ -37,15 +37,22 @@ fn compute(
         None => return vec![],
     };
 
+    let mut hints = Vec::new();
+
+    // ── ujapi hints: always visible (version tag after path) ─────────────
+    for hint in &snapshot.ujapi_hints {
+        if in_range(&hint.position, range) {
+            hints.push(hint.clone());
+        }
+    }
+
     let settings = &snapshot.file_symbols.file_settings;
     let ref_tip = settings.get("ref-tip").map(|v| v == "1").unwrap_or(false);
     let type_tip = settings.get("type-tip").map(|v| v == "1").unwrap_or(false);
 
     if !ref_tip && !type_tip {
-        return vec![];
+        return hints;
     }
-
-    let mut hints = Vec::new();
 
     // ── ref-tip: debug reference-ID hints ───────────────────────────────
     if ref_tip {
@@ -61,12 +68,15 @@ fn compute(
                     .external_decls
                     .get(&span.decl_key)
                     .map(|ext| {
-                        let path = ext.uri.path();
-                        let fname = path.rsplit('/').next().unwrap_or(path);
-                        match ext.origin_decl_key {
-                            Some(ok) => format!("\u{2192}{}#{}", fname, ok),
-                            None => format!("\u{2192}{}", fname),
-                        }
+                        let parts: Vec<String> = ext.origins.iter().map(|o| {
+                            let path = o.uri.path();
+                            let fname = path.rsplit('/').next().unwrap_or(path);
+                            match o.origin_decl_key {
+                                Some(ok) => format!("{}#{}", fname, ok),
+                                None => fname.to_string(),
+                            }
+                        }).collect();
+                        format!("\u{2192}{}", parts.join(","))
                     })
                     .unwrap_or_else(|| format!("#{}", span.decl_key))
             } else {

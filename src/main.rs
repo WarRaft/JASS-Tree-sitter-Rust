@@ -269,6 +269,55 @@ async fn main() {
                     }
                 }
 
+                MethodCall::DidChangeWatchedFiles(params) => {
+                    // Files changed on disk (created / modified / deleted) — but
+                    // NOT via the editor.  Re-parse every file that imports any of
+                    // the changed URIs so that diagnostics / links update.
+                    use crate::util::import_graph::IMPORT_GRAPH;
+
+                    let mut dependents_to_reparse: std::collections::HashSet<Url> =
+                        std::collections::HashSet::new();
+
+                    for event in &params.changes {
+                        let changed_uri = &event.uri;
+
+                        // 3 = Deleted: also evict from FILE_STORE / import graph.
+                        if event.change_type == 3 {
+                            FILE_STORE.remove(changed_uri);
+                        }
+
+                        // 1 = Created, 2 = Changed: the file was added or
+                        // modified outside the editor.  If it's already known
+                        // to the import graph, re-parse it from disk so its
+                        // symbols are updated.
+                        if event.change_type == 1 || event.change_type == 2 {
+                            if IMPORT_GRAPH.all_uris().contains(changed_uri) {
+                                dependents_to_reparse.insert(changed_uri.clone());
+                            }
+                        }
+
+                        // All direct dependents of the changed file need re-parsing.
+                        for dep in IMPORT_GRAPH.direct_dependents(changed_uri) {
+                            dependents_to_reparse.insert(dep);
+                        }
+                    }
+
+                    if !dependents_to_reparse.is_empty() {
+                        tokio::spawn(async move {
+                            for uri in &dependents_to_reparse {
+                                if let Ok(path) = uri.to_file_path() {
+                                    if let Ok(content) = std::fs::read_to_string(&path) {
+                                        if let Err(e) = lng::jass::open::open(uri, &content).await {
+                                            error!("file-watcher reparse {}: {}", uri, e);
+                                        }
+                                    }
+                                }
+                            }
+                            crate::util::file_store::send_refresh_all().await;
+                        });
+                    }
+                }
+
                 // ─── All other methods spawned as concurrent request handlers ─
 
                 other => {
@@ -295,6 +344,9 @@ async fn main() {
                                 // ── 0. Force-load the scope resolver from disk ───────
                                 let _ = SCOPE_RESOLVER.file_count();
 
+                                // ── 0b. UjAPI release cache is now loaded lazily ─
+                                // (triggered only when //import-ujapi! is encountered)
+
                                 // ── 1. Load ALL cached data from unified disk cache ──
                                 let cached_entries = file_cache::load_all();
                                 let mut stale_uris: Vec<url::Url> = Vec::new();
@@ -319,6 +371,7 @@ async fn main() {
                                                 file_symbols: cached.symbols.clone(),
                                                 _type_map: Default::default(),
                                                 type_hints: Vec::new(),
+                                                ujapi_hints: Vec::new(),
                                                 func_decl_keys: cached.func_decl_keys.clone(),
                                             },
                                         );
@@ -422,6 +475,37 @@ async fn main() {
                                                     "kind": "end",
                                                     "message": format!("Done — {} files rescanned", total)
                                                 }
+                                            }
+                                        }),
+                                    ).await;
+                                }
+
+                                // ── 4. Register file watchers ─────────────────────────
+                                // VS Code only sends textDocument/didChange for files
+                                // open in the editor.  To detect external changes (file
+                                // created / modified / deleted on disk) we register
+                                // workspace/didChangeWatchedFiles watchers.
+                                {
+                                    use std::sync::atomic::{AtomicI64, Ordering};
+                                    static REG_ID: AtomicI64 = AtomicI64::new(-1000);
+                                    let id = REG_ID.fetch_sub(1, Ordering::Relaxed);
+                                    send(
+                                        &writer,
+                                        &json!({
+                                            "jsonrpc": "2.0",
+                                            "id": id,
+                                            "method": "client/registerCapability",
+                                            "params": {
+                                                "registrations": [{
+                                                    "id": "file-watcher-j",
+                                                    "method": "workspace/didChangeWatchedFiles",
+                                                    "registerOptions": {
+                                                        "watchers": [
+                                                            { "globPattern": "**/*.j",  "kind": 7 },
+                                                            { "globPattern": "**/*.as", "kind": 7 }
+                                                        ]
+                                                    }
+                                                }]
                                             }
                                         }),
                                     ).await;
@@ -546,17 +630,19 @@ async fn main() {
                                             if let Some(byte) = params.position.to_byte_offset(rope_entry.value()) {
                                                 let ref_map = &snapshot.ref_map;
                                                 if let Some(ext) = ref_map.external_at(byte) {
-                                                    // Cross-file: look up declaration in the external file's FILE_STORE.
-                                                    if let Some(ext_snap) = FILE_STORE.get(&ext.uri) {
-                                                        let ext_ref_map = &ext_snap.ref_map;
-                                                        for group in ext_ref_map.groups.values() {
-                                                            if group.name == ext.name {
-                                                                for occ in &group.occurrences {
-                                                                    if occ.is_decl {
-                                                                        locs.push(crate::lsp::location::Location {
-                                                                            uri: ext.uri.to_string(),
-                                                                            range: occ.range.clone(),
-                                                                        });
+                                                    // Cross-file: look up declarations in ALL origin files.
+                                                    for origin in &ext.origins {
+                                                        if let Some(ext_snap) = FILE_STORE.get(&origin.uri) {
+                                                            let ext_ref_map = &ext_snap.ref_map;
+                                                            for group in ext_ref_map.groups.values() {
+                                                                if group.name == ext.name {
+                                                                    for occ in &group.occurrences {
+                                                                        if occ.is_decl {
+                                                                            locs.push(crate::lsp::location::Location {
+                                                                                uri: origin.uri.to_string(),
+                                                                                range: occ.range.clone(),
+                                                                            });
+                                                                        }
                                                                     }
                                                                 }
                                                             }

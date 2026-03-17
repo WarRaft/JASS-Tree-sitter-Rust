@@ -374,8 +374,20 @@ fn compute_symbol_hover(uri: &Url, position: &Position) -> Option<Hover> {
 
     // Determine the source of the symbol — local or external
     let (doc_comment, signature) = if let Some(ext) = ref_map.external_decls.get(&span.decl_key) {
-        // External symbol — look up in the origin file's FileSymbols or SCOPE_RESOLVER
-        lookup_symbol_info(&ext.uri, &ext.name)
+        // External symbol — try all origin files, prefer the one with a doc comment
+        let mut best_doc = None;
+        let mut best_sig = None;
+        for origin in &ext.origins {
+            let (doc, sig) = lookup_symbol_info(&origin.uri, &ext.name);
+            if best_sig.is_none() {
+                best_sig = sig;
+            }
+            if doc.is_some() {
+                best_doc = doc;
+                break; // found a doc comment, use it
+            }
+        }
+        (best_doc, best_sig)
     } else {
         // Local symbol — look up in this file's FileSymbols
         lookup_symbol_info(uri, name)

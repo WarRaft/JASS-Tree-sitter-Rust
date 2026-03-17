@@ -124,10 +124,10 @@ pub fn resolve_import_directive(
 /// | ✗ | — | Error diagnostic + code action "download" |
 /// | ✓ | no tag in file | Warning diagnostic + code action "re-download" |
 /// | ✓ | tag ≠ latest | Warning diagnostic + code action "re-download" |
-/// | ✓ | tag = latest (or latest unknown) | document link (ok) |
+/// | ✓ | tag = latest (or latest unknown) | document link + inlay hint |
 ///
-/// A background `spawn_blocking` fetch is **always** kicked off so that
-/// `cached_release()` is populated for subsequent parses / hovers.
+/// Version info is shown as an **InlayHint** after the path, not as a
+/// Hint-level diagnostic.
 pub fn resolve_ujapi_directive(
     uri: &Url,
     ud: &UjapiDirective,
@@ -137,6 +137,7 @@ pub fn resolve_ujapi_directive(
     frozen_imports: &mut HashSet<Url>,
     links: &mut Vec<DocumentLink>,
     diagnostics: &mut Vec<Diagnostic>,
+    inlay_hints: &mut Vec<crate::lsp::inlay_hint::lsp::InlayHint>,
 ) {
     use crate::util::ujapi;
 
@@ -159,10 +160,8 @@ pub fn resolve_ujapi_directive(
         end: Position::from_byte_offset(rope, path_end_byte).unwrap_or_default(),
     };
 
-    // Always kick off a background fetch so that the latest tag is available.
-    tokio::task::spawn_blocking(|| {
-        let _ = ujapi::fetch_latest_release();
-    });
+    // Lazily schedule a background version check (once per session).
+    ujapi::schedule_background_check();
 
     match resolve_import(uri, &ud.path) {
         Some(resolved) => {
@@ -170,16 +169,20 @@ pub fn resolve_ujapi_directive(
             imports.insert(resolved.url.clone());
             frozen_imports.insert(resolved.url.clone());
 
+            // Data payload for code actions (download / re-download).
+            let ujapi_data = serde_json::json!({
+                "ujapi_uri": uri.to_string(),
+                "ujapi_path": ud.path,
+            });
+
             if !resolved.exists {
                 // ── File does not exist ──────────────────────────────
                 diagnostics.push(Diagnostic {
                     range: path_range,
-                    message: format!(
-                        "UjAPI file not found: `{}`. Use **Alt+Enter** to download.",
-                        ud.path
-                    ),
+                    message: format!("UjAPI file not found: `{}`", ud.path),
                     severity: Some(DiagnosticSeverity::Error),
                     source: Some("ujapi".into()),
+                    data: Some(ujapi_data),
                     ..Default::default()
                 });
                 return;
@@ -194,13 +197,14 @@ pub fn resolve_ujapi_directive(
             let latest = ujapi::cached_release();
 
             match (&file_tag, &latest) {
-                // No tag in the file at all → outdated / broken
+                // No tag in the file at all → broken
                 (None, _) => {
                     diagnostics.push(Diagnostic {
                         range: path_range.clone(),
-                        message: "UjAPI file has no version tag. Use **Alt+Enter** to re-download.".into(),
+                        message: "UjAPI file has no version tag".into(),
                         severity: Some(DiagnosticSeverity::Warning),
                         source: Some("ujapi".into()),
+                        data: Some(ujapi_data.clone()),
                         ..Default::default()
                     });
                 }
@@ -209,15 +213,35 @@ pub fn resolve_ujapi_directive(
                     diagnostics.push(Diagnostic {
                         range: path_range.clone(),
                         message: format!(
-                            "UjAPI outdated: local `{}`, latest `{}`. Use **Alt+Enter** to update.",
+                            "UjAPI outdated: local `{}`, latest `{}`",
                             ft, rel.tag
                         ),
                         severity: Some(DiagnosticSeverity::Warning),
                         source: Some("ujapi".into()),
+                        data: Some(ujapi_data.clone()),
                         ..Default::default()
                     });
                 }
-                // Tags match, or latest is unknown yet → ok
+                // Tags match → show version as inlay hint ✓
+                (Some(ft), Some(rel)) if *ft == rel.tag => {
+                    inlay_hints.push(crate::lsp::inlay_hint::lsp::InlayHint {
+                        position: path_range.end.clone(),
+                        label: format!("{} ✓", ft),
+                        kind: None,
+                        padding_left: Some(true),
+                        padding_right: Some(false),
+                    });
+                }
+                // File has tag but no cached release — show version as inlay hint
+                (Some(ft), None) => {
+                    inlay_hints.push(crate::lsp::inlay_hint::lsp::InlayHint {
+                        position: path_range.end.clone(),
+                        label: format!("{}", ft),
+                        kind: None,
+                        padding_left: Some(true),
+                        padding_right: Some(false),
+                    });
+                }
                 _ => {}
             }
 
@@ -230,7 +254,7 @@ pub fn resolve_ujapi_directive(
                     format!("UjAPI {} → {} available", ft, rel.tag)
                 }
                 (Some(ft), None) => {
-                    format!("UjAPI {} (checking for updates…)", ft)
+                    format!("UjAPI {}", ft)
                 }
                 (None, _) => "UjAPI (no version tag)".into(),
             };
@@ -410,6 +434,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             file_symbols: cached.symbols,
             _type_map: Default::default(),
             type_hints: Vec::new(),
+            ujapi_hints: Vec::new(),
             func_decl_keys: cached.func_decl_keys,
         });
         FILE_STORE.insert(dep_uri.clone(), snapshot);
@@ -462,6 +487,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         file_symbols: file_symbols.clone(),
         _type_map: cursor.type_map,
         type_hints: cursor.type_hints,
+        ujapi_hints: Vec::new(),
         func_decl_keys: func_decl_keys.clone(),
     });
 

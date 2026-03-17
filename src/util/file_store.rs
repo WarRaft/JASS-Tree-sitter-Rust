@@ -58,6 +58,8 @@ pub struct ParseSnapshot {
     pub _type_map: TypeMap,
     /// Inlay hints for type annotations (shown when `//set type-tip 1`).
     pub type_hints: Vec<InlayHint>,
+    /// Inlay hints from `//import-ujapi!` — always visible (version tag).
+    pub ujapi_hints: Vec<InlayHint>,
     /// DeclKeys that belong to function / native declarations.
     pub func_decl_keys: HashSet<DeclKey>,
 }

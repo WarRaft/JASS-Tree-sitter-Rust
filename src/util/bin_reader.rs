@@ -76,6 +76,7 @@ impl<'a> BinReader<'a> {
 
     /// Current byte offset in the buffer.
     #[inline]
+    #[allow(dead_code)]
     pub fn position(&self) -> usize {
         self.pos
     }
@@ -105,6 +106,7 @@ impl<'a> BinReader<'a> {
 
     /// Seek to an absolute byte offset.
     #[inline]
+    #[allow(dead_code)]
     pub fn seek(&mut self, offset: usize) {
         self.pos = offset;
     }
@@ -191,6 +193,7 @@ impl<'a> BinReader<'a> {
     // ── Warcraft-specific helpers ────────────────────────────────────────
 
     /// Read a 4-byte rawcode (e.g. `'hfoo'`).
+    #[allow(dead_code)]
     pub fn read_rawcode(&mut self) -> BinResult<[u8; 4]> {
         let b = self.read_bytes(4)?;
         Ok([b[0], b[1], b[2], b[3]])

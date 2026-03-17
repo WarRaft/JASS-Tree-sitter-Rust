@@ -545,11 +545,15 @@ impl Cursor {
     ///    `start_byte`, **and emit "Undeclared" diagnostics**.
     fn link_imports(&mut self, imported: &[ImportedSymbol]) {
         use std::collections::HashMap as Map;
+        use crate::lsp::ref_map::ExternalOrigin;
 
-        // Build lookup: (name, namespace) → first ImportedSymbol
-        let mut import_lookup: Map<(&str, ImportedKind), &ImportedSymbol> = Map::new();
+        // Build lookup: (name, namespace) → ALL matching ImportedSymbols
+        let mut import_lookup: Map<(&str, ImportedKind), Vec<&ImportedSymbol>> = Map::new();
         for sym in imported {
-            import_lookup.entry((sym.name.as_str(), sym.kind)).or_insert(sym);
+            import_lookup
+                .entry((sym.name.as_str(), sym.kind))
+                .or_default()
+                .push(sym);
         }
 
         // Group unresolved refs by (name, namespace)
@@ -587,17 +591,29 @@ impl Cursor {
                             is_decl: false,
                         });
                 }
-            } else if let Some(sym) = import_lookup.get(&(name.as_str(), ns)) {
-                // 2. Matched an import → external group
+            } else if let Some(syms) = import_lookup.get(&(name.as_str(), ns)) {
+                // 2. Matched imports → external group with ALL origins
                 let key = EXTERNAL_KEY_BASE + ext_counter;
                 ext_counter += 1;
                 self.ref_names.insert(key, name.clone());
+
+                // Deduplicate origins by URI (same file may appear multiple times)
+                let mut seen_uris = std::collections::HashSet::new();
+                let mut origins = Vec::new();
+                for sym in syms {
+                    if seen_uris.insert(sym.origin_uri.as_str().to_string()) {
+                        origins.push(ExternalOrigin {
+                            uri: sym.origin_uri.clone(),
+                            origin_decl_key: sym.origin_decl_key,
+                        });
+                    }
+                }
+
                 self.external_decls.insert(
                     key,
                     ExternalDecl {
-                        uri: sym.origin_uri.clone(),
                         name: name.clone(),
-                        origin_decl_key: sym.origin_decl_key,
+                        origins,
                     },
                 );
                 for uref in refs {
@@ -2389,7 +2405,7 @@ impl Cursor {
                             "Handle leak: local `{}` (`{}`) is not set to `null` before function end",
                             hl.name, hl.type_name,
                         ),
-                        severity: Some(DiagnosticSeverity::Warning),
+                        severity: Some(DiagnosticSeverity::Error),
                         ..Default::default()
                     });
                 }
@@ -2473,7 +2489,7 @@ impl Cursor {
                                     "Handle leak: local `{}` (`{}`) is not set to `null` before `return`",
                                     hl.name, hl.type_name,
                                 ),
-                                severity: Some(DiagnosticSeverity::Warning),
+                                severity: Some(DiagnosticSeverity::Error),
                                 ..Default::default()
                             });
                         }

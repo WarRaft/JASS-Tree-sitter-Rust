@@ -1204,7 +1204,7 @@ endfunction
                 .find(|&&k| k >= EXTERNAL_KEY_BASE)
                 .expect("should have an external key for Bar");
             assert_eq!(c.ref_names[&ext_key], "Bar");
-            assert_eq!(c.external_decls[&ext_key].uri, origin);
+            assert_eq!(c.external_decls[&ext_key].origins[0].uri, origin);
             let occs = &c.ref_groups[&ext_key];
             assert_eq!(occs.len(), 2, "both calls to Bar should be in the external group");
             assert!(!occs[0].is_decl, "external refs are not declarations");
@@ -1232,7 +1232,7 @@ endfunction
                 .find(|&&k| k >= EXTERNAL_KEY_BASE
                     && c.ref_names.get(&k).map(|n| n == "bj_lastCreatedUnit").unwrap_or(false))
                 .expect("should have external key for bj_lastCreatedUnit");
-            assert_eq!(c.external_decls[&ext_key].uri, origin);
+            assert_eq!(c.external_decls[&ext_key].origins[0].uri, origin);
         });
     }
 
@@ -1259,7 +1259,7 @@ endfunction
                 assert!(key.is_some(),
                     "type {:?} should resolve as an imported symbol", type_name);
                 let key = *key.unwrap();
-                assert_eq!(c.external_decls[&key].uri, origin);
+                assert_eq!(c.external_decls[&key].origins[0].uri, origin);
             }
         });
     }
@@ -2130,7 +2130,7 @@ endfunction
                     .collect::<Vec<_>>()
             );
             let key = *ext_a.unwrap();
-            assert_eq!(c.external_decls[&key].uri, origin);
+            assert_eq!(c.external_decls[&key].origins[0].uri, origin);
             let occs = &c.ref_groups[&key];
             assert_eq!(occs.len(), 1, "1 ref (the bare set)");
             assert!(!occs[0].is_decl, "external ref should not be a declaration");
@@ -2174,7 +2174,7 @@ endfunction
                 "expected external group named 'A'"
             );
             let key = *ext_a.unwrap();
-            assert_eq!(c.external_decls[&key].uri, origin);
+            assert_eq!(c.external_decls[&key].origins[0].uri, origin);
         });
     }
 

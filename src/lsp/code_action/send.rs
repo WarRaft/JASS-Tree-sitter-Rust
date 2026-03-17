@@ -4,7 +4,6 @@ use crate::lsp::code_action::lsp::{
 };
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
-use crate::util::roper::uri_map::ROPE_MAP;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::Stdout;
@@ -31,63 +30,42 @@ pub async fn send(
 }
 
 fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
-    let uri = &params.text_document.uri;
     let mut actions = Vec::new();
 
-    // ── UjAPI download action ────────────────────────────────────────────
-    // Look at the line under cursor to see if it's a //import-ujapi! directive
-    let rope_entry = match ROPE_MAP.get(uri) {
-        Some(e) => e,
-        None => return actions,
-    };
-    let rope = rope_entry.value();
+    // ── UjAPI download / re-download actions ──────────────────────────────
+    // Diagnostics with source="ujapi" carry { ujapi_uri, ujapi_path } in `data`.
+    let ujapi_diags: Vec<_> = params.context.diagnostics.iter()
+        .filter(|d| d.source.as_deref() == Some("ujapi"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
 
-    let line_idx = params.range.start.line;
-    let line_count = rope.line_of_offset(rope.len()) + 1;
-    if line_idx >= line_count {
-        return actions;
-    }
+    if !ujapi_diags.is_empty() {
+        // Extract download params from the first matching diagnostic.
+        let maybe_params = ujapi_diags[0].data.as_ref().and_then(|data| {
+            let u = data.get("ujapi_uri")?.as_str()?.to_string();
+            let p = data.get("ujapi_path")?.as_str()?.to_string();
+            if u.is_empty() || p.is_empty() { None } else { Some((u, p)) }
+        });
 
-    let line_start = rope.offset_of_line(line_idx);
-    let line_end = if line_idx + 1 < line_count {
-        rope.offset_of_line(line_idx + 1)
-    } else {
-        rope.len()
-    };
-    let line_text = rope.slice_to_cow(line_start..line_end);
-    let trimmed = line_text.trim();
-
-    if let Some(rest) = trimmed.strip_prefix("//import-ujapi!") {
-        let path = rest.trim().to_string();
-        if !path.is_empty() {
-            let ujapi_diags: Vec<_> = params.context.diagnostics.iter()
-                .filter(|d| d.source.as_deref() == Some("ujapi"))
-                .cloned()
-                .collect();
-
-            // Always offer the action on this line (download / re-download / update).
-            let title = if ujapi_diags.iter().any(|d| d.message.contains("not found")) {
-                "⬇ Download UjAPI common.j"
-            } else if !ujapi_diags.is_empty() {
-                "⬇ Re-download UjAPI common.j"
+        if let Some((ujapi_uri, ujapi_path)) = maybe_params {
+            let is_not_found = ujapi_diags.iter().any(|d| d.message.contains("not found"));
+            let title = if is_not_found {
+                "⬇ Download UjAPI"
             } else {
-                "⬇ Re-download UjAPI common.j"
+                "⬇ Update UjAPI"
             };
 
             actions.push(CodeAction {
                 title: title.to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
-                diagnostics: if !ujapi_diags.is_empty() {
-                    Some(ujapi_diags)
-                } else {
-                    None
-                },
+                diagnostics: Some(ujapi_diags),
                 command: Some(Command {
                     title: title.to_string(),
                     command: "ujapi.download".into(),
                     arguments: Some(vec![
-                        json!(uri.to_string()),
-                        json!(path),
+                        json!(ujapi_uri),
+                        json!(ujapi_path),
                     ]),
                 }),
             });

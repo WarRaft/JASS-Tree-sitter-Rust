@@ -15,8 +15,8 @@ use crate::lsp::rename::lsp::{PrepareRenameParams, RenameFilesParams, RenamePara
 use crate::lsp::semantic::lsp::{SemanticTokensParams, SemanticTokensRangeParams};
 use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::text_document::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    TextDocumentIdentifier,
+    DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, TextDocumentIdentifier,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -91,6 +91,9 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/didChange")]
     DidChange(DidChangeTextDocumentParams),
+
+    #[serde(rename = "workspace/didChangeWatchedFiles")]
+    DidChangeWatchedFiles(DidChangeWatchedFilesParams),
 
     #[serde(rename = "textDocument/semanticTokens/full")]
     SemanticFull(SemanticTokensParams),

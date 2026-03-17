@@ -27,17 +27,23 @@ pub type DeclKey = u32;
 /// a collision-free partition.
 pub const EXTERNAL_KEY_BASE: u32 = u32::MAX / 2;
 
-/// An imported symbol whose declaration lives in another file.
+/// A single origin location for an imported symbol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalOrigin {
+    /// URI of the file that contains the declaration.
+    pub uri: Url,
+    /// DeclKey of this symbol in the origin file's RefMap (if known).
+    pub origin_decl_key: Option<DeclKey>,
+}
+
+/// An imported symbol whose declaration lives in another file (or files).
 /// Stored in [`RefMap::external_decls`] for cross-file go-to-definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalDecl {
-    /// URI of the file that contains the declaration.
-    pub uri: Url,
     /// Symbol name (function / native / type / global).
     pub name: String,
-    /// DeclKey of this symbol in the origin file's RefMap (if known).
-    /// Allows displaying the origin file's internal reference ID.
-    pub origin_decl_key: Option<DeclKey>,
+    /// All files that declare this symbol.
+    pub origins: Vec<ExternalOrigin>,
 }
 
 /// A single occurrence of an identifier.
