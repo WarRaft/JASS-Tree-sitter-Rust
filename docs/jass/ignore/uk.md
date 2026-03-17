@@ -27,24 +27,50 @@ endfunction
 
 ## Доступні теги
 
-| Тег | Опис |
-|-----|------|
-| `unused` | Придушити діагностику **невикористаних функцій**. |
-| `leak` | Придушити діагностику **витоків handle**. |
-| `cycle` | Придушити діагностику **циклічних викликів**. |
+| Тег | Файл (`//ignore`) | Функція (`//@ignore`) | Змінна (`//@ignore`) |
+|-----|:-:|:-:|:-:|
+| `unused` | ✔ | ✔ | — |
+| `leak` | ✔ | ✔ | ✔ |
+| `cycle` | ✔ | ✔ | — |
+
+* **`unused`** — придушити діагностику **невикористаних функцій**.
+* **`leak`** — придушити діагностику **витоків handle**.
+* **`cycle`** — придушити діагностику **циклічних викликів**.
 
 ## Придушення для окремої декларації
 
-Використовуйте `//@ignore` в коментарі безпосередньо над декларацією:
+Використовуйте `//@ignore` в коментарі безпосередньо над декларацією.
+Теги можна комбінувати в одному рядку: `//@ignore unused cycle`.
+
+### Рівень функції
+
+`//@ignore` над функцією придушує діагностику лише для неї:
 
 ```jass
 //@ignore unused
 function Helper takes nothing returns nothing
 endfunction
 
+//@ignore cycle
+function Recursive takes nothing returns nothing
+    call Recursive()
+endfunction
+
+//@ignore leak
+function Setup takes nothing returns nothing
+    local unit u = CreateUnit()
+endfunction
+```
+
+### Рівень змінної
+
+`//@ignore leak` над оголошенням `local` придушує діагностику витоку лише для цієї змінної:
+
+```jass
 function Foo takes nothing returns nothing
     //@ignore leak
     local unit u = CreateUnit()
+    local unit v = CreateUnit()  // ← все ще діагностується
 endfunction
 ```
 

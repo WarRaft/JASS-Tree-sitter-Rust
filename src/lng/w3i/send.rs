@@ -32,7 +32,9 @@ pub async fn send(writer: &Arc<Mutex<Stdout>>, call_id: Option<CancelId>, uri: &
 async fn _send(uri: &Url) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
     let path = uri.to_file_path().map_err(|()| "Invalid file URI")?;
     let buf = tokio::fs::read(&path).await?;
-    let data = W3iData::read(&buf)?;
-    Ok(to_value(data)?)
+    let (data, meta) = W3iData::read(&buf)?;
+    let mut val = to_value(data)?;
+    val["_meta"] = to_value(meta)?;
+    Ok(val)
 }
 

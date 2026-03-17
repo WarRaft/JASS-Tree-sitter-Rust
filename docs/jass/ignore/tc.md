@@ -26,24 +26,50 @@ endfunction
 
 ## 可用標籤
 
-| 標籤 | 說明 |
-|------|------|
-| `unused` | 抑制**未使用函式**診斷。 |
-| `leak` | 抑制 **handle 洩漏**診斷。 |
-| `cycle` | 抑制**循環呼叫鏈**診斷。 |
+| 標籤 | 檔案 (`//ignore`) | 函式 (`//@ignore`) | 變數 (`//@ignore`) |
+|-----|:-:|:-:|:-:|
+| `unused` | ✔ | ✔ | — |
+| `leak` | ✔ | ✔ | ✔ |
+| `cycle` | ✔ | ✔ | — |
+
+* **`unused`** — 抑制**未使用函式**診斷。
+* **`leak`** — 抑制 **handle 洩漏**診斷。
+* **`cycle`** — 抑制**循環呼叫鏈**診斷。
 
 ## 單宣告抑制
 
-在宣告正上方的註解中使用 `//@ignore`：
+在宣告正上方的註解中使用 `//@ignore`。
+標籤可以組合在同一行中：`//@ignore unused cycle`。
+
+### 函式級別
+
+在函式上方放置 `//@ignore` 僅抑制該函式的診斷：
 
 ```jass
 //@ignore unused
 function Helper takes nothing returns nothing
 endfunction
 
+//@ignore cycle
+function Recursive takes nothing returns nothing
+    call Recursive()
+endfunction
+
+//@ignore leak
+function Setup takes nothing returns nothing
+    local unit u = CreateUnit()
+endfunction
+```
+
+### 變數級別
+
+在 `local` 宣告上方放置 `//@ignore leak` 僅抑制該變數的洩漏診斷：
+
+```jass
 function Foo takes nothing returns nothing
     //@ignore leak
     local unit u = CreateUnit()
+    local unit v = CreateUnit()  // ← 仍會被診斷
 endfunction
 ```
 

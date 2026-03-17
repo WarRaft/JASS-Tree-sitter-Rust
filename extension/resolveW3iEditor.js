@@ -56,6 +56,8 @@ function renderW3i(d, fname) {
         `<tr><td class="key">${k}</td><td>${v}</td></tr>`
     ).join('')
 
+    const metaHtml = renderMeta(d._meta)
+
     // ── Description ─────────────────────────────────────
     const descHtml = d.description
         ? `<details><summary>Description</summary><pre class="desc">${esc(d.description)}</pre></details>`
@@ -262,6 +264,7 @@ function renderW3i(d, fname) {
 </head>
 <body>
     <h1>🗺 ${esc(fname)}</h1>
+    ${metaHtml}
     <table class="info">${generalHtml}</table>
     ${descHtml}
     ${pDescHtml}
@@ -392,7 +395,35 @@ function sharedStyles() {
             margin-bottom: 0.25rem;
             color: var(--vscode-descriptionForeground);
         }
+        .meta-banner {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.3rem 0.75rem;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-bottom: 0.75rem;
+            font-variant-numeric: tabular-nums;
+        }
+        .meta-banner.ok {
+            background: rgba(78, 201, 176, 0.12);
+            color: #4ec9b0;
+            border: 1px solid rgba(78, 201, 176, 0.3);
+        }
+        .meta-banner.warn {
+            background: rgba(224, 108, 64, 0.12);
+            color: #e06c40;
+            border: 1px solid rgba(224, 108, 64, 0.3);
+        }
     `
+}
+
+function renderMeta(meta) {
+    if (!meta) return ''
+    if (meta.remaining === 0) {
+        return `<div class="meta-banner ok">✓ All ${meta.total} bytes read</div>`
+    }
+    return `<div class="meta-banner warn">⚠ ${meta.remaining} of ${meta.total} bytes not read (parser stopped at 0x${meta.read.toString(16).toUpperCase()})</div>`
 }
 
 module.exports = {

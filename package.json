@@ -155,7 +155,7 @@
     "customEditors": [
       {
         "viewType": "blp.preview",
-        "displayName": "BLP Image Viewer",
+        "displayName": "%customEditor.blp.displayName%",
         "selector": [
           {
             "filenamePattern": "*.blp"
@@ -165,7 +165,7 @@
       },
       {
         "viewType": "doo.preview",
-        "displayName": "DOO Placement Viewer",
+        "displayName": "%customEditor.doo.displayName%",
         "selector": [
           {
             "filenamePattern": "*.doo"
@@ -175,7 +175,7 @@
       },
       {
         "viewType": "w3i.preview",
-        "displayName": "W3I Map Info Viewer",
+        "displayName": "%customEditor.w3i.displayName%",
         "selector": [
           {
             "filenamePattern": "*.w3i"

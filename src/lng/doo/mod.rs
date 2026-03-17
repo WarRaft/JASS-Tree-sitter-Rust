@@ -9,7 +9,7 @@
 
 pub mod send;
 
-use crate::util::bin_reader::{BinRead, BinReader, BinResult, Rawcode};
+use crate::util::bin_reader::{BinRead, BinReader, BinReaderMeta, BinResult, Rawcode};
 use serde::Serialize;
 
 // ─── Simple types ────────────────────────────────────────────────────────────
@@ -136,7 +136,7 @@ impl DooData {
     ///
     /// * `is_unit` — `true` for `war3mapUnits.doo`, `false` for `war3map.doo`.
     /// * `patch`   — patch version from the parent `.w3i` (affects field layout).
-    pub fn read(data: &[u8], is_unit: bool, patch: u32) -> BinResult<Self> {
+    pub fn read(data: &[u8], is_unit: bool, patch: u32) -> BinResult<(Self, BinReaderMeta)> {
         let mut r = BinReader::new(data);
 
         let magic = r.read_fixed_string(4)?;  // "W3do"
@@ -157,6 +157,7 @@ impl DooData {
             None
         };
 
-        Ok(DooData { magic, format, subformat, items, cliffs })
+        let meta = r.meta();
+        Ok((DooData { magic, format, subformat, items, cliffs }, meta))
     }
 }

@@ -27,24 +27,50 @@ endfunction
 
 ## Available Tags
 
-| Tag | Description |
-|-----|-------------|
-| `unused` | Suppress **unused-function** diagnostics. |
-| `leak` | Suppress **handle-leak** diagnostics. |
-| `cycle` | Suppress **cyclic-call-chain** diagnostics. |
+| Tag | File (`//ignore`) | Function (`//@ignore`) | Variable (`//@ignore`) |
+|-----|:-:|:-:|:-:|
+| `unused` | ✔ | ✔ | — |
+| `leak` | ✔ | ✔ | ✔ |
+| `cycle` | ✔ | ✔ | — |
+
+* **`unused`** — suppress **unused-function** diagnostics.
+* **`leak`** — suppress **handle-leak** diagnostics.
+* **`cycle`** — suppress **cyclic-call-chain** diagnostics.
 
 ## Per-Declaration Suppression
 
-Use `//@ignore` in a comment directly above a declaration:
+Use `//@ignore` in a comment directly above a declaration.
+Tags can be combined on one line: `//@ignore unused cycle`.
+
+### Function level
+
+Placing `//@ignore` above a function suppresses diagnostics for that function only:
 
 ```jass
 //@ignore unused
 function Helper takes nothing returns nothing
 endfunction
 
+//@ignore cycle
+function Recursive takes nothing returns nothing
+    call Recursive()
+endfunction
+
+//@ignore leak
+function Setup takes nothing returns nothing
+    local unit u = CreateUnit()
+endfunction
+```
+
+### Variable level
+
+Placing `//@ignore leak` above a `local` declaration suppresses the leak diagnostic for that single variable:
+
+```jass
 function Foo takes nothing returns nothing
     //@ignore leak
     local unit u = CreateUnit()
+    local unit v = CreateUnit()  // ← still diagnosed
 endfunction
 ```
 

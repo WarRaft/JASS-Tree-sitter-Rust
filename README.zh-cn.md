@@ -36,6 +36,16 @@ WarCraft III 的主要脚本语言。基于专用的
 
 内置的 **BLP** 纹理格式图像查看器，BLP 是 WarCraft III 使用的纹理格式。
 
+### DOO — `.doo`
+
+内置的 **DOO** 放置文件查看器（`war3map.doo`、`war3mapUnits.doo`）。
+以结构化表格显示单位/可破坏物的放置信息、位置、rawcode 和悬崖装饰。
+
+### W3I — `.w3i`
+
+内置的 **W3I** 地图信息文件查看器（`war3map.w3i`）。
+显示地图元数据：名称、作者、玩家、势力、摄像机边界、雾/天气设置、随机组等。
+
 ---
 
 ## LSP 功能
@@ -226,15 +236,19 @@ endfunction
 |---------|------|
 | `importGraph.show` | 显示导入图 |
 | `callGraph.show` | 显示调用图 |
+| `typeGraph.show` | 显示类型图 |
+| `rescan.execute` | 重新扫描所有文件 |
 | `build.execute` | 构建（JASS / AngelScript） |
 
 或者直接在 `keybindings.json` 中添加绑定（`Ctrl+Shift+P` → *Preferences: Open Keyboard Shortcuts (JSON)*）：
 
 ```json
 [
-  { "key": "ctrl+shift+i", "command": "importGraph.show", "when": "resourceLangId == jass || resourceLangId == angelscript" },
-  { "key": "ctrl+shift+g", "command": "callGraph.show",   "when": "resourceLangId == jass || resourceLangId == angelscript" },
-  { "key": "ctrl+shift+b", "command": "build.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" }
+  { "key": "ctrl+shift+i", "command": "importGraph.show",  "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+g", "command": "callGraph.show",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+t", "command": "typeGraph.show",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+r", "command": "rescan.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+b", "command": "build.execute",     "when": "resourceLangId == jass || resourceLangId == angelscript" }
 ]
 ```
 

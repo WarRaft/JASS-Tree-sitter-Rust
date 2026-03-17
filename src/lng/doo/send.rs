@@ -37,7 +37,9 @@ async fn _send(uri: &Url) -> Result<serde_json::Value, Box<dyn Error + Send + Sy
     let is_unit = fname.to_ascii_lowercase().contains("units");
 
     let buf = tokio::fs::read(&path).await?;
-    let data = DooData::read(&buf, is_unit, 26)?;
-    Ok(to_value(data)?)
+    let (data, meta) = DooData::read(&buf, is_unit, 26)?;
+    let mut val = to_value(data)?;
+    val["_meta"] = to_value(meta)?;
+    Ok(val)
 }
 

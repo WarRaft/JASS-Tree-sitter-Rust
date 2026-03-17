@@ -36,6 +36,16 @@ JASS вынесен на первый план ради внимания (и н�
 
 Встроенный просмотрщик изображений формата **BLP**, используемого в WarCraft III.
 
+### DOO — `.doo`
+
+Встроенный просмотрщик файлов размещения **DOO** (`war3map.doo`, `war3mapUnits.doo`).
+Отображает размещение юнитов/деревьев, позиции, rawcode и декорации клиффов в структурированной таблице.
+
+### W3I — `.w3i`
+
+Встроенный просмотрщик файлов информации о карте **W3I** (`war3map.w3i`).
+Отображает метаданные карты: название, автор, игроки, силы, границы камеры, настройки тумана/погоды, рандомные группы и другое.
+
 ---
 
 ## Возможности LSP
@@ -226,15 +236,19 @@ endfunction
 |------------|----------|
 | `importGraph.show` | Показать граф импортов |
 | `callGraph.show` | Показать граф вызовов |
+| `typeGraph.show` | Показать граф типов |
+| `rescan.execute` | Перечитать все файлы |
 | `build.execute` | Сборка (JASS / AngelScript) |
 
 Или добавьте привязки напрямую в `keybindings.json` (`Ctrl+Shift+P` → *Preferences: Open Keyboard Shortcuts (JSON)*):
 
 ```json
 [
-  { "key": "ctrl+shift+i", "command": "importGraph.show", "when": "resourceLangId == jass || resourceLangId == angelscript" },
-  { "key": "ctrl+shift+g", "command": "callGraph.show",   "when": "resourceLangId == jass || resourceLangId == angelscript" },
-  { "key": "ctrl+shift+b", "command": "build.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" }
+  { "key": "ctrl+shift+i", "command": "importGraph.show",  "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+g", "command": "callGraph.show",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+t", "command": "typeGraph.show",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+r", "command": "rescan.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+b", "command": "build.execute",     "when": "resourceLangId == jass || resourceLangId == angelscript" }
 ]
 ```
 

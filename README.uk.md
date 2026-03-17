@@ -36,6 +36,16 @@ JASS винесено на перший план заради уваги (і н�
 
 Вбудований переглядач зображень формату **BLP**, що використовується у WarCraft III.
 
+### DOO — `.doo`
+
+Вбудований переглядач файлів розміщення **DOO** (`war3map.doo`, `war3mapUnits.doo`).
+Відображає розміщення юнітів/дерев, позиції, rawcode та декорації кліфів у структурованій таблиці.
+
+### W3I — `.w3i`
+
+Вбудований переглядач файлів інформації про карту **W3I** (`war3map.w3i`).
+Відображає метадані карти: назву, автора, гравців, сили, межі камери, налаштування туману/погоди, рандомні групи тощо.
+
 ---
 
 ## Можливості LSP
@@ -226,15 +236,19 @@ endfunction
 |------------|------|
 | `importGraph.show` | Показати граф імпортів |
 | `callGraph.show` | Показати граф викликів |
+| `typeGraph.show` | Показати граф типів |
+| `rescan.execute` | Перечитати всі файли |
 | `build.execute` | Збірка (JASS / AngelScript) |
 
 Або додайте прив'язки безпосередньо в `keybindings.json` (`Ctrl+Shift+P` → *Preferences: Open Keyboard Shortcuts (JSON)*):
 
 ```json
 [
-  { "key": "ctrl+shift+i", "command": "importGraph.show", "when": "resourceLangId == jass || resourceLangId == angelscript" },
-  { "key": "ctrl+shift+g", "command": "callGraph.show",   "when": "resourceLangId == jass || resourceLangId == angelscript" },
-  { "key": "ctrl+shift+b", "command": "build.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" }
+  { "key": "ctrl+shift+i", "command": "importGraph.show",  "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+g", "command": "callGraph.show",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+t", "command": "typeGraph.show",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+r", "command": "rescan.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+b", "command": "build.execute",     "when": "resourceLangId == jass || resourceLangId == angelscript" }
 ]
 ```
 

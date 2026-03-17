@@ -37,6 +37,16 @@ Grammar — [tree-sitter-bni](https://github.com/WarRaft/tree-sitter-bni).
 
 Built-in image viewer for the **BLP** texture format used by WarCraft III.
 
+### DOO — `.doo`
+
+Built-in viewer for **DOO** placement files (`war3map.doo`, `war3mapUnits.doo`).
+Displays unit/doodad placements, positions, rawcodes, and cliff decorations in a structured table.
+
+### W3I — `.w3i`
+
+Built-in viewer for **W3I** map information files (`war3map.w3i`).
+Displays map metadata: name, author, players, forces, camera bounds, fog/weather settings, random groups, and more.
+
 ---
 
 ## LSP Features
@@ -227,15 +237,19 @@ Open **Keyboard Shortcuts** (`Ctrl+K Ctrl+S` / `⌘K ⌘S`), search for the comm
 |------------|-------------|
 | `importGraph.show` | Show Import Graph |
 | `callGraph.show` | Show Call Graph |
+| `typeGraph.show` | Show Type Graph |
+| `rescan.execute` | Rescan All Files |
 | `build.execute` | Build (JASS / AngelScript) |
 
 Alternatively, add bindings directly to `keybindings.json` (`Ctrl+Shift+P` → *Preferences: Open Keyboard Shortcuts (JSON)*):
 
 ```json
 [
-  { "key": "ctrl+shift+i", "command": "importGraph.show", "when": "resourceLangId == jass || resourceLangId == angelscript" },
-  { "key": "ctrl+shift+g", "command": "callGraph.show",   "when": "resourceLangId == jass || resourceLangId == angelscript" },
-  { "key": "ctrl+shift+b", "command": "build.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" }
+  { "key": "ctrl+shift+i", "command": "importGraph.show",  "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+g", "command": "callGraph.show",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+t", "command": "typeGraph.show",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+r", "command": "rescan.execute",    "when": "resourceLangId == jass || resourceLangId == angelscript" },
+  { "key": "ctrl+shift+b", "command": "build.execute",     "when": "resourceLangId == jass || resourceLangId == angelscript" }
 ]
 ```
 

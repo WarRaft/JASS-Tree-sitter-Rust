@@ -7,7 +7,7 @@
 
 pub mod send;
 
-use crate::util::bin_reader::{BinRead, BinReader, BinResult, Rawcode};
+use crate::util::bin_reader::{BinRead, BinReader, BinReaderMeta, BinResult, Rawcode};
 use serde::Serialize;
 
 // ─── Simple types (hexpat structs) ───────────────────────────────────────────
@@ -296,7 +296,7 @@ pub struct W3iData {
 
 impl W3iData {
     /// Parse a `.w3i` file from raw bytes.
-    pub fn read(data: &[u8]) -> BinResult<Self> {
+    pub fn read(data: &[u8]) -> BinResult<(Self, BinReaderMeta)> {
         let mut r = BinReader::new(data);
 
         let format = r.read_u32()?;
@@ -388,7 +388,8 @@ impl W3iData {
             None
         };
 
-        Ok(W3iData {
+        let meta = r.meta();
+        Ok((W3iData {
             format, save_count, editor_version, editor_version_full,
             map_name, author, description, players_description,
             cam_bounds, map_size, map_width, map_height, map_flags,
@@ -400,6 +401,6 @@ impl W3iData {
             weather, sound, light, water_color,
             is_lua,
             players, clans, upgrades, techs, groups, items,
-        })
+        }, meta))
     }
 }

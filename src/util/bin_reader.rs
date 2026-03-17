@@ -6,6 +6,19 @@
 
 use std::fmt;
 
+// ─── Parse metadata ──────────────────────────────────────────────────────────
+
+/// Metadata produced after parsing, reporting how much of the input was consumed.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BinReaderMeta {
+    /// Total size of the input buffer in bytes.
+    pub total: usize,
+    /// Byte offset where the parser stopped (= number of bytes consumed).
+    pub read: usize,
+    /// Bytes remaining after the parser stopped.
+    pub remaining: usize,
+}
+
 // ─── Error type ──────────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -78,6 +91,16 @@ impl<'a> BinReader<'a> {
     #[inline]
     pub fn remaining(&self) -> usize {
         self.data.len().saturating_sub(self.pos)
+    }
+
+    /// Produce parse metadata — total / read / remaining byte counts.
+    #[inline]
+    pub fn meta(&self) -> BinReaderMeta {
+        BinReaderMeta {
+            total: self.data.len(),
+            read: self.pos,
+            remaining: self.remaining(),
+        }
     }
 
     /// Seek to an absolute byte offset.

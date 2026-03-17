@@ -3,6 +3,9 @@
   "command.callGraph.show": "Показать граф вызовов",
   "command.typeGraph.show": "Показать граф типов",
   "command.rescan.execute": "Перечитать все файлы",
-  "command.build.execute": "Сборка"
+  "command.build.execute": "Сборка",
+  "customEditor.blp.displayName": "Просмотр BLP-изображений",
+  "customEditor.doo.displayName": "Просмотр DOO-размещений",
+  "customEditor.w3i.displayName": "Просмотр W3I-информации карты"
 }
 

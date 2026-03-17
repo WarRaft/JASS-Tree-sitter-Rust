@@ -185,30 +185,39 @@ function buildHtml(data, d3Src, savedSettings) {
         fill: none;
         marker-end: url(#arrow);
     }
+    .link-hit {
+        stroke: transparent;
+        stroke-width: 12;
+        fill: none;
+        cursor: pointer;
+    }
 
-    .node-circle {
+    .node-rect {
+        rx: 4; ry: 4;
+        cursor: pointer;
+        transition: opacity 0.15s;
+    }
+    .node-rect:hover { opacity: 0.85; }
+    .node-rect.root {
+        fill: var(--vscode-focusBorder, #007acc);
         stroke: var(--vscode-focusBorder, #007acc);
         stroke-width: 1.5;
-        cursor: pointer;
-        transition: r 0.15s;
     }
-    .node-circle:hover { r: 9; }
-    .node-circle.root {
-        fill: var(--vscode-focusBorder, #007acc);
-    }
-    .node-circle.dep {
+    .node-rect.dep {
         fill: var(--vscode-editor-background, #1e1e1e);
+        stroke: var(--vscode-focusBorder, #007acc);
+        stroke-width: 1.5;
     }
 
     .node-label {
         fill: var(--vscode-editor-foreground, #d4d4d4);
         font-size: 11px;
         pointer-events: none;
-        text-shadow:
-            -1px -1px 2px var(--vscode-editor-background, #1e1e1e),
-             1px -1px 2px var(--vscode-editor-background, #1e1e1e),
-            -1px  1px 2px var(--vscode-editor-background, #1e1e1e),
-             1px  1px 2px var(--vscode-editor-background, #1e1e1e);
+        dominant-baseline: central;
+        text-anchor: middle;
+    }
+    .node-label.root {
+        fill: var(--vscode-button-foreground, #fff);
     }
 
     .toolbar {
@@ -244,9 +253,9 @@ function buildHtml(data, d3Src, savedSettings) {
     }
     .legend-dot {
         display: inline-block;
-        width: 10px;
+        width: 14px;
         height: 10px;
-        border-radius: 50%;
+        border-radius: 2px;
         margin-right: 4px;
         vertical-align: middle;
     }
@@ -328,7 +337,7 @@ function initSliders() {
 function applySettings() {
     simulation.force('link').distance(settings.linkDistance);
     simulation.force('charge').strength(settings.chargeStrength);
-    simulation.force('collision').radius(settings.collisionRadius);
+    simulation.force('collision').radius(d => d.boxWidth / 2 + settings.collisionRadius);
     simulation.force('center').strength(settings.centerStrength);
     simulation.alpha(0.5).restart();
 }
@@ -337,15 +346,29 @@ function applySettings() {
 svg.append('defs').append('marker')
     .attr('id', 'arrow')
     .attr('viewBox', '0 -5 10 10')
-    .attr('refX', 18)
+    .attr('refX', 10)
     .attr('refY', 0)
     .attr('markerWidth', 8)
     .attr('markerHeight', 8)
     .attr('orient', 'auto')
     .append('path')
-    .attr('d', 'M0,-5L10,0L0,5')
+    .attr('d', 'M0,-4L10,0L0,4')
     .attr('fill', getComputedStyle(document.documentElement)
         .getPropertyValue('--vscode-editorWidget-border').trim() || '#555');
+
+// Measure text for node sizing
+const tempSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+document.body.appendChild(tempSvg);
+const tempText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+tempText.style.fontSize = '11px';
+tempText.style.fontFamily = getComputedStyle(document.body).fontFamily;
+tempSvg.appendChild(tempText);
+graphData.nodes.forEach(n => {
+    tempText.textContent = n.label;
+    n.boxWidth = Math.max(tempText.getComputedTextLength() + 16, 40);
+    n.boxHeight = 22;
+});
+document.body.removeChild(tempSvg);
 
 const g = svg.append('g');
 
@@ -362,7 +385,19 @@ const simulation = d3.forceSimulation(graphData.nodes)
         .distance(settings.linkDistance))
     .force('charge', d3.forceManyBody().strength(settings.chargeStrength))
     .force('center', d3.forceCenter(width / 2, height / 2).strength(settings.centerStrength))
-    .force('collision', d3.forceCollide(settings.collisionRadius));
+    .force('collision', d3.forceCollide().radius(d => d.boxWidth / 2 + settings.collisionRadius));
+
+// Edge hit areas (wide invisible lines for clicking)
+const linkHit = g.append('g')
+    .selectAll('line')
+    .data(graphData.links)
+    .join('line')
+    .attr('class', 'link-hit')
+    .on('dblclick', (e, d) => {
+        e.stopPropagation();
+        const tgt = typeof d.target === 'object' ? d.target : graphData.nodes[d.target];
+        if (tgt) vscode.postMessage({type: 'openFile', uri: tgt.uri});
+    });
 
 // Links
 const link = g.append('g')
@@ -381,9 +416,13 @@ const node = g.append('g')
         .on('drag', dragged)
         .on('end', dragEnded));
 
-node.append('circle')
-    .attr('class', d => 'node-circle ' + (d.isRoot ? 'root' : 'dep'))
-    .attr('r', d => d.isRoot ? 8 : 6)
+// Rectangle
+node.append('rect')
+    .attr('class', d => 'node-rect ' + (d.isRoot ? 'root' : 'dep'))
+    .attr('width', d => d.boxWidth)
+    .attr('height', d => d.boxHeight)
+    .attr('x', d => -d.boxWidth / 2)
+    .attr('y', d => -d.boxHeight / 2)
     .on('dblclick', (e, d) => {
         e.stopPropagation();
         vscode.postMessage({type: 'openFile', uri: d.uri});
@@ -393,13 +432,24 @@ node.append('title')
     .text(d => d.uri);
 
 node.append('text')
-    .attr('class', 'node-label')
-    .attr('dx', 12)
-    .attr('dy', 4)
+    .attr('class', d => 'node-label' + (d.isRoot ? ' root' : ''))
     .text(d => d.label);
 
 simulation.on('tick', () => {
     link
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => {
+            const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+            const len = Math.sqrt(dx*dx + dy*dy) || 1;
+            return d.target.x - (dx/len) * (d.target.boxWidth/2 + 4);
+        })
+        .attr('y2', d => {
+            const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
+            const len = Math.sqrt(dx*dx + dy*dy) || 1;
+            return d.target.y - (dy/len) * (d.target.boxHeight/2 + 4);
+        });
+    linkHit
         .attr('x1', d => d.source.x)
         .attr('y1', d => d.source.y)
         .attr('x2', d => d.target.x)

@@ -3,6 +3,9 @@
   "command.callGraph.show": "Show Call Graph",
   "command.typeGraph.show": "Show Type Graph",
   "command.rescan.execute": "Rescan All Files",
-  "command.build.execute": "Build"
+  "command.build.execute": "Build",
+  "customEditor.blp.displayName": "BLP Image Viewer",
+  "customEditor.doo.displayName": "DOO Placement Viewer",
+  "customEditor.w3i.displayName": "W3I Map Info Viewer"
 }
 
