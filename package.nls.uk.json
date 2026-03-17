@@ -4,6 +4,7 @@
   "command.typeGraph.show": "Показати граф типів",
   "command.rescan.execute": "Перечитати всі файли",
   "command.build.execute": "Збірка",
+  "command.ujapi.download": "Завантажити UjAPI common.j",
   "customEditor.blp.displayName": "Перегляд BLP-зображень",
   "customEditor.doo.displayName": "Перегляд DOO-розміщень",
   "customEditor.w3i.displayName": "Перегляд W3I-інформації карти"

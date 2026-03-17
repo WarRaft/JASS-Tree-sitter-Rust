@@ -13,6 +13,7 @@ use crate::lng::blp::send::send as blp_send;
 use crate::lng::doo::send::send as doo_send;
 use crate::lng::w3i::send::send as w3i_send;
 use crate::lsp::cancel::CancelCheck;
+use crate::lsp::code_action::send::send as code_action_send;
 use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::completion::send::send as completion_send;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
@@ -43,6 +44,7 @@ use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::util::file_store::{mark_parse_pending, mark_parse_done, wait_for_parse, FILE_STORE, LSP_WRITER};
 use crate::util::uri_map::LNG_URI_MAP;
 use log::{error, info};
+use url::Url;
 
 #[tokio::main]
 async fn main() {
@@ -124,6 +126,7 @@ async fn main() {
                                     document_link_provider: Some(DocumentLinkOptions {
                                         resolve_provider: Some(false),
                                     }),
+                                    code_action_provider: Some(true),
                                     document_formatting_provider: Some(
                                         DocumentFormattingOptions {},
                                     ),
@@ -983,6 +986,70 @@ async fn main() {
                                     },
                                 )
                                 .await;
+                            }
+
+                            MethodCall::CodeAction(params) => {
+                                code_action_send(&writer, call.id, &params).await;
+                            }
+
+                            MethodCall::UjapiDownload(params) => {
+                                let source_uri = params.uri.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    let dest = match crate::util::ujapi::resolve_ujapi_path(&params.uri, &params.path) {
+                                        Some(p) => p,
+                                        None => return json!({
+                                            "ok": false,
+                                            "message": format!("Cannot resolve path: {}", params.path)
+                                        }),
+                                    };
+                                    match crate::util::ujapi::download_common_j(&dest) {
+                                        Ok(rel) => json!({
+                                            "ok": true,
+                                            "message": format!("Downloaded UjAPI {} to {}", rel.tag, dest.display()),
+                                            "tag": rel.tag,
+                                            "path": dest.display().to_string()
+                                        }),
+                                        Err(e) => json!({
+                                            "ok": false,
+                                            "message": format!("Download failed: {}", e)
+                                        }),
+                                    }
+                                }).await.unwrap_or_else(|e| json!({
+                                    "ok": false,
+                                    "message": format!("Task error: {}", e)
+                                }));
+
+                                // After successful download, re-parse the source file
+                                // so the ujapi diagnostic clears and symbols become available.
+                                if result.get("ok").and_then(|v| v.as_bool()) == Some(true) {
+                                    if let Some(path_str) = result.get("path").and_then(|v| v.as_str()) {
+                                        let dest_path = std::path::PathBuf::from(path_str);
+                                        if let Ok(content) = std::fs::read_to_string(&dest_path) {
+                                            if let Ok(dest_uri) = Url::from_file_path(&dest_path) {
+                                                if let Err(e) = lng::jass::open::open(&dest_uri, &content).await {
+                                                    error!("ujapi: open downloaded file: {}", e);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Re-parse the file containing the //import-ujapi! directive.
+                                    if let Ok(content) = source_uri.to_file_path().and_then(|p| std::fs::read_to_string(&p).map_err(|_| ())) {
+                                        if let Err(e) = lng::jass::open::open(&source_uri, &content).await {
+                                            error!("ujapi: re-parse source: {}", e);
+                                        }
+                                    }
+                                    crate::util::file_store::send_refresh_all().await;
+                                }
+
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(result),
+                                        error: None,
+                                    },
+                                ).await;
                             }
 
                             _ => {

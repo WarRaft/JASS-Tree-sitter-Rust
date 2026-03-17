@@ -194,7 +194,7 @@ pub struct Comment<'tree> {
 }
 
 // Re-export shared directive types for convenience.
-pub use crate::lng::directive::{IgnoreDirective, ImportDirective, SetDirective};
+pub use crate::lng::directive::{IgnoreDirective, ImportDirective, SetDirective, UjapiDirective};
 
 // ─── Expressions ─────────────────────────────────────────────────────────────
 
@@ -252,6 +252,7 @@ pub enum Statement<'tree> {
     Import(ImportDirective<'tree>),
     SetDir(SetDirective<'tree>),
     IgnoreDir(IgnoreDirective<'tree>),
+    UjapiImport(UjapiDirective<'tree>),
     /// Unrecognized or error CST node preserved in the AST so it participates
     /// in ordering (e.g. blocks import scanning) and can be highlighted.
     Error(CstError<'tree>),
@@ -297,7 +298,7 @@ pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
         // Stop at first non-comment, non-directive item.
         match &ast.items[i] {
             Statement::Comment(_) => {}
-            Statement::Import(_) | Statement::SetDir(_) | Statement::IgnoreDir(_) => {
+            Statement::Import(_) | Statement::SetDir(_) | Statement::IgnoreDir(_) | Statement::UjapiImport(_) => {
                 i += 1;
                 continue;
             }
@@ -310,6 +311,7 @@ pub fn rewrite_imports(ast: &mut Ast, src: &[u8]) {
                     Directive::Import(imp) => Statement::Import(imp),
                     Directive::Set(sd) => Statement::SetDir(sd),
                     Directive::Ignore(ig) => Statement::IgnoreDir(ig),
+                    Directive::Ujapi(ud) => Statement::UjapiImport(ud),
                 };
                 i += 1;
                 continue;

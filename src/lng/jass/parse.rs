@@ -146,6 +146,12 @@ fn _parse(
                 &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
             );
         }
+        if let Statement::UjapiImport(ud) = item {
+            crate::util::parse::resolve_ujapi_directive(
+                uri, ud, &src, rope,
+                &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
+            );
+        }
     }
 
     // ── Cancellation checkpoint ──

@@ -11,6 +11,7 @@ pub(crate) mod roper;
 pub(crate) mod scope_resolver;
 pub(crate) mod tree_map;
 pub(crate) mod type_graph;
+pub(crate) mod ujapi;
 pub(crate) mod uri_map;
 
 #[cfg(test)]

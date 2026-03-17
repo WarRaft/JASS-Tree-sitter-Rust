@@ -196,6 +196,36 @@ module.exports = {
                 } catch (e) {
                     window.showErrorMessage(`Build error: ${e.message}`)
                 }
+            }),
+
+            // UjAPI download
+            commands.registerCommand('ujapi.download', async (uriStr, relPath) => {
+                if (!uriStr || !relPath) {
+                    window.showWarningMessage('Missing URI or path for UjAPI download.')
+                    return
+                }
+                await window.withProgress(
+                    {
+                        location: ProgressLocation.Notification,
+                        title: 'Downloading UjAPI common.j…',
+                        cancellable: false
+                    },
+                    async () => {
+                        try {
+                            const result = await client.sendRequest('ujapi/download', {
+                                uri: uriStr,
+                                path: relPath
+                            })
+                            if (result && result.ok) {
+                                window.showInformationMessage(`✓ ${result.message}`)
+                            } else {
+                                window.showErrorMessage(`✗ ${result ? result.message : 'Download failed'}`)
+                            }
+                        } catch (e) {
+                            window.showErrorMessage(`UjAPI download error: ${e.message}`)
+                        }
+                    }
+                )
             })
         )
 

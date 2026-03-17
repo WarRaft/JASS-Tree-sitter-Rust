@@ -1,4 +1,5 @@
 use crate::lsp::cancel::{CancelId, CancelParams};
+use crate::lsp::code_action::lsp::{CodeActionParams, UjapiDownloadParams};
 use crate::lsp::completion::lsp::CompletionParams;
 use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
 use crate::lsp::document_link::lsp::DocumentLinkParams;
@@ -153,6 +154,12 @@ pub enum MethodCall {
 
     #[serde(rename = "rescan/execute")]
     RescanExecute(TextDocumentIdentifier),
+
+    #[serde(rename = "ujapi/download")]
+    UjapiDownload(UjapiDownloadParams),
+
+    #[serde(rename = "textDocument/codeAction")]
+    CodeAction(CodeActionParams),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage

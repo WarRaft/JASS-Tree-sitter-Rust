@@ -441,6 +441,7 @@ impl Cursor {
             Statement::Import(i) => i.node,
             Statement::SetDir(s) => s.node,
             Statement::IgnoreDir(ig) => ig.node,
+            Statement::UjapiImport(u) => u.node,
             Statement::Error(e) => e.node,
         }
     }
@@ -1165,6 +1166,19 @@ impl Cursor {
             return None;
         }
 
+        // UjapiImport directives — skip comment tracking, add dedicated semantic
+        if let Statement::UjapiImport(ud) = stmt {
+            self.flush_comment_run();
+            self.directive_nodes.insert(ud.node.start_byte());
+            crate::lng::directive::visit_ujapi_semantic(
+                ud,
+                &mut self.semantic,
+                &mut self.diagnostics,
+                &self.rope,
+            );
+            return None;
+        }
+
         // Comment tracking
         if let Statement::Comment(c) = stmt {
             let row = c.node.start_position().row;
@@ -1738,6 +1752,7 @@ impl Cursor {
             Statement::Import(_) => unreachable!("handled above"),
             Statement::SetDir(_) => unreachable!("handled above"),
             Statement::IgnoreDir(_) => unreachable!("handled above"),
+            Statement::UjapiImport(_) => unreachable!("handled above"),
             Statement::Error(_) => None, // diagnostics already collected from ast.errors
         }
     }

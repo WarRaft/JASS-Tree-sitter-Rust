@@ -214,6 +214,11 @@
         "command": "build.execute",
         "title": "%command.build.execute%",
         "icon": "$(play)"
+      },
+      {
+        "command": "ujapi.download",
+        "title": "%command.ujapi.download%",
+        "icon": "$(cloud-download)"
       }
     ],
     "menus": {

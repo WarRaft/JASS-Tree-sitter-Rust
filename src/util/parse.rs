@@ -14,6 +14,7 @@
 //!   per-language parse functions.
 
 use crate::lng::directive::ImportDirective;
+use crate::lng::directive::UjapiDirective;
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_link::lsp::DocumentLink;
@@ -101,6 +102,149 @@ pub fn resolve_import_directive(
             diagnostics.push(Diagnostic {
                 range: path_range,
                 message: format!("Cannot resolve import path: {}", imp.path),
+                severity: Some(DiagnosticSeverity::Error),
+                ..Default::default()
+            });
+        }
+    }
+}
+
+/// Resolve a single `//import-ujapi! <path>` directive.
+///
+/// The target file is treated as a **frozen** import.
+///
+/// ## Logic
+///
+/// 1. Resolve `<path>` to an absolute path.
+/// 2. Read the **first line** of the file to extract `//<tag>`.
+/// 3. Compare the local tag with the cached latest GitHub release tag.
+///
+/// | File exists? | Tag matches latest? | Result |
+/// |:---:|:---:|---|
+/// | ✗ | — | Error diagnostic + code action "download" |
+/// | ✓ | no tag in file | Warning diagnostic + code action "re-download" |
+/// | ✓ | tag ≠ latest | Warning diagnostic + code action "re-download" |
+/// | ✓ | tag = latest (or latest unknown) | document link (ok) |
+///
+/// A background `spawn_blocking` fetch is **always** kicked off so that
+/// `cached_release()` is populated for subsequent parses / hovers.
+pub fn resolve_ujapi_directive(
+    uri: &Url,
+    ud: &UjapiDirective,
+    src: &[u8],
+    rope: &Rope,
+    imports: &mut HashSet<Url>,
+    frozen_imports: &mut HashSet<Url>,
+    links: &mut Vec<DocumentLink>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use crate::util::ujapi;
+
+    if ud.path.is_empty() {
+        return; // cursor already emits "Missing destination path"
+    }
+
+    let node = &ud.node;
+    let prefix_len = "//import-ujapi!".len();
+
+    let node_text =
+        std::str::from_utf8(&src[node.start_byte()..node.end_byte()]).unwrap_or("");
+    let after_prefix = &node_text[prefix_len..];
+    let ws_len = after_prefix.len() - after_prefix.trim_start().len();
+    let path_start_byte = node.start_byte() + prefix_len + ws_len;
+    let path_end_byte = node.start_byte() + prefix_len + ws_len + ud.path.len();
+
+    let path_range = Range {
+        start: Position::from_byte_offset(rope, path_start_byte).unwrap_or_default(),
+        end: Position::from_byte_offset(rope, path_end_byte).unwrap_or_default(),
+    };
+
+    // Always kick off a background fetch so that the latest tag is available.
+    tokio::task::spawn_blocking(|| {
+        let _ = ujapi::fetch_latest_release();
+    });
+
+    match resolve_import(uri, &ud.path) {
+        Some(resolved) => {
+            // Always register as a frozen import (even when outdated).
+            imports.insert(resolved.url.clone());
+            frozen_imports.insert(resolved.url.clone());
+
+            if !resolved.exists {
+                // ── File does not exist ──────────────────────────────
+                diagnostics.push(Diagnostic {
+                    range: path_range,
+                    message: format!(
+                        "UjAPI file not found: `{}`. Use **Alt+Enter** to download.",
+                        ud.path
+                    ),
+                    severity: Some(DiagnosticSeverity::Error),
+                    source: Some("ujapi".into()),
+                    ..Default::default()
+                });
+                return;
+            }
+
+            // ── File exists — check version tag ─────────────────────
+            let disk_path = resolved.url.to_file_path().ok();
+            let file_tag = disk_path
+                .as_deref()
+                .and_then(ujapi::read_file_tag);
+
+            let latest = ujapi::cached_release();
+
+            match (&file_tag, &latest) {
+                // No tag in the file at all → outdated / broken
+                (None, _) => {
+                    diagnostics.push(Diagnostic {
+                        range: path_range.clone(),
+                        message: "UjAPI file has no version tag. Use **Alt+Enter** to re-download.".into(),
+                        severity: Some(DiagnosticSeverity::Warning),
+                        source: Some("ujapi".into()),
+                        ..Default::default()
+                    });
+                }
+                // We have both tags and they differ → outdated
+                (Some(ft), Some(rel)) if *ft != rel.tag => {
+                    diagnostics.push(Diagnostic {
+                        range: path_range.clone(),
+                        message: format!(
+                            "UjAPI outdated: local `{}`, latest `{}`. Use **Alt+Enter** to update.",
+                            ft, rel.tag
+                        ),
+                        severity: Some(DiagnosticSeverity::Warning),
+                        source: Some("ujapi".into()),
+                        ..Default::default()
+                    });
+                }
+                // Tags match, or latest is unknown yet → ok
+                _ => {}
+            }
+
+            // Build tooltip.
+            let tooltip = match (&file_tag, &latest) {
+                (Some(ft), Some(rel)) if *ft == rel.tag => {
+                    format!("UjAPI {} ✓ (up to date)", ft)
+                }
+                (Some(ft), Some(rel)) => {
+                    format!("UjAPI {} → {} available", ft, rel.tag)
+                }
+                (Some(ft), None) => {
+                    format!("UjAPI {} (checking for updates…)", ft)
+                }
+                (None, _) => "UjAPI (no version tag)".into(),
+            };
+
+            links.push(DocumentLink {
+                range: path_range,
+                target: Some(resolved.url.to_string()),
+                tooltip: Some(tooltip),
+            });
+        }
+        None => {
+            diagnostics.push(Diagnostic {
+                range: path_range,
+                message: format!("Cannot resolve UjAPI path: {}", ud.path),
                 severity: Some(DiagnosticSeverity::Error),
                 ..Default::default()
             });

@@ -1,7 +1,7 @@
 //! Unified on-disk cache — **one file = one cache entry**.
 //!
 //! Replaces the old `symbol_cache` + `ref_cache` split.  Each source file's
-//! parse output is stored as a single bincode blob keyed by SHA-256(URI).
+//! parse output is stored as a single bitcode blob keyed by SHA-256(URI).
 //!
 //! ## Stored data
 //!
@@ -107,17 +107,6 @@ struct CacheEntry {
     func_decl_keys: HashSet<DeclKey>,
 }
 
-/// Borrowing variant for serialization without cloning.
-#[derive(serde::Serialize)]
-struct CacheEntryRef<'a> {
-    uri: &'a str,
-    meta: FileMeta,
-    content_hash: [u8; 32],
-    symbols: &'a FileSymbols,
-    ref_map: &'a RefMap,
-    func_decl_keys: &'a HashSet<DeclKey>,
-}
-
 /// Result of loading a cache entry.
 pub struct CacheData {
     pub meta: FileMeta,
@@ -148,7 +137,7 @@ pub fn load(uri: &Url) -> Option<CacheData> {
         }
     };
 
-    let entry: CacheEntry = match bincode::deserialize(&data) {
+    let entry: CacheEntry = match bitcode::deserialize(&data) {
         Ok(e) => e,
         Err(e) => {
             error!("file_cache: deserialize {:?}: {}", path, e);
@@ -181,16 +170,17 @@ pub fn store(
         let _ = fs::create_dir_all(parent);
     }
 
-    let entry = CacheEntryRef {
-        uri: uri.as_str(),
+    // NOTE: CacheEntryRef can't derive bitcode::Encode (lifetimes), so build owned.
+    let entry = CacheEntry {
+        uri: uri.as_str().to_string(),
         meta,
         content_hash,
-        symbols,
-        ref_map,
-        func_decl_keys,
+        symbols: symbols.clone(),
+        ref_map: ref_map.clone(),
+        func_decl_keys: func_decl_keys.clone(),
     };
 
-    match bincode::serialize(&entry) {
+    match bitcode::serialize(&entry) {
         Ok(data) => {
             if let Err(e) = fs::write(&path, data) {
                 error!("file_cache: write {:?}: {}", path, e);
@@ -227,7 +217,7 @@ pub fn load_all() -> Vec<(Url, CacheData)> {
             Ok(d) => d,
             Err(_) => continue,
         };
-        match bincode::deserialize::<CacheEntry>(&data) {
+        match bitcode::deserialize::<CacheEntry>(&data) {
             Ok(ce) => {
                 if let Ok(uri) = Url::parse(&ce.uri) {
                     result.push((

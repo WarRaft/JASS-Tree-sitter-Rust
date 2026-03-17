@@ -4,6 +4,7 @@
   "command.typeGraph.show": "显示类型图",
   "command.rescan.execute": "重新扫描所有文件",
   "command.build.execute": "构建",
+  "command.ujapi.download": "下载 UjAPI common.j",
   "customEditor.blp.displayName": "BLP 图像查看器",
   "customEditor.doo.displayName": "DOO 放置查看器",
   "customEditor.w3i.displayName": "W3I 地图信息查看器"

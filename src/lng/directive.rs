@@ -171,6 +171,20 @@ pub struct IgnoreDirective<'tree> {
     pub tags: Vec<String>,
 }
 
+/// `//import-ujapi! <path>` — download & frozen-import from UjAPI.
+///
+/// Fetches `uJAPIFiles/common.j` from the latest UjAPI GitHub release and
+/// saves it to the user-specified `<path>` (relative to the current file).
+/// The imported file is treated as **frozen** (read-only), identical to
+/// `//import!`.
+#[derive(Debug, Clone)]
+pub struct UjapiDirective<'tree> {
+    /// The original comment CST node.
+    pub node: Node<'tree>,
+    /// The raw relative destination path.
+    pub path: String,
+}
+
 // ─── Known ignore tags ──────────────────────────────────────────────────────
 
 /// Descriptor for a known `//ignore` / `//@ignore` tag.
@@ -202,6 +216,7 @@ pub enum Directive<'tree> {
     Import(ImportDirective<'tree>),
     Set(SetDirective<'tree>),
     Ignore(IgnoreDirective<'tree>),
+    Ujapi(UjapiDirective<'tree>),
 }
 
 /// Try to parse a comment CST node as a directive.
@@ -215,6 +230,14 @@ pub fn try_parse_directive<'tree>(node: &Node<'tree>, src: &[u8]) -> Option<Dire
 
     let text = std::str::from_utf8(&src[node.start_byte()..node.end_byte()]).ok()?;
 
+    // ── //import-ujapi! ───────────────────────────────────────────
+    if let Some(rest) = text.strip_prefix("//import-ujapi!") {
+        let path = rest.trim().to_string();
+        return Some(Directive::Ujapi(UjapiDirective {
+            node: *node,
+            path,
+        }));
+    }
     // ── //import! ────────────────────────────────────────────────
     if let Some(rest) = text.strip_prefix("//import!") {
         let path = rest.trim().to_string();
@@ -524,6 +547,49 @@ pub fn process_imports<'a>(
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
                 });
+            }
+        }
+    }
+}
+
+/// Emit semantic tokens for an `//import-ujapi! path` directive.
+pub fn visit_ujapi_semantic(
+    ud: &UjapiDirective,
+    semantic: &mut Hub,
+    diagnostics: &mut Vec<Diagnostic>,
+    rope: &Rope,
+) {
+    let node = &ud.node;
+    let prefix_len = "//import-ujapi!".len();
+    let start_byte = node.start_byte();
+
+    // Macro token for the "//import-ujapi!" prefix
+    semantic.add_range(start_byte, prefix_len, rope, TokenKind::Macro, 0u32);
+
+    if ud.path.is_empty() {
+        diagnostics.push(Diagnostic {
+            range: node.to_range(rope),
+            message: "Missing destination path for UjAPI import".into(),
+            severity: Some(DiagnosticSeverity::Error),
+            ..Default::default()
+        });
+    } else {
+        // String token for the path
+        let full_text_bytes = node.end_byte() - node.start_byte();
+        if full_text_bytes > prefix_len {
+            let path_offset = start_byte + prefix_len;
+            let path_len = full_text_bytes - prefix_len;
+            let raw = &rope.slice_to_cow(path_offset..path_offset + path_len);
+            let trimmed = raw.trim_start();
+            let ws_len = raw.len() - trimmed.len();
+            if !trimmed.is_empty() {
+                semantic.add_range(
+                    path_offset + ws_len,
+                    trimmed.len(),
+                    rope,
+                    TokenKind::String,
+                    0u32,
+                );
             }
         }
     }

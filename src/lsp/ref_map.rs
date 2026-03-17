@@ -74,7 +74,7 @@ pub struct Span {
 }
 
 /// All reference data for a single file.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default, Clone, Serialize, Deserialize)]
 pub struct RefMap {
     /// DeclKey → group of occurrences.
     pub groups: HashMap<DeclKey, RefGroup>,

@@ -48,6 +48,8 @@ pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rename_provider: Option<RenameOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_action_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub document_link_provider: Option<DocumentLinkOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document_formatting_provider: Option<DocumentFormattingOptions>,

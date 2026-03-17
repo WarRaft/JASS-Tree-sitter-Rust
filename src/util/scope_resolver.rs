@@ -121,7 +121,7 @@ impl ScopeResolver {
         let inner = if let Some(path) = cache_path() {
             if path.exists() {
                 match fs::read(&path) {
-                    Ok(data) => match bincode::deserialize::<ScopeInner>(&data) {
+                    Ok(data) => match bitcode::deserialize::<ScopeInner>(&data) {
                         Ok(si) => {
                             info!(
                                 "scope_resolver: loaded {} names, {} files from {}",
@@ -160,7 +160,7 @@ impl ScopeResolver {
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        match bincode::serialize(inner) {
+        match bitcode::serialize(inner) {
             Ok(data) => {
                 if let Err(e) = fs::write(&path, &data) {
                     error!("scope_resolver: write: {}", e);

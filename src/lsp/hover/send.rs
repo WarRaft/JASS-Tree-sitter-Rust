@@ -152,6 +152,47 @@ fn compute_directive_hover(
     line_idx: usize,
     col: usize,
 ) -> Option<Hover> {
+    // ── Special: //import-ujapi! — dynamic hover with version ─────────
+    if trimmed.starts_with("//import-ujapi!") {
+        let leading_ws = line_text.len() - trimmed.len();
+        let prefix = "//import-ujapi!";
+        let prefix_start_col = leading_ws;
+        let prefix_end_col = leading_ws + prefix.len();
+
+        if col >= prefix_start_col && col <= prefix_end_col {
+            let latest = crate::util::ujapi::cached_release();
+            let version_line = match &latest {
+                Some(rel) => format!(
+                    "**Latest release:** [`{}`]({}) — {}",
+                    rel.tag, rel.html_url, rel.name
+                ),
+                None => "*Fetching latest release info…*".to_string(),
+            };
+
+            let md = format!(
+                "### `//import-ujapi!`\n\n\
+                 Download `uJAPIFiles/common.j` from the latest \
+                 [UjAPI](https://github.com/UnryzeC/UjAPI) GitHub release \
+                 and treat it as a frozen import.\n\n\
+                 {version_line}\n\n\
+                 The first line of the downloaded file contains `//<tag>` for version tracking.\n\n\
+                 Use code action (**Alt+Enter**) to download / re-download."
+            );
+            return Some(Hover {
+                contents: MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: md,
+                },
+                range: Some(Range {
+                    start: Position { line: line_idx, character: prefix_start_col },
+                    end: Position { line: line_idx, character: prefix_end_col },
+                }),
+            });
+        }
+
+        return None;
+    }
+
     let (prefix, doc_fn): (&str, fn() -> &'static str) =
         if trimmed.starts_with("//import!") {
             ("//import!", import_doc as fn() -> &'static str)

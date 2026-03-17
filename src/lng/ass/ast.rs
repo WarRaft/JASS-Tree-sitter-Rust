@@ -449,6 +449,7 @@ pub fn rewrite_directives(ast: &mut Ast, src: &[u8]) {
                     Directive::Import(imp) => TopLevel::ImportDir(imp),
                     Directive::Set(sd) => TopLevel::SetDir(sd),
                     Directive::Ignore(ig) => TopLevel::IgnoreDir(ig),
+                    Directive::Ujapi(_) => { i += 1; continue; } // not supported in AS
                 };
                 i += 1;
                 continue;

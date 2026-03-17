@@ -109,6 +109,14 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 sort_text: Some("4".into()),
                 ..Default::default()
             },
+            CompletionItem {
+                label: "import-ujapi!".into(),
+                kind: Some(CompletionItemKind::Keyword),
+                detail: Some("Download & import UjAPI common.j".into()),
+                insert_text: Some("import-ujapi! ".into()),
+                sort_text: Some("5".into()),
+                ..Default::default()
+            },
         ];
     }
 
@@ -231,9 +239,11 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
         }
     }
 
-    // ── Case 3: cursor on the path after "//import " or "//import! " ─────────
+    // ── Case 3: cursor on the path after "//import ", "//import! ", or "//import-ujapi! " ──
 
-    let path_part = if let Some(rest) = trimmed.strip_prefix("//import!") {
+    let path_part = if let Some(rest) = trimmed.strip_prefix("//import-ujapi!") {
+        rest.strip_prefix(' ').or(Some(rest))
+    } else if let Some(rest) = trimmed.strip_prefix("//import!") {
         rest.strip_prefix(' ').or(Some(rest))
     } else if let Some(rest) = trimmed.strip_prefix("//import") {
         // Guard against "//importing" etc.
