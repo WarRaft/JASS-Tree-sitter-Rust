@@ -7,6 +7,8 @@ const {
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
 const {resolveBlpEditor} = require('./resolveBlpEditor.js')
+const {resolveDooEditor} = require('./resolveDooEditor.js')
+const {resolveW3iEditor} = require('./resolveW3iEditor.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
@@ -81,32 +83,44 @@ module.exports = {
             console.log(`${params.message}`)
         })
 
-        context.subscriptions.push(
-            // https://code.visualstudio.com/api/references/vscode-api#window.registerCustomEditorProvider
-            window.registerCustomEditorProvider(
-                'blp.preview',
+        client.onDidChangeState(({oldState, newState}) => {
+            const message = onDidChangeStateMessage(oldState, newState)
+            if (message) {
+                window.showWarningMessage(message)
+            }
+        })
+
+        // Start the client early so custom editors can send requests.
+        const clientReady = client.start().catch(err => {
+            window.showErrorMessage(`❌ Failed to start LSP client:\n\n${err.message}`)
+        })
+
+        /** Helper: open-custom-document boilerplate */
+        const openCustomDocument = uri => ({uri, dispose: () => {}})
+
+        /** Helper: register a binary-file custom editor that talks to LSP */
+        function binaryEditor(viewType, resolver) {
+            return window.registerCustomEditorProvider(
+                viewType,
                 {
-                    openCustomDocument(uri) {
-                        return {
-                            uri,
-                            dispose: () => {
-                            }
-                        }
-                    },
+                    openCustomDocument,
                     async resolveCustomEditor(document, webviewPanel, _token) {
-                        webviewPanel.webview.options = {
-                            enableScripts: true
-                        }
-                        return resolveBlpEditor(document, webviewPanel, _token, client)
+                        webviewPanel.webview.options = {enableScripts: true}
+                        await clientReady
+                        return resolver(document, webviewPanel, _token, client)
                     }
                 },
                 {
-                    webviewOptions: {
-                        retainContextWhenHidden: true,
-                    },
+                    webviewOptions: {retainContextWhenHidden: true},
                     supportsMultipleEditorsPerDocument: false
                 }
-            ),
+            )
+        }
+
+        context.subscriptions.push(
+            binaryEditor('blp.preview', resolveBlpEditor),
+            binaryEditor('doo.preview', resolveDooEditor),
+            binaryEditor('w3i.preview', resolveW3iEditor),
 
             // Import Graph panel
             commands.registerCommand('importGraph.show', () => {
@@ -185,18 +199,7 @@ module.exports = {
             })
         )
 
-        client.onDidChangeState(({oldState, newState}) => {
-            const message = onDidChangeStateMessage(oldState, newState)
-            if (message) {
-                window.showWarningMessage(message)
-            }
-        })
-
-        try {
-            await client.start()
-        } catch (err) {
-            window.showErrorMessage(`❌ Failed to start LSP client:\n\n${err.message}`)
-        }
+        await clientReady
     },
 
     async deactivate() {

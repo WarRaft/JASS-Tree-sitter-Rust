@@ -1,3 +1,4 @@
+pub(crate) mod bin_reader;
 pub(crate) mod call_graph;
 pub(crate) mod change;
 pub(crate) mod dfs_node;

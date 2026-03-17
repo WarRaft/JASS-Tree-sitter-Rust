@@ -55,6 +55,14 @@ pub enum MethodCall {
     #[serde(rename = "blp/render")]
     BlpRender(TextDocumentIdentifier),
 
+    /// DOO
+    #[serde(rename = "doo/render")]
+    DooRender(TextDocumentIdentifier),
+
+    /// W3I
+    #[serde(rename = "w3i/render")]
+    W3iRender(TextDocumentIdentifier),
+
     /// LSP
     #[serde(rename = "initialize")]
     Initialize(InitializeParams),

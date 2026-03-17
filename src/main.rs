@@ -10,6 +10,8 @@ use tokio::io::{self, BufReader, Stdout};
 use tokio::sync::Mutex;
 
 use crate::lng::blp::send::send as blp_send;
+use crate::lng::doo::send::send as doo_send;
+use crate::lng::w3i::send::send as w3i_send;
 use crate::lsp::cancel::CancelCheck;
 use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::completion::send::send as completion_send;
@@ -271,6 +273,14 @@ async fn main() {
                         match other {
                             MethodCall::BlpRender(param) => {
                                 blp_send(&writer, call.id, &param.uri).await;
+                            }
+
+                            MethodCall::DooRender(param) => {
+                                doo_send(&writer, call.id, &param.uri).await;
+                            }
+
+                            MethodCall::W3iRender(param) => {
+                                w3i_send(&writer, call.id, &param.uri).await;
                             }
 
                             MethodCall::Initialized(_) => {
