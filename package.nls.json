@@ -5,8 +5,10 @@
   "command.rescan.execute": "Rescan All Files",
   "command.build.execute": "Build",
   "command.ujapi.download": "Download UjAPI common.j",
+  "command.mpq.browse": "Browse MPQ Archive",
   "customEditor.blp.displayName": "BLP Image Viewer",
   "customEditor.doo.displayName": "DOO Placement Viewer",
-  "customEditor.w3i.displayName": "W3I Map Info Viewer"
+  "customEditor.w3i.displayName": "W3I Map Info Viewer",
+  "customEditor.mpq.displayName": "MPQ Archive Viewer"
 }
 

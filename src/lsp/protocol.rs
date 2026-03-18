@@ -170,6 +170,16 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/codeAction")]
     CodeAction(CodeActionParams),
+
+    /// MPQ archive browsing
+    #[serde(rename = "mpq/info")]
+    MpqInfo(MpqArchiveParams),
+
+    #[serde(rename = "mpq/list")]
+    MpqList(MpqArchiveParams),
+
+    #[serde(rename = "mpq/read")]
+    MpqRead(MpqReadParams),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
@@ -188,3 +198,22 @@ pub struct ResponseMessage<T = Value> {
     pub result: Option<T>,
     pub error: Option<Value>,
 }
+
+/// Params for `mpq/list` — list files in an archive.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpqArchiveParams {
+    /// Absolute filesystem path to the MPQ archive.
+    pub archive_path: String,
+}
+
+/// Params for `mpq/read` — read a single file from an archive.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MpqReadParams {
+    /// Absolute filesystem path to the MPQ archive.
+    pub archive_path: String,
+    /// Internal path inside the archive (e.g. "war3map.j").
+    pub file_path: String,
+}
+

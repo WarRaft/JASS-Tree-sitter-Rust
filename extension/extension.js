@@ -2,7 +2,7 @@
 // noinspection NpmUsedModulesInstalled
 const {
     window,
-    Uri, ExtensionMode, commands, ProgressLocation
+    Uri, ExtensionMode, commands, ProgressLocation, workspace
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
@@ -13,6 +13,8 @@ const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
 const {showTypeGraph} = require('./typeGraphPanel.js')
+const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
+const {resolveMpqEditor} = require('./resolveMpqEditor.js')
 
 const path = require('path')
 
@@ -98,6 +100,50 @@ module.exports = {
         /** Helper: open-custom-document boilerplate */
         const openCustomDocument = uri => ({uri, dispose: () => {}})
 
+        // ── MPQ virtual filesystem ───────────────────────────────
+        const mpqProvider = new MpqFileSystemProvider(() => client, clientReady)
+
+        context.subscriptions.push(
+            workspace.registerFileSystemProvider('mpq', mpqProvider, {
+                isCaseSensitive: false,
+                isReadonly: true,
+            }),
+
+            commands.registerCommand('mpq.browse', async (resourceUri) => {
+                // resourceUri may come from explorer context menu or be undefined
+                let archivePath
+                if (resourceUri && resourceUri.fsPath) {
+                    archivePath = resourceUri.fsPath
+                } else {
+                    const editor = window.activeTextEditor
+                    if (editor && editor.document.uri.fsPath.match(/\.(?:w3[xmn]|mpq)$/i)) {
+                        archivePath = editor.document.uri.fsPath
+                    }
+                }
+                if (!archivePath) {
+                    window.showWarningMessage('No MPQ archive selected.')
+                    return
+                }
+
+                // Wait for LSP to be ready before mounting.
+                await clientReady
+
+                const rootUri = MpqFileSystemProvider.makeUri(archivePath)
+                const name = archivePath.split(/[\\/]/).pop() || 'MPQ Archive'
+
+                // Add as a workspace folder so it appears in the explorer
+                const existing = (workspace.workspaceFolders || [])
+                    .findIndex(f => f.uri.toString() === rootUri.toString())
+                if (existing === -1) {
+                    workspace.updateWorkspaceFolders(
+                        (workspace.workspaceFolders || []).length,
+                        0,
+                        {uri: rootUri, name: `📦 ${name}`}
+                    )
+                }
+            })
+        )
+
         /** Helper: register a binary-file custom editor that talks to LSP */
         function binaryEditor(viewType, resolver) {
             return window.registerCustomEditorProvider(
@@ -121,6 +167,7 @@ module.exports = {
             binaryEditor('blp.preview', resolveBlpEditor),
             binaryEditor('doo.preview', resolveDooEditor),
             binaryEditor('w3i.preview', resolveW3iEditor),
+            binaryEditor('mpq.preview', resolveMpqEditor),
 
             // Import Graph panel
             commands.registerCommand('importGraph.show', () => {

@@ -17,7 +17,7 @@
 
 ## 支持的语言
 
-### [JASS](https://github.com/WarRaft/tree-sitter-jass) — `.j`、`.pld`
+### [JASS](https://github.com/WarRaft/tree-sitter-jass) — `.j`、`.pld`、`.ai`
 
 WarCraft III 的主要脚本语言。基于专用的
 [tree-sitter-jass](https://github.com/WarRaft/tree-sitter-jass) 语法提供完整支持。

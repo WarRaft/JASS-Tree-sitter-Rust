@@ -17,7 +17,7 @@ JASS винесено на перший план заради уваги (і н�
 
 ## Підтримувані мови
 
-### [JASS](https://github.com/WarRaft/tree-sitter-jass) — `.j`, `.pld`
+### [JASS](https://github.com/WarRaft/tree-sitter-jass) — `.j`, `.pld`, `.ai`
 
 Основна мова скриптів WarCraft III. Повна підтримка на основі спеціальної граматики
 [tree-sitter-jass](https://github.com/WarRaft/tree-sitter-jass).

@@ -1,5 +1,6 @@
 *
 **
+!package.nls*.json
 !node_modules/**
 !extension/**
 !bin/**
@@ -7,4 +8,5 @@
 !sdk/**
 !icons/**
 !images/**
+!syntaxes/**
 !LICENSE

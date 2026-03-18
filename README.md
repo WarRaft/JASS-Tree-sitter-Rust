@@ -18,7 +18,7 @@ and a few modern conveniences along the way.
 
 ## Supported Languages
 
-### [JASS](https://github.com/WarRaft/tree-sitter-jass) — `.j`, `.pld`
+### [JASS](https://github.com/WarRaft/tree-sitter-jass) — `.j`, `.pld`, `.ai`
 
 The primary language of WarCraft III scripting. Full support based on a dedicated
 [tree-sitter-jass](https://github.com/WarRaft/tree-sitter-jass) grammar.

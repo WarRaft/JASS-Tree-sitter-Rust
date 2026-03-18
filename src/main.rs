@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use crate::lng::blp::send::send as blp_send;
 use crate::lng::doo::send::send as doo_send;
 use crate::lng::w3i::send::send as w3i_send;
+use crate::lng::mpq::send::{send_info as mpq_info_send, send_list as mpq_list_send, send_read as mpq_read_send};
 use crate::lsp::cancel::CancelCheck;
 use crate::lsp::code_action::send::send as code_action_send;
 use crate::lsp::completion::lsp::CompletionOptions;
@@ -509,6 +510,7 @@ async fn main() {
                                                     "registerOptions": {
                                                         "watchers": [
                                                             { "globPattern": "**/*.j",  "kind": 7 },
+                                                            { "globPattern": "**/*.ai", "kind": 7 },
                                                             { "globPattern": "**/*.as", "kind": 7 }
                                                         ]
                                                     }
@@ -1163,6 +1165,18 @@ async fn main() {
                                         error: None,
                                     },
                                 ).await;
+                            }
+
+                            MethodCall::MpqInfo(params) => {
+                                mpq_info_send(&writer, call.id, &params.archive_path).await;
+                            }
+
+                            MethodCall::MpqList(params) => {
+                                mpq_list_send(&writer, call.id, &params.archive_path).await;
+                            }
+
+                            MethodCall::MpqRead(params) => {
+                                mpq_read_send(&writer, call.id, &params.archive_path, &params.file_path).await;
                             }
 
                             _ => {

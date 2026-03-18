@@ -77,7 +77,8 @@
         ],
         "extensions": [
           ".j",
-          ".pld"
+          ".pld",
+          ".ai"
         ],
         "icon": {
           "light": "./icons/jass.svg",
@@ -126,6 +127,62 @@
         "icon": {
           "light": "./icons/w3i.svg",
           "dark": "./icons/w3i.svg"
+        }
+      },
+      {
+        "id": "w3x",
+        "aliases": [
+          "W3X Map Archive",
+          "W3X"
+        ],
+        "extensions": [
+          ".w3x"
+        ],
+        "icon": {
+          "light": "./icons/w3x.svg",
+          "dark": "./icons/w3x.svg"
+        }
+      },
+      {
+        "id": "w3m",
+        "aliases": [
+          "W3M Map Archive",
+          "W3M"
+        ],
+        "extensions": [
+          ".w3m"
+        ],
+        "icon": {
+          "light": "./icons/w3m.svg",
+          "dark": "./icons/w3m.svg"
+        }
+      },
+      {
+        "id": "w3n",
+        "aliases": [
+          "W3N Campaign Archive",
+          "W3N"
+        ],
+        "extensions": [
+          ".w3n"
+        ],
+        "icon": {
+          "light": "./icons/w3n.svg",
+          "dark": "./icons/w3n.svg"
+        }
+      },
+      {
+        "id": "mpq",
+        "aliases": [
+          "MPQ Archive",
+          "MPQ"
+        ],
+        "extensions": [
+          ".mpq"
+        ],
+        "icon": {
+          "light": "./icons/mpq.svg",
+          "dark": "./icons/mpq.svg"
         }
       }
     ],
@@ -182,12 +239,32 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "mpq.preview",
+        "displayName": "%customEditor.mpq.displayName%",
+        "selector": [
+          {
+            "filenamePattern": "*.w3x"
+          },
+          {
+            "filenamePattern": "*.w3m"
+          },
+          {
+            "filenamePattern": "*.w3n"
+          },
+          {
+            "filenamePattern": "*.mpq"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "activationEvents": [
       "onCustomEditor:blp.preview",
       "onCustomEditor:doo.preview",
-      "onCustomEditor:w3i.preview"
+      "onCustomEditor:w3i.preview",
+      "onCustomEditor:mpq.preview"
     ],
     "commands": [
       {
@@ -219,9 +296,21 @@
         "command": "ujapi.download",
         "title": "%command.ujapi.download%",
         "icon": "$(cloud-download)"
+      },
+      {
+        "command": "mpq.browse",
+        "title": "%command.mpq.browse%",
+        "icon": "$(folder-opened)"
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "mpq.browse",
+          "when": "resourceExtname =~ /\\.(w3[xmn]|mpq)$/i",
+          "group": "navigation"
+        }
+      ],
       "editor/title": [
         {
           "command": "importGraph.show",

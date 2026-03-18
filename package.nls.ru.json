@@ -5,8 +5,10 @@
   "command.rescan.execute": "Перечитать все файлы",
   "command.build.execute": "Сборка",
   "command.ujapi.download": "Скачать UjAPI common.j",
+  "command.mpq.browse": "Обзор архива MPQ",
   "customEditor.blp.displayName": "Просмотр BLP-изображений",
   "customEditor.doo.displayName": "Просмотр DOO-размещений",
-  "customEditor.w3i.displayName": "Просмотр W3I-информации карты"
+  "customEditor.w3i.displayName": "Просмотр W3I-информации карты",
+  "customEditor.mpq.displayName": "Просмотр MPQ-архивов"
 }
 
