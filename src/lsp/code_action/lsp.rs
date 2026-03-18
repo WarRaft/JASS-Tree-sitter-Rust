@@ -1,5 +1,6 @@
 use crate::lsp::diagnostic::lsp::Diagnostic;
 use crate::lsp::range::Range;
+use crate::lsp::rename::lsp::WorkspaceEdit;
 use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,6 +37,9 @@ pub struct CodeAction {
     pub diagnostics: Option<Vec<Diagnostic>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub edit: Option<WorkspaceEdit>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<Command>,
 }
 
@@ -62,4 +66,5 @@ pub struct UjapiDownloadParams {
 
 /// Code Action kind constants.
 pub const CODE_ACTION_KIND_QUICKFIX: &str = "quickfix";
+pub const CODE_ACTION_KIND_REFACTOR: &str = "refactor";
 

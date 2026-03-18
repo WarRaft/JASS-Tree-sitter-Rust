@@ -392,6 +392,140 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
     entries
 }
 
+/// Convert `AsFileSymbols` into `GlobalEntry` items for the scope resolver.
+///
+/// Each entry's `namespace` field is set to the enclosing AS namespace
+/// (or `""` for top-level).
+pub fn as_file_symbols_to_entries(
+    uri: &Url,
+    fs: &crate::lng::ass::symbol::AsFileSymbols,
+) -> Vec<GlobalEntry> {
+    let mut entries = Vec::new();
+
+    for f in &fs.functions {
+        entries.push(GlobalEntry {
+            uri: uri.clone(),
+            name: f.name.clone(),
+            namespace: f.namespace.clone(),
+            ns: SymbolNS::Func,
+            decl_key: f.decl_byte,
+            type_name: None,
+            params: f.params.iter().map(|p| (p.name.clone(), p.type_name.clone())).collect(),
+            return_type: f.return_type.clone(),
+            is_constant: false,
+            is_array: false,
+            doc_comment: f.doc_comment.clone(),
+        });
+    }
+    for c in &fs.classes {
+        entries.push(GlobalEntry {
+            uri: uri.clone(),
+            name: c.name.clone(),
+            namespace: c.namespace.clone(),
+            ns: SymbolNS::Var,
+            decl_key: c.decl_byte,
+            type_name: None,
+            params: vec![],
+            return_type: None,
+            is_constant: false,
+            is_array: false,
+            doc_comment: c.doc_comment.clone(),
+        });
+    }
+    for i in &fs.interfaces {
+        entries.push(GlobalEntry {
+            uri: uri.clone(),
+            name: i.name.clone(),
+            namespace: i.namespace.clone(),
+            ns: SymbolNS::Var,
+            decl_key: i.decl_byte,
+            type_name: None,
+            params: vec![],
+            return_type: None,
+            is_constant: false,
+            is_array: false,
+            doc_comment: i.doc_comment.clone(),
+        });
+    }
+    for e in &fs.enums {
+        entries.push(GlobalEntry {
+            uri: uri.clone(),
+            name: e.name.clone(),
+            namespace: e.namespace.clone(),
+            ns: SymbolNS::Var,
+            decl_key: e.decl_byte,
+            type_name: None,
+            params: vec![],
+            return_type: None,
+            is_constant: false,
+            is_array: false,
+            doc_comment: e.doc_comment.clone(),
+        });
+    }
+    for m in &fs.mixins {
+        entries.push(GlobalEntry {
+            uri: uri.clone(),
+            name: m.name.clone(),
+            namespace: m.namespace.clone(),
+            ns: SymbolNS::Var,
+            decl_key: m.decl_byte,
+            type_name: None,
+            params: vec![],
+            return_type: None,
+            is_constant: false,
+            is_array: false,
+            doc_comment: m.doc_comment.clone(),
+        });
+    }
+    for td in &fs.typedefs {
+        entries.push(GlobalEntry {
+            uri: uri.clone(),
+            name: td.alias.clone(),
+            namespace: td.namespace.clone(),
+            ns: SymbolNS::Var,
+            decl_key: td.decl_byte,
+            type_name: Some(td.original.clone()),
+            params: vec![],
+            return_type: None,
+            is_constant: false,
+            is_array: false,
+            doc_comment: td.doc_comment.clone(),
+        });
+    }
+    for fd in &fs.funcdefs {
+        entries.push(GlobalEntry {
+            uri: uri.clone(),
+            name: fd.name.clone(),
+            namespace: fd.namespace.clone(),
+            ns: SymbolNS::Func,
+            decl_key: fd.decl_byte,
+            type_name: None,
+            params: fd.params.iter().map(|p| (p.name.clone(), p.type_name.clone())).collect(),
+            return_type: fd.return_type.clone(),
+            is_constant: false,
+            is_array: false,
+            doc_comment: fd.doc_comment.clone(),
+        });
+    }
+    for g in &fs.globals {
+        entries.push(GlobalEntry {
+            uri: uri.clone(),
+            name: g.name.clone(),
+            namespace: g.namespace.clone(),
+            ns: SymbolNS::Var,
+            decl_key: g.decl_byte,
+            type_name: g.type_name.clone(),
+            params: vec![],
+            return_type: None,
+            is_constant: false,
+            is_array: false,
+            doc_comment: g.doc_comment.clone(),
+        });
+    }
+
+    entries
+}
+
 
 /// Ensure that `FILE_SYMBOLS` and `SCOPE_RESOLVER` have entries for `dep_uri`.
 ///
@@ -433,6 +567,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             type_hints: Vec::new(),
             ujapi_hints: Vec::new(),
             func_decl_keys: cached.func_decl_keys,
+            colors: Vec::new(),
         });
         FILE_STORE.insert(dep_uri.clone(), snapshot);
         return true;
@@ -468,10 +603,22 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         let mut ast = crate::lng::ass::ast::build_ast(tree.root_node());
         let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
         crate::lng::ass::ast::rewrite_directives(&mut ast, &src);
-        let cursor = crate::lng::ass::cursor::Cursor::walk(&ast, &rope);
+        let cursor = crate::lng::ass::cursor::Cursor::walk(&ast, &rope, &[]);
+
+        let mut as_file_symbols = cursor.file_symbols;
+        as_file_symbols.file_settings = cursor.file_settings;
+
+        // Build a RefMap for cross-file go-to-definition.
+        let func_decl_keys = cursor.func_decl_keys;
+        let ref_map = crate::lsp::ref_map::build_ref_map(
+            cursor.ref_groups,
+            cursor.ref_names,
+            cursor.external_decls,
+            &rope,
+        );
 
         let mut file_symbols = crate::lng::jass::symbol::FileSymbols::new();
-        file_symbols.file_settings = cursor.file_settings;
+        file_symbols.file_settings = as_file_symbols.file_settings.clone();
 
         let snapshot = std::sync::Arc::new(crate::util::file_store::ParseSnapshot {
             folding: cursor.folding,
@@ -479,16 +626,17 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             semantic: std::sync::RwLock::new(cursor.semantic),
             diagnostics: cursor.diagnostics,
             links: vec![],
-            ref_map: crate::lsp::ref_map::RefMap::default(),
-            file_symbols: file_symbols.clone(),
+            ref_map,
+            file_symbols,
             _type_map: Default::default(),
             type_hints: Vec::new(),
             ujapi_hints: Vec::new(),
-            func_decl_keys: std::collections::HashSet::new(),
+            func_decl_keys: func_decl_keys.clone(),
+            colors: cursor.colors,
         });
 
         FILE_STORE.insert(dep_uri.clone(), snapshot);
-        let entries = file_symbols_to_entries(dep_uri, &file_symbols);
+        let entries = as_file_symbols_to_entries(dep_uri, &as_file_symbols);
         SCOPE_RESOLVER.update_file(dep_uri, hash, entries);
         return true;
     }
@@ -522,6 +670,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         type_hints: cursor.type_hints,
         ujapi_hints: Vec::new(),
         func_decl_keys: func_decl_keys.clone(),
+        colors: cursor.colors,
     });
 
     // Persist to unified disk cache.

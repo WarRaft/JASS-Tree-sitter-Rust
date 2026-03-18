@@ -1,5 +1,6 @@
 pub(crate) mod cancel;
 pub(crate) mod code_action;
+pub(crate) mod color;
 pub(crate) mod completion;
 pub(crate) mod diagnostic;
 pub(crate) mod document_link;

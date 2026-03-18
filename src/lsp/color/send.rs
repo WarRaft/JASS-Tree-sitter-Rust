@@ -1,0 +1,88 @@
+//! Handlers for `textDocument/documentColor` and `textDocument/colorPresentation`.
+
+use crate::lsp::cancel::CancelId;
+use crate::lsp::color::lsp::*;
+use crate::lsp::protocol::ResponseMessage;
+use crate::lsp::send::send;
+use crate::util::file_store::FILE_STORE;
+use std::sync::Arc;
+use tokio::io::Stdout;
+use tokio::sync::Mutex;
+
+pub async fn document_color_send(
+    writer: &Arc<Mutex<Stdout>>,
+    id: Option<CancelId>,
+    params: &DocumentColorParams,
+) {
+    let uri = &params.text_document.uri;
+    let colors = FILE_STORE
+        .get(uri)
+        .map(|snap| snap.value().colors.clone())
+        .unwrap_or_default();
+
+    send(
+        writer,
+        &ResponseMessage {
+            jsonrpc: "2.0".into(),
+            id,
+            result: Some(&colors),
+            error: None,
+        },
+    )
+    .await;
+}
+
+pub async fn color_presentation_send(
+    writer: &Arc<Mutex<Stdout>>,
+    id: Option<CancelId>,
+    params: &ColorPresentationParams,
+) {
+    // Determine whether this color sits inside a string literal.
+    // Heuristic: if the range length is 10, it's likely a `|cAARRGGBB` pattern.
+    let range_len = {
+        let start_line = params.range.start.line;
+        let end_line = params.range.end.line;
+        if start_line == end_line {
+            params.range.end.character.saturating_sub(params.range.start.character)
+        } else {
+            0
+        }
+    };
+
+    let is_pipe_color = range_len == 10;
+
+    let presentations = if is_pipe_color {
+        // Inside a string: |cAARRGGBB
+        let label = crate::lng::string_colors::color_to_pipe_string(&params.color);
+        vec![ColorPresentation {
+            label: label.clone(),
+            text_edit: Some(TextEdit {
+                range: params.range.clone(),
+                new_text: label,
+            }),
+            additional_text_edits: None,
+        }]
+    } else {
+        // Hex literal: 0xAARRGGBB
+        let label = crate::lng::string_colors::color_to_hex_string(&params.color);
+        vec![ColorPresentation {
+            label: label.clone(),
+            text_edit: Some(TextEdit {
+                range: params.range.clone(),
+                new_text: label,
+            }),
+            additional_text_edits: None,
+        }]
+    };
+
+    send(
+        writer,
+        &ResponseMessage {
+            jsonrpc: "2.0".into(),
+            id,
+            result: Some(&presentations),
+            error: None,
+        },
+    )
+    .await;
+}

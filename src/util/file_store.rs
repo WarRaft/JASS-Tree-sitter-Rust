@@ -26,6 +26,7 @@ use url::Url;
 
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
+use crate::lsp::color::lsp::ColorInformation;
 use crate::lsp::diagnostic::lsp::Diagnostic;
 use crate::lsp::document_link::lsp::DocumentLink;
 use crate::lsp::document_symbol::lsp::DocumentSymbol;
@@ -62,6 +63,8 @@ pub struct ParseSnapshot {
     pub ujapi_hints: Vec<InlayHint>,
     /// DeclKeys that belong to function / native declarations.
     pub func_decl_keys: HashSet<DeclKey>,
+    /// Color information for `|cAARRGGBB` in strings and `0xAARRGGBB` hex literals.
+    pub colors: Vec<ColorInformation>,
 }
 
 // ─── Global stores ───────────────────────────────────────────────────────────

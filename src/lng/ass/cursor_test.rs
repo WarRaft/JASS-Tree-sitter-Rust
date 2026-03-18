@@ -15,7 +15,7 @@ mod tests {
         let rope = Rope::from(src);
         let src_bytes: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
         rewrite_directives(&mut ast, &src_bytes);
-        let cursor = Cursor::walk(&ast, &rope);
+        let cursor = Cursor::walk(&ast, &rope, &[]);
         f(&cursor);
     }
 
@@ -629,5 +629,205 @@ void baz() {}
                 "semantic data should be empty for empty source");
         });
     }
-}
 
+    // ─── Composite / generic types ───────────────────────────────────────
+
+    #[test]
+    fn array_type_inner_type_colored() {
+        let src = "array<unit> PlayerUnit;\n";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            let array_tok = tokens.iter().find(|(t, _)| t == "array").unwrap();
+            assert_eq!(array_tok.1, TokenKind::Type,
+                "Expected 'array' to be Type, got {:?}", array_tok.1);
+
+            let unit_tok = tokens.iter().find(|(t, _)| t == "unit").unwrap();
+            assert_eq!(unit_tok.1, TokenKind::Type,
+                "Expected 'unit' (inner type) to be Type, got {:?}", unit_tok.1);
+
+            // detail should be the full composite type
+            assert_eq!(cursor.symbols.len(), 1);
+            assert_eq!(cursor.symbols[0].detail.as_deref(), Some("array<unit>"));
+        });
+    }
+
+    #[test]
+    fn array_type_in_param_colored() {
+        let src = "void foo(array<int> param) {}\n";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            let array_tok = tokens.iter().find(|(t, _)| t == "array").unwrap();
+            assert_eq!(array_tok.1, TokenKind::Type,
+                "Expected 'array' to be Type, got {:?}", array_tok.1);
+
+            // 'int' as inner type in array<int> should still be Type
+            let int_toks: Vec<_> = tokens.iter().filter(|(t, _)| t == "int").collect();
+            assert!(int_toks.iter().all(|(_, k)| *k == TokenKind::Type),
+                "Expected all 'int' tokens to be Type, got {:?}", int_toks);
+        });
+    }
+
+    #[test]
+    fn array_weathereffect_type_colored() {
+        let src = "array<weathereffect> effects;\n";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            let array_tok = tokens.iter().find(|(t, _)| t == "array").unwrap();
+            assert_eq!(array_tok.1, TokenKind::Type,
+                "Expected 'array' to be Type, got {:?}", array_tok.1);
+
+            let we_tok = tokens.iter().find(|(t, _)| t == "weathereffect").unwrap();
+            assert_eq!(we_tok.1, TokenKind::Type,
+                "Expected 'weathereffect' (inner type) to be Type, got {:?}", we_tok.1);
+
+            assert_eq!(cursor.symbols[0].detail.as_deref(), Some("array<weathereffect>"));
+        });
+    }
+
+    #[test]
+    fn array_builtin_no_undeclared_diagnostic() {
+        // `array` is a built-in template type — should not produce "Undeclared type"
+        let src = "array<int> numbers;\n";
+        with_cursor(src, |cursor| {
+            let undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("array"))
+                .collect();
+            assert!(undeclared.is_empty(),
+                "Expected no 'undeclared' diagnostic for built-in 'array', got {:?}", undeclared);
+        });
+    }
+
+    #[test]
+    fn array_inner_custom_type_unresolved_produces_diagnostic() {
+        // Inner type `Foo` is not declared → should still produce diagnostic
+        let src = "array<Foo> items;\n";
+        with_cursor(src, |cursor| {
+            let foo_diag: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("Foo"))
+                .collect();
+            assert!(!foo_diag.is_empty(),
+                "Expected 'undeclared' diagnostic for unknown inner type 'Foo'");
+
+            // But no diagnostic for 'array' itself
+            let array_diag: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("array"))
+                .collect();
+            assert!(array_diag.is_empty(),
+                "Expected no diagnostic for built-in 'array', got {:?}", array_diag);
+        });
+    }
+
+    // ─── Built-in funcdef types ──────────────────────────────────────────
+
+    #[test]
+    fn builtin_callback_func_no_diagnostic() {
+        let src = "CallbackFunc cb;\n";
+        with_cursor(src, |cursor| {
+            let diag: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("CallbackFunc"))
+                .collect();
+            assert!(diag.is_empty(),
+                "Expected no diagnostic for built-in 'CallbackFunc', got {:?}", diag);
+        });
+    }
+
+    #[test]
+    fn builtin_boolexpr_func_no_diagnostic() {
+        let src = "BoolexprFunc filter;\n";
+        with_cursor(src, |cursor| {
+            let diag: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("BoolexprFunc"))
+                .collect();
+            assert!(diag.is_empty(),
+                "Expected no diagnostic for built-in 'BoolexprFunc', got {:?}", diag);
+        });
+    }
+
+    #[test]
+    fn builtin_funcdef_types_colored_as_type() {
+        let src = "CallbackFunc cb;\nBoolexprFunc filter;\n";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            let cb_tok = tokens.iter().find(|(t, _)| t == "CallbackFunc").unwrap();
+            assert_eq!(cb_tok.1, TokenKind::Type,
+                "Expected 'CallbackFunc' to be Type, got {:?}", cb_tok.1);
+
+            let be_tok = tokens.iter().find(|(t, _)| t == "BoolexprFunc").unwrap();
+            assert_eq!(be_tok.1, TokenKind::Type,
+                "Expected 'BoolexprFunc' to be Type, got {:?}", be_tok.1);
+        });
+    }
+
+    // ─── Function references (@FuncName) ─────────────────────────────────
+
+    #[test]
+    fn handle_of_func_ref_colored_as_function() {
+        let src = "void test() {\n  ForGroup(g, @MyFunc);\n}\nvoid MyFunc() {}\n";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            let my_func_tok = tokens.iter().find(|(t, _)| t == "MyFunc"
+                && *t != "ForGroup").unwrap();
+            assert_eq!(my_func_tok.1, TokenKind::Function,
+                "Expected '@MyFunc' operand to be Function, got {:?}", my_func_tok.1);
+        });
+    }
+
+    #[test]
+    fn handle_of_func_ref_linked_to_decl() {
+        let src = "void MyFunc() {}\nvoid test() {\n  ForGroup(g, @MyFunc);\n}\n";
+        with_cursor(src, |cursor| {
+            // MyFunc should appear in ref_groups — both decl and ref
+            let my_func_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "MyFunc")
+                .map(|(k, _)| *k);
+            assert!(my_func_key.is_some(),
+                "Expected MyFunc in ref_names");
+
+            let key = my_func_key.unwrap();
+            let occurrences = cursor.ref_groups.get(&key).unwrap();
+            // At least 2: declaration + @MyFunc reference
+            assert!(occurrences.len() >= 2,
+                "Expected at least 2 occurrences for MyFunc (decl + @ref), got {}",
+                occurrences.len());
+        });
+    }
+
+    // ─── Char literal ────────────────────────────────────────────────────
+
+    #[test]
+    fn char_literal_colored_as_number() {
+        let src = "int x = 'A';\n";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            let char_tok = tokens.iter().find(|(t, _)| t == "'A'").unwrap();
+            assert_eq!(char_tok.1, TokenKind::Number,
+                "Expected char literal 'A' to be Number, got {:?}", char_tok.1);
+        });
+    }
+
+    #[test]
+    fn string_literal_still_colored_as_string() {
+        let src = "string s = \"hello\";\n";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            // String literal is tokenized into sub-ranges (quotes + content).
+            // All parts (", hello, ") should be String.
+            let str_parts: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "\"" || t == "hello")
+                .collect();
+            assert!(!str_parts.is_empty(),
+                "Expected string literal tokens, got: {:?}", tokens);
+            for (text, kind) in &str_parts {
+                assert_eq!(*kind, TokenKind::String,
+                    "Expected '{}' to be String, got {:?}", text, kind);
+            }
+        });
+    }
+}

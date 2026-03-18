@@ -30,7 +30,7 @@
             ]
         },
         "string-single": {
-            "name": "string.quoted.single.angelscript",
+            "name": "constant.character.angelscript",
             "begin": "'",
             "end": "'|$",
             "patterns": [

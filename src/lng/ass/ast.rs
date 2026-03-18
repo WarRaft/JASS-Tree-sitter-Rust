@@ -29,6 +29,7 @@ const FIELD_HANDLER: u16 = Field::Handler as u16;
 const FIELD_EXCEPTION: u16 = Field::Exception as u16;
 const FIELD_ALIAS: u16 = Field::Alias as u16;
 const FIELD_MODULE: u16 = Field::Module as u16;
+const FIELD_OPERATOR: u16 = Field::Operator as u16;
 
 // ─── Semantic role for identifiers ───────────────────────────────────────────
 
@@ -362,8 +363,11 @@ pub enum Expr<'tree> {
         node: Node<'tree>,
         inner: Box<Expr<'tree>>,
     },
-    /// `@handle`
-    HandleOf { node: Node<'tree> },
+    /// `@handle` or `@FuncName` — function/handle reference
+    HandleOf {
+        node: Node<'tree>,
+        operand: Box<Expr<'tree>>,
+    },
     /// Lambda: `function(params) { ... }`
     Lambda { node: Node<'tree> },
     /// String literal.
@@ -994,15 +998,29 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
             })
         }
         Kind::UnaryExpression => {
+            // `@expr` → HandleOf (function/handle reference)
+            let is_at = node
+                .child_by_field_id(FIELD_OPERATOR)
+                .map(|op| Kind::try_from(op.kind_id()) == Ok(Kind::At))
+                .unwrap_or(false);
+
             let operand = node
                 .child_by_field_id(FIELD_OPERAND)
                 .and_then(|n| build_expr(&n))
                 .map(Box::new)
                 .unwrap_or_else(|| Box::new(Expr::Other(*node)));
-            Some(Expr::Unary {
-                node: *node,
-                operand,
-            })
+
+            if is_at {
+                Some(Expr::HandleOf {
+                    node: *node,
+                    operand,
+                })
+            } else {
+                Some(Expr::Unary {
+                    node: *node,
+                    operand,
+                })
+            }
         }
         Kind::PostfixExpression => {
             let operand = node
@@ -1073,16 +1091,20 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
                 .unwrap_or_else(|| Box::new(Expr::Other(*node)));
             Some(Expr::Parens { node: *node, inner })
         }
-        Kind::HandleOfExpression => Some(Expr::HandleOf { node: *node }),
+        Kind::HandleOfExpression => {
+            let operand = node
+                .child_by_field_id(FIELD_OPERAND)
+                .and_then(|n| build_expr(&n))
+                .map(Box::new)
+                .unwrap_or_else(|| Box::new(Expr::Other(*node)));
+            Some(Expr::HandleOf { node: *node, operand })
+        }
         Kind::LambdaExpression => Some(Expr::Lambda { node: *node }),
         Kind::StringLiteral => Some(Expr::StringLiteral(*node)),
-        Kind::IntegerLiteral | Kind::HexLiteral | Kind::BitsLiteral | Kind::FloatLiteral => {
+        Kind::IntegerLiteral | Kind::HexLiteral | Kind::BitsLiteral | Kind::FloatLiteral
+        | Kind::CharLiteral => {
             Some(Expr::NumberLiteral(*node))
         }
-        Kind::NullLiteral | Kind::ThisExpression | Kind::SuperExpression => {
-            Some(Expr::KeywordLiteral(*node))
-        }
-        Kind::BoolLiteral | Kind::True | Kind::False => Some(Expr::KeywordLiteral(*node)),
         Kind::PrimaryExpression => {
             // primary_expression wraps a single child
             let count = node.child_count();

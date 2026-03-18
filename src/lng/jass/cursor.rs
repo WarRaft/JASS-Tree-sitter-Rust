@@ -155,6 +155,9 @@ pub struct Cursor {
     /// Used by call-graph diagnostics to avoid tagging same-named variables.
     pub func_decl_keys: HashSet<DeclKey>,
 
+    /// Color information for `|cAARRGGBB` in strings and `0xAARRGGBB` hex literals.
+    pub colors: Vec<crate::lsp::color::lsp::ColorInformation>,
+
     /// Per-file settings parsed from `//set key value` directives.
     pub file_settings: HashMap<String, String>,
     /// File-level diagnostic suppression tags from `//ignore tag` directives.
@@ -351,6 +354,7 @@ impl Cursor {
             ref_names: HashMap::new(),
             external_decls: HashMap::new(),
             func_decl_keys: HashSet::new(),
+            colors: Vec::new(),
             file_settings: HashMap::new(),
             file_ignore_tags: HashSet::new(),
             type_map: TypeMap::default(),
@@ -2166,9 +2170,10 @@ impl Cursor {
                     continue;
                 }
 
-                // String literal: mark entire node and skip children
+                // String literal: tokenize with escape/color-code awareness
                 if kind == Some(Kind::StringLiteral) {
-                    self.semantic.add_node(&node, &self.rope, TokenKind::String, 0u32);
+                    crate::lng::string_colors::tokenize_string_literal(&node, &self.rope, &mut self.semantic);
+                    self.colors.extend(crate::lng::string_colors::collect_string_colors(&node, &self.rope));
                     // Don't descend into children (quotes, content)
                     if cursor.goto_next_sibling() {
                         continue;
@@ -2215,7 +2220,15 @@ impl Cursor {
                             | Kind::Lt | Kind::Gt | Kind::Le | Kind::Ge
                             | Kind::EqEq | Kind::Neq => TokenKind::Operator,
 
-                            Kind::Number | Kind::Float | Kind::Rawcode => TokenKind::Number,
+                            Kind::Number | Kind::Float | Kind::Rawcode => {
+                                // Collect color from hex literals like 0xAARRGGBB
+                                if kind == Kind::Number {
+                                    if let Some(ci) = crate::lng::string_colors::collect_hex_literal_color(&node, &self.rope) {
+                                        self.colors.push(ci);
+                                    }
+                                }
+                                TokenKind::Number
+                            }
                             Kind::Comment => {
                                 // //* doc comment and //@ignore: prefix as Comment, body as String
                                 let sb = node.start_byte();

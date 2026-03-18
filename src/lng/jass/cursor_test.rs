@@ -269,23 +269,27 @@ endfunction
         let src = "call Foo(\"my shit\")\n";
         with_cursor(src, |c| {
             let line = c.semantic.lines.get(&0).expect("should have line 0");
-            let str_tok = line.tokens.iter().find(|t| t.col == 9);
+            // String literal is tokenized into sub-ranges (quotes + content).
+            // All tokens covering cols 9..18 should be String.
+            let str_tokens: Vec<_> = line.tokens.iter()
+                .filter(|t| t.col >= 9 && t.col < 18)
+                .collect();
             assert!(
-                str_tok.is_some(),
-                "Should have a string token at col=9, tokens: {:?}",
+                !str_tokens.is_empty(),
+                "Should have string tokens at cols 9..18, tokens: {:?}",
                 line.tokens
             );
-            assert_eq!(
-                str_tok.unwrap().kind,
-                TokenKind::String,
-                "String literal should be TokenKind::String, got {:?}",
-                str_tok.unwrap().kind
-            );
-            assert_eq!(
-                str_tok.unwrap().len,
-                9,
-                "String token len should be 9 (including quotes)"
-            );
+            for tok in &str_tokens {
+                assert_eq!(
+                    tok.kind,
+                    TokenKind::String,
+                    "String literal sub-token should be TokenKind::String, got {:?}",
+                    tok.kind
+                );
+            }
+            // Total length of all string tokens should be 9
+            let total_len: usize = str_tokens.iter().map(|t| t.len).sum();
+            assert_eq!(total_len, 9, "Total string token length should be 9 (including quotes)");
         });
     }
 

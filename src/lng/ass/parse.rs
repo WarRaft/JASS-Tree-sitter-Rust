@@ -1,15 +1,20 @@
 use crate::lng::ass::ast::{build_ast, rewrite_directives, TopLevel};
-use crate::lng::ass::cursor::Cursor;
+use crate::lng::ass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
-use crate::lsp::ref_map::RefMap;
+use crate::lsp::ref_map::{build_ref_map, DeclKey};
+use crate::util::file_cache;
 use crate::util::file_store::{
-    exports_changed, new_cancel_token, ParseSnapshot, FILE_STORE,
+    exports_changed, new_cancel_token, register_pending, ParseSnapshot, FILE_STORE,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
-use crate::util::parse::{cascade_parse_and_notify, resolve_import_directive, resolve_path_import, ParseFn};
+use crate::util::parse::{
+    as_file_symbols_to_entries, cascade_parse_and_notify, ensure_file_symbols,
+    find_decl_key_by_name, resolve_import_directive, resolve_path_import, ParseFn,
+};
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
+use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
 use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
@@ -17,6 +22,11 @@ use std::error::Error;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use url::Url;
+
+// ─── Jass namespace constant ────────────────────────────────────────────────
+
+/// Namespace assigned to entities imported from `.j` (JASS) files.
+const JASS_NAMESPACE: &str = "Jass";
 
 // ─── Main parse entry point ─────────────────────────────────────────────────
 
@@ -133,20 +143,149 @@ fn _parse(
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() { return Ok(vec![]); }
 
-    // 4. Single-pass cursor: diagnostics + symbols + folding + id_roles
-    let cursor = Cursor::walk(&ast, rope);
+    // 4. Gather symbols from the **entire connected component** (unified scope).
+    //    Symbols from `.j` files are placed under the `Jass` namespace;
+    //    symbols from `.as` files keep their original namespace.
+    //    JASS types are also promoted to top-level (namespace = "") so that
+    //    AS code can reference them without qualifier (e.g. `unit`, `handle`).
+    let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
+    {
+        // Ensure every peer is in the scope resolver.
+        for peer_uri in &component {
+            if peer_uri != uri {
+                let ts_lang = if crate::util::open::is_as_uri(peer_uri) {
+                    tree_sitter_as::language().into()
+                } else {
+                    tree_sitter_jass::language().into()
+                };
+                if !ensure_file_symbols(peer_uri, ts_lang) {
+                    register_pending(peer_uri, uri);
+                    log::info!(
+                        "pending import: {} waits for {}",
+                        uri.path(),
+                        peer_uri.path()
+                    );
+                }
+            }
+        }
 
-    // 5. Merge import diagnostics with cursor diagnostics
+        let visible_entries = SCOPE_RESOLVER.all_visible(&component);
+
+        for entry in &visible_entries {
+            // Skip entries from the file being parsed — cursor builds them locally.
+            if &entry.uri == uri {
+                continue;
+            }
+
+            let is_jass_file = !crate::util::open::is_as_uri(&entry.uri);
+
+            let origin_snapshot = FILE_STORE.get(&entry.uri);
+            let origin_decl_key = origin_snapshot
+                .as_ref()
+                .and_then(|snap| {
+                    find_decl_key_by_name(
+                        &snap.ref_map,
+                        &entry.name,
+                        entry.ns,
+                        &snap.func_decl_keys,
+                    )
+                })
+                .or(Some(entry.decl_key as DeclKey));
+
+            let sym_kind = match entry.ns {
+                SymbolNS::Func => ImportedKind::Func,
+                SymbolNS::Var => ImportedKind::Var,
+            };
+
+            if is_jass_file {
+                // JASS entities → placed under the `Jass` namespace.
+                imported_symbols.push(ImportedSymbol {
+                    origin_uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                    kind: sym_kind,
+                    origin_decl_key,
+                    return_type: entry.return_type.clone(),
+                    type_name: entry.type_name.clone(),
+                    namespace: JASS_NAMESPACE.to_string(),
+                });
+
+                // JASS types are also available unqualified (bare name)
+                // so that `class MyUnit : unit` works without `Jass::`.
+                // JASS variables and functions are also promoted for
+                // compatibility since they share the same names.
+                imported_symbols.push(ImportedSymbol {
+                    origin_uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                    kind: sym_kind,
+                    origin_decl_key,
+                    return_type: entry.return_type.clone(),
+                    type_name: entry.type_name.clone(),
+                    namespace: String::new(),
+                });
+            } else {
+                // AS entities → keep their original namespace.
+                imported_symbols.push(ImportedSymbol {
+                    origin_uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                    kind: sym_kind,
+                    origin_decl_key,
+                    return_type: entry.return_type.clone(),
+                    type_name: entry.type_name.clone(),
+                    namespace: entry.namespace.clone(),
+                });
+            }
+        }
+    }
+
+    // When any `.j` file is connected, the engine implicitly provides
+    // the `handle` base type.  Inject it if not already imported.
+    let has_jass = component.iter().any(|u| u != uri && !crate::util::open::is_as_uri(u));
+    if has_jass {
+        let already_has_handle = imported_symbols.iter()
+            .any(|s| s.name == "handle" && s.kind == ImportedKind::Var);
+        if !already_has_handle {
+            if let Some(jass_uri) = component.iter().find(|u| !crate::util::open::is_as_uri(u)) {
+                imported_symbols.push(ImportedSymbol {
+                    origin_uri: jass_uri.clone(),
+                    name: "handle".to_string(),
+                    kind: ImportedKind::Var,
+                    origin_decl_key: None,
+                    return_type: None,
+                    type_name: None,
+                    namespace: String::new(),
+                });
+            }
+        }
+    }
+
+    // ── Cancellation checkpoint ──
+    if cancel.is_cancelled() { return Ok(vec![]); }
+
+    // 5. Two-phase cursor: diagnostics + symbols + folding + id_roles + scopes + ref linking
+    let cursor = Cursor::walk(&ast, rope, &imported_symbols);
+
+    // 6. Merge import diagnostics with cursor diagnostics
     let mut all_diagnostics = cursor.diagnostics;
     all_diagnostics.extend(import_diagnostics);
 
     // ── FINAL cancellation check — don't store stale results ──
     if cancel.is_cancelled() { return Ok(vec![]); }
 
-    // 6. Build snapshot and store atomically in FILE_STORE.
+    // 7. Build ref_map
+    let func_decl_keys = cursor.func_decl_keys;
+    let ref_map = build_ref_map(cursor.ref_groups, cursor.ref_names, cursor.external_decls, rope);
+
+    // 8. Build file_symbols for export diff and scope resolver
+    let mut as_file_symbols = cursor.file_symbols;
+    as_file_symbols.frozen_imports = frozen_imports;
+    as_file_symbols.file_settings = cursor.file_settings;
+    as_file_symbols.file_ignore_tags = cursor.file_ignore_tags;
+
+    // Convert to JASS FileSymbols for ParseSnapshot compatibility
     let mut file_symbols = FileSymbols::new();
-    file_symbols.frozen_imports = frozen_imports;
-    file_symbols.file_settings = cursor.file_settings;
+    file_symbols.frozen_imports = as_file_symbols.frozen_imports.clone();
+    file_symbols.file_settings = as_file_symbols.file_settings.clone();
+    file_symbols.file_ignore_tags = as_file_symbols.file_ignore_tags.clone();
 
     let old_snapshot = FILE_STORE.get(uri).map(|e| Arc::clone(e.value()));
 
@@ -156,17 +295,23 @@ fn _parse(
         semantic: std::sync::RwLock::new(cursor.semantic),
         diagnostics: all_diagnostics,
         links,
-        ref_map: RefMap::default(),
+        ref_map,
         file_symbols,
         _type_map: TypeMap::default(),
         type_hints: vec![],
         ujapi_hints,
-        func_decl_keys: HashSet::new(),
+        func_decl_keys,
+        colors: cursor.colors,
     });
 
     FILE_STORE.insert(uri.clone(), new_snapshot.clone());
 
-    // 7. Export diff — decide on cascade.
+    // 9. Update scope resolver with AS symbols
+    let hash = file_cache::content_hash(rope);
+    let entries = as_file_symbols_to_entries(uri, &as_file_symbols);
+    SCOPE_RESOLVER.update_file(uri, hash, entries);
+
+    // 10. Export diff — decide on cascade.
     let did_change = exports_changed(old_snapshot.as_deref(), &new_snapshot);
 
     let cascade = if did_change || old_component != component {

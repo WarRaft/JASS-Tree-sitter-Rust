@@ -130,6 +130,7 @@ async fn main() {
                                     document_formatting_provider: Some(
                                         DocumentFormattingOptions {},
                                     ),
+                                    color_provider: Some(true),
                                     workspace: Some(WorkspaceServerCapabilities {
                                         file_operations: Some(FileOperationOptions {
                                             will_rename: Some(FileOperationRegistrationOptions {
@@ -378,6 +379,7 @@ async fn main() {
                                                 type_hints: Vec::new(),
                                                 ujapi_hints: Vec::new(),
                                                 func_decl_keys: cached.func_decl_keys.clone(),
+                                                colors: Vec::new(),
                                             },
                                         );
                                         FILE_STORE.insert(uri.clone(), snapshot);
@@ -822,6 +824,26 @@ async fn main() {
                                     },
                                 )
                                 .await;
+                            }
+
+                            MethodCall::DocumentColor(params) => {
+                                if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                crate::lsp::color::send::document_color_send(
+                                    &writer, call.id, &params,
+                                ).await;
+                            }
+
+                            MethodCall::ColorPresentation(params) => {
+                                if call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                crate::lsp::color::send::color_presentation_send(
+                                    &writer, call.id, &params,
+                                ).await;
                             }
 
                             MethodCall::ImportGraphSubgraph(params) => {

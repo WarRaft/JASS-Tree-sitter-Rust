@@ -54,5 +54,7 @@ pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document_formatting_provider: Option<DocumentFormattingOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub color_provider: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceServerCapabilities>,
 }

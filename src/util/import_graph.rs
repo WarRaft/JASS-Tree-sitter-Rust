@@ -508,6 +508,12 @@ impl ImportGraph {
     /// Return the **connected subgraph** reachable from `uri` walking both
     /// outgoing (dependencies) and incoming (dependents) edges.
     ///
+    /// **Frozen-node pruning:** when a node is a frozen file (imported via
+    /// `//import!` by anyone), its *incoming* edges are **not** followed.
+    /// This prevents shared library files (e.g. `common.j`) from pulling
+    /// every unrelated project into the graph.  Outgoing edges of frozen
+    /// nodes are still traversed so the full dependency chain is visible.
+    ///
     /// The result is a pair `(nodes, edges)` where each node is a URL string
     /// and each edge is `(source_index, target_index)` into the nodes vec.
     /// `nodes[0]` is always `uri` itself (when it exists in the graph).
@@ -518,20 +524,27 @@ impl ImportGraph {
         };
 
         // BFS in both directions to collect all reachable nodes.
+        // For frozen nodes we skip incoming edges so that unrelated projects
+        // that also import the same frozen library are not pulled in.
         let mut visited: HashSet<NodeIndex> = HashSet::new();
         let mut queue = std::collections::VecDeque::new();
         queue.push_back(start);
         visited.insert(start);
 
         while let Some(cur) = queue.pop_front() {
+            // Always follow outgoing edges (files that `cur` imports).
             for next in inner.graph.neighbors_directed(cur, Direction::Outgoing) {
                 if visited.insert(next) {
                     queue.push_back(next);
                 }
             }
-            for next in inner.graph.neighbors_directed(cur, Direction::Incoming) {
-                if visited.insert(next) {
-                    queue.push_back(next);
+            // Follow incoming edges only when `cur` is NOT a frozen file.
+            let cur_uri = &inner.graph[cur];
+            if !crate::util::file_store::is_uri_frozen(cur_uri) {
+                for next in inner.graph.neighbors_directed(cur, Direction::Incoming) {
+                    if visited.insert(next) {
+                        queue.push_back(next);
+                    }
                 }
             }
         }

@@ -262,6 +262,7 @@ fn _parse(
         type_hints: Vec::new(),
         ujapi_hints: Vec::new(),
         func_decl_keys: func_decl_keys.clone(),
+        colors: Vec::new(),
     });
     FILE_STORE.insert(uri.clone(), preliminary);
     {
@@ -329,6 +330,7 @@ fn _parse(
         type_hints: cursor.type_hints,
         ujapi_hints,
         func_decl_keys,
+        colors: cursor.colors,
     });
 
     // Persist to unified disk cache.

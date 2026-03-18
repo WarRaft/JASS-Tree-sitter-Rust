@@ -1,5 +1,6 @@
 use crate::lsp::cancel::{CancelId, CancelParams};
 use crate::lsp::code_action::lsp::{CodeActionParams, UjapiDownloadParams};
+use crate::lsp::color::lsp::{ColorPresentationParams, DocumentColorParams};
 use crate::lsp::completion::lsp::CompletionParams;
 use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
 use crate::lsp::document_link::lsp::DocumentLinkParams;
@@ -160,6 +161,12 @@ pub enum MethodCall {
 
     #[serde(rename = "ujapi/download")]
     UjapiDownload(UjapiDownloadParams),
+
+    #[serde(rename = "textDocument/documentColor")]
+    DocumentColor(DocumentColorParams),
+
+    #[serde(rename = "textDocument/colorPresentation")]
+    ColorPresentation(ColorPresentationParams),
 
     #[serde(rename = "textDocument/codeAction")]
     CodeAction(CodeActionParams),

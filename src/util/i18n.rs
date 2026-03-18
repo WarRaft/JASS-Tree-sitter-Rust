@@ -781,3 +781,45 @@ pub fn ujapi_hover_body(version_line: &str) -> String {
     }
 }
 
+// ─── String format conversion code actions ──────────────────────────────────
+
+pub fn convert_to_triple_quoted() -> &'static str {
+    pick(
+        "Convert to triple-quoted string \"\"\"…\"\"\"",
+        "Преобразовать в строку с тройными кавычками \"\"\"…\"\"\"",
+        "Перетворити на рядок з потрійними лапками \"\"\"…\"\"\"",
+        "转换为三引号字符串 \"\"\"…\"\"\"",
+        "轉換為三引號字串 \"\"\"…\"\"\"",
+    )
+}
+
+pub fn convert_to_single_quoted() -> &'static str {
+    pick(
+        "Convert to regular string \"…\"",
+        "Преобразовать в обычную строку \"…\"",
+        "Перетворити на звичайний рядок \"…\"",
+        "转换为普通字符串 \"…\"",
+        "轉換為普通字串 \"…\"",
+    )
+}
+
+pub fn convert_all_to_triple_quoted() -> &'static str {
+    pick(
+        "Convert all strings in file to \"\"\"…\"\"\"",
+        "Преобразовать все строки в файле в \"\"\"…\"\"\"",
+        "Перетворити всі рядки у файлі на \"\"\"…\"\"\"",
+        "将文件中所有字符串转换为 \"\"\"…\"\"\"",
+        "將檔案中所有字串轉換為 \"\"\"…\"\"\"",
+    )
+}
+
+pub fn convert_all_to_single_quoted() -> &'static str {
+    pick(
+        "Convert all strings in file to \"…\"",
+        "Преобразовать все строки в файле в \"…\"",
+        "Перетворити всі рядки у файлі на \"…\"",
+        "将文件中所有字符串转换为 \"…\"",
+        "將檔案中所有字串轉換為 \"…\"",
+    )
+}
+
