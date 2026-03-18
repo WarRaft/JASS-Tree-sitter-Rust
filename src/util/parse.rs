@@ -92,7 +92,7 @@ pub fn resolve_import_directive(
             } else {
                 diagnostics.push(Diagnostic {
                     range: path_range,
-                    message: format!("File not found: {}", imp.path),
+                    message: crate::util::i18n::file_not_found(&imp.path),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
                 });
@@ -101,7 +101,7 @@ pub fn resolve_import_directive(
         None => {
             diagnostics.push(Diagnostic {
                 range: path_range,
-                message: format!("Cannot resolve import path: {}", imp.path),
+                message: crate::util::i18n::cannot_resolve_import(&imp.path),
                 severity: Some(DiagnosticSeverity::Error),
                 ..Default::default()
             });
@@ -179,7 +179,7 @@ pub fn resolve_ujapi_directive(
                 // ── File does not exist ──────────────────────────────
                 diagnostics.push(Diagnostic {
                     range: path_range,
-                    message: format!("UjAPI file not found: `{}`", ud.path),
+                    message: crate::util::i18n::ujapi_file_not_found(&ud.path),
                     severity: Some(DiagnosticSeverity::Error),
                     source: Some("ujapi".into()),
                     data: Some(ujapi_data),
@@ -201,7 +201,7 @@ pub fn resolve_ujapi_directive(
                 (None, _) => {
                     diagnostics.push(Diagnostic {
                         range: path_range.clone(),
-                        message: "UjAPI file has no version tag".into(),
+                        message: crate::util::i18n::ujapi_no_version_tag().into(),
                         severity: Some(DiagnosticSeverity::Warning),
                         source: Some("ujapi".into()),
                         data: Some(ujapi_data.clone()),
@@ -212,10 +212,7 @@ pub fn resolve_ujapi_directive(
                 (Some(ft), Some(rel)) if *ft != rel.tag => {
                     diagnostics.push(Diagnostic {
                         range: path_range.clone(),
-                        message: format!(
-                            "UjAPI outdated: local `{}`, latest `{}`",
-                            ft, rel.tag
-                        ),
+                        message: crate::util::i18n::ujapi_outdated(ft, &rel.tag),
                         severity: Some(DiagnosticSeverity::Warning),
                         source: Some("ujapi".into()),
                         data: Some(ujapi_data.clone()),
@@ -248,15 +245,15 @@ pub fn resolve_ujapi_directive(
             // Build tooltip.
             let tooltip = match (&file_tag, &latest) {
                 (Some(ft), Some(rel)) if *ft == rel.tag => {
-                    format!("UjAPI {} ✓ (up to date)", ft)
+                    crate::util::i18n::ujapi_tooltip_up_to_date(ft)
                 }
                 (Some(ft), Some(rel)) => {
-                    format!("UjAPI {} → {} available", ft, rel.tag)
+                    crate::util::i18n::ujapi_tooltip_update_available(ft, &rel.tag)
                 }
                 (Some(ft), None) => {
                     format!("UjAPI {}", ft)
                 }
-                (None, _) => "UjAPI (no version tag)".into(),
+                (None, _) => crate::util::i18n::ujapi_tooltip_no_tag().into(),
             };
 
             links.push(DocumentLink {
@@ -268,7 +265,7 @@ pub fn resolve_ujapi_directive(
         None => {
             diagnostics.push(Diagnostic {
                 range: path_range,
-                message: format!("Cannot resolve UjAPI path: {}", ud.path),
+                message: crate::util::i18n::ujapi_cannot_resolve(&ud.path),
                 severity: Some(DiagnosticSeverity::Error),
                 ..Default::default()
             });
@@ -300,7 +297,7 @@ pub fn resolve_path_import(
             } else {
                 diagnostics.push(Diagnostic {
                     range: path_range,
-                    message: format!("File not found: {}", path_text),
+                    message: crate::util::i18n::file_not_found(path_text),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
                 });
@@ -309,7 +306,7 @@ pub fn resolve_path_import(
         None => {
             diagnostics.push(Diagnostic {
                 range: path_range,
-                message: format!("Cannot resolve import path: {}", path_text),
+                message: crate::util::i18n::cannot_resolve_import(path_text),
                 severity: Some(DiagnosticSeverity::Error),
                 ..Default::default()
             });

@@ -643,17 +643,15 @@ impl Cursor {
                             kind: uref.kind,
                             is_decl: i == 0, // first = "declaration"
                         });
-                    let label = if uref.is_type_ref {
-                        "type"
-                    } else {
-                        match ns {
-                            ImportedKind::Func => "function",
-                            ImportedKind::Var  => "variable",
-                        }
-                    };
                     self.diagnostics.push(Diagnostic {
                         range: uref.range.clone(),
-                        message: format!("Undeclared {} `{}`", label, name),
+                        message: crate::util::i18n::undeclared_symbol(
+                            crate::util::i18n::undeclared_label(
+                                uref.is_type_ref,
+                                matches!(ns, ImportedKind::Func),
+                            ),
+                            &name,
+                        ),
                         severity: Some(DiagnosticSeverity::Error),
                         ..Default::default()
                     });
@@ -1846,10 +1844,7 @@ impl Cursor {
                     .unwrap_or_else(|| stmt_node.to_range(&self.rope));
                 self.diagnostics.push(Diagnostic {
                     range,
-                    message: format!(
-                        "Cannot assign type `{}` to `{}`",
-                        et, declared_type,
-                    ),
+                    message: crate::util::i18n::cannot_assign_type(et, declared_type),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
                 });
@@ -2077,10 +2072,7 @@ impl Cursor {
                         if let Some((_kind, op_range, op_text)) = Self::binary_op_range(node, &self.rope) {
                             self.diagnostics.push(Diagnostic {
                                 range: op_range,
-                                message: format!(
-                                    "Operator `{}` cannot be applied to `{}` and `{}`",
-                                    op_text, l, r
-                                ),
+                                message: crate::util::i18n::operator_binary_error(&op_text, l, r),
                                 severity: Some(DiagnosticSeverity::Error),
                                 ..Default::default()
                             });
@@ -2115,10 +2107,7 @@ impl Cursor {
                             let op_text = self.node_text(&op_n);
                             self.diagnostics.push(Diagnostic {
                                 range: op_n.to_range(&self.rope),
-                                message: format!(
-                                    "Operator `{}` cannot be applied to `{}`",
-                                    op_text, t
-                                ),
+                                message: crate::util::i18n::operator_unary_error(&op_text, t),
                                 severity: Some(DiagnosticSeverity::Error),
                                 ..Default::default()
                             });
@@ -2401,9 +2390,8 @@ impl Cursor {
                 if state != NullState::Null {
                     self.diagnostics.push(Diagnostic {
                         range: end_range.clone(),
-                        message: format!(
-                            "Handle leak: local `{}` (`{}`) is not set to `null` before function end",
-                            hl.name, hl.type_name,
+                        message: crate::util::i18n::handle_leak_function_end(
+                            &hl.name, &hl.type_name,
                         ),
                         severity: Some(DiagnosticSeverity::Error),
                         ..Default::default()
@@ -2485,9 +2473,8 @@ impl Cursor {
                         if state != NullState::Null {
                             self.diagnostics.push(Diagnostic {
                                 range: ret_range.clone(),
-                                message: format!(
-                                    "Handle leak: local `{}` (`{}`) is not set to `null` before `return`",
-                                    hl.name, hl.type_name,
+                                message: crate::util::i18n::handle_leak_before_return(
+                                    &hl.name, &hl.type_name,
                                 ),
                                 severity: Some(DiagnosticSeverity::Error),
                                 ..Default::default()

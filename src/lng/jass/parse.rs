@@ -287,7 +287,7 @@ fn _parse(
                     if !file_unused_suppressed && !per_decl_suppressed {
                         all_diagnostics.push(Diagnostic {
                             range: decl_occ.range.clone(),
-                            message: format!("Unused function `{}`", group.name),
+                            message: crate::util::i18n::unused_function(&group.name),
                             severity: Some(DiagnosticSeverity::Hint),
                             tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
                             ..Default::default()
@@ -301,10 +301,7 @@ fn _parse(
                     if !file_cycle_suppressed && !per_decl_suppressed {
                         all_diagnostics.push(Diagnostic {
                             range: decl_occ.range.clone(),
-                            message: format!(
-                                "Function `{}` is part of a cyclic call chain — cannot be ordered",
-                                group.name
-                            ),
+                            message: crate::util::i18n::cyclic_call_chain(&group.name),
                             severity: Some(DiagnosticSeverity::Warning),
                             ..Default::default()
                         });

@@ -34,57 +34,16 @@ const IGNORE_UK: &str = include_str!("../../../docs/jass/ignore/uk.md");
 const IGNORE_ZH: &str = include_str!("../../../docs/jass/ignore/zh.md");
 const IGNORE_TC: &str = include_str!("../../../docs/jass/ignore/tc.md");
 
-/// Pick the best doc by the system locale env vars.
-/// Falls back to English.
-fn pick_locale<F: Fn(&str) -> &'static str>(picker: F) -> &'static str {
-    let lang = std::env::var("LANG")
-        .or_else(|_| std::env::var("LC_ALL"))
-        .or_else(|_| std::env::var("LC_MESSAGES"))
-        .or_else(|_| std::env::var("LANGUAGE"))
-        .unwrap_or_default()
-        .to_lowercase();
-
-    if lang.starts_with("ru") {
-        picker("ru")
-    } else if lang.starts_with("uk") {
-        picker("uk")
-    } else if lang.starts_with("zh_tw") || lang.starts_with("zh_hant") || lang.starts_with("zh-tw") || lang.starts_with("zh-hant") {
-        picker("tc")
-    } else if lang.starts_with("zh") {
-        picker("zh")
-    } else {
-        picker("en")
-    }
-}
-
 fn import_doc() -> &'static str {
-    pick_locale(|l| match l {
-        "ru" => IMPORT_RU,
-        "uk" => IMPORT_UK,
-        "zh" => IMPORT_ZH,
-        "tc" => IMPORT_TC,
-        _ => IMPORT_EN,
-    })
+    crate::util::i18n::pick(IMPORT_EN, IMPORT_RU, IMPORT_UK, IMPORT_ZH, IMPORT_TC)
 }
 
 fn set_doc() -> &'static str {
-    pick_locale(|l| match l {
-        "ru" => SET_RU,
-        "uk" => SET_UK,
-        "zh" => SET_ZH,
-        "tc" => SET_TC,
-        _ => SET_EN,
-    })
+    crate::util::i18n::pick(SET_EN, SET_RU, SET_UK, SET_ZH, SET_TC)
 }
 
 fn ignore_doc() -> &'static str {
-    pick_locale(|l| match l {
-        "ru" => IGNORE_RU,
-        "uk" => IGNORE_UK,
-        "zh" => IGNORE_ZH,
-        "tc" => IGNORE_TC,
-        _ => IGNORE_EN,
-    })
+    crate::util::i18n::pick(IGNORE_EN, IGNORE_RU, IGNORE_UK, IGNORE_ZH, IGNORE_TC)
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────
@@ -162,22 +121,13 @@ fn compute_directive_hover(
         if col >= prefix_start_col && col <= prefix_end_col {
             let latest = crate::util::ujapi::cached_release();
             let version_line = match &latest {
-                Some(rel) => format!(
-                    "**Latest release:** [`{}`]({}) — {}",
-                    rel.tag, rel.html_url, rel.name
+                Some(rel) => crate::util::i18n::ujapi_hover_latest_release(
+                    &rel.tag, &rel.html_url, &rel.name,
                 ),
-                None => "*Fetching latest release info…*".to_string(),
+                None => crate::util::i18n::ujapi_hover_fetching().to_string(),
             };
 
-            let md = format!(
-                "### `//import-ujapi!`\n\n\
-                 Download `uJAPIFiles/common.j` from the latest \
-                 [UjAPI](https://github.com/UnryzeC/UjAPI) GitHub release \
-                 and treat it as a frozen import.\n\n\
-                 {version_line}\n\n\
-                 The first line of the downloaded file contains `//<tag>` for version tracking.\n\n\
-                 Use code action (**Alt+Enter**) to download / re-download."
-            );
+            let md = crate::util::i18n::ujapi_hover_body(&version_line);
             return Some(Hover {
                 contents: MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -239,13 +189,14 @@ fn compute_directive_hover(
 
             if col >= key_start_col && col <= key_end_col {
                 if let Some(def) = crate::lng::directive::find_set_def(key) {
+                    let detail = crate::util::i18n::set_def_detail(def.key);
                     let type_label = match def.kind {
                         crate::lng::directive::SetValueKind::Bool => "`0` | `1`",
                         crate::lng::directive::SetValueKind::Path => "`<path>`",
                     };
                     let md = format!(
                         "### `//set {}`\n\n{}\n\n**Type:** {}\\\n**Default:** `{}`",
-                        def.key, def.detail, type_label, def.default
+                        def.key, detail, type_label, def.default
                     );
                     return Some(Hover {
                         contents: MarkupContent {
@@ -274,7 +225,8 @@ fn compute_directive_hover(
                 cursor_pos += pos + tag_str.len();
                 if col >= tag_start_col && col <= tag_end_col {
                     if let Some(def) = crate::lng::directive::find_ignore_tag(tag_str) {
-                        let md = format!("### `//ignore {}`\n\n{}", def.tag, def.detail);
+                        let detail = crate::util::i18n::ignore_tag_detail(def.tag);
+                        let md = format!("### `//ignore {}`\n\n{}", def.tag, detail);
                         return Some(Hover {
                             contents: MarkupContent {
                                 kind: MarkupKind::Markdown,

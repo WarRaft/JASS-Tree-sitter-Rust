@@ -51,9 +51,9 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         if let Some((ujapi_uri, ujapi_path)) = maybe_params {
             let is_not_found = ujapi_diags.iter().any(|d| d.message.contains("not found"));
             let title = if is_not_found {
-                "⬇ Download UjAPI"
+                crate::util::i18n::ujapi_download()
             } else {
-                "⬇ Update UjAPI"
+                crate::util::i18n::ujapi_update()
             };
 
             actions.push(CodeAction {

@@ -4,6 +4,7 @@ pub(crate) mod change;
 pub(crate) mod dfs_node;
 pub(crate) mod file_cache;
 pub(crate) mod file_store;
+pub(crate) mod i18n;
 pub(crate) mod import_graph;
 pub(crate) mod open;
 pub(crate) mod parse;

@@ -62,16 +62,16 @@ pub fn build_jass(uri: &Url) -> BuildResult {
     // 1. Find build target across the whole tree.
     let (trigger_uri, target) = match find_build_setting(uri, "build-jass") {
         Some(pair) => pair,
-        None => return err("No `//set build-jass <path>` directive found in the import tree."),
+        None => return err(crate::util::i18n::build_no_setting_jass()),
     };
 
     // 2. Resolve output path relative to the file that owns the directive.
     let base_dir = match trigger_uri.to_file_path() {
         Ok(p) => match p.parent() {
             Some(d) => d.to_path_buf(),
-            None => return err("Cannot determine parent directory."),
+            None => return err(crate::util::i18n::build_no_parent_dir()),
         },
-        Err(_) => return err("URI is not a file path."),
+        Err(_) => return err(crate::util::i18n::build_not_file_path()),
     };
 
     let out_path = resolve_output_path(&base_dir, &target, "war3map.j");
@@ -157,16 +157,16 @@ pub fn build_as(uri: &Url) -> BuildResult {
     // 1. Find build target across the whole tree.
     let (trigger_uri, target) = match find_build_setting(uri, "build-as") {
         Some(pair) => pair,
-        None => return err("No `//set build-as <path>` directive found in the import tree."),
+        None => return err(crate::util::i18n::build_no_setting_as()),
     };
 
     // 2. Resolve output path relative to the file that owns the directive.
     let base_dir = match trigger_uri.to_file_path() {
         Ok(p) => match p.parent() {
             Some(d) => d.to_path_buf(),
-            None => return err("Cannot determine parent directory."),
+            None => return err(crate::util::i18n::build_no_parent_dir()),
         },
-        Err(_) => return err("URI is not a file path."),
+        Err(_) => return err(crate::util::i18n::build_not_file_path()),
     };
 
     let out_path = resolve_output_path(&base_dir, &target, "war3map.as");
@@ -289,18 +289,16 @@ fn write_output(
         Ok(_) => BuildResult {
             ok: true,
             path: out_path.display().to_string(),
-            message: format!(
-                "Build OK — {} globals, {} functions{}",
+            message: crate::util::i18n::build_ok(
                 fragments.globals_out.len(),
                 sorted_funcs.len(),
-                if fragments.bare_stmts.is_empty() {
-                    String::new()
-                } else {
-                    format!(", {} statements → main", fragments.bare_stmts.len())
-                },
+                fragments.bare_stmts.len(),
             ),
         },
-        Err(e) => err(&format!("Failed to write {}: {}", out_path.display(), e)),
+        Err(e) => err(&crate::util::i18n::build_write_failed(
+            &out_path.display().to_string(),
+            &e.to_string(),
+        )),
     }
 }
 

@@ -325,12 +325,12 @@ fn collect_errors<'tree>(node: &Node<'tree>, errors: &mut Vec<CstError<'tree>>) 
     if node.is_missing() {
         errors.push(CstError {
             node: *node,
-            message: format!("Missing `{}`", node.kind()),
+            message: crate::util::i18n::missing_token(node.kind()),
         });
     } else if node.is_error() {
         errors.push(CstError {
             node: *node,
-            message: "Syntax error".into(),
+            message: crate::util::i18n::syntax_error().into(),
         });
     }
     let count = node.child_count();
@@ -359,13 +359,13 @@ fn build_children<'tree>(
                 // Any named CST node that didn't map to a known statement
                 // (including ERROR nodes and unexpected constructs like bare
                 // expressions) is preserved so it blocks import scanning
-                // and is visible to diagnostics.
+            } else if capture_unknown && (child.is_error() || child.is_named()) {
                 stmts.push(Statement::Error(CstError {
                     node: child,
                     message: if child.is_error() {
-                        "Syntax error".into()
+                        crate::util::i18n::syntax_error().into()
                     } else {
-                        format!("Unexpected `{}`", child.kind())
+                        crate::util::i18n::unexpected_node(child.kind())
                     },
                 }));
             }

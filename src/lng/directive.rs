@@ -48,8 +48,6 @@ pub struct SetDef {
     /// Default value (shown in docs and used when the user types the key
     /// without a value in the completion snippet).
     pub default: &'static str,
-    /// Short one-line description (English) — used in completion `detail`.
-    pub detail: &'static str,
     /// Sort order in the completion list (lower = higher).
     pub sort_order: u8,
 }
@@ -65,28 +63,24 @@ pub static SET_DEFS: &[SetDef] = &[
         key: "ref-tip",
         kind: SetValueKind::Bool,
         default: "0",
-        detail: "Show / hide reference-ID inlay hints (debug)",
         sort_order: 0,
     },
     SetDef {
         key: "type-tip",
         kind: SetValueKind::Bool,
         default: "0",
-        detail: "Show / hide type-annotation inlay hints",
         sort_order: 1,
     },
     SetDef {
         key: "build-jass",
         kind: SetValueKind::Path,
         default: "./",
-        detail: "Output path for the JASS build",
         sort_order: 2,
     },
     SetDef {
         key: "build-as",
         kind: SetValueKind::Path,
         default: "./",
-        detail: "Output path for the AngelScript build",
         sort_order: 3,
     },
 ];
@@ -104,10 +98,7 @@ pub fn validate_set_value(def: &SetDef, value: &str) -> Option<String> {
     match def.kind {
         SetValueKind::Bool => {
             if value != "0" && value != "1" {
-                Some(format!(
-                    "Invalid value `{}` for `{}`: expected `0` or `1`",
-                    value, def.key
-                ))
+                Some(crate::util::i18n::invalid_bool_value(value, def.key))
             } else {
                 None
             }
@@ -192,15 +183,13 @@ pub struct UjapiDirective<'tree> {
 pub struct IgnoreTagDef {
     /// Tag name (e.g. `"unused"`).
     pub tag: &'static str,
-    /// Short one-line description (English).
-    pub detail: &'static str,
 }
 
 /// All recognized suppression tags for `//ignore` and `//@ignore`.
 pub static IGNORE_TAGS: &[IgnoreTagDef] = &[
-    IgnoreTagDef { tag: "unused", detail: "Suppress unused-function diagnostic" },
-    IgnoreTagDef { tag: "leak",   detail: "Suppress handle-leak diagnostic" },
-    IgnoreTagDef { tag: "cycle",  detail: "Suppress cyclic-call-chain diagnostic" },
+    IgnoreTagDef { tag: "unused" },
+    IgnoreTagDef { tag: "leak" },
+    IgnoreTagDef { tag: "cycle" },
 ];
 
 /// Look up an `IgnoreTagDef` by name.
@@ -316,7 +305,7 @@ pub fn visit_import_semantic(
     if imp.path.is_empty() {
         diagnostics.push(Diagnostic {
             range: node.to_range(rope),
-            message: "Missing import path".into(),
+            message: crate::util::i18n::missing_import_path().into(),
             severity: Some(DiagnosticSeverity::Error),
             ..Default::default()
         });
@@ -403,14 +392,14 @@ pub fn visit_set_semantic(
     if sd.key.is_empty() {
         diagnostics.push(Diagnostic {
             range: node.to_range(rope),
-            message: "Missing setting key".into(),
+            message: crate::util::i18n::missing_setting_key().into(),
             severity: Some(DiagnosticSeverity::Error),
             ..Default::default()
         });
     } else if sd.value.is_empty() {
         diagnostics.push(Diagnostic {
             range: node.to_range(rope),
-            message: format!("Missing value for setting `{}`", sd.key),
+            message: crate::util::i18n::missing_setting_value(&sd.key),
             severity: Some(DiagnosticSeverity::Warning),
             ..Default::default()
         });
@@ -466,7 +455,7 @@ pub fn visit_ignore_semantic(
     if ig.tags.is_empty() {
         diagnostics.push(Diagnostic {
             range: node.to_range(rope),
-            message: "Missing ignore tag (e.g. `unused`, `leak`)".into(),
+            message: crate::util::i18n::missing_ignore_tag().into(),
             severity: Some(DiagnosticSeverity::Warning),
             ..Default::default()
         });
@@ -534,7 +523,7 @@ pub fn process_imports<'a>(
                 } else {
                     diagnostics.push(Diagnostic {
                         range: path_range,
-                        message: format!("File not found: {}", imp.path),
+                        message: crate::util::i18n::file_not_found(&imp.path),
                         severity: Some(DiagnosticSeverity::Error),
                         ..Default::default()
                     });
@@ -543,7 +532,7 @@ pub fn process_imports<'a>(
             None => {
                 diagnostics.push(Diagnostic {
                     range: path_range,
-                    message: format!("Cannot resolve import path: {}", imp.path),
+                    message: crate::util::i18n::cannot_resolve_import(&imp.path),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
                 });
@@ -569,7 +558,7 @@ pub fn visit_ujapi_semantic(
     if ud.path.is_empty() {
         diagnostics.push(Diagnostic {
             range: node.to_range(rope),
-            message: "Missing destination path for UjAPI import".into(),
+            message: crate::util::i18n::ujapi_missing_path().into(),
             severity: Some(DiagnosticSeverity::Error),
             ..Default::default()
         });

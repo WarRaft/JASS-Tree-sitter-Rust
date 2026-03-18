@@ -59,7 +59,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                 let expected = node.kind();
                 diagnostic.push(Diagnostic {
                     range: node.to_range(&rope),
-                    message: format!("Missing `{}`", expected),
+                    message: crate::util::i18n::missing_token(expected),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
                 });
@@ -69,7 +69,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
             if node.is_error() {
                 diagnostic.push(Diagnostic {
                     range: node.to_range(&rope),
-                    message: "Syntax error".into(),
+                    message: crate::util::i18n::syntax_error().into(),
                     severity: Some(DiagnosticSeverity::Error),
                     ..Default::default()
                 });

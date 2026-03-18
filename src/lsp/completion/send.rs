@@ -72,7 +72,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
             CompletionItem {
                 label: "import".into(),
                 kind: Some(CompletionItemKind::Keyword),
-                detail: Some("Import a file".into()),
+                detail: Some(crate::util::i18n::completion_import_file().into()),
                 insert_text: Some("import ".into()),
                 sort_text: Some("0".into()),
                 ..Default::default()
@@ -80,7 +80,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
             CompletionItem {
                 label: "import!".into(),
                 kind: Some(CompletionItemKind::Keyword),
-                detail: Some("Import a frozen (read-only) file".into()),
+                detail: Some(crate::util::i18n::completion_import_frozen().into()),
                 insert_text: Some("import! ".into()),
                 sort_text: Some("1".into()),
                 ..Default::default()
@@ -88,7 +88,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
             CompletionItem {
                 label: "set".into(),
                 kind: Some(CompletionItemKind::Keyword),
-                detail: Some("Set a file-local configuration value".into()),
+                detail: Some(crate::util::i18n::completion_set_config().into()),
                 insert_text: Some("set ".into()),
                 sort_text: Some("2".into()),
                 ..Default::default()
@@ -96,7 +96,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
             CompletionItem {
                 label: "ignore".into(),
                 kind: Some(CompletionItemKind::Keyword),
-                detail: Some("Suppress diagnostics for the entire file".into()),
+                detail: Some(crate::util::i18n::completion_suppress_file().into()),
                 insert_text: Some("ignore ".into()),
                 sort_text: Some("3".into()),
                 ..Default::default()
@@ -104,7 +104,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
             CompletionItem {
                 label: "@ignore".into(),
                 kind: Some(CompletionItemKind::Keyword),
-                detail: Some("Suppress diagnostics for the next declaration".into()),
+                detail: Some(crate::util::i18n::completion_suppress_decl().into()),
                 insert_text: Some("@ignore ".into()),
                 sort_text: Some("4".into()),
                 ..Default::default()
@@ -112,7 +112,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
             CompletionItem {
                 label: "import-ujapi!".into(),
                 kind: Some(CompletionItemKind::Keyword),
-                detail: Some("Download & import UjAPI common.j".into()),
+                detail: Some(crate::util::i18n::ujapi_completion_detail().into()),
                 insert_text: Some("import-ujapi! ".into()),
                 sort_text: Some("5".into()),
                 ..Default::default()
@@ -125,7 +125,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
         return vec![CompletionItem {
             label: "ignore".into(),
             kind: Some(CompletionItemKind::Keyword),
-            detail: Some("Suppress diagnostics for the next declaration".into()),
+            detail: Some(crate::util::i18n::completion_suppress_decl().into()),
             insert_text: Some("ignore ".into()),
             sort_text: Some("0".into()),
             ..Default::default()
@@ -147,7 +147,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 .map(|(i, def)| CompletionItem {
                     label: def.tag.into(),
                     kind: Some(CompletionItemKind::EnumMember),
-                    detail: Some(def.detail.into()),
+                    detail: Some(crate::util::i18n::ignore_tag_detail(def.tag).into()),
                     insert_text: None,
                     sort_text: Some(i.to_string()),
                     ..Default::default()
@@ -168,7 +168,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 .map(|(i, def)| CompletionItem {
                     label: def.tag.into(),
                     kind: Some(CompletionItemKind::EnumMember),
-                    detail: Some(def.detail.into()),
+                    detail: Some(crate::util::i18n::ignore_tag_detail(def.tag).into()),
                     insert_text: None,
                     sort_text: Some(i.to_string()),
                     ..Default::default()
@@ -190,7 +190,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                             CompletionItem {
                                 label: "1".into(),
                                 kind: Some(CompletionItemKind::Value),
-                                detail: Some("Enable".into()),
+                                detail: Some(crate::util::i18n::completion_enable().into()),
                                 insert_text: Some("1".into()),
                                 sort_text: Some("0".into()),
                                 ..Default::default()
@@ -198,7 +198,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                             CompletionItem {
                                 label: "0".into(),
                                 kind: Some(CompletionItemKind::Value),
-                                detail: Some("Disable".into()),
+                                detail: Some(crate::util::i18n::completion_disable().into()),
                                 insert_text: Some("0".into()),
                                 sort_text: Some("1".into()),
                                 ..Default::default()
@@ -227,7 +227,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                         CompletionItem {
                             label: def.key.into(),
                             kind: Some(CompletionItemKind::Property),
-                            detail: Some(def.detail.into()),
+                            detail: Some(crate::util::i18n::set_def_detail(def.key).into()),
                             insert_text: Some(insert),
                             sort_text: Some(def.sort_order.to_string()),
                             ..Default::default()
@@ -394,7 +394,7 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
         items.push(CompletionItem {
             label: "function".into(),
             kind: Some(CompletionItemKind::Snippet),
-            detail: Some("function … endfunction".into()),
+            detail: Some(crate::util::i18n::completion_function_snippet().into()),
             insert_text: Some(
                 "function ${1:name} takes nothing returns nothing\n\t$0\nendfunction".into(),
             ),

@@ -465,12 +465,12 @@ fn collect_errors<'tree>(node: &Node<'tree>, errors: &mut Vec<CstError<'tree>>) 
     if node.is_missing() {
         errors.push(CstError {
             node: *node,
-            message: format!("Missing `{}`", node.kind()),
+            message: crate::util::i18n::missing_token(node.kind()),
         });
     } else if node.is_error() {
         errors.push(CstError {
             node: *node,
-            message: "Syntax error".into(),
+            message: crate::util::i18n::syntax_error().into(),
         });
     }
     let count = node.child_count();

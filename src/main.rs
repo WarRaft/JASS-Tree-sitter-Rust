@@ -1090,19 +1090,19 @@ async fn main() {
                                         Some(p) => p,
                                         None => return json!({
                                             "ok": false,
-                                            "message": format!("Cannot resolve path: {}", params.path)
+                                            "message": crate::util::i18n::ujapi_cannot_resolve_download_path(&params.path)
                                         }),
                                     };
                                     match crate::util::ujapi::download_common_j(&dest) {
                                         Ok(rel) => json!({
                                             "ok": true,
-                                            "message": format!("Downloaded UjAPI {} to {}", rel.tag, dest.display()),
+                                            "message": crate::util::i18n::ujapi_downloaded(&rel.tag, &dest.display().to_string()),
                                             "tag": rel.tag,
                                             "path": dest.display().to_string()
                                         }),
                                         Err(e) => json!({
                                             "ok": false,
-                                            "message": format!("Download failed: {}", e)
+                                            "message": crate::util::i18n::ujapi_download_failed(&e.to_string())
                                         }),
                                     }
                                 }).await.unwrap_or_else(|e| json!({
