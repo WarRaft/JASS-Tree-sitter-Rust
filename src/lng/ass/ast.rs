@@ -377,7 +377,7 @@ pub enum Expr<'tree> {
 }
 
 // Re-export shared directive types for convenience.
-pub use crate::lng::directive::{IgnoreDirective, ImportDirective, SetDirective};
+pub use crate::lng::directive::{IgnoreDirective, ImportDirective, SetDirective, UjapiDirective};
 
 /// Top-level statement (script level or inside namespace).
 #[derive(Debug, Clone)]
@@ -400,6 +400,8 @@ pub enum TopLevel<'tree> {
     SetDir(SetDirective<'tree>),
     /// `//ignore tag…` directive (shared with JASS).
     IgnoreDir(IgnoreDirective<'tree>),
+    /// `//import-ujapi! <path>` directive (shared with JASS).
+    UjapiDir(UjapiDirective<'tree>),
     Other(Node<'tree>),
 }
 
@@ -436,7 +438,7 @@ pub fn rewrite_directives(ast: &mut Ast, src: &[u8]) {
     while i < ast.items.len() {
         match &ast.items[i] {
             TopLevel::Comment(_) => {}
-            TopLevel::ImportDir(_) | TopLevel::SetDir(_) | TopLevel::IgnoreDir(_) => {
+            TopLevel::ImportDir(_) | TopLevel::SetDir(_) | TopLevel::IgnoreDir(_) | TopLevel::UjapiDir(_) => {
                 i += 1;
                 continue;
             }
@@ -449,7 +451,7 @@ pub fn rewrite_directives(ast: &mut Ast, src: &[u8]) {
                     Directive::Import(imp) => TopLevel::ImportDir(imp),
                     Directive::Set(sd) => TopLevel::SetDir(sd),
                     Directive::Ignore(ig) => TopLevel::IgnoreDir(ig),
-                    Directive::Ujapi(_) => { i += 1; continue; } // not supported in AS
+                    Directive::Ujapi(ud) => TopLevel::UjapiDir(ud),
                 };
                 i += 1;
                 continue;

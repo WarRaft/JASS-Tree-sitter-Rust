@@ -401,8 +401,8 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
 /// **Must NOT be called for the file currently being parsed** — the caller
 /// must exclude `current_uri` from the loop to avoid clobbering in-flight data.
 ///
-/// `ts_language` is the tree-sitter language used to parse the dependency
-/// when it must be read from disk (e.g. `tree_sitter_jass::language()`).
+/// The tree-sitter language is selected automatically based on the URI
+/// extension (`.as` → AngelScript, otherwise → JASS).
 ///
 /// Returns `true` if symbols were successfully loaded, `false` otherwise.
 ///
@@ -459,8 +459,44 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         None => return false,
     };
 
-    // Use the JASS AST builder as the default for dependency symbols.
     let rope = Rope::from(content.as_str());
+    let hash = file_cache::content_hash(&rope);
+
+    // Dispatch AST building by file extension so AS files use the correct
+    // grammar/cursor and vice-versa.
+    let is_as = crate::util::open::is_as_uri(dep_uri);
+
+    if is_as {
+        // ── AngelScript path ──
+        let mut ast = crate::lng::ass::ast::build_ast(tree.root_node());
+        let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
+        crate::lng::ass::ast::rewrite_directives(&mut ast, &src);
+        let cursor = crate::lng::ass::cursor::Cursor::walk(&ast, &rope);
+
+        let mut file_symbols = crate::lng::jass::symbol::FileSymbols::new();
+        file_symbols.file_settings = cursor.file_settings;
+
+        let snapshot = std::sync::Arc::new(crate::util::file_store::ParseSnapshot {
+            folding: cursor.folding,
+            symbols: cursor.symbols,
+            semantic: std::sync::RwLock::new(cursor.semantic),
+            diagnostics: cursor.diagnostics,
+            links: vec![],
+            ref_map: crate::lsp::ref_map::RefMap::default(),
+            file_symbols: file_symbols.clone(),
+            _type_map: Default::default(),
+            type_hints: Vec::new(),
+            ujapi_hints: Vec::new(),
+            func_decl_keys: std::collections::HashSet::new(),
+        });
+
+        FILE_STORE.insert(dep_uri.clone(), snapshot);
+        let entries = file_symbols_to_entries(dep_uri, &file_symbols);
+        SCOPE_RESOLVER.update_file(dep_uri, hash, entries);
+        return true;
+    }
+
+    // ── JASS path (default) ──
     let ast = crate::lng::jass::ast::build_ast(tree.root_node());
     let cursor = crate::lng::jass::cursor::Cursor::walk(&ast, &rope, &[]);
     let file_symbols = cursor.file_symbols;
@@ -539,6 +575,28 @@ pub type ParseFn = Box<
         + Sync,
 >;
 
+// ─── Universal dispatch ─────────────────────────────────────────────────────
+
+/// Parse an in-memory file (must have rope + tree), dispatching to the
+/// correct language based on the URI extension.
+pub async fn parse_by_uri(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    if crate::util::open::is_as_uri(uri) {
+        crate::lng::ass::parse::parse(uri).await
+    } else {
+        crate::lng::jass::parse::parse(uri).await
+    }
+}
+
+/// Parse a closed file from disk, dispatching to the correct language
+/// based on the URI extension.
+pub async fn parse_from_disk_by_uri(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    if crate::util::open::is_as_uri(uri) {
+        crate::lng::ass::parse::parse_from_disk(uri).await
+    } else {
+        crate::lng::jass::parse::parse_from_disk(uri).await
+    }
+}
+
 /// Two-pass cascade: parse the current file, drain pending waiters,
 /// re-parse affected peers, refresh editors.
 ///
@@ -552,12 +610,13 @@ pub type ParseFn = Box<
 /// * `parse_fn` — language-specific parse that returns the cascade peer list.
 /// * `parse_from_disk_fn` — language-specific disk parse for closed peers.
 ///
-/// The cascade logic (CascadeGuard, pending-drain, peer loop, refresh)
-/// is identical for every language.
+/// **Peer re-parsing** dispatches by URI extension (via [`parse_by_uri`] /
+/// [`parse_from_disk_by_uri`]) so that cross-language imports (JASS ↔ AS)
+/// always use the correct grammar.
 pub async fn cascade_parse_and_notify(
     uri: &Url,
     parse_fn: &ParseFn,
-    parse_from_disk_fn: Option<&ParseFn>,
+    _parse_from_disk_fn: Option<&ParseFn>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     // Cycle guard.
     let _guard = match CascadeGuard::try_enter(uri) {
@@ -598,23 +657,21 @@ pub async fn cascade_parse_and_notify(
         }
 
         let ok = if ROPE_MAP.contains_key(peer_uri) && TREE_MAP.contains_key(peer_uri) {
-            match parse_fn(peer_uri.clone()).await {
+            match parse_by_uri(peer_uri).await {
                 Ok(_) => true,
                 Err(e) => {
                     log::error!("cascade re-parse {}: {}", peer_uri, e);
                     false
                 }
             }
-        } else if let Some(disk_fn) = parse_from_disk_fn {
-            match disk_fn(peer_uri.clone()).await {
+        } else {
+            match parse_from_disk_by_uri(peer_uri).await {
                 Ok(_) => true,
                 Err(e) => {
                     log::debug!("cascade disk-parse {}: {}", peer_uri.path(), e);
                     false
                 }
             }
-        } else {
-            false
         };
 
         if ok {

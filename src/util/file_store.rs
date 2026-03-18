@@ -175,13 +175,21 @@ pub async fn send_refresh_all() {
 
 /// Send `textDocument/publishDiagnostics` for every file in `FILE_STORE`
 /// and the legacy `DIAGNOSTIC_URI_MAP` (BNI).
+///
+/// **Important**: we snapshot the data first and drop the DashMap guards
+/// *before* awaiting any IO.  Holding a DashMap read-lock across `.await`
+/// would deadlock with concurrent `insert()` calls from parse tasks.
 async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
     use serde_json::json;
 
-    // Files from FILE_STORE (JASS, AngelScript).
-    for entry in FILE_STORE.iter() {
-        let uri = entry.key();
-        let diagnostics = &entry.value().diagnostics;
+    // ── 1. Snapshot FILE_STORE (JASS, AngelScript) ───────────────────────
+    let file_diags: Vec<(String, Vec<Diagnostic>)> = FILE_STORE
+        .iter()
+        .map(|entry| (entry.key().to_string(), entry.value().diagnostics.clone()))
+        .collect();
+    // DashMap guards dropped here.
+
+    for (uri, diagnostics) in &file_diags {
         crate::lsp::send::send(
             writer,
             &json!({
@@ -196,15 +204,24 @@ async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
         .await;
     }
 
-    // Legacy fallback (BNI).
+    // ── 2. Snapshot DIAGNOSTIC_URI_MAP (BNI) ─────────────────────────────
     use crate::lsp::diagnostic::lsp::DocumentDiagnosticReport;
     use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
-    for entry in DIAGNOSTIC_URI_MAP.iter() {
-        let uri = entry.key();
-        let items = match entry.value() {
-            DocumentDiagnosticReport::Full { items, .. } => items.clone(),
-            _ => vec![],
-        };
+
+    let bni_diags: Vec<(String, Vec<Diagnostic>)> = DIAGNOSTIC_URI_MAP
+        .iter()
+        .map(|entry| {
+            let uri = entry.key().to_string();
+            let items = match entry.value() {
+                DocumentDiagnosticReport::Full { items, .. } => items.clone(),
+                _ => vec![],
+            };
+            (uri, items)
+        })
+        .collect();
+    // DashMap guards dropped here.
+
+    for (uri, items) in &bni_diags {
         crate::lsp::send::send(
             writer,
             &json!({

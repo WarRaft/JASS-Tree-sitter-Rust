@@ -182,20 +182,26 @@ pub fn schedule_background_check() {
         }
     }
 
+    // Capture the **main** tokio runtime handle NOW (we're on a tokio task).
+    // Inside `std::thread::spawn`, `try_current()` would find reqwest's
+    // internal runtime instead of ours — leading to a crash when that
+    // runtime is dropped while our future is still running.
+    let rt_handle = tokio::runtime::Handle::try_current().ok();
+
     // Fire and forget.
-    std::thread::spawn(|| {
+    std::thread::spawn(move || {
         let attempt = BG_ATTEMPTS.fetch_add(1, Ordering::Relaxed) + 1;
         info!("ujapi: background check attempt {}/{}", attempt, MAX_BG_ATTEMPTS);
         match fetch_latest_release() {
             Ok(rel) => {
                 BG_DONE.store(true, Ordering::Relaxed);
                 info!("ujapi: background check OK — {}", rel.tag);
-                // Trigger a diagnostics refresh so Hint updates.
-                tokio::runtime::Handle::try_current().ok().map(|h| {
+                // Trigger a diagnostics refresh so inlay hints update.
+                if let Some(h) = rt_handle {
                     h.spawn(async {
                         crate::util::file_store::send_refresh_all().await;
                     });
-                });
+                }
             }
             Err(e) => {
                 warn!("ujapi: background check failed ({}/{}): {}", attempt, MAX_BG_ATTEMPTS, e);

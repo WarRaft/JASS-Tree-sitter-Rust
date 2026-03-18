@@ -99,6 +99,7 @@ impl Cursor {
             TopLevel::ImportDir(n) => n.node,
             TopLevel::SetDir(n) => n.node,
             TopLevel::IgnoreDir(n) => n.node,
+            TopLevel::UjapiDir(n) => n.node,
             TopLevel::Other(n) => *n,
         }
     }
@@ -203,6 +204,19 @@ impl Cursor {
                 &mut self.semantic,
                 &mut self.diagnostics,
                 &mut self.file_ignore_tags,
+                &self.rope,
+            );
+            return None;
+        }
+
+        // UjapiDir directives — skip comment tracking, add dedicated semantic
+        if let TopLevel::UjapiDir(ud) = item {
+            self.flush_comment_run();
+            self.directive_nodes.insert(ud.node.start_byte());
+            crate::lng::directive::visit_ujapi_semantic(
+                ud,
+                &mut self.semantic,
+                &mut self.diagnostics,
                 &self.rope,
             );
             return None;
@@ -343,6 +357,7 @@ impl Cursor {
             TopLevel::ImportDir(_) => unreachable!("handled above"),
             TopLevel::SetDir(_) => unreachable!("handled above"),
             TopLevel::IgnoreDir(_) => unreachable!("handled above"),
+            TopLevel::UjapiDir(_) => unreachable!("handled above"),
             TopLevel::Other(_) => None,
         }
     }

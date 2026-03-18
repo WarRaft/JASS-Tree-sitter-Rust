@@ -81,10 +81,7 @@ pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sy
     let parse_fn: ParseFn = Box::new(|u| {
         Box::pin(async move { parse(&u).await })
     });
-    let disk_fn: ParseFn = Box::new(|u| {
-        Box::pin(async move { parse_from_disk(&u).await })
-    });
-    cascade_parse_and_notify(uri, &parse_fn, Some(&disk_fn)).await
+    cascade_parse_and_notify(uri, &parse_fn, None).await
 }
 
 /// Core parse logic (runs on the blocking thread pool).
@@ -175,7 +172,12 @@ fn _parse(
         // Skip `uri` itself to avoid clobbering current-file data with stale cache.
         for peer_uri in &component {
             if peer_uri != uri {
-                if !ensure_file_symbols(peer_uri, tree_sitter_jass::language().into()) {
+                let ts_lang = if crate::util::open::is_as_uri(peer_uri) {
+                    tree_sitter_as::language().into()
+                } else {
+                    tree_sitter_jass::language().into()
+                };
+                if !ensure_file_symbols(peer_uri, ts_lang) {
                     // Dependency not available yet — register so that when it
                     // finishes parsing we get a cascade re-parse.
                     register_pending(peer_uri, uri);

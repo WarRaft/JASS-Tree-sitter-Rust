@@ -12,6 +12,36 @@ use std::error::Error;
 use tree_sitter::Parser;
 use url::Url;
 
+// ─── Language detection ─────────────────────────────────────────────────────
+
+/// Returns `true` if the URI has a `.as` extension (AngelScript).
+pub fn is_as_uri(uri: &Url) -> bool {
+    uri.path().ends_with(".as")
+}
+
+// ─── Universal open ─────────────────────────────────────────────────────────
+
+/// Open and parse a file from disk content, dispatching to the correct
+/// language based on the URI extension.
+///
+/// * `.as` → `lng::ass::open::open`
+/// * everything else → `lng::jass::open::open`
+///
+/// Use this instead of hardcoding `lng::jass::open::open` in places that
+/// handle arbitrary URIs (file watcher, rescan, stale re-parse, etc.).
+pub async fn open_by_uri(
+    uri: &Url,
+    content: &str,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if is_as_uri(uri) {
+        crate::lng::ass::open::open(uri, content).await
+    } else {
+        crate::lng::jass::open::open(uri, content).await
+    }
+}
+
+// ─── Synchronous init ───────────────────────────────────────────────────────
+
 /// Synchronous initialisation: set up rope, tree-sitter parser and initial tree.
 ///
 /// **Must be called from the main message loop** (not from a spawned task) to
@@ -33,17 +63,14 @@ pub fn init(
     ROPE_MAP.insert(uri.clone(), rope);
     LNG_URI_MAP.insert(uri.clone(), language_id.to_string());
 
-    let mut parser = PARSER_MAP.entry(uri.clone()).or_insert_with(|| {
-        let mut p = Parser::new();
-        p.set_language(&ts_language)
-            .expect("Failed to set tree-sitter language");
-        p
-    });
+    let mut parser_entry = PARSER_MAP.entry(uri.clone()).or_insert_with(Parser::new);
+    parser_entry
+        .set_language(&ts_language)
+        .expect("Failed to set tree-sitter language");
 
-    let new_tree = parser
+    let new_tree = parser_entry
         .parse(text, None)
         .expect("Failed to parse document text");
     TREE_MAP.insert(uri.clone(), new_tree);
     Ok(())
 }
-

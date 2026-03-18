@@ -305,9 +305,14 @@ async fn main() {
                     if !dependents_to_reparse.is_empty() {
                         tokio::spawn(async move {
                             for uri in &dependents_to_reparse {
+                                // Skip files that are currently open — they
+                                // have fresh in-memory state from DidChange.
+                                if crate::util::roper::uri_map::ROPE_MAP.contains_key(uri) {
+                                    continue;
+                                }
                                 if let Ok(path) = uri.to_file_path() {
                                     if let Ok(content) = std::fs::read_to_string(&path) {
-                                        if let Err(e) = lng::jass::open::open(uri, &content).await {
+                                        if let Err(e) = crate::util::open::open_by_uri(uri, &content).await {
                                             error!("file-watcher reparse {}: {}", uri, e);
                                         }
                                     }
@@ -457,7 +462,7 @@ async fn main() {
 
                                         if let Ok(path) = uri.to_file_path() {
                                             if let Ok(content) = std::fs::read_to_string(&path) {
-                                                if let Err(e) = lng::jass::open::open(uri, &content).await {
+                                                if let Err(e) = crate::util::open::open_by_uri(uri, &content).await {
                                                     error!("rescan {}: {}", uri, e);
                                                 }
                                             }
@@ -965,7 +970,7 @@ async fn main() {
                                     match uri.to_file_path() {
                                         Ok(path) => match std::fs::read_to_string(&path) {
                                             Ok(content) => {
-                                                if let Err(e) = lng::jass::open::open(uri, &content).await {
+                                                if let Err(e) = crate::util::open::open_by_uri(uri, &content).await {
                                                     let msg = format!("{}: {}", fname, e);
                                                     error!("rescan {}", msg);
                                                     errors.push(msg);
@@ -1112,7 +1117,7 @@ async fn main() {
                                         let dest_path = std::path::PathBuf::from(path_str);
                                         if let Ok(content) = std::fs::read_to_string(&dest_path) {
                                             if let Ok(dest_uri) = Url::from_file_path(&dest_path) {
-                                                if let Err(e) = lng::jass::open::open(&dest_uri, &content).await {
+                                                if let Err(e) = crate::util::open::open_by_uri(&dest_uri, &content).await {
                                                     error!("ujapi: open downloaded file: {}", e);
                                                 }
                                             }
@@ -1120,7 +1125,7 @@ async fn main() {
                                     }
                                     // Re-parse the file containing the //import-ujapi! directive.
                                     if let Ok(content) = source_uri.to_file_path().and_then(|p| std::fs::read_to_string(&p).map_err(|_| ())) {
-                                        if let Err(e) = lng::jass::open::open(&source_uri, &content).await {
+                                        if let Err(e) = crate::util::open::open_by_uri(&source_uri, &content).await {
                                             error!("ujapi: re-parse source: {}", e);
                                         }
                                     }
