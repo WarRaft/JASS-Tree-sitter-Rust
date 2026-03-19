@@ -65,19 +65,21 @@ pub struct Param<'tree> {
     pub name: Option<Id<'tree>>,
 }
 
-/// `native <name> takes <params> returns <return_type>`
+/// `[constant] native <name> takes <params> returns <return_type>`
 #[derive(Debug, Clone)]
 pub struct NativeDecl<'tree> {
     pub node: Node<'tree>,
+    pub is_constant: bool,
     pub name: Option<Id<'tree>>,
     pub params: Vec<Param<'tree>>,
     pub return_type: Option<Id<'tree>>,
 }
 
-/// `function <name> takes <params> returns <return_type> ... endfunction`
+/// `[constant] function <name> takes <params> returns <return_type> ... endfunction`
 #[derive(Debug, Clone)]
 pub struct FunctionDecl<'tree> {
     pub node: Node<'tree>,
+    pub is_constant: bool,
     pub name: Option<Id<'tree>>,
     pub params: Vec<Param<'tree>>,
     pub return_type: Option<Id<'tree>>,
@@ -524,6 +526,7 @@ fn build_params<'tree>(node: &Node<'tree>) -> Vec<Param<'tree>> {
 fn build_native_decl<'tree>(node: &Node<'tree>) -> NativeDecl<'tree> {
     NativeDecl {
         node: *node,
+        is_constant: has_keyword(node, Kind::Constant),
         name: maybe_id(node, FIELD_NAME, IdRole::FunctionDecl),
         params: build_params(node),
         return_type: maybe_id(node, FIELD_RETURN_TYPE, IdRole::TypeRef),
@@ -536,6 +539,7 @@ fn build_function_decl<'tree>(
 ) -> FunctionDecl<'tree> {
     FunctionDecl {
         node: *node,
+        is_constant: has_keyword(node, Kind::Constant),
         name: maybe_id(node, FIELD_NAME, IdRole::FunctionDecl),
         params: build_params(node),
         return_type: maybe_id(node, FIELD_RETURN_TYPE, IdRole::TypeRef),

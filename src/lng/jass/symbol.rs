@@ -32,6 +32,7 @@ pub struct NativeSym {
     pub name: String,
     pub params: Vec<ParamSym>,
     pub return_type: Option<String>,
+    pub is_constant: bool,
     /// Declaration order inside the file.
     pub decl_index: usize,
     /// `//*` doc comment (markdown) attached to this declaration.
@@ -47,6 +48,7 @@ pub struct FunctionSym {
     pub name: String,
     pub params: Vec<ParamSym>,
     pub return_type: Option<String>,
+    pub is_constant: bool,
     /// Declaration order inside the file (0-based, across all top-level items).
     pub decl_index: usize,
     /// Names of functions directly called from the body (including `call`
