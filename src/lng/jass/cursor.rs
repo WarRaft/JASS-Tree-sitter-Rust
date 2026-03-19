@@ -2422,6 +2422,11 @@ impl Cursor {
                             &hl.name, &hl.type_name,
                         ),
                         severity: Some(DiagnosticSeverity::Error),
+                        source: Some("leak".into()),
+                        data: Some(serde_json::json!({
+                            "leak_var": hl.name,
+                            "leak_kind": "endfunction",
+                        })),
                         ..Default::default()
                     });
                 }
@@ -2505,6 +2510,11 @@ impl Cursor {
                                     &hl.name, &hl.type_name,
                                 ),
                                 severity: Some(DiagnosticSeverity::Error),
+                                source: Some("leak".into()),
+                                data: Some(serde_json::json!({
+                                    "leak_var": hl.name,
+                                    "leak_kind": "return",
+                                })),
                                 ..Default::default()
                             });
                         }

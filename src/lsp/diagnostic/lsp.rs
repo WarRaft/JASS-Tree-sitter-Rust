@@ -20,6 +20,7 @@ pub struct DocumentDiagnosticParams {
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentDiagnosticReport
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
+#[allow(dead_code)]
 pub enum DocumentDiagnosticReport {
     #[serde(rename_all = "camelCase")]
     #[serde(rename = "full")]
@@ -44,6 +45,7 @@ pub enum DocumentDiagnosticReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
+#[allow(dead_code)]
 pub enum UnattachedDocumentDiagnosticReport {
     Full {
         kind: FullKind,
@@ -59,12 +61,14 @@ pub enum UnattachedDocumentDiagnosticReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
 pub enum FullKind {
     Full,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[allow(dead_code)]
 pub enum UnchangedKind {
     Unchanged,
 }

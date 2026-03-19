@@ -171,8 +171,7 @@ pub async fn send_refresh_all() {
     push_inlay_hints(writer).await;
 }
 
-/// Send `textDocument/publishDiagnostics` for every file in `FILE_STORE`
-/// and the legacy `DIAGNOSTIC_URI_MAP` (BNI).
+/// Send `textDocument/publishDiagnostics` for every file in `FILE_STORE`.
 ///
 /// **Important**: we snapshot the data first and drop the DashMap guards
 /// *before* awaiting any IO.  Holding a DashMap read-lock across `.await`
@@ -180,7 +179,6 @@ pub async fn send_refresh_all() {
 async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
     use serde_json::json;
 
-    // ── 1. Snapshot FILE_STORE (JASS, AngelScript) ───────────────────────
     let file_diags: Vec<(String, Vec<Diagnostic>)> = FILE_STORE
         .iter()
         .map(|entry| (entry.key().to_string(), entry.value().diagnostics.clone()))
@@ -196,38 +194,6 @@ async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
                 "params": {
                     "uri": uri,
                     "diagnostics": diagnostics
-                }
-            }),
-        )
-        .await;
-    }
-
-    // ── 2. Snapshot DIAGNOSTIC_URI_MAP (BNI) ─────────────────────────────
-    use crate::lsp::diagnostic::lsp::DocumentDiagnosticReport;
-    use crate::lsp::diagnostic::uri_map::URI_MAP as DIAGNOSTIC_URI_MAP;
-
-    let bni_diags: Vec<(String, Vec<Diagnostic>)> = DIAGNOSTIC_URI_MAP
-        .iter()
-        .map(|entry| {
-            let uri = entry.key().to_string();
-            let items = match entry.value() {
-                DocumentDiagnosticReport::Full { items, .. } => items.clone(),
-                _ => vec![],
-            };
-            (uri, items)
-        })
-        .collect();
-    // DashMap guards dropped here.
-
-    for (uri, items) in &bni_diags {
-        crate::lsp::send::send(
-            writer,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/publishDiagnostics",
-                "params": {
-                    "uri": uri,
-                    "diagnostics": items
                 }
             }),
         )

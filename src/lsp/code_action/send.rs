@@ -2,10 +2,13 @@ use crate::lsp::cancel::CancelId;
 use crate::lsp::code_action::lsp::{
     CodeAction, CodeActionParams, Command, CODE_ACTION_KIND_QUICKFIX, CODE_ACTION_KIND_REFACTOR,
 };
+use crate::lsp::diagnostic::lsp::Diagnostic;
+use crate::lsp::position::Position;
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::range::Range;
 use crate::lsp::rename::lsp::{TextEdit, WorkspaceEdit};
 use crate::lsp::send::send as lsp_send;
+use crate::util::file_store::FILE_STORE;
 use crate::util::open::is_as_uri;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
@@ -89,6 +92,12 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
                 actions.push(fa);
             }
         }
+    }
+
+    // ── Handle leak quick fixes ─────────────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_leak_fixes(params));
     }
 
     actions
@@ -314,3 +323,205 @@ fn unescape_for_triple(s: &str) -> String {
     out
 }
 
+// ─── Handle leak quick fixes ─────────────────────────────────────────────────
+
+/// Extract variable name from a leak diagnostic's `data` field.
+fn leak_var(diag: &Diagnostic) -> Option<String> {
+    diag.data.as_ref()?.get("leak_var")?.as_str().map(String::from)
+}
+
+/// Extract leak kind (`"return"` or `"endfunction"`) from a leak diagnostic's `data`.
+fn leak_kind(diag: &Diagnostic) -> Option<String> {
+    diag.data.as_ref()?.get("leak_kind")?.as_str().map(String::from)
+}
+
+/// Read the leading whitespace of a line in a rope.
+fn line_indent(rope: &lapce_xi_rope::Rope, line: usize) -> String {
+    let line_count = rope.line_of_offset(rope.len()) + 1;
+    if line >= line_count {
+        return String::new();
+    }
+    let line_start = rope.offset_of_line(line);
+    let line_end = rope.offset_of_line(line + 1).min(rope.len());
+    let text = rope.slice_to_cow(line_start..line_end);
+    text.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .collect()
+}
+
+/// Find the body-level indentation for an `endfunction` leak.
+/// Scans backwards from the `endfunction` line to find the first non-blank line
+/// and uses its indentation.  Falls back to `endfunction` indent + 4 spaces.
+fn body_indent(rope: &lapce_xi_rope::Rope, endfunction_line: usize) -> String {
+    let line_count = rope.line_of_offset(rope.len()) + 1;
+    let mut line = endfunction_line;
+    while line > 0 {
+        line -= 1;
+        if line >= line_count {
+            break;
+        }
+        let ls = rope.offset_of_line(line);
+        let le = rope.offset_of_line(line + 1).min(rope.len());
+        let text = rope.slice_to_cow(ls..le);
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return text
+                .chars()
+                .take_while(|c| *c == ' ' || *c == '\t')
+                .collect();
+        }
+    }
+    // Fallback: endfunction indent + 4 spaces.
+    let ef_indent = line_indent(rope, endfunction_line);
+    format!("{}    ", ef_indent)
+}
+
+/// Build a `TextEdit` that inserts `set <var> = null` before the given
+/// diagnostic's target line, with appropriate indentation.
+fn leak_text_edit(
+    diag: &Diagnostic,
+    rope: &lapce_xi_rope::Rope,
+) -> Option<TextEdit> {
+    let var = leak_var(diag)?;
+    let kind = leak_kind(diag)?;
+    let target_line = diag.range.start.line;
+
+    let indent = if kind == "endfunction" {
+        body_indent(rope, target_line)
+    } else {
+        // "return" — same indent as the return keyword line
+        line_indent(rope, target_line)
+    };
+
+    let insert_pos = Position {
+        line: target_line,
+        character: 0,
+    };
+
+    Some(TextEdit {
+        range: Range {
+            start: insert_pos.clone(),
+            end: insert_pos,
+        },
+        new_text: format!("{}set {} = null\n", indent, var),
+    })
+}
+
+/// Compute quick fix actions for handle leak diagnostics.
+fn compute_leak_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    let uri = &params.text_document.uri;
+    let rope = match ROPE_MAP.get(uri) {
+        Some(r) => r,
+        None => return actions,
+    };
+    let rope = rope.value();
+
+    // Collect leak diagnostics from the cursor context.
+    let leak_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("leak"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    // ── Per-variable quick fixes ──────────────────────────────────────────
+    // Group by (line, var) to avoid duplicate edits at the same location.
+    let mut seen = std::collections::HashSet::new();
+    for diag in &leak_diags {
+        let var = match leak_var(diag) {
+            Some(v) => v,
+            None => continue,
+        };
+        let key = (diag.range.start.line, var.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        if let Some(edit) = leak_text_edit(diag, rope) {
+            let title = crate::util::i18n::fix_handle_leak(&var);
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title,
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
+                command: None,
+            });
+        }
+    }
+
+    // ── Fix all leaks in file ─────────────────────────────────────────────
+    if !leak_diags.is_empty() {
+        if let Some(file_action) = compute_fix_all_leaks(uri, rope) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that fixes ALL handle leaks in the file.
+fn compute_fix_all_leaks(
+    uri: &url::Url,
+    rope: &lapce_xi_rope::Rope,
+) -> Option<CodeAction> {
+    // Get all diagnostics for this file from FILE_STORE.
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let leak_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("leak"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if leak_diags.len() < 2 {
+        return None;
+    }
+
+    // Build edits, deduplicated by (line, var), sorted by line descending
+    // so that insertions don't shift line numbers of subsequent edits.
+    let mut seen = std::collections::HashSet::new();
+    let mut edits: Vec<(usize, TextEdit)> = Vec::new();
+    for diag in &leak_diags {
+        let var = match leak_var(diag) {
+            Some(v) => v,
+            None => continue,
+        };
+        let key = (diag.range.start.line, var);
+        if !seen.insert(key) {
+            continue;
+        }
+        if let Some(edit) = leak_text_edit(diag, rope) {
+            edits.push((diag.range.start.line, edit));
+        }
+    }
+
+    // Sort by line descending so inserts don't invalidate positions.
+    edits.sort_by(|a, b| b.0.cmp(&a.0));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, e)| e).collect();
+
+    if text_edits.is_empty() {
+        return None;
+    }
+
+    let title = crate::util::i18n::fix_all_handle_leaks().to_string();
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title,
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
+        command: None,
+    })
+}

@@ -212,6 +212,28 @@ pub fn handle_leak_before_return(name: &str, type_name: &str) -> String {
     }
 }
 
+// ─── Handle leak quick fix ──────────────────────────────────────────────────
+
+pub fn fix_handle_leak(name: &str) -> String {
+    match locale() {
+        Locale::En => format!("Set `{}` to `null`", name),
+        Locale::Ru => format!("Установить `{}` в `null`", name),
+        Locale::Uk => format!("Встановити `{}` в `null`", name),
+        Locale::Zh => format!("将 `{}` 设置为 `null`", name),
+        Locale::Tc => format!("將 `{}` 設置為 `null`", name),
+    }
+}
+
+pub fn fix_all_handle_leaks() -> &'static str {
+    pick(
+        "Fix all handle leaks in file",
+        "Исправить все утечки хэндлов в файле",
+        "Виправити всі витоки хендлів у файлі",
+        "修复文件中所有句柄泄漏",
+        "修復檔案中所有句柄洩漏",
+    )
+}
+
 // ─── Function diagnostics ───────────────────────────────────────────────────
 
 pub fn unused_function(name: &str) -> String {
