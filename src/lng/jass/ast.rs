@@ -235,6 +235,22 @@ pub enum Expr<'tree> {
     Literal(Node<'tree>),
 }
 
+impl<'tree> Expr<'tree> {
+    /// Get the CST node backing this expression.
+    pub fn cst_node(&self) -> &Node<'tree> {
+        match self {
+            Expr::Id(id) => &id.node,
+            Expr::Call(fc) => &fc.node,
+            Expr::FuncRef(id) => &id.node,
+            Expr::Binary { node, .. } => node,
+            Expr::Unary { node, .. } => node,
+            Expr::Parens { node, .. } => node,
+            Expr::Index { node, .. } => node,
+            Expr::Literal(node) => node,
+        }
+    }
+}
+
 /// Any top-level or body statement.
 #[derive(Debug, Clone)]
 pub enum Statement<'tree> {

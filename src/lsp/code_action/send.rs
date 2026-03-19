@@ -100,10 +100,354 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         actions.extend(compute_leak_fixes(params));
     }
 
+    // ── Simplify if-return quick fixes ──────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_simplify_fixes(params));
+    }
+
+    // ── Redundant parentheses quick fixes ───────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_parens_fixes(params));
+    }
+
+    // ── Redundant boolean-comparison quick fixes ─────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_bool_cmp_fixes(params));
+    }
+
+    // ── Inline single-call function quick fixes ──────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_inline_fixes(params));
+    }
+
     actions
 }
 
-// ─── AS string format toggle ─────────────────────────────────────────────────
+// ─── Simplify if-return fixes ────────────────────────────────────────────────
+
+/// Quick-fix and "fix all" actions for redundant if-return patterns.
+fn compute_simplify_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    let uri = &params.text_document.uri;
+    let rope = match ROPE_MAP.get(uri) {
+        Some(r) => r,
+        None => return actions,
+    };
+    let _rope = rope.value();
+
+    // Per-diagnostic quick fixes from the current request context.
+    let simplify_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("simplify"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &simplify_diags {
+        if let Some(new_text) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("simplify_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            let edit = TextEdit {
+                range: diag.range.clone(),
+                new_text: new_text.to_string(),
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::simplify_if_return_action().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    // "Fix all" action (needs ≥ 2 simplifiable patterns in the file).
+    if !simplify_diags.is_empty() {
+        if let Some(file_action) = compute_simplify_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that fixes ALL redundant if-returns in the file.
+fn compute_simplify_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let simplify_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("simplify"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if simplify_diags.len() < 2 {
+        return None;
+    }
+
+    // Sort ascending by (line, character).
+    let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
+    for diag in &simplify_diags {
+        if let Some(new_text) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("simplify_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            edits.push((
+                diag.range.start.line,
+                diag.range.start.character,
+                TextEdit {
+                    range: diag.range.clone(),
+                    new_text: new_text.to_string(),
+                },
+            ));
+        }
+    }
+
+    edits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, _, e)| e).collect();
+
+    if text_edits.is_empty() {
+        return None;
+    }
+
+    let title = crate::util::i18n::simplify_all_if_return_action().to_string();
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title,
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
+
+// ─── Redundant parentheses fixes ─────────────────────────────────────────────
+
+/// Extract the two 1-character delete edits stored in a `parens` diagnostic.
+///
+/// Each diagnostic stores the position of its `(` (`parens_open`) and `)`
+/// (`parens_close`) as 1-char LSP ranges.  Deleting those two characters
+/// is equivalent to removing the paren pair but guarantees that edits for
+/// different diagnostics — even when the paren spans overlap — are always
+/// non-overlapping.
+fn paren_delete_edits(diag: &Diagnostic) -> Option<[TextEdit; 2]> {
+    let data = diag.data.as_ref()?;
+    let open: Range  = serde_json::from_value(data.get("parens_open")?.clone()).ok()?;
+    let close: Range = serde_json::from_value(data.get("parens_close")?.clone()).ok()?;
+    Some([
+        TextEdit { range: open,  new_text: String::new() },
+        TextEdit { range: close, new_text: String::new() },
+    ])
+}
+
+/// Quick-fix and "fix all" actions for redundant parentheses diagnostics.
+fn compute_parens_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    let uri = &params.text_document.uri;
+
+    let parens_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("parens"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &parens_diags {
+        if let Some([open_edit, close_edit]) = paren_delete_edits(diag) {
+            let mut changes = HashMap::new();
+            // Close first so that if a client applies sequentially the open
+            // position is still valid (deleting `)` doesn't shift `(`).
+            changes.insert(uri.clone(), vec![close_edit, open_edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::remove_redundant_parens().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    if !parens_diags.is_empty() {
+        if let Some(file_action) = compute_parens_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that removes ALL redundant parentheses in the file.
+///
+/// Each diagnostic contributes two 1-char delete edits (`(` and `)`).
+/// Because every edit covers exactly one character, no two edits can ever
+/// overlap — even for nested paren pairs like `(Some((1)))`.
+///
+/// Edits are sorted descending by (line, character) so that, even if the
+/// client applies them sequentially, later edits in the file don't shift the
+/// positions of earlier ones.
+fn compute_parens_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let parens_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("parens"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if parens_diags.len() < 2 {
+        return None;
+    }
+
+    // Collect (line, char, TextEdit) for every open and close paren.
+    let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
+    for diag in &parens_diags {
+        if let Some([open_edit, close_edit]) = paren_delete_edits(diag) {
+            edits.push((open_edit.range.start.line,  open_edit.range.start.character,  open_edit));
+            edits.push((close_edit.range.start.line, close_edit.range.start.character, close_edit));
+        }
+    }
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    // Sort descending by (line, character): apply end-of-file first so that
+    // earlier positions are not shifted by preceding deletions.
+    edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, _, e)| e).collect();
+
+    let title = crate::util::i18n::remove_all_redundant_parens().to_string();
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title,
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
+
+
+
+// ─── Redundant boolean comparison fixes ──────────────────────────────────────
+
+/// Quick-fix and "fix all" actions for `expr == true/false` / `expr != true/false`.
+fn compute_bool_cmp_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+    let uri = &params.text_document.uri;
+
+    let diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("bool_cmp"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &diags {
+        if let Some(new_text) = diag
+            .data.as_ref()
+            .and_then(|d| d.get("bool_cmp_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![TextEdit {
+                range: diag.range.clone(),
+                new_text: new_text.to_string(),
+            }]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::simplify_bool_cmp().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    if !diags.is_empty() {
+        if let Some(file_action) = compute_bool_cmp_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a code action that simplifies ALL redundant boolean comparisons in the file.
+fn compute_bool_cmp_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let bool_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("bool_cmp"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if bool_diags.len() < 2 {
+        return None;
+    }
+
+    let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
+    for diag in &bool_diags {
+        if let Some(new_text) = diag
+            .data.as_ref()
+            .and_then(|d| d.get("bool_cmp_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            edits.push((
+                diag.range.start.line,
+                diag.range.start.character,
+                TextEdit { range: diag.range.clone(), new_text: new_text.to_string() },
+            ));
+        }
+    }
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    // Sort descending: apply end-of-file edits first so earlier positions stay valid.
+    edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, _, e)| e).collect();
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title: crate::util::i18n::simplify_all_bool_cmp().to_string(),
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
 
 const STRING_LITERAL_KIND: u16 = crate::lng::ass::kind::Kind::StringLiteral as u16;
 
@@ -525,3 +869,456 @@ fn compute_fix_all_leaks(
         command: None,
     })
 }
+
+// ─── Inline single-call function fixes ───────────────────────────────────────
+
+/// Extract inline metadata from a diagnostic's `data` field.
+fn inline_data(diag: &Diagnostic) -> Option<(String, String, bool, Range)> {
+    let data = diag.data.as_ref()?;
+    let name = data.get("inline_name")?.as_str()?.to_string();
+    let expr = data.get("inline_expr")?.as_str()?.to_string();
+    let is_compound = data.get("inline_is_compound")?.as_bool().unwrap_or(false);
+    let func_range: Range = serde_json::from_value(data.get("inline_func_range")?.clone()).ok()?;
+    Some((name, expr, is_compound, func_range))
+}
+
+/// Build a `TextEdit` that deletes the entire function declaration,
+/// extending the range to consume the trailing newline (if present).
+fn func_delete_edit(rope: &lapce_xi_rope::Rope, func_range: &Range) -> TextEdit {
+    let end_line = func_range.end.line;
+    let line_count = rope.line_of_offset(rope.len()) + 1;
+    // Extend to the start of the next line to consume the trailing newline.
+    let end = if end_line + 1 < line_count {
+        Position { line: end_line + 1, character: 0 }
+    } else {
+        func_range.end.clone()
+    };
+    // Also consume a preceding blank line if the function starts at line > 0.
+    let start = func_range.start.clone();
+    TextEdit {
+        range: Range { start, end },
+        new_text: String::new(),
+    }
+}
+
+/// Check whether `NAME()` at `call_start..call_end` in `source` is a top-level
+/// expression (the sole expression in its syntactic slot).
+fn is_top_level_call_in_text(source: &str, call_start: usize, call_end: usize) -> bool {
+    let line_start = source[..call_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = source[call_end..].find('\n').map(|p| call_end + p).unwrap_or(source.len());
+
+    let before = source[line_start..call_start].trim();
+    let after = source[call_end..line_end].trim();
+
+    // `call NAME()`
+    if before.ends_with("call") && after.is_empty() { return true; }
+    // `return NAME()`
+    if before.ends_with("return") && after.is_empty() { return true; }
+    // `exitwhen NAME()`
+    if before.ends_with("exitwhen") && after.is_empty() { return true; }
+    // `set VAR = NAME()` / `set VAR[IDX] = NAME()`
+    if before.starts_with("set ") && before.ends_with('=') && after.is_empty() { return true; }
+    // `if NAME() then` / `elseif NAME() then`
+    if before.ends_with("if") && after == "then" { return true; }
+
+    false
+}
+
+/// Find `NAME()` in the rope text (respecting word boundaries) and build
+/// a `TextEdit` that replaces it with the inlined expression.
+///
+/// Returns `Some((edit, byte_offset_of_match))` on success.
+fn find_call_and_build_edit(
+    rope: &lapce_xi_rope::Rope,
+    func_name: &str,
+    expr: &str,
+    is_compound: bool,
+) -> Option<TextEdit> {
+    let source = rope.slice_to_cow(0..rope.len());
+    let source = source.as_ref();
+    let pattern = format!("{}()", func_name);
+    let mut search_from = 0;
+
+    while let Some(pos) = source[search_from..].find(&pattern) {
+        let abs_pos = search_from + pos;
+        let is_boundary = if abs_pos == 0 {
+            true
+        } else {
+            let b = source.as_bytes()[abs_pos - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+
+        if is_boundary {
+            let call_end = abs_pos + pattern.len();
+            let top_level = is_top_level_call_in_text(source, abs_pos, call_end);
+            let replacement = if top_level || !is_compound {
+                expr.to_string()
+            } else {
+                format!("({})", expr)
+            };
+            let range = Range::from_byte_offsets(rope, abs_pos, call_end);
+            return Some(TextEdit { range, new_text: replacement });
+        }
+
+        search_from = abs_pos + pattern.len();
+    }
+
+    None
+}
+
+/// Build edits (func deletion + call replacement) for a single inline diagnostic.
+fn build_inline_edits(
+    uri: &url::Url,
+    func_name: &str,
+    expr: &str,
+    is_compound: bool,
+    func_range: &Range,
+) -> Option<HashMap<url::Url, Vec<TextEdit>>> {
+    let rope = ROPE_MAP.get(uri)?;
+    let rope = rope.value();
+
+    let delete_edit = func_delete_edit(rope, func_range);
+
+    // Search current file for the call site.
+    if let Some(replace_edit) = find_call_and_build_edit(rope, func_name, expr, is_compound) {
+        // Both edits are in the same file — make sure delete comes after replace
+        // in the list (sorted descending) so positions stay valid.
+        let mut edits = vec![delete_edit, replace_edit];
+        edits.sort_by(|a, b| b.range.start.line.cmp(&a.range.start.line)
+            .then(b.range.start.character.cmp(&a.range.start.character)));
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), edits);
+        return Some(changes);
+    }
+
+    // Search other files in the connected component for the call site.
+    let component = crate::util::import_graph::IMPORT_GRAPH.connected_component(uri);
+    for peer_uri in &component {
+        if peer_uri == uri { continue; }
+        if let Some(peer_rope) = ROPE_MAP.get(peer_uri) {
+            let peer_rope = peer_rope.value();
+            if let Some(replace_edit) = find_call_and_build_edit(peer_rope, func_name, expr, is_compound) {
+                let mut changes = HashMap::new();
+                changes.insert(uri.clone(), vec![delete_edit]);
+                changes.insert(peer_uri.clone(), vec![replace_edit]);
+                return Some(changes);
+            }
+        }
+    }
+
+    None
+}
+
+/// Quick-fix and "fix all" actions for inlinable function diagnostics.
+fn compute_inline_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+    let uri = &params.text_document.uri;
+
+    let inline_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("inline"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &inline_diags {
+        if let Some((name, expr, is_compound, func_range)) = inline_data(diag) {
+            if let Some(changes) = build_inline_edits(uri, &name, &expr, is_compound, &func_range) {
+                actions.push(CodeAction {
+                    title: crate::util::i18n::inline_function_action().to_string(),
+                    kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                    diagnostics: Some(vec![diag.clone()]),
+                    edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                    command: None,
+                });
+            }
+        }
+    }
+
+    // "Fix all" action — inline all single-call functions in the file.
+    if !inline_diags.is_empty() {
+        if let Some(file_action) = compute_inline_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that inlines ALL single-call functions in the file.
+///
+/// Handles nested inline functions: if inline function A's expression calls
+/// inline function B, B's expression is recursively resolved into A's before
+/// the final call-site replacement.  All inline function declarations are
+/// deleted, and only call sites *outside* any inline function body get a
+/// replacement edit.
+fn compute_inline_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let inline_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("inline"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if inline_diags.len() < 2 {
+        return None;
+    }
+
+    // Step 1: Collect all inline candidates.
+    //         name → (expr_text, is_compound, func_range)
+    let mut inline_map: HashMap<String, (String, bool, Range)> = HashMap::new();
+    for diag in &inline_diags {
+        if let Some((name, expr, is_compound, func_range)) = inline_data(diag) {
+            inline_map.insert(name, (expr, is_compound, func_range));
+        }
+    }
+    if inline_map.len() < 2 {
+        return None;
+    }
+
+    // Step 2: Build dependency graph.
+    //         deps[name] = list of other inline functions called by `name`.
+    let names: Vec<String> = inline_map.keys().cloned().collect();
+    let mut deps: HashMap<String, Vec<String>> = HashMap::new();
+    for (name, (expr, _, _)) in &inline_map {
+        let mut name_deps = Vec::new();
+        for other in &names {
+            if other != name && has_call_in_text(expr, other) {
+                name_deps.push(other.clone());
+            }
+        }
+        deps.insert(name.clone(), name_deps);
+    }
+
+    // Step 3: Topological sort (leaves first, dependents last).
+    let sorted = topo_sort_inline(&names, &deps);
+
+    // Step 4: Resolve expressions bottom-up.
+    //         When processing a function, all its inline-callee expressions
+    //         are already resolved, so a single pass suffices.
+    let mut resolved_exprs: HashMap<String, String> = HashMap::new();
+    for name in &sorted {
+        let (expr, _, _) = &inline_map[name];
+        let mut resolved = expr.clone();
+        for dep in deps.get(name).into_iter().flatten() {
+            let dep_resolved = &resolved_exprs[dep];
+            let (_, dep_compound, _) = &inline_map[dep];
+            resolved = replace_call_in_text(&resolved, dep, dep_resolved, *dep_compound);
+        }
+        resolved_exprs.insert(name.clone(), resolved);
+    }
+
+    // Step 5: Build edits.
+    let rope = ROPE_MAP.get(uri)?;
+    let rope = rope.value();
+    let mut edits: Vec<TextEdit> = Vec::new();
+
+    // 5a. Delete all inline function declarations.
+    for (_, _, func_range) in inline_map.values() {
+        edits.push(func_delete_edit(rope, func_range));
+    }
+
+    // 5b. Replace call sites that are OUTSIDE all inline function bodies.
+    let exclude_ranges: Vec<&Range> = inline_map.values().map(|(_, _, r)| r).collect();
+    for (name, (_, is_compound, _)) in &inline_map {
+        let resolved_expr = &resolved_exprs[name];
+        if let Some(call_edit) = find_call_and_build_edit_excluding(
+            rope, name, resolved_expr, *is_compound, &exclude_ranges,
+        ) {
+            edits.push(call_edit);
+        } else {
+            // Call site might be in another file.
+            let component = crate::util::import_graph::IMPORT_GRAPH.connected_component(uri);
+            for peer_uri in &component {
+                if peer_uri == uri { continue; }
+                if let Some(peer_rope) = ROPE_MAP.get(peer_uri) {
+                    let peer_rope = peer_rope.value();
+                    if let Some(call_edit) = find_call_and_build_edit(
+                        peer_rope, name, resolved_expr, *is_compound,
+                    ) {
+                        // Cross-file edits are not supported in "fix all" yet.
+                        // For now, skip.  (Single-function inline handles this.)
+                        let _ = call_edit;
+                    }
+                }
+            }
+        }
+    }
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    // Sort descending so edits don't invalidate each other's positions.
+    edits.sort_by(|a, b| b.range.start.line.cmp(&a.range.start.line)
+        .then(b.range.start.character.cmp(&a.range.start.character)));
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), edits);
+
+    Some(CodeAction {
+        title: crate::util::i18n::inline_all_functions_action().to_string(),
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
+
+// ─── Inline helpers ──────────────────────────────────────────────────────────
+
+/// Check whether `source` contains a word-boundary `NAME()` call.
+fn has_call_in_text(source: &str, func_name: &str) -> bool {
+    let pattern = format!("{}()", func_name);
+    let mut search_from = 0;
+    while let Some(pos) = source[search_from..].find(&pattern) {
+        let abs_pos = search_from + pos;
+        let is_boundary = if abs_pos == 0 {
+            true
+        } else {
+            let b = source.as_bytes()[abs_pos - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        if is_boundary {
+            return true;
+        }
+        search_from = abs_pos + pattern.len();
+    }
+    false
+}
+
+/// Replace all word-boundary `NAME()` occurrences in `source` with
+/// `replacement` (wrapped in parentheses if compound and not top-level).
+fn replace_call_in_text(
+    source: &str,
+    func_name: &str,
+    replacement: &str,
+    is_compound: bool,
+) -> String {
+    let pattern = format!("{}()", func_name);
+    let mut result = String::with_capacity(source.len());
+    let mut search_from = 0;
+
+    while let Some(pos) = source[search_from..].find(&pattern) {
+        let abs_pos = search_from + pos;
+        let is_boundary = if abs_pos == 0 {
+            true
+        } else {
+            let b = source.as_bytes()[abs_pos - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+
+        if !is_boundary {
+            result.push_str(&source[search_from..abs_pos + pattern.len()]);
+            search_from = abs_pos + pattern.len();
+            continue;
+        }
+
+        let call_end = abs_pos + pattern.len();
+        let top_level = is_top_level_call_in_text(source, abs_pos, call_end);
+
+        result.push_str(&source[search_from..abs_pos]);
+        if top_level || !is_compound {
+            result.push_str(replacement);
+        } else {
+            result.push('(');
+            result.push_str(replacement);
+            result.push(')');
+        }
+
+        search_from = call_end;
+    }
+
+    result.push_str(&source[search_from..]);
+    result
+}
+
+/// DFS-based topological sort: dependencies (leaves) come before dependents.
+fn topo_sort_inline(
+    names: &[String],
+    deps: &HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    let mut visited = std::collections::HashSet::new();
+    let mut order = Vec::new();
+
+    fn dfs(
+        name: &str,
+        deps: &HashMap<String, Vec<String>>,
+        visited: &mut std::collections::HashSet<String>,
+        order: &mut Vec<String>,
+    ) {
+        if visited.contains(name) { return; }
+        visited.insert(name.to_string());
+        if let Some(d) = deps.get(name) {
+            for dep in d {
+                dfs(dep, deps, visited, order);
+            }
+        }
+        order.push(name.to_string());
+    }
+
+    // Alphabetical seed order for determinism.
+    let mut sorted_names: Vec<&String> = names.iter().collect();
+    sorted_names.sort();
+    for name in sorted_names {
+        dfs(name, deps, &mut visited, &mut order);
+    }
+
+    order
+}
+
+/// Like [`find_call_and_build_edit`] but skips matches whose line falls
+/// inside any of the `exclude_ranges` (used to skip calls inside inline
+/// function bodies that are being deleted).
+fn find_call_and_build_edit_excluding(
+    rope: &lapce_xi_rope::Rope,
+    func_name: &str,
+    expr: &str,
+    is_compound: bool,
+    exclude_ranges: &[&Range],
+) -> Option<TextEdit> {
+    let source = rope.slice_to_cow(0..rope.len());
+    let source = source.as_ref();
+    let pattern = format!("{}()", func_name);
+    let mut search_from = 0;
+
+    while let Some(pos) = source[search_from..].find(&pattern) {
+        let abs_pos = search_from + pos;
+        let is_boundary = if abs_pos == 0 {
+            true
+        } else {
+            let b = source.as_bytes()[abs_pos - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+
+        if is_boundary {
+            let call_end = abs_pos + pattern.len();
+            let range = Range::from_byte_offsets(rope, abs_pos, call_end);
+            let call_line = range.start.line;
+
+            // Skip if the call is inside an excluded (deleted) function.
+            let excluded = exclude_ranges.iter().any(|r| {
+                call_line >= r.start.line && call_line <= r.end.line
+            });
+
+            if !excluded {
+                let top_level = is_top_level_call_in_text(source, abs_pos, call_end);
+                let replacement = if top_level || !is_compound {
+                    expr.to_string()
+                } else {
+                    format!("({})", expr)
+                };
+                return Some(TextEdit { range, new_text: replacement });
+            }
+        }
+
+        search_from = abs_pos + pattern.len();
+    }
+
+    None
+}
+

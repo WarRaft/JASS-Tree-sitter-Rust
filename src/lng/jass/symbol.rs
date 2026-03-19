@@ -60,6 +60,18 @@ pub struct FunctionSym {
     /// Diagnostic tags suppressed via `//@ignore tag1 tag2` above this declaration.
     #[serde(default)]
     pub ignore_tags: HashSet<String>,
+    /// `true` when the function takes nothing and the body consists of a
+    /// single `return <expr>` statement — an inline candidate.
+    #[serde(default)]
+    pub is_single_return: bool,
+    /// The flattened text of the return expression (only set when
+    /// `is_single_return` is true).
+    #[serde(default)]
+    pub inline_return_text: Option<String>,
+    /// Whether the return expression is compound (binary/unary) and needs
+    /// parentheses when inlined into a sub-expression.
+    #[serde(default)]
+    pub inline_is_compound: bool,
 }
 
 /// A single global variable declaration (one name inside a `globals` block).
@@ -106,6 +118,10 @@ pub struct FileSymbols {
     /// marks it as a build entry point for tree-shaking and import graph traversal.
     #[serde(default)]
     pub is_entry: bool,
+    /// Function names used via `function NAME` references (code-type arguments).
+    /// These are NOT call sites and cannot be inlined.
+    #[serde(default)]
+    pub func_refs: HashSet<String>,
 }
 
 #[allow(dead_code)]

@@ -361,34 +361,53 @@ pub fn mark_parse_done(uri: &Url, generation: u64) {
     }
 }
 
+/// Returns `true` if a parse for `uri` has been requested but not yet completed.
+///
+/// Used by [`cascade_parse_and_notify`] to suppress spurious
+/// `workspace/semanticTokens/refresh` calls from cancelled parse tasks that
+/// have already been superseded by a newer one.
+pub fn is_parse_in_flight(uri: &Url) -> bool {
+    let desired = match PARSE_DESIRED.get(uri) {
+        Some(v) => *v,
+        None => return false,
+    };
+    let done = match PARSE_DONE_TX.get(uri) {
+        Some(tx) => *tx.borrow(),
+        None => return false,
+    };
+    desired > done
+}
+
 /// Wait until the latest desired parse for `uri` has completed.
 ///
 /// Returns immediately if there is no in-flight parse.  Otherwise blocks
 /// (up to `timeout`) until the watch channel signals that the completed
 /// generation has caught up with (or exceeded) the desired generation.
+///
+/// The desired generation is **re-read on every loop iteration** so that if a
+/// new `DidChange` arrives while we are waiting (bumping the desired counter),
+/// we keep waiting for the *newest* parse rather than returning with a stale
+/// snapshot.
 pub async fn wait_for_parse(uri: &Url, timeout: Duration) {
-    let desired = match PARSE_DESIRED.get(uri) {
-        Some(v) => *v,
-        None => return,
-    };
-
     let mut rx = match PARSE_DONE_TX.get(uri) {
         Some(tx) => tx.subscribe(),
         None => return,
     };
 
-    // Already caught up?
-    if *rx.borrow() >= desired {
-        return;
-    }
-
+    let uri = uri.clone();
     let _ = tokio::time::timeout(timeout, async {
         loop {
-            if rx.changed().await.is_err() {
-                break;
-            }
+            // Re-read the latest desired generation on every iteration so that
+            // a concurrent DidChange (which bumps desired) is respected.
+            let desired = match PARSE_DESIRED.get(&uri) {
+                Some(v) => *v,
+                None => return,
+            };
             if *rx.borrow() >= desired {
-                break;
+                return;
+            }
+            if rx.changed().await.is_err() {
+                return;
             }
         }
     })

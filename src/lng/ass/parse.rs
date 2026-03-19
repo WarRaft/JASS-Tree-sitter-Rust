@@ -65,11 +65,11 @@ pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> 
 /// Parse + cascade re-parse + push diagnostics + refresh all open editors.
 ///
 /// Intended to be called from a **spawned task** (not the main message loop).
-pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn parse_and_notify(uri: &Url, generation: Option<u64>) -> Result<(), Box<dyn Error + Send + Sync>> {
     let parse_fn: ParseFn = Box::new(|u| {
         Box::pin(async move { parse(&u).await })
     });
-    cascade_parse_and_notify(uri, &parse_fn, None).await
+    cascade_parse_and_notify(uri, &parse_fn, None, generation).await
 }
 
 /// Core parse logic (runs on the blocking thread pool).

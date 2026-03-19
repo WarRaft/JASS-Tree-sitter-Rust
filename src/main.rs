@@ -196,7 +196,7 @@ async fn main() {
                         } else {
                             let parse_gen = mark_parse_pending(&uri);
                             tokio::spawn(async move {
-                                if let Err(e) = lng::jass::parse::parse_and_notify(&uri).await {
+                                if let Err(e) = lng::jass::parse::parse_and_notify(&uri, Some(parse_gen)).await {
                                     error!("jass parse: {}", e);
                                 }
                                 mark_parse_done(&uri, parse_gen);
@@ -210,7 +210,7 @@ async fn main() {
                         } else {
                             let parse_gen = mark_parse_pending(&uri);
                             tokio::spawn(async move {
-                                if let Err(e) = lng::ass::parse::parse_and_notify(&uri).await {
+                                if let Err(e) = lng::ass::parse::parse_and_notify(&uri, Some(parse_gen)).await {
                                     error!("as parse: {}", e);
                                 }
                                 mark_parse_done(&uri, parse_gen);
@@ -244,7 +244,7 @@ async fn main() {
                             } else {
                                 let parse_gen = mark_parse_pending(&uri);
                                 tokio::spawn(async move {
-                                    if let Err(e) = lng::jass::parse::parse_and_notify(&uri).await {
+                                    if let Err(e) = lng::jass::parse::parse_and_notify(&uri, Some(parse_gen)).await {
                                         error!("jass parse: {}", e);
                                     }
                                     mark_parse_done(&uri, parse_gen);
@@ -256,7 +256,7 @@ async fn main() {
                             } else {
                                 let parse_gen = mark_parse_pending(&uri);
                                 tokio::spawn(async move {
-                                    if let Err(e) = lng::ass::parse::parse_and_notify(&uri).await {
+                                    if let Err(e) = lng::ass::parse::parse_and_notify(&uri, Some(parse_gen)).await {
                                         error!("as parse: {}", e);
                                     }
                                     mark_parse_done(&uri, parse_gen);

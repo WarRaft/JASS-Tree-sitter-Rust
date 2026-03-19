@@ -60,6 +60,10 @@ pub struct FuncDiagnostics {
     /// Function names declared in this file that participate in a
     /// non-trivial call cycle (SCC len > 1) preventing topological ordering.
     pub in_cycle: HashSet<String>,
+    /// Function names declared in this file that are inlinable: they take
+    /// nothing, their body is a single `return expr`, and they are called
+    /// exactly once across the whole component.
+    pub inlinable: HashSet<String>,
 }
 
 /// Lightweight analysis: return unused / cyclic function names declared in `uri`.
@@ -88,6 +92,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
         is_native: bool,
         _is_frozen: bool,
         callees: HashSet<String>,
+        is_single_return: bool,
     }
 
     let mut func_map: HashMap<String, Info> = HashMap::new();
@@ -105,6 +110,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
                 is_native: false,
                 _is_frozen: is_frozen,
                 callees: f.callees.clone(),
+                is_single_return: f.is_single_return,
             });
         }
         for n in &fs.file_symbols.natives {
@@ -113,6 +119,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
                 is_native: true,
                 _is_frozen: is_frozen,
                 callees: HashSet::new(),
+                is_single_return: false,
             });
         }
     }
@@ -135,6 +142,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
                 is_native: false,
                 _is_frozen: false,
                 callees: all_bare,
+                is_single_return: false,
             });
         }
     }
@@ -181,6 +189,15 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
         }
     }
 
+    // Collect `function NAME` references across the component.
+    // Functions used as code-type values cannot be inlined.
+    let mut all_func_refs: HashSet<String> = HashSet::new();
+    for peer_uri in &component {
+        if let Some(fs) = FILE_STORE.get(peer_uri) {
+            all_func_refs.extend(fs.file_symbols.func_refs.iter().cloned());
+        }
+    }
+
     // Filter to functions declared in `uri`.
     for (name, info) in &func_map {
         if info.uri != *uri || info.is_native {
@@ -190,11 +207,17 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
             continue;
         }
         if let Some(&ni) = name_to_idx.get(name) {
-            if *in_degree.get(&ni).unwrap_or(&0) == 0 {
+            let deg = *in_degree.get(&ni).unwrap_or(&0);
+            if deg == 0 {
                 result.unused.insert(name.clone());
             }
             if cycle_nodes.contains(&ni) {
                 result.in_cycle.insert(name.clone());
+            }
+            // Inlinable: single-return, takes nothing, called from exactly
+            // one other function, and NOT used as a `function NAME` reference.
+            if deg == 1 && info.is_single_return && !all_func_refs.contains(name) {
+                result.inlinable.insert(name.clone());
             }
         }
     }

@@ -83,7 +83,10 @@ pub fn format(uri: &Url, options: &FormattingOptions) -> Vec<TextEdit> {
                 let trail_start = trimmed.len();
                 let trail_end = line.len();
                 if line[trail_start..].chars().all(|c| c == ' ' || c == '\t' || c == '\r') {
-                    edits.push(TextEdit::trailing_ws(i, trail_start, trail_end));
+                    // Convert byte offsets to UTF-16 code-unit offsets.
+                    let ts16 = byte_col_to_utf16(line, trail_start);
+                    let te16 = byte_col_to_utf16(line, trail_end);
+                    edits.push(TextEdit::trailing_ws(i, ts16, te16));
                 }
             }
         }
@@ -93,11 +96,11 @@ pub fn format(uri: &Url, options: &FormattingOptions) -> Vec<TextEdit> {
     if options.insert_final_newline.unwrap_or(false) {
         if !text.ends_with('\n') {
             let last_line = line_count - 1;
-            let last_line_len = lines[last_line].len();
+            let last_line_utf16 = byte_col_to_utf16(lines[last_line], lines[last_line].len());
             edits.push(TextEdit {
                 range: crate::lsp::range::Range {
-                    start: crate::lsp::position::Position { line: last_line, character: last_line_len },
-                    end: crate::lsp::position::Position { line: last_line, character: last_line_len },
+                    start: crate::lsp::position::Position { line: last_line, character: last_line_utf16 },
+                    end: crate::lsp::position::Position { line: last_line, character: last_line_utf16 },
                 },
                 new_text: "\n".to_string(),
             });
@@ -251,6 +254,18 @@ fn is_keyword_opt(k: &Result<Kind, impl std::fmt::Debug>) -> bool {
     matches!(k, Ok(k) if is_keyword(*k))
 }
 
+/// Convert a byte-column offset (as returned by tree-sitter) into a
+/// UTF-16 code-unit column offset (as required by the LSP protocol).
+///
+/// Tree-sitter reports `node.start/end_position().column` as a byte offset
+/// from the start of the line.  The LSP spec mandates that `character` is a
+/// UTF-16 code-unit offset.  For ASCII-only lines the two are equal, but
+/// multi-byte characters (e.g. Cyrillic, CJK) cause them to diverge.
+fn byte_col_to_utf16(line: &str, byte_col: usize) -> usize {
+    let clamped = byte_col.min(line.len());
+    line[..clamped].encode_utf16().count()
+}
+
 /// Ensure the whitespace gap between two adjacent sibling nodes equals
 /// `expected`.  Emits a `TextEdit` only when the actual gap differs and
 /// consists entirely of whitespace (safety guard).
@@ -272,6 +287,7 @@ fn ensure_gap(
     }
 
     let line = prev_end.row;
+    // Byte-based columns from tree-sitter — used for string slicing only.
     let start_col = prev_end.column;
     let end_col = next_start.column;
 
@@ -294,15 +310,19 @@ fn ensure_gap(
         return;
     }
 
+    // Convert byte columns → UTF-16 code-unit columns for the LSP edit.
+    let utf16_start = byte_col_to_utf16(line_str, start_col);
+    let utf16_end   = byte_col_to_utf16(line_str, end_col);
+
     edits.push(TextEdit {
         range: crate::lsp::range::Range {
             start: crate::lsp::position::Position {
                 line,
-                character: start_col,
+                character: utf16_start,
             },
             end: crate::lsp::position::Position {
                 line,
-                character: end_col,
+                character: utf16_end,
             },
         },
         new_text: expected.to_string(),

@@ -55,13 +55,13 @@ pub struct BuildResult {
 
 /// Execute the JASS build for the file at `uri`.
 ///
-/// When `//entry` files exist, the build starts from each entry file that
-/// has a `//set build-jass` directive.  Files not reachable from an entry
-/// point are excluded (tree-shaking).  All connected entry files with
-/// `build-jass` are built.
+/// The build always starts from an `//entry` file.  The entry file must
+/// carry a `//set build-jass <path>` directive (or one of the entry files
+/// reachable in the same connected component must have it).
 ///
-/// When no `//entry` files exist, falls back to the legacy behaviour:
-/// scan the connected component for `build-jass`.
+/// Files not reachable from the entry point are excluded (tree-shaking).
+/// If no `//entry` file with a `build-jass` setting is found, an error
+/// is returned — the build requires an explicit entry point.
 pub fn build_jass(uri: &Url) -> BuildResult {
     // 1. Find build target — must be in an //entry file when entries exist.
     let (trigger_uri, target) = match find_build_setting(uri, "build-jass") {
@@ -84,7 +84,10 @@ pub fn build_jass(uri: &Url) -> BuildResult {
     let file_order = collect_file_order(&trigger_uri);
 
     // 4. Parse each file and collect fragments.
-    let fragments = collect_fragments(&trigger_uri, &file_order, BuildMode::Jass);
+    let mut fragments = collect_fragments(&trigger_uri, &file_order, BuildMode::Jass);
+
+    // 4b. Inline single-call-site trivial functions.
+    apply_inlines(&mut fragments);
 
     // 5. Topological sort of functions.
     let sorted_funcs = topo_sort_functions(&fragments.functions);
@@ -179,7 +182,10 @@ pub fn build_as(uri: &Url) -> BuildResult {
     let file_order = collect_file_order(&trigger_uri);
 
     // 4. Parse each file and collect fragments.
-    let fragments = collect_fragments(&trigger_uri, &file_order, BuildMode::As);
+    let mut fragments = collect_fragments(&trigger_uri, &file_order, BuildMode::As);
+
+    // 4b. Inline single-call-site trivial functions.
+    apply_inlines(&mut fragments);
 
     // 5. Topological sort of functions.
     let sorted_funcs = topo_sort_functions(&fragments.functions);
@@ -245,19 +251,18 @@ pub fn build_as(uri: &Url) -> BuildResult {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Search for a build setting `key` across all files in the connected component
-/// of the import tree. Returns `(uri_of_file_with_setting, setting_value)`.
+/// Search for a build setting `key` in `//entry` files within the connected
+/// component of the import tree. Returns `(uri_of_entry_file, setting_value)`.
 ///
-/// When `//entry` files exist, only entry files are searched — build
-/// directives in non-entry files are ignored (and diagnosed separately).
-/// When no entries exist, falls back to searching the whole component.
+/// Build directives (`//set build-jass`, `//set build-as`) are only honoured
+/// in files that carry the `//entry` directive.  Non-entry files that contain
+/// these settings are diagnosed as errors and are never used as build origins.
+/// The build always starts from the entry file and follows its imports.
 fn find_build_setting(uri: &Url, key: &str) -> Option<(Url, String)> {
-    let has_entries = IMPORT_GRAPH.has_entry_points();
-
     // Check the current file first.
     if let Some(fs) = FILE_STORE.get(uri) {
-        if let Some(v) = fs.file_symbols.file_settings.get(key) {
-            if !has_entries || fs.file_symbols.is_entry {
+        if fs.file_symbols.is_entry {
+            if let Some(v) = fs.file_symbols.file_settings.get(key) {
                 return Some((uri.clone(), v.clone()));
             }
         }
@@ -266,8 +271,8 @@ fn find_build_setting(uri: &Url, key: &str) -> Option<(Url, String)> {
     let component = IMPORT_GRAPH.connected_component(uri);
     for u in &component {
         if let Some(fs) = FILE_STORE.get(u) {
-            if let Some(v) = fs.file_symbols.file_settings.get(key) {
-                if !has_entries || fs.file_symbols.is_entry {
+            if fs.file_symbols.is_entry {
+                if let Some(v) = fs.file_symbols.file_settings.get(key) {
                     return Some((u.clone(), v.clone()));
                 }
             }
@@ -315,11 +320,24 @@ fn write_output(
     }
 }
 
+/// Inline candidate info: a function with no parameters whose body is a
+/// single `return expr` statement.
+#[derive(Clone)]
+struct InlineCandidate {
+    /// The text of the return expression.
+    expr_text: String,
+    /// Whether the expression is compound (binary/unary) and needs wrapping
+    /// in parentheses when inlined into a sub-expression context.
+    is_compound: bool,
+}
+
 #[allow(dead_code)]
 struct FuncFragment {
     name: String,
     source: String,
     callees: HashSet<String>,
+    /// If this function is an inline candidate, stores the info.
+    inline_expr: Option<InlineCandidate>,
 }
 
 /// Collected fragments from all files in the import tree.
@@ -351,38 +369,14 @@ fn emit_expr(src: &str, expr: &Expr, for_as: bool) -> String {
     if for_as {
         return emit_expr_as(src, expr);
     }
-    let node = match expr {
-        Expr::Id(id) => &id.node,
-        Expr::Call(fc) => &fc.node,
-        Expr::FuncRef(id) => &id.node,
-        Expr::Binary { node, .. } => node,
-        Expr::Unary { node, .. } => node,
-        Expr::Parens { node, .. } => node,
-        Expr::Index { node, .. } => node,
-        Expr::Literal(node) => node,
-    };
-    flatten(src, node)
-}
-
-/// Get the CST node backing any [`Expr`].
-fn expr_cst_node<'a, 'tree>(expr: &'a Expr<'tree>) -> &'a tree_sitter::Node<'tree> {
-    match expr {
-        Expr::Id(id) => &id.node,
-        Expr::Call(fc) => &fc.node,
-        Expr::FuncRef(id) => &id.node,
-        Expr::Binary { node, .. } => node,
-        Expr::Unary { node, .. } => node,
-        Expr::Parens { node, .. } => node,
-        Expr::Index { node, .. } => node,
-        Expr::Literal(node) => node,
-    }
+    flatten(src, expr.cst_node())
 }
 
 /// Extract the operator text from a binary expression by looking at the
 /// source between the left and right operand CST spans.
 fn binary_op_text(src: &str, left: &Expr, right: &Expr) -> String {
-    let left_end = expr_cst_node(left).end_byte();
-    let right_start = expr_cst_node(right).start_byte();
+    let left_end = left.cst_node().end_byte();
+    let right_start = right.cst_node().start_byte();
     if left_end < right_start {
         src[left_end..right_start].trim().to_string()
     } else {
@@ -422,7 +416,7 @@ fn emit_expr_as(src: &str, expr: &Expr) -> String {
             format!("{} {} {}", left_str, op, right_str)
         }
         Expr::Unary { node, operand } => {
-            let op_end = expr_cst_node(operand).start_byte();
+            let op_end = operand.cst_node().start_byte();
             let op_text = src[node.start_byte()..op_end].trim();
             format!("{} {}", op_text, emit_expr_as(src, operand))
         }
@@ -768,6 +762,56 @@ pub fn hoist_jass_locals_text(source: &str) -> String {
     hoist_jass_locals(source)
 }
 
+/// Test-only: detect an inline candidate from source code.
+#[cfg(test)]
+pub fn detect_inline_candidate_text(src: &str) -> Option<(String, bool)> {
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_jass::language().into())
+        .ok()?;
+    let tree = parser.parse(src, None)?;
+    let mut ast = build_ast(tree.root_node());
+    let src_bytes = src.as_bytes().to_vec();
+    rewrite_imports(&mut ast, &src_bytes);
+
+    for item in &ast.items {
+        if let Statement::Function(f) = item {
+            if f.params.is_empty() {
+                if let Some(ic) = detect_inline_candidate(src, &f.body, false) {
+                    return Some((ic.expr_text, ic.is_compound));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Test-only wrapper for [`inline_call_in_source`].
+#[cfg(test)]
+pub fn inline_call_in_source_text(
+    source: &str,
+    func_name: &str,
+    expr_text: &str,
+    is_compound: bool,
+) -> String {
+    let candidate = InlineCandidate {
+        expr_text: expr_text.to_string(),
+        is_compound,
+    };
+    inline_call_in_source(source, func_name, &candidate)
+}
+
+/// Test-only wrapper for [`is_top_level_call`].
+#[cfg(test)]
+pub fn is_top_level_call_text(source: &str, func_name: &str) -> bool {
+    let pattern = format!("{}()", func_name);
+    if let Some(pos) = source.find(&pattern) {
+        is_top_level_call(source, pos, pos + pattern.len())
+    } else {
+        false
+    }
+}
+
 /// Resolve `<path>` relative to `base_dir`. If `<path>` looks like a directory
 /// (ends with `/` or `\` or has no extension), append `default_file`.
 fn resolve_output_path(base_dir: &Path, target: &str, default_file: &str) -> PathBuf {
@@ -790,15 +834,11 @@ fn resolve_output_path(base_dir: &Path, target: &str, default_file: &str) -> Pat
 
 /// Collect the ordered list of file URIs to process for a build.
 ///
-/// The `trigger_uri` is the file that owns the `//set build-*` directive
-/// (which is always an `//entry` file when entries exist).
-///
-/// When entry points exist, the file order is the set of files
-/// transitively imported by `trigger_uri` (forward-only BFS).
-/// Files not reachable from it are excluded (tree-shaking).
-///
-/// When no entry points exist, the original behaviour is preserved:
-/// all dependencies of `trigger_uri` plus itself.
+/// The `trigger_uri` is the `//entry` file that owns the `//set build-*`
+/// directive.  The file order is the set of files transitively imported by
+/// `trigger_uri` (forward-only BFS), with the entry file itself appended
+/// last so its bare top-level statements end up in `main`.
+/// Files not reachable from the entry are excluded (tree-shaking).
 fn collect_file_order(trigger_uri: &Url) -> Vec<Url> {
     let mut deps = IMPORT_GRAPH.dependencies(trigger_uri);
     // Put the trigger file last (its bare statements go into main).
@@ -887,12 +927,20 @@ fn collect_fragments(_trigger_uri: &Url, file_order: &[Url], mode: BuildMode) ->
                             })
                             .unwrap_or_default();
 
+                        // Detect inline candidate: takes nothing + single `return expr`.
+                        let inline_expr = if f.params.is_empty() {
+                            detect_inline_candidate(&src, &f.body, for_as)
+                        } else {
+                            None
+                        };
+
                         functions.insert(
                             fname.clone(),
                             FuncFragment {
                                 name: fname,
                                 source: emit_function(&src, f, for_as),
                                 callees,
+                                inline_expr,
                             },
                         );
                     }
@@ -924,6 +972,188 @@ fn collect_fragments(_trigger_uri: &Url, file_order: &[Url], mode: BuildMode) ->
         globals_out,
         functions,
         bare_stmts,
+    }
+}
+
+// ─── Function inlining ──────────────────────────────────────────────────────
+
+/// Detect whether a function body is a single `return expr` and, if so,
+/// return the [`InlineCandidate`] with the expression text and compoundness.
+fn detect_inline_candidate(
+    src: &str,
+    body: &[Statement],
+    for_as: bool,
+) -> Option<InlineCandidate> {
+    // Body must contain exactly one statement: `return <expr>`.
+    if body.len() != 1 {
+        return None;
+    }
+    if let Statement::Return(r) = &body[0] {
+        let expr = r.value.as_ref()?;
+        let expr_text = emit_expr(src, expr, for_as);
+        let is_compound = matches!(expr, Expr::Binary { .. } | Expr::Unary { .. });
+        Some(InlineCandidate { expr_text, is_compound })
+    } else {
+        None
+    }
+}
+
+/// Count occurrences of `NAME()` with word-boundary check in `source`.
+fn count_call_occurrences(source: &str, func_name: &str) -> usize {
+    let pattern = format!("{}()", func_name);
+    let mut count = 0;
+    let mut search_from = 0;
+    while let Some(pos) = source[search_from..].find(&pattern) {
+        let abs_pos = search_from + pos;
+        let is_boundary = if abs_pos == 0 {
+            true
+        } else {
+            let b = source.as_bytes()[abs_pos - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+        if is_boundary {
+            count += 1;
+        }
+        search_from = abs_pos + pattern.len();
+    }
+    count
+}
+
+/// Check whether `NAME()` at the given position in `source` is a top-level
+/// expression (the sole expression in its syntactic slot) as opposed to part
+/// of a larger expression like `a + NAME()`.
+fn is_top_level_call(source: &str, call_start: usize, call_end: usize) -> bool {
+    let line_start = source[..call_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
+    let line_end = source[call_end..].find('\n').map(|p| call_end + p).unwrap_or(source.len());
+
+    let before = source[line_start..call_start].trim();
+    let after = source[call_end..line_end].trim();
+
+    // `call NAME()`
+    if before.ends_with("call") && after.is_empty() { return true; }
+    // `return NAME()`
+    if before.ends_with("return") && after.is_empty() { return true; }
+    // `exitwhen NAME()`
+    if before.ends_with("exitwhen") && after.is_empty() { return true; }
+    // `set VAR = NAME()` / `set VAR[IDX] = NAME()`
+    if before.starts_with("set ") && before.ends_with('=') && after.is_empty() { return true; }
+    // `if NAME() then` / `elseif NAME() then`
+    if before.ends_with("if") && after == "then" { return true; }
+
+    false
+}
+
+/// Replace `NAME()` calls in `source` with the inlined expression.
+///
+/// - Top-level calls (sole expression in a `call`/`return`/`set`/`if`/etc.)
+///   get the expression as-is.
+/// - Nested calls inside larger expressions get the expression wrapped in
+///   parentheses when it is compound (binary/unary).
+fn inline_call_in_source(source: &str, func_name: &str, candidate: &InlineCandidate) -> String {
+    let pattern = format!("{}()", func_name);
+    let mut result = String::with_capacity(source.len());
+    let mut search_from = 0;
+
+    while let Some(pos) = source[search_from..].find(&pattern) {
+        let abs_pos = search_from + pos;
+        let is_boundary = if abs_pos == 0 {
+            true
+        } else {
+            let b = source.as_bytes()[abs_pos - 1];
+            !b.is_ascii_alphanumeric() && b != b'_'
+        };
+
+        if !is_boundary {
+            result.push_str(&source[search_from..abs_pos + pattern.len()]);
+            search_from = abs_pos + pattern.len();
+            continue;
+        }
+
+        let call_end = abs_pos + pattern.len();
+        let top_level = is_top_level_call(source, abs_pos, call_end);
+
+        result.push_str(&source[search_from..abs_pos]);
+
+        if top_level || !candidate.is_compound {
+            result.push_str(&candidate.expr_text);
+        } else {
+            result.push('(');
+            result.push_str(&candidate.expr_text);
+            result.push(')');
+        }
+
+        search_from = call_end;
+    }
+
+    result.push_str(&source[search_from..]);
+    result
+}
+
+/// Inline functions that take nothing, have a single `return expr` body,
+/// and are called exactly once across the entire build output.
+///
+/// Inlined functions are removed from the function map so they are not
+/// emitted in the final output.
+fn apply_inlines(fragments: &mut Fragments) {
+    // Step 1: collect candidates.
+    let candidates: HashMap<String, InlineCandidate> = fragments
+        .functions
+        .iter()
+        .filter_map(|(name, frag)| {
+            frag.inline_expr.as_ref().map(|ic| (name.clone(), ic.clone()))
+        })
+        .collect();
+
+    if candidates.is_empty() {
+        return;
+    }
+
+    // Step 2: count call sites for each candidate across all sources.
+    let mut to_inline: Vec<String> = Vec::new();
+    for cand_name in candidates.keys() {
+        let mut count: usize = 0;
+        for (fname, frag) in &fragments.functions {
+            if fname == cand_name {
+                continue;
+            }
+            count += count_call_occurrences(&frag.source, cand_name);
+        }
+        for stmt in &fragments.bare_stmts {
+            count += count_call_occurrences(stmt, cand_name);
+        }
+        for g in &fragments.globals_out {
+            count += count_call_occurrences(g, cand_name);
+        }
+        if count == 1 {
+            to_inline.push(cand_name.clone());
+        }
+    }
+
+    if to_inline.is_empty() {
+        return;
+    }
+
+    // Step 3: perform replacements.
+    for cand_name in &to_inline {
+        let candidate = candidates[cand_name].clone();
+        for frag in fragments.functions.values_mut() {
+            if frag.name == *cand_name {
+                continue;
+            }
+            frag.source = inline_call_in_source(&frag.source, cand_name, &candidate);
+            frag.callees.remove(cand_name);
+        }
+        for stmt in fragments.bare_stmts.iter_mut() {
+            *stmt = inline_call_in_source(stmt, cand_name, &candidate);
+        }
+        for g in fragments.globals_out.iter_mut() {
+            *g = inline_call_in_source(g, cand_name, &candidate);
+        }
+    }
+
+    // Step 4: remove inlined functions.
+    for name in &to_inline {
+        fragments.functions.remove(name);
     }
 }
 

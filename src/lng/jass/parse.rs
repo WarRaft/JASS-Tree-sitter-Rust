@@ -78,11 +78,11 @@ pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> 
 /// Cyclic cascades are prevented by [`CascadeGuard`] (RAII set guard).
 ///
 /// Intended to be called from a **spawned task** (not the main message loop).
-pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub async fn parse_and_notify(uri: &Url, generation: Option<u64>) -> Result<(), Box<dyn Error + Send + Sync>> {
     let parse_fn: ParseFn = Box::new(|u| {
         Box::pin(async move { parse(&u).await })
     });
-    cascade_parse_and_notify(uri, &parse_fn, None).await
+    cascade_parse_and_notify(uri, &parse_fn, None, generation).await
 }
 
 /// Core parse logic (runs on the blocking thread pool).
@@ -255,6 +255,14 @@ fn _parse(
     // 8. Call-graph diagnostics: unused functions & cyclic calls.
     //    We need FILE_STORE populated for the current file, so write a
     //    preliminary snapshot first (it will be replaced below).
+    //
+    // IMPORTANT: capture the true old snapshot BEFORE inserting the preliminary.
+    // If cancellation fires at the final checkpoint we restore it so that
+    // FILE_STORE is never left with the empty preliminary (which would cause
+    // the SemanticTokens handler to return an empty token list).
+    let true_old_snapshot: Option<Arc<ParseSnapshot>> =
+        FILE_STORE.get(uri).map(|e| Arc::clone(e.value()));
+
     let preliminary = Arc::new(ParseSnapshot {
         folding: Vec::new(),
         symbols: Vec::new(),
@@ -313,35 +321,78 @@ fn _parse(
                         });
                     }
                 }
+                if func_diag.inlinable.contains(&group.name) {
+                    let per_decl_suppressed = cursor.file_symbols.functions
+                        .iter()
+                        .any(|f| f.name == group.name && f.ignore_tags.contains("inline"));
+                    let file_inline_suppressed = cursor.file_ignore_tags.contains("inline");
+                    if !file_inline_suppressed && !per_decl_suppressed {
+                        // Find inline metadata from file_symbols.
+                        let func_sym = cursor.file_symbols.functions
+                            .iter()
+                            .find(|f| f.name == group.name);
+                        let inline_expr = func_sym
+                            .and_then(|f| f.inline_return_text.clone())
+                            .unwrap_or_default();
+                        let inline_is_compound = func_sym
+                            .map(|f| f.inline_is_compound)
+                            .unwrap_or(false);
+
+                        // Find the full function range from the AST.
+                        let func_range = ast.items.iter().find_map(|item| {
+                            if let Statement::Function(f) = item {
+                                let fname = f.name.as_ref()
+                                    .map(|id| rope.slice_to_cow(
+                                        id.node.start_byte()..id.node.end_byte(),
+                                    ).to_string());
+                                if fname.as_deref() == Some(&group.name) {
+                                    Some(f.node.to_range(rope))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        });
+
+                        let data = serde_json::json!({
+                            "inline_name": group.name,
+                            "inline_expr": inline_expr,
+                            "inline_is_compound": inline_is_compound,
+                            "inline_func_range": func_range,
+                        });
+
+                        all_diagnostics.push(Diagnostic {
+                            range: decl_occ.range.clone(),
+                            message: crate::util::i18n::inlinable_function(&group.name),
+                            severity: Some(DiagnosticSeverity::Hint),
+                            tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                            source: Some("inline".into()),
+                            data: Some(data),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
         }
     }
 
     // 8b. Diagnostic: `//set build-*` in a non-entry file.
-    //     When entries exist somewhere in the component, build directives
-    //     must be in `//entry` files.
-    {
-        let has_entries_in_component = {
-            let mut comp = component.clone();
-            comp.insert(uri.clone());
-            comp.iter().any(|u| {
-                FILE_STORE.get(u).map_or(false, |s| s.file_symbols.is_entry)
-            })
-        };
-        if has_entries_in_component && !new_snapshot_is_entry {
-            for (key, _) in &cursor_file_settings {
-                if key == "build-jass" || key == "build-as" {
-                    // Find the SetDir node in the AST to get its range.
-                    for item in &ast.items {
-                        if let Statement::SetDir(sd) = item {
-                            if sd.key == *key {
-                                all_diagnostics.push(Diagnostic {
-                                    range: sd.node.to_range(rope),
-                                    message: crate::util::i18n::build_requires_entry(key),
-                                    severity: Some(DiagnosticSeverity::Error),
-                                    ..Default::default()
-                                });
-                            }
+    //     Build directives must always be in `//entry` files regardless of
+    //     whether any entry points exist in the component.
+    if !new_snapshot_is_entry {
+        for (key, _) in &cursor_file_settings {
+            if key == "build-jass" || key == "build-as" {
+                // Find the SetDir node in the AST to get its range.
+                for item in &ast.items {
+                    if let Statement::SetDir(sd) = item {
+                        if sd.key == *key {
+                            all_diagnostics.push(Diagnostic {
+                                range: sd.node.to_range(rope),
+                                message: crate::util::i18n::build_requires_entry(key),
+                                severity: Some(DiagnosticSeverity::Error),
+                                ..Default::default()
+                            });
                         }
                     }
                 }
@@ -350,7 +401,15 @@ fn _parse(
     }
 
     // ── FINAL cancellation check — don't store stale results ──
-    if cancel.is_cancelled() { return Ok(vec![]); }
+    if cancel.is_cancelled() {
+        // Restore the pre-preliminary snapshot so the SemanticTokens handler
+        // never reads an empty placeholder.
+        match true_old_snapshot {
+            Some(snap) => { FILE_STORE.insert(uri.clone(), snap); }
+            None => { FILE_STORE.remove(uri); }
+        }
+        return Ok(vec![]);
+    }
 
     // 9. Build snapshot and store atomically.
     let old_snapshot = FILE_STORE.get(uri).map(|e| Arc::clone(e.value()));

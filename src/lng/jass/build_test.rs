@@ -321,5 +321,205 @@ endfunction
             "JASS mode should NOT add parens, got: {result}"
         );
     }
+
+    // ─── Function inlining ───────────────────────────────────────────────────
+
+    #[test]
+    fn detect_inline_candidate_simple_return() {
+        let src = "\
+function A takes nothing returns boolean
+    return true
+endfunction
+";
+        let result = detect_inline_candidate_text(src);
+        assert!(result.is_some(), "should detect inline candidate");
+        let (expr, is_compound) = result.unwrap();
+        assert_eq!(expr, "true");
+        assert!(!is_compound, "literal should not be compound");
+    }
+
+    #[test]
+    fn detect_inline_candidate_binary_expr() {
+        let src = "\
+function A takes nothing returns boolean
+    return GetUnitUserData(udg_Target) == 74
+endfunction
+";
+        let result = detect_inline_candidate_text(src);
+        assert!(result.is_some(), "should detect inline candidate");
+        let (expr, is_compound) = result.unwrap();
+        assert_eq!(expr, "GetUnitUserData(udg_Target) == 74");
+        assert!(is_compound, "binary expression should be compound");
+    }
+
+    #[test]
+    fn detect_inline_candidate_variable_return() {
+        let src = "\
+function A takes nothing returns integer
+    return udg_X
+endfunction
+";
+        let result = detect_inline_candidate_text(src);
+        assert!(result.is_some());
+        let (expr, is_compound) = result.unwrap();
+        assert_eq!(expr, "udg_X");
+        assert!(!is_compound, "variable should not be compound");
+    }
+
+    #[test]
+    fn detect_inline_candidate_call_return() {
+        let src = "\
+function A takes nothing returns integer
+    return GetUnitState(u)
+endfunction
+";
+        let result = detect_inline_candidate_text(src);
+        assert!(result.is_some());
+        let (expr, is_compound) = result.unwrap();
+        assert_eq!(expr, "GetUnitState(u)");
+        assert!(!is_compound, "call should not be compound");
+    }
+
+    #[test]
+    fn detect_inline_candidate_not_takes_params() {
+        let src = "\
+function A takes integer x returns boolean
+    return x == 5
+endfunction
+";
+        // Should NOT be detected — function takes parameters.
+        let result = detect_inline_candidate_text(src);
+        assert!(result.is_none(), "function with params should not be candidate");
+    }
+
+    #[test]
+    fn detect_inline_candidate_not_multiple_stmts() {
+        let src = "\
+function A takes nothing returns boolean
+    local integer x = 5
+    return x == 5
+endfunction
+";
+        let result = detect_inline_candidate_text(src);
+        assert!(result.is_none(), "function with multiple statements should not be candidate");
+    }
+
+    #[test]
+    fn detect_inline_candidate_unary_compound() {
+        let src = "\
+function A takes nothing returns boolean
+    return not udg_Flag
+endfunction
+";
+        let result = detect_inline_candidate_text(src);
+        assert!(result.is_some());
+        let (expr, is_compound) = result.unwrap();
+        assert_eq!(expr, "not udg_Flag");
+        assert!(is_compound, "unary expression should be compound");
+    }
+
+    #[test]
+    fn inline_top_level_if_condition() {
+        let source = "if MyFunc() then";
+        assert!(is_top_level_call_text(source, "MyFunc"), "if COND then should be top-level");
+    }
+
+    #[test]
+    fn inline_top_level_return() {
+        let source = "    return MyFunc()";
+        assert!(is_top_level_call_text(source, "MyFunc"), "return EXPR should be top-level");
+    }
+
+    #[test]
+    fn inline_top_level_call_stmt() {
+        let source = "    call MyFunc()";
+        assert!(is_top_level_call_text(source, "MyFunc"), "call NAME() should be top-level");
+    }
+
+    #[test]
+    fn inline_top_level_set() {
+        let source = "    set x = MyFunc()";
+        assert!(is_top_level_call_text(source, "MyFunc"), "set VAR = NAME() should be top-level");
+    }
+
+    #[test]
+    fn inline_top_level_exitwhen() {
+        let source = "    exitwhen MyFunc()";
+        assert!(is_top_level_call_text(source, "MyFunc"), "exitwhen NAME() should be top-level");
+    }
+
+    #[test]
+    fn inline_nested_in_binary() {
+        let source = "    set x = a + MyFunc()";
+        assert!(!is_top_level_call_text(source, "MyFunc"), "a + NAME() should NOT be top-level");
+    }
+
+    #[test]
+    fn inline_nested_as_argument() {
+        let source = "    call Foo(MyFunc())";
+        assert!(!is_top_level_call_text(source, "MyFunc"), "Foo(NAME()) should NOT be top-level");
+    }
+
+    #[test]
+    fn inline_nested_in_comparison() {
+        let source = "    if MyFunc() == true then";
+        assert!(!is_top_level_call_text(source, "MyFunc"), "NAME() == true should NOT be top-level");
+    }
+
+    #[test]
+    fn inline_replace_top_level_no_parens() {
+        // Compound expression inlined at top-level — no parens.
+        let source = "    return MyFunc()\n";
+        let result = inline_call_in_source_text(source, "MyFunc", "a + b", true);
+        assert_eq!(result, "    return a + b\n");
+    }
+
+    #[test]
+    fn inline_replace_nested_compound_gets_parens() {
+        // Compound expression inlined in a larger expression — gets parens.
+        let source = "    set x = y + MyFunc()\n";
+        let result = inline_call_in_source_text(source, "MyFunc", "a == b", true);
+        assert_eq!(result, "    set x = y + (a == b)\n");
+    }
+
+    #[test]
+    fn inline_replace_nested_simple_no_parens() {
+        // Simple expression inlined in a larger expression — no parens needed.
+        let source = "    set x = y + MyFunc()\n";
+        let result = inline_call_in_source_text(source, "MyFunc", "42", false);
+        assert_eq!(result, "    set x = y + 42\n");
+    }
+
+    #[test]
+    fn inline_replace_if_condition_compound() {
+        // Compound expression inlined as sole if-condition — no parens (top-level).
+        let source = "    if MyFunc() then\n";
+        let result = inline_call_in_source_text(source, "MyFunc", "GetUnitUserData(udg_Target) == 74", true);
+        assert_eq!(result, "    if GetUnitUserData(udg_Target) == 74 then\n");
+    }
+
+    #[test]
+    fn inline_replace_if_condition_nested() {
+        // Compound expression inlined inside `and` — gets parens.
+        let source = "    if a and MyFunc() then\n";
+        let result = inline_call_in_source_text(source, "MyFunc", "GetUnitUserData(udg_Target) == 74", true);
+        assert_eq!(result, "    if a and (GetUnitUserData(udg_Target) == 74) then\n");
+    }
+
+    #[test]
+    fn inline_word_boundary_no_false_match() {
+        // Longer name containing `MyFunc` should NOT match.
+        let source = "    call MyFuncExtra()\n";
+        let result = inline_call_in_source_text(source, "MyFunc", "true", false);
+        assert_eq!(result, "    call MyFuncExtra()\n", "should not replace partial match");
+    }
+
+    #[test]
+    fn inline_replace_call_stmt_with_call_expr() {
+        // `call NAME()` where the return expression is itself a call.
+        let source = "    call MyFunc()\n";
+        let result = inline_call_in_source_text(source, "MyFunc", "DoSomething(x)", false);
+        assert_eq!(result, "    call DoSomething(x)\n");
+    }
 }
 

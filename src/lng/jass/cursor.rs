@@ -697,6 +697,12 @@ impl Cursor {
         }
     }
 
+    /// Record a `function NAME` reference (code-type argument).
+    /// These are NOT call sites and cannot be inlined.
+    fn record_func_ref(&mut self, name: &str) {
+        self.file_symbols.func_refs.insert(name.to_string());
+    }
+
     // ─── ref helpers (highlight / definition / references / rename) ────
 
     /// Declare a **variable** (global, local, param, constant).
@@ -1426,11 +1432,40 @@ impl Cursor {
                     self.check_handle_leaks(&f.body, &func_vars, &f.node);
                 }
 
+                // Redundant if-return simplification check.
+                {
+                    let body = f.body.clone();
+                    self.check_redundant_if_return(&body);
+                }
+
                 // hl: pop function scope
                 self.hl_pop_scope();
 
                 // Finalize callee collection.
                 let callees = self.current_callees.take().unwrap_or_default();
+
+                // Detect inline candidate: takes nothing + single `return expr`.
+                let is_single_return = f.params.is_empty()
+                    && f.body.len() == 1
+                    && matches!(&f.body[0], Statement::Return(r) if r.value.is_some());
+
+                let (inline_return_text, inline_is_compound) = if is_single_return {
+                    if let Statement::Return(r) = &f.body[0] {
+                        if let Some(ref expr) = r.value {
+                            let node = expr.cst_node();
+                            let text = self.rope.slice_to_cow(node.start_byte()..node.end_byte());
+                            let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                            let compound = matches!(expr, Expr::Binary { .. } | Expr::Unary { .. });
+                            (Some(flat), compound)
+                        } else {
+                            (None, false)
+                        }
+                    } else {
+                        (None, false)
+                    }
+                } else {
+                    (None, false)
+                };
 
                 self.file_symbols.functions.push(FunctionSym {
                     name: func_name.clone(),
@@ -1441,6 +1476,9 @@ impl Cursor {
                     callees,
                     doc_comment: ann.doc_comment,
                     ignore_tags: ann.ignore_tags,
+                    is_single_return,
+                    inline_return_text,
+                    inline_is_compound,
                 });
 
                 self.scopes.push(Scope {
@@ -1475,6 +1513,7 @@ impl Cursor {
                     for d in &v.decls {
                         self.register_id(&d.name);
                         let expr_type = if let Some(expr) = &d.value {
+                            self.check_expr_hints(expr);
                             self.visit_expr(expr)
                         } else {
                             None
@@ -1571,6 +1610,7 @@ impl Cursor {
                     self.hl_reference_type(&tname, &tid.node, DocumentHighlightKind::Read);
                 }
                 let expr_type = if let Some(expr) = &l.value {
+                    self.check_expr_hints(expr);
                     self.visit_expr(expr)
                 } else {
                     None
@@ -1632,6 +1672,7 @@ impl Cursor {
                 for d in &v.decls {
                     self.register_id(&d.name);
                     let expr_type = if let Some(expr) = &d.value {
+                        self.check_expr_hints(expr);
                         self.visit_expr(expr)
                     } else {
                         None
@@ -1715,9 +1756,11 @@ impl Cursor {
             Statement::Set(s) => {
                 self.register_id(&s.variable);
                 if let Some(expr) = &s.index {
+                    self.check_expr_hints(expr);
                     self.visit_expr(expr);
                 }
                 let value_type = if let Some(expr) = &s.value {
+                    self.check_expr_hints(expr);
                     self.visit_expr(expr)
                 } else {
                     None
@@ -1756,6 +1799,7 @@ impl Cursor {
                         self.hl_reference_func(&fname, &name_id.node, DocumentHighlightKind::Read);
                     }
                     for arg in &fc.args {
+                        self.check_expr_hints(arg);
                         self.visit_expr(arg);
                     }
                 }
@@ -1765,11 +1809,13 @@ impl Cursor {
             Statement::If(i) => {
                 self.push_fold_region(&i.node);
                 if let Some(cond) = &i.condition {
+                    self.check_expr_hints(cond);
                     self.visit_expr(cond);
                 }
                 let _body = self.visit_stmts(&i.body, vars);
                 for branch in &i.branches {
                     if let Some(cond) = &branch.condition {
+                        self.check_expr_hints(cond);
                         self.visit_expr(cond);
                     }
                     let _body = self.visit_stmts(&branch.body, vars);
@@ -1785,12 +1831,14 @@ impl Cursor {
 
             Statement::Return(r) => {
                 if let Some(expr) = &r.value {
+                    self.check_expr_hints(expr);
                     self.visit_expr(expr);
                 }
                 None
             }
             Statement::Exitwhen(e) => {
                 if let Some(expr) = &e.condition {
+                    self.check_expr_hints(expr);
                     self.visit_expr(expr);
                 }
                 None
@@ -2078,6 +2126,7 @@ impl Cursor {
                     ret_type = self.lookup_func_return_type(&fname);
                 }
                 for arg in &fc.args {
+                    self.check_expr_hints(arg);
                     self.visit_expr(arg);
                 }
                 if let Some(ref t) = ret_type {
@@ -2089,6 +2138,7 @@ impl Cursor {
                 self.id_roles.insert(id.node.start_byte(), id.role);
                 let fname = self.node_text(&id.node);
                 self.record_callee(&fname);
+                self.record_func_ref(&fname);
                 self.hl_reference_func(&fname, &id.node, DocumentHighlightKind::Read);
                 let ty = "code".to_string();
                 self.emit_type_hint(&id.node, &ty, None);
@@ -2333,6 +2383,270 @@ impl Cursor {
                 if !cursor.goto_parent() {
                     return;
                 }
+            }
+        }
+    }
+
+    // ─── Redundant parentheses detection ─────────────────────────────────
+
+    /// If `expr` is wrapped in redundant `(…)` — including multiple nested
+    /// layers — emit one `Hint` diagnostic **per layer**.
+    ///
+    /// Each diagnostic stores `parens_open` / `parens_close` as the 1-char
+    /// ranges of the `(` and `)` of that specific layer.  Deleting those
+    /// single characters never produces overlapping edits, even for deeply
+    /// nested parens like `( (expr) )`.
+    fn check_redundant_parens(&mut self, expr: &Expr) {
+        let mut current = expr;
+        loop {
+            let (node, inner) = match current {
+                Expr::Parens { node, inner } => (node, inner.as_ref()),
+                _ => break,
+            };
+            let sb = node.start_byte();
+            let eb = node.end_byte();
+            let full_range  = Range::from_byte_offsets(&self.rope, sb, eb);
+            let open_range  = Range::from_byte_offsets(&self.rope, sb, sb + 1);
+            let close_range = Range::from_byte_offsets(&self.rope, eb.saturating_sub(1), eb);
+            self.diagnostics.push(Diagnostic {
+                range: full_range,
+                message: crate::util::i18n::redundant_parens().to_string(),
+                severity: Some(DiagnosticSeverity::Hint),
+                source: Some("parens".into()),
+                data: Some(serde_json::json!({
+                    "parens_open":  open_range,
+                    "parens_close": close_range,
+                })),
+                ..Default::default()
+            });
+            current = inner;
+        }
+    }
+
+    /// Detect `expr == true`, `expr == false`, `expr != true`, `expr != false`
+    /// and emit a `Warning` diagnostic with the simplified replacement.
+    ///
+    /// In JASS there is no implicit boolean coercion, so comparing a boolean
+    /// expression to a boolean literal is always redundant:
+    ///   `a == true`  →  `a`
+    ///   `a == false` →  `not(a)`
+    ///   `a != true`  →  `not(a)`
+    ///   `a != false` →  `a`
+    fn check_bool_cmp(&mut self, expr: &Expr) {
+        // Peel transparent parens — the parens diagnostic handles those.
+        let mut current = expr;
+        while let Expr::Parens { inner, .. } = current {
+            current = inner;
+        }
+        let (node, left, right) = match current {
+            Expr::Binary { node, left, right } => (node, left.as_ref(), right.as_ref()),
+            _ => return,
+        };
+        let op = match Self::binary_op_kind(node) {
+            Some(k @ (Kind::EqEq | Kind::Neq)) => k,
+            _ => return,
+        };
+        // Find which side is the boolean literal.
+        let (other, bool_val) = if let Some(b) = self.as_bool_literal(right) {
+            (left, b)
+        } else if let Some(b) = self.as_bool_literal(left) {
+            (right, b)
+        } else {
+            return;
+        };
+        // == true / != false → keep expr; == false / != true → negate
+        let negate = (op == Kind::EqEq) != bool_val;
+        let new_text = if negate {
+            self.negate_cond_text(other)
+        } else {
+            self.expr_text(other)
+        };
+        let cst = Self::expr_node(current);
+        let range = Range::from_byte_offsets(&self.rope, cst.start_byte(), cst.end_byte());
+        self.diagnostics.push(Diagnostic {
+            range,
+            message: crate::util::i18n::redundant_bool_cmp().to_string(),
+            severity: Some(DiagnosticSeverity::Warning),
+            source: Some("bool_cmp".into()),
+            data: Some(serde_json::json!({ "bool_cmp_new_text": new_text })),
+            ..Default::default()
+        });
+    }
+
+    /// Run all expression-level hint/warning checks on `expr`.
+    ///
+    /// Call this instead of bare [`check_redundant_parens`] so that every new
+    /// expression-level check is automatically applied everywhere.
+    #[inline]
+    fn check_expr_hints(&mut self, expr: &Expr) {
+        self.check_redundant_parens(expr);
+        self.check_bool_cmp(expr);
+    }
+
+    // ─── Simplify if-return detection ────────────────────────────────
+
+    /// Return the CST node backing any [`Expr`].
+    fn expr_node<'a, 'x>(expr: &'a Expr<'x>) -> &'a Node<'x> {
+        match expr {
+            Expr::Id(id) => &id.node,
+            Expr::Call(fc) => &fc.node,
+            Expr::FuncRef(id) => &id.node,
+            Expr::Binary { node, .. } => node,
+            Expr::Unary { node, .. } => node,
+            Expr::Parens { node, .. } => node,
+            Expr::Index { node, .. } => node,
+            Expr::Literal(node) => node,
+        }
+    }
+
+    /// Extract the text of any expression.
+    fn expr_text(&self, expr: &Expr) -> String {
+        self.node_text(Self::expr_node(expr))
+    }
+
+    /// If `expr` is a boolean literal (`true` / `false`), return its value.
+    fn as_bool_literal(&self, expr: &Expr) -> Option<bool> {
+        if let Expr::Id(id) = expr {
+            match self.node_text(&id.node).as_str() {
+                "true" => return Some(true),
+                "false" => return Some(false),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Compute the negation of a JASS condition expression as source text.
+    ///
+    /// * `if(not(inner))…` → `inner` text  (double-not elimination)
+    /// * `if(cond)…`       → `not(cond)` text
+    fn negate_cond_text(&self, cond: &Expr) -> String {
+        match cond {
+            // Unary `not expr`: strip the `not` (double-negation elimination).
+            Expr::Unary { node, operand } => {
+                let is_not = node
+                    .child(0)
+                    .and_then(|c| Kind::try_from(c.grammar_id()).ok())
+                    .map_or(false, |k| k == Kind::Not);
+                if is_not {
+                    self.expr_text(operand)
+                } else {
+                    format!("not {}", self.node_text(node))
+                }
+            }
+            // Parenthesised expression: `not (expr)` — keep the parens.
+            Expr::Parens { .. } => format!("not {}", self.expr_text(cond)),
+            // Everything else: `not expr` with a space.
+            other => format!("not {}", self.expr_text(other)),
+        }
+    }
+
+    /// Try to detect the pattern inside a single statement list:
+    ///
+    /// ```jass
+    /// if (cond) then
+    ///     return BOOL
+    /// endif
+    /// return (not BOOL)
+    /// ```
+    ///
+    /// and emit a `Hint` diagnostic with `source = "simplify"` carrying the
+    /// replacement text in `data.simplify_new_text`.
+    fn check_if_return_pattern(
+        &mut self,
+        if_stmt: &IfStmt,
+        next_ret: &ReturnStmt,
+    ) {
+        // Must be a plain `if … then … endif` with no elseif/else.
+        if !if_stmt.branches.is_empty() || if_stmt.body.len() != 1 {
+            return;
+        }
+        let body_ret = match &if_stmt.body[0] {
+            Statement::Return(r) => r,
+            _ => return,
+        };
+        let body_val = match &body_ret.value {
+            Some(v) => v,
+            None => return,
+        };
+        let next_val = match &next_ret.value {
+            Some(v) => v,
+            None => return,
+        };
+        let body_b = match self.as_bool_literal(body_val) {
+            Some(b) => b,
+            None => return,
+        };
+        let next_b = match self.as_bool_literal(next_val) {
+            Some(b) => b,
+            None => return,
+        };
+        // The two `return` values must be opposite booleans.
+        if body_b == next_b {
+            return;
+        }
+        let cond = match &if_stmt.condition {
+            Some(c) => c,
+            None => return,
+        };
+
+        // Build the replacement text: `return <expr>`.
+        let new_text = if body_b {
+            // if(cond) then return true endif; return false → return cond
+            format!("return {}", self.expr_text(cond))
+        } else {
+            // if(cond) then return false endif; return true → return not(cond)
+            // with double-not elimination when cond is already `not(…)`.
+            format!("return {}", self.negate_cond_text(cond))
+        };
+
+        let start_byte = if_stmt.node.start_byte();
+        let end_byte = next_ret.node.end_byte();
+        let range = Range::from_byte_offsets(&self.rope, start_byte, end_byte);
+
+        self.diagnostics.push(Diagnostic {
+            range,
+            message: crate::util::i18n::simplify_if_return().to_string(),
+            severity: Some(DiagnosticSeverity::Hint),
+            source: Some("simplify".into()),
+            data: Some(serde_json::json!({
+                "simplify_new_text": new_text,
+            })),
+            ..Default::default()
+        });
+    }
+
+    /// Walk a statement list (and its nested `if`/`loop` bodies) looking for
+    /// redundant if-return patterns.
+    fn check_redundant_if_return(&mut self, stmts: &[Statement]) {
+        let n = stmts.len();
+        for i in 0..n {
+            // Check the pair (stmts[i], stmts[i+1]).
+            if i + 1 < n {
+                if let Statement::If(if_stmt) = &stmts[i] {
+                    if let Statement::Return(next_ret) = &stmts[i + 1] {
+                        // Clone the data we need because check_if_return_pattern
+                        // takes `&mut self` and we have borrows on `stmts`.
+                        let if_stmt = if_stmt.clone();
+                        let next_ret = next_ret.clone();
+                        self.check_if_return_pattern(&if_stmt, &next_ret);
+                    }
+                }
+            }
+            // Recurse into nested bodies.
+            match &stmts[i] {
+                Statement::If(if_stmt) => {
+                    let if_stmt = if_stmt.clone();
+                    self.check_redundant_if_return(&if_stmt.body.clone());
+                    for branch in &if_stmt.branches {
+                        self.check_redundant_if_return(&branch.body.clone());
+                    }
+                }
+                Statement::Loop(loop_stmt) => {
+                    let body = loop_stmt.body.clone();
+                    self.check_redundant_if_return(&body);
+                }
+                _ => {}
             }
         }
     }

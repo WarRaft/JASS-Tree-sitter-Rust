@@ -271,6 +271,51 @@ pub fn cyclic_call_chain(name: &str) -> String {
     }
 }
 
+pub fn inlinable_function(name: &str) -> String {
+    match locale() {
+        Locale::En => format!(
+            "Function `{}` can be inlined — single return, called once",
+            name
+        ),
+        Locale::Ru => format!(
+            "Функция `{}` может быть заинлайнена — единственный return, единственный вызов",
+            name
+        ),
+        Locale::Uk => format!(
+            "Функція `{}` може бути заінлайнена — єдиний return, єдиний виклик",
+            name
+        ),
+        Locale::Zh => format!(
+            "函数 `{}` 可以内联 — 单一返回，仅调用一次",
+            name
+        ),
+        Locale::Tc => format!(
+            "函式 `{}` 可以內聯 — 單一返回，僅呼叫一次",
+            name
+        ),
+    }
+}
+
+pub fn inline_function_action() -> &'static str {
+    pick(
+        "Inline function",
+        "Заинлайнить функцию",
+        "Заінлайнити функцію",
+        "内联函数",
+        "內聯函式",
+    )
+}
+
+pub fn inline_all_functions_action() -> &'static str {
+    pick(
+        "Inline all single-call functions in file",
+        "Заинлайнить все функции с единственным вызовом в файле",
+        "Заінлайнити всі функції з єдиним викликом у файлі",
+        "内联文件中所有单次调用函数",
+        "內聯檔案中所有單次呼叫函式",
+    )
+}
+
 // ─── Import directive diagnostics ───────────────────────────────────────────
 
 pub fn missing_import_path() -> &'static str {
@@ -862,6 +907,102 @@ pub fn convert_all_to_single_quoted() -> &'static str {
         "Перетворити всі рядки у файлі на \"…\"",
         "将文件中所有字符串转换为 \"…\"",
         "將檔案中所有字串轉換為 \"…\"",
+    )
+}
+
+// ─── Simplify if-return ──────────────────────────────────────────────────────
+
+pub fn simplify_if_return() -> &'static str {
+    pick(
+        "Simplify: replace if-return with a single return",
+        "Упрощение: заменить if-return одним return",
+        "Спрощення: замінити if-return одним return",
+        "简化：将 if-return 替换为单个 return",
+        "簡化：將 if-return 替換為單個 return",
+    )
+}
+
+pub fn simplify_if_return_action() -> &'static str {
+    pick(
+        "Simplify to single return",
+        "Упростить до одного return",
+        "Спростити до одного return",
+        "简化为单个 return",
+        "簡化為單個 return",
+    )
+}
+
+pub fn simplify_all_if_return_action() -> &'static str {
+    pick(
+        "Simplify all if-returns in file",
+        "Упростить все if-return в файле",
+        "Спростити всі if-return у файлі",
+        "简化文件中所有 if-return",
+        "簡化檔案中所有 if-return",
+    )
+}
+
+// ─── Redundant parentheses ───────────────────────────────────────────────────
+
+pub fn redundant_parens() -> &'static str {
+    pick(
+        "Redundant parentheses",
+        "Лишние скобки",
+        "Зайві дужки",
+        "多余的括号",
+        "多餘的括號",
+    )
+}
+
+pub fn remove_redundant_parens() -> &'static str {
+    pick(
+        "Remove redundant parentheses",
+        "Убрать лишние скобки",
+        "Прибрати зайві дужки",
+        "删除多余括号",
+        "刪除多餘括號",
+    )
+}
+
+pub fn remove_all_redundant_parens() -> &'static str {
+    pick(
+        "Remove all redundant parentheses in file",
+        "Убрать все лишние скобки в файле",
+        "Прибрати всі зайві дужки у файлі",
+        "删除文件中所有多余括号",
+        "刪除檔案中所有多餘括號",
+    )
+}
+
+// ─── Redundant boolean comparison ────────────────────────────────────────────
+
+pub fn redundant_bool_cmp() -> &'static str {
+    pick(
+        "Redundant boolean comparison",
+        "Лишнее сравнение с булевым значением",
+        "Зайве порівняння з булевим значенням",
+        "多余的布尔比较",
+        "多餘的布林比較",
+    )
+}
+
+pub fn simplify_bool_cmp() -> &'static str {
+    pick(
+        "Simplify boolean comparison",
+        "Упростить сравнение с булевым значением",
+        "Спростити порівняння з булевим значенням",
+        "简化布尔比较",
+        "簡化布林比較",
+    )
+}
+
+pub fn simplify_all_bool_cmp() -> &'static str {
+    pick(
+        "Simplify all boolean comparisons in file",
+        "Упростить все сравнения с булевым значением в файле",
+        "Спростити всі порівняння з булевим значенням у файлі",
+        "简化文件中所有布尔比较",
+        "簡化檔案中所有布林比較",
     )
 }
 

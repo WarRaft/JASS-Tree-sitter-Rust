@@ -18,5 +18,5 @@ pub fn init(uri: &Url, text: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
 pub async fn open(uri: &Url, text: impl AsRef<[u8]>) -> Result<(), Box<dyn Error + Send + Sync>> {
     let text = std::str::from_utf8(text.as_ref())?;
     init(uri, text)?;
-    parse_and_notify(uri).await
+    parse_and_notify(uri, None).await
 }
