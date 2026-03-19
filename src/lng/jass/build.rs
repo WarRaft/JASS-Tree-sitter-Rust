@@ -55,11 +55,15 @@ pub struct BuildResult {
 
 /// Execute the JASS build for the file at `uri`.
 ///
-/// Looks up `build-jass` across the entire import tree, resolves the output
-/// path relative to the file that contains the directive, collects all
-/// sources from the import tree, and emits a merged file.
+/// When `//entry` files exist, the build starts from each entry file that
+/// has a `//set build-jass` directive.  Files not reachable from an entry
+/// point are excluded (tree-shaking).  All connected entry files with
+/// `build-jass` are built.
+///
+/// When no `//entry` files exist, falls back to the legacy behaviour:
+/// scan the connected component for `build-jass`.
 pub fn build_jass(uri: &Url) -> BuildResult {
-    // 1. Find build target across the whole tree.
+    // 1. Find build target — must be in an //entry file when entries exist.
     let (trigger_uri, target) = match find_build_setting(uri, "build-jass") {
         Some(pair) => pair,
         None => return err(crate::util::i18n::build_no_setting_jass()),
@@ -76,7 +80,7 @@ pub fn build_jass(uri: &Url) -> BuildResult {
 
     let out_path = resolve_output_path(&base_dir, &target, "war3map.j");
 
-    // 3. Collect ordered file list from import tree.
+    // 3. Collect ordered file list starting from the entry/trigger.
     let file_order = collect_file_order(&trigger_uri);
 
     // 4. Parse each file and collect fragments.
@@ -243,20 +247,29 @@ pub fn build_as(uri: &Url) -> BuildResult {
 
 /// Search for a build setting `key` across all files in the connected component
 /// of the import tree. Returns `(uri_of_file_with_setting, setting_value)`.
-/// The current file is checked first, then the rest of the tree.
+///
+/// When `//entry` files exist, only entry files are searched — build
+/// directives in non-entry files are ignored (and diagnosed separately).
+/// When no entries exist, falls back to searching the whole component.
 fn find_build_setting(uri: &Url, key: &str) -> Option<(Url, String)> {
+    let has_entries = IMPORT_GRAPH.has_entry_points();
+
     // Check the current file first.
     if let Some(fs) = FILE_STORE.get(uri) {
         if let Some(v) = fs.file_symbols.file_settings.get(key) {
-            return Some((uri.clone(), v.clone()));
+            if !has_entries || fs.file_symbols.is_entry {
+                return Some((uri.clone(), v.clone()));
+            }
         }
     }
-    // Search the entire connected component.
+    // Search the connected component.
     let component = IMPORT_GRAPH.connected_component(uri);
     for u in &component {
         if let Some(fs) = FILE_STORE.get(u) {
             if let Some(v) = fs.file_symbols.file_settings.get(key) {
-                return Some((u.clone(), v.clone()));
+                if !has_entries || fs.file_symbols.is_entry {
+                    return Some((u.clone(), v.clone()));
+                }
             }
         }
     }
@@ -775,12 +788,21 @@ fn resolve_output_path(base_dir: &Path, target: &str, default_file: &str) -> Pat
     }
 }
 
-/// Collect the ordered list of file URIs to process.
-/// Order: dependencies first (topological via import graph), then the trigger file.
-fn collect_file_order(uri: &Url) -> Vec<Url> {
-    let mut deps = IMPORT_GRAPH.dependencies(uri);
+/// Collect the ordered list of file URIs to process for a build.
+///
+/// The `trigger_uri` is the file that owns the `//set build-*` directive
+/// (which is always an `//entry` file when entries exist).
+///
+/// When entry points exist, the file order is the set of files
+/// transitively imported by `trigger_uri` (forward-only BFS).
+/// Files not reachable from it are excluded (tree-shaking).
+///
+/// When no entry points exist, the original behaviour is preserved:
+/// all dependencies of `trigger_uri` plus itself.
+fn collect_file_order(trigger_uri: &Url) -> Vec<Url> {
+    let mut deps = IMPORT_GRAPH.dependencies(trigger_uri);
     // Put the trigger file last (its bare statements go into main).
-    deps.push(uri.clone());
+    deps.push(trigger_uri.clone());
     // Deduplicate while preserving order.
     let mut seen = HashSet::new();
     deps.retain(|u| seen.insert(u.clone()));

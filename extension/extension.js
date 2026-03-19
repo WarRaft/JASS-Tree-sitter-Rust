@@ -286,6 +286,29 @@ module.exports = {
                 }
             }),
 
+            // Restart LSP server
+            commands.registerCommand('jass.restartServer', async () => {
+                if (!client) {
+                    window.showWarningMessage('LSP client is not running.')
+                    return
+                }
+                await window.withProgress(
+                    {
+                        location: ProgressLocation.Notification,
+                        title: 'Restarting JASS LSP server…',
+                        cancellable: false
+                    },
+                    async () => {
+                        try {
+                            await client.restart()
+                            window.showInformationMessage('✓ JASS LSP server restarted.')
+                        } catch (e) {
+                            window.showErrorMessage(`Failed to restart LSP server: ${e.message}`)
+                        }
+                    }
+                )
+            }),
+
             // UjAPI download
             commands.registerCommand('ujapi.download', async (uriStr, relPath) => {
                 if (!uriStr || !relPath) {

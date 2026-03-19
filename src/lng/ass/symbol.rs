@@ -147,6 +147,10 @@ pub struct AsFileSymbols {
     pub file_settings: HashMap<String, String>,
     /// File-level diagnostic suppression tags from `//ignore tag` directives.
     pub file_ignore_tags: HashSet<String>,
+    /// `true` when the file contains a `//entry` directive —
+    /// marks it as a build entry point for tree-shaking and import graph traversal.
+    #[serde(default)]
+    pub is_entry: bool,
 }
 
 #[allow(dead_code)]

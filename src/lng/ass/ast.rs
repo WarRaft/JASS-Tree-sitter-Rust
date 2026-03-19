@@ -381,7 +381,7 @@ pub enum Expr<'tree> {
 }
 
 // Re-export shared directive types for convenience.
-pub use crate::lng::directive::{IgnoreDirective, ImportDirective, SetDirective, UjapiDirective};
+pub use crate::lng::directive::{EntryDirective, IgnoreDirective, ImportDirective, SetDirective, UjapiDirective};
 
 /// Top-level statement (script level or inside namespace).
 #[derive(Debug, Clone)]
@@ -406,6 +406,8 @@ pub enum TopLevel<'tree> {
     IgnoreDir(IgnoreDirective<'tree>),
     /// `//import-ujapi! <path>` directive (shared with JASS).
     UjapiDir(UjapiDirective<'tree>),
+    /// `//entry` directive (shared with JASS) — marks the file as a build entry point.
+    EntryDir(EntryDirective<'tree>),
     Other(Node<'tree>),
 }
 
@@ -442,7 +444,7 @@ pub fn rewrite_directives(ast: &mut Ast, src: &[u8]) {
     while i < ast.items.len() {
         match &ast.items[i] {
             TopLevel::Comment(_) => {}
-            TopLevel::ImportDir(_) | TopLevel::SetDir(_) | TopLevel::IgnoreDir(_) | TopLevel::UjapiDir(_) => {
+            TopLevel::ImportDir(_) | TopLevel::SetDir(_) | TopLevel::IgnoreDir(_) | TopLevel::UjapiDir(_) | TopLevel::EntryDir(_) => {
                 i += 1;
                 continue;
             }
@@ -456,6 +458,7 @@ pub fn rewrite_directives(ast: &mut Ast, src: &[u8]) {
                     Directive::Set(sd) => TopLevel::SetDir(sd),
                     Directive::Ignore(ig) => TopLevel::IgnoreDir(ig),
                     Directive::Ujapi(ud) => TopLevel::UjapiDir(ud),
+                    Directive::Entry(ed) => TopLevel::EntryDir(ed),
                 };
                 i += 1;
                 continue;

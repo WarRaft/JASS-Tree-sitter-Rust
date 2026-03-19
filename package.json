@@ -301,6 +301,11 @@
         "command": "mpq.browse",
         "title": "%command.mpq.browse%",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "jass.restartServer",
+        "title": "%command.jass.restartServer%",
+        "icon": "$(debug-restart)"
       }
     ],
     "menus": {

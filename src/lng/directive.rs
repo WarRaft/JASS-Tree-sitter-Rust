@@ -176,6 +176,22 @@ pub struct UjapiDirective<'tree> {
     pub path: String,
 }
 
+/// `//entry` — marks the file as a build entry point.
+///
+/// Recognized only at the root level, before the first language statement
+/// (alongside `//import`, `//set`, and `//ignore`).  The `//entry` prefix
+/// must start at column 0 with no space after `//`.
+///
+/// Entry points define the roots of the dependency tree for builds and
+/// tree-shaking.  Only files transitively reachable from an entry point
+/// are included in the build output, and only functions reachable from
+/// entry-point files' `main`/`config` are considered live.
+#[derive(Debug, Clone)]
+pub struct EntryDirective<'tree> {
+    /// The original comment CST node.
+    pub node: Node<'tree>,
+}
+
 // ─── Known ignore tags ──────────────────────────────────────────────────────
 
 /// Descriptor for a known `//ignore` / `//@ignore` tag.
@@ -206,6 +222,7 @@ pub enum Directive<'tree> {
     Set(SetDirective<'tree>),
     Ignore(IgnoreDirective<'tree>),
     Ujapi(UjapiDirective<'tree>),
+    Entry(EntryDirective<'tree>),
 }
 
 /// Try to parse a comment CST node as a directive.
@@ -274,6 +291,12 @@ pub fn try_parse_directive<'tree>(node: &Node<'tree>, src: &[u8]) -> Option<Dire
                 tags,
             }));
         }
+    }
+    // ── //entry ──────────────────────────────────────────────────
+    if text == "//entry" || text.strip_prefix("//entry").map_or(false, |r| r.starts_with(' ') || r.starts_with('\t')) {
+        return Some(Directive::Entry(EntryDirective {
+            node: *node,
+        }));
     }
 
     None
@@ -582,6 +605,20 @@ pub fn visit_ujapi_semantic(
             }
         }
     }
+}
+
+/// Emit semantic tokens for an `//entry` directive.
+pub fn visit_entry_semantic(
+    ed: &EntryDirective,
+    semantic: &mut Hub,
+    rope: &Rope,
+) {
+    let node = &ed.node;
+    let prefix_len = "//entry".len();
+    let start_byte = node.start_byte();
+
+    // Macro token for the "//entry" prefix
+    semantic.add_range(start_byte, prefix_len, rope, TokenKind::Macro, 0u32);
 }
 
 /// Check whether a CST node's `start_byte` is in the set of directive nodes,

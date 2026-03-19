@@ -38,6 +38,11 @@ pub static IMPORT_GRAPH: Lazy<ImportGraph> = Lazy::new(ImportGraph::load);
 /// so it survives server restarts.
 pub struct ImportGraph {
     inner: RwLock<GraphInner>,
+    /// Cached entry-point mapping: file URI → set of entry URIs that can
+    /// reach it via outgoing edges.  Recomputed by [`recompute_entry_cache`]
+    /// after every import-graph mutation so that callers don't need to BFS
+    /// each time.
+    entry_cache: RwLock<HashMap<Url, HashSet<Url>>>,
 }
 
 struct GraphInner {
@@ -92,6 +97,7 @@ impl ImportGraph {
     pub(crate) fn new_empty() -> Self {
         Self {
             inner: RwLock::new(GraphInner::new()),
+            entry_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -127,6 +133,7 @@ impl ImportGraph {
 
         Self {
             inner: RwLock::new(inner),
+            entry_cache: RwLock::new(HashMap::new()),
         }
     }
 
@@ -505,14 +512,77 @@ impl ImportGraph {
             .collect()
     }
 
-    /// Return the **connected subgraph** reachable from `uri` walking both
-    /// outgoing (dependencies) and incoming (dependents) edges.
+    /// Recompute the per-file entry-point cache.
     ///
-    /// **Frozen-node pruning:** when a node is a frozen file (imported via
-    /// `//import!` by anyone), its *incoming* edges are **not** followed.
-    /// This prevents shared library files (e.g. `common.j`) from pulling
-    /// every unrelated project into the graph.  Outgoing edges of frozen
-    /// nodes are still traversed so the full dependency chain is visible.
+    /// BFS forward from every known entry-point URI (files with `//entry`
+    /// in `FILE_STORE`) and record which entries can reach each node.
+    /// Call this after every import-graph or `is_entry` mutation.
+    pub fn recompute_entry_cache(&self) {
+        let entry_uris = crate::util::file_store::entry_uris();
+        let inner = self.inner.read().unwrap();
+        let mut new_cache: HashMap<Url, HashSet<Url>> = HashMap::new();
+
+        for entry_uri in &entry_uris {
+            if let Some(&start) = inner.index.get(entry_uri) {
+                let mut bfs = Bfs::new(&inner.graph, start);
+                while let Some(n) = bfs.next(&inner.graph) {
+                    new_cache
+                        .entry(inner.graph[n].clone())
+                        .or_default()
+                        .insert(entry_uri.clone());
+                }
+            }
+        }
+
+        *self.entry_cache.write().unwrap() = new_cache;
+    }
+
+    /// Return the set of entry-point URIs that can reach `uri`.
+    ///
+    /// Reads from the cache populated by [`recompute_entry_cache`].
+    /// Returns an empty set when `uri` is not reachable from any entry.
+    pub fn cached_entry_points_for(&self, uri: &Url) -> HashSet<Url> {
+        self.entry_cache
+            .read()
+            .unwrap()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// `true` when the entry cache is non-empty (at least one `//entry`
+    /// file exists and has been processed).
+    pub fn has_entry_points(&self) -> bool {
+        !self.entry_cache.read().unwrap().is_empty()
+    }
+
+    /// Return the set of URIs **transitively reachable** from all entry-point
+    /// files (files with `//entry` directive), reading from the cached map.
+    ///
+    /// If no entry points exist, returns an empty set — the caller
+    /// should fall back to the full connected component.
+    pub fn reachable_from_entries(&self) -> HashSet<Url> {
+        self.entry_cache
+            .read()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// Return the **connected subgraph** reachable from `uri`.
+    ///
+    /// **Entry-point-aware traversal:** when the graph contains at least one
+    /// entry point (`//entry` directive), the subgraph is computed as the set
+    /// of files transitively reachable from the same entry point(s) as `uri`.
+    /// This shows exactly the "build scope" of the current file.
+    ///
+    /// **Fallback (no entry points):** frozen-node pruning is applied instead.
+    /// When a node is a frozen file (imported via `//import!` by anyone), its
+    /// *incoming* edges are **not** followed.  This prevents shared library
+    /// files (e.g. `common.j`) from pulling every unrelated project into the
+    /// graph.  Outgoing edges of frozen nodes are still traversed so the full
+    /// dependency chain is visible.
     ///
     /// The result is a pair `(nodes, edges)` where each node is a URL string
     /// and each edge is `(source_index, target_index)` into the nodes vec.
@@ -523,31 +593,84 @@ impl ImportGraph {
             return (vec![uri.to_string()], vec![]);
         };
 
-        // BFS in both directions to collect all reachable nodes.
-        // For frozen nodes we skip incoming edges so that unrelated projects
-        // that also import the same frozen library are not pulled in.
-        let mut visited: HashSet<NodeIndex> = HashSet::new();
-        let mut queue = std::collections::VecDeque::new();
-        queue.push_back(start);
-        visited.insert(start);
+        // Read the cached entry-point map.
+        let cache = self.entry_cache.read().unwrap();
+        let has_entries = !cache.is_empty();
 
-        while let Some(cur) = queue.pop_front() {
-            // Always follow outgoing edges (files that `cur` imports).
-            for next in inner.graph.neighbors_directed(cur, Direction::Outgoing) {
-                if visited.insert(next) {
-                    queue.push_back(next);
+        let visited: HashSet<NodeIndex>;
+
+        if has_entries {
+            // Find which entries own `uri`.
+            let my_entries: HashSet<Url> = cache
+                .get(uri)
+                .cloned()
+                .unwrap_or_default();
+
+            if my_entries.is_empty() {
+                // File not reachable from any entry — show only its own
+                // outgoing deps (and itself).
+                let mut vis: HashSet<NodeIndex> = HashSet::new();
+                let mut queue = std::collections::VecDeque::new();
+                queue.push_back(start);
+                vis.insert(start);
+                while let Some(cur) = queue.pop_front() {
+                    for next in inner.graph.neighbors_directed(cur, Direction::Outgoing) {
+                        if vis.insert(next) {
+                            queue.push_back(next);
+                        }
+                    }
                 }
+                visited = vis;
+            } else {
+                // Collect the union of all files reachable from those entries.
+                let mut vis: HashSet<NodeIndex> = HashSet::new();
+                let mut queue = std::collections::VecDeque::new();
+
+                for eu in &my_entries {
+                    if let Some(&idx) = inner.index.get(eu) {
+                        if vis.insert(idx) {
+                            queue.push_back(idx);
+                        }
+                    }
+                }
+
+                while let Some(cur) = queue.pop_front() {
+                    for next in inner.graph.neighbors_directed(cur, Direction::Outgoing) {
+                        if vis.insert(next) {
+                            queue.push_back(next);
+                        }
+                    }
+                }
+
+                vis.insert(start);
+                visited = vis;
             }
-            // Follow incoming edges only when `cur` is NOT a frozen file.
-            let cur_uri = &inner.graph[cur];
-            if !crate::util::file_store::is_uri_frozen(cur_uri) {
-                for next in inner.graph.neighbors_directed(cur, Direction::Incoming) {
-                    if visited.insert(next) {
+        } else {
+            // Fallback: frozen-node pruning (original behaviour).
+            let mut vis: HashSet<NodeIndex> = HashSet::new();
+            let mut queue = std::collections::VecDeque::new();
+            queue.push_back(start);
+            vis.insert(start);
+
+            while let Some(cur) = queue.pop_front() {
+                for next in inner.graph.neighbors_directed(cur, Direction::Outgoing) {
+                    if vis.insert(next) {
                         queue.push_back(next);
                     }
                 }
+                let cur_uri = &inner.graph[cur];
+                if !crate::util::file_store::is_uri_frozen(cur_uri) {
+                    for next in inner.graph.neighbors_directed(cur, Direction::Incoming) {
+                        if vis.insert(next) {
+                            queue.push_back(next);
+                        }
+                    }
+                }
             }
+            visited = vis;
         }
+
+        drop(cache); // release entry_cache lock before building result
 
         // Build nodes list; start node is always index 0.
         let mut node_list: Vec<NodeIndex> = Vec::with_capacity(visited.len());

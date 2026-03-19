@@ -14,6 +14,7 @@ use crate::util::parse::{
     ParseFn,
 };
 use crate::util::roper::uri_map::ROPE_MAP;
+use crate::util::roper::node::NodeExt;
 use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
 use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
@@ -238,6 +239,10 @@ fn _parse(
     cursor.file_symbols.file_ignore_tags = cursor.file_ignore_tags.clone();
     cursor.file_symbols.bare_callees = cursor.bare_callees.clone();
 
+    // Snapshot values needed for post-walk diagnostics (before cursor is consumed).
+    let new_snapshot_is_entry = cursor.file_symbols.is_entry;
+    let cursor_file_settings = cursor.file_symbols.file_settings.clone();
+
     // 6. Merge import diagnostics with cursor diagnostics
     let mut all_diagnostics = cursor.diagnostics;
     all_diagnostics.extend(import_diagnostics);
@@ -312,6 +317,38 @@ fn _parse(
         }
     }
 
+    // 8b. Diagnostic: `//set build-*` in a non-entry file.
+    //     When entries exist somewhere in the component, build directives
+    //     must be in `//entry` files.
+    {
+        let has_entries_in_component = {
+            let mut comp = component.clone();
+            comp.insert(uri.clone());
+            comp.iter().any(|u| {
+                FILE_STORE.get(u).map_or(false, |s| s.file_symbols.is_entry)
+            })
+        };
+        if has_entries_in_component && !new_snapshot_is_entry {
+            for (key, _) in &cursor_file_settings {
+                if key == "build-jass" || key == "build-as" {
+                    // Find the SetDir node in the AST to get its range.
+                    for item in &ast.items {
+                        if let Statement::SetDir(sd) = item {
+                            if sd.key == *key {
+                                all_diagnostics.push(Diagnostic {
+                                    range: sd.node.to_range(rope),
+                                    message: crate::util::i18n::build_requires_entry(key),
+                                    severity: Some(DiagnosticSeverity::Error),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── FINAL cancellation check — don't store stale results ──
     if cancel.is_cancelled() { return Ok(vec![]); }
 
@@ -347,6 +384,9 @@ fn _parse(
 
     // ── Atomic store — single source of truth ──
     FILE_STORE.insert(uri.clone(), new_snapshot.clone());
+
+    // ── Recompute entry-point cache after FILE_STORE update ──
+    IMPORT_GRAPH.recompute_entry_cache();
 
     // 10. Export diff — decide on cascade.
     let did_change = exports_changed(old_snapshot.as_deref(), &new_snapshot);

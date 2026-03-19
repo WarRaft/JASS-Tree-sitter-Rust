@@ -286,6 +286,7 @@ fn _parse(
     file_symbols.frozen_imports = as_file_symbols.frozen_imports.clone();
     file_symbols.file_settings = as_file_symbols.file_settings.clone();
     file_symbols.file_ignore_tags = as_file_symbols.file_ignore_tags.clone();
+    file_symbols.is_entry = as_file_symbols.is_entry;
 
     let old_snapshot = FILE_STORE.get(uri).map(|e| Arc::clone(e.value()));
 
@@ -305,6 +306,9 @@ fn _parse(
     });
 
     FILE_STORE.insert(uri.clone(), new_snapshot.clone());
+
+    // ── Recompute entry-point cache after FILE_STORE update ──
+    IMPORT_GRAPH.recompute_entry_cache();
 
     // 9. Update scope resolver with AS symbols
     let hash = file_cache::content_hash(rope);

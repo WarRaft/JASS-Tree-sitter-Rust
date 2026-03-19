@@ -245,6 +245,23 @@ pub fn is_uri_frozen(target_uri: &Url) -> bool {
     })
 }
 
+/// Check if `uri` is marked as an **entry point** (contains `//entry` directive).
+pub fn is_uri_entry(uri: &Url) -> bool {
+    FILE_STORE
+        .get(uri)
+        .map(|snap| snap.file_symbols.is_entry)
+        .unwrap_or(false)
+}
+
+/// Collect all URIs that are marked as entry points (`//entry` directive).
+pub fn entry_uris() -> Vec<Url> {
+    FILE_STORE
+        .iter()
+        .filter(|entry| entry.value().file_symbols.is_entry)
+        .map(|entry| entry.key().clone())
+        .collect()
+}
+
 
 /// Export diff: compare the old and new exported symbol names.
 ///
@@ -280,6 +297,11 @@ pub fn exports_changed(old: Option<&ParseSnapshot>, new: &ParseSnapshot) -> bool
     let old_types: HashSet<&str> = old.file_symbols.types.iter().map(|t| t.name.as_str()).collect();
     let new_types: HashSet<&str> = new.file_symbols.types.iter().map(|t| t.name.as_str()).collect();
     if old_types != new_types {
+        return true;
+    }
+
+    // Entry-point status changed — affects tree-shaking and unused detection.
+    if old.file_symbols.is_entry != new.file_symbols.is_entry {
         return true;
     }
 

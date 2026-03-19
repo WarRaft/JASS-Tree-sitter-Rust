@@ -19,8 +19,36 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
-/// JASS entry-point function names — never considered unused.
-const ENTRY_POINTS: &[&str] = &["main", "config"];
+/// JASS entry-point function names — never considered unused when
+/// declared in a file that is an entry point (has `//entry` directive)
+/// or when no `//entry` directives exist in the project (fallback).
+const ENTRY_POINT_NAMES: &[&str] = &["main", "config"];
+
+/// Check whether `func_name` in `func_uri` should be treated as an
+/// entry-point function (never marked unused).
+///
+/// If any file in the component has `//entry`, only `main`/`config`
+/// in entry-point files (or reachable from them) are exempt.
+/// If no `//entry` directives exist, the old behaviour is preserved:
+/// all `main`/`config` are exempt everywhere.
+fn is_entry_function(func_name: &str, func_uri: &Url, component: &HashSet<Url>) -> bool {
+    if !ENTRY_POINT_NAMES.contains(&func_name) {
+        return false;
+    }
+
+    // Check if any file in the component is an entry point.
+    let has_entries = component.iter().any(|u| {
+        crate::util::file_store::is_uri_entry(u)
+    });
+
+    if !has_entries {
+        // No //entry directives — fallback: all main/config are entry points.
+        return true;
+    }
+
+    // Only main/config in entry-point files are exempt.
+    crate::util::file_store::is_uri_entry(func_uri)
+}
 
 // ─── Diagnostic helpers ──────────────────────────────────────────────────────
 
@@ -158,7 +186,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
         if info.uri != *uri || info.is_native {
             continue;
         }
-        if ENTRY_POINTS.contains(&name.as_str()) {
+        if is_entry_function(name, &info.uri, &component) {
             continue;
         }
         if let Some(&ni) = name_to_idx.get(name) {
@@ -403,7 +431,7 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
             in_cycle: cycle_nodes.contains(&ni),
             is_unused: *in_degree.get(&ni).unwrap_or(&0) == 0
                 && !info.is_native
-                && !ENTRY_POINTS.contains(&name.as_str()),
+                && !is_entry_function(name, &info.uri, &component),
             is_native: info.is_native,
         });
     }

@@ -547,6 +547,16 @@ pub fn completion_suppress_decl() -> &'static str {
     )
 }
 
+pub fn completion_entry_point() -> &'static str {
+    pick(
+        "Mark file as a build entry point",
+        "Отметить файл как точку входа сборки",
+        "Позначити файл як точку входу збірки",
+        "标记文件为构建入口点",
+        "標記檔案為建構入口點",
+    )
+}
+
 pub fn completion_enable() -> &'static str {
     pick("Enable", "Включить", "Увімкнути", "启用", "啟用")
 }
@@ -661,6 +671,16 @@ pub fn ignore_tag_detail(tag: &str) -> &'static str {
 }
 
 // ─── Build messages ─────────────────────────────────────────────────────────
+
+pub fn build_requires_entry(key: &str) -> String {
+    match locale() {
+        Locale::En => format!("`//set {}` requires `//entry` directive in this file.", key),
+        Locale::Ru => format!("`//set {}` требует директиву `//entry` в этом файле.", key),
+        Locale::Uk => format!("`//set {}` потребує директиву `//entry` у цьому файлі.", key),
+        Locale::Zh => format!("`//set {}` 需要在此文件中使用 `//entry` 指令。", key),
+        Locale::Tc => format!("`//set {}` 需要在此檔案中使用 `//entry` 指令。", key),
+    }
+}
 
 pub fn build_no_setting_jass() -> &'static str {
     pick(

@@ -102,6 +102,10 @@ pub struct FileSymbols {
     /// Function names called from bare top-level statements (outside any
     /// function body).  These are effectively callees of the implicit `main`.
     pub bare_callees: HashSet<String>,
+    /// `true` when the file contains a `//entry` directive —
+    /// marks it as a build entry point for tree-shaking and import graph traversal.
+    #[serde(default)]
+    pub is_entry: bool,
 }
 
 #[allow(dead_code)]

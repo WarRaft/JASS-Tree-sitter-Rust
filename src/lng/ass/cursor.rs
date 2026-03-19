@@ -225,6 +225,7 @@ impl Cursor {
             TopLevel::SetDir(n) => n.node,
             TopLevel::IgnoreDir(n) => n.node,
             TopLevel::UjapiDir(n) => n.node,
+            TopLevel::EntryDir(n) => n.node,
             TopLevel::Other(n) => *n,
         }
     }
@@ -775,6 +776,19 @@ impl Cursor {
             return None;
         }
 
+        // EntryDir directives
+        if let TopLevel::EntryDir(ed) = item {
+            self.flush_comment_run();
+            self.directive_nodes.insert(ed.node.start_byte());
+            crate::lng::directive::visit_entry_semantic(
+                ed,
+                &mut self.semantic,
+                &self.rope,
+            );
+            self.file_symbols.is_entry = true;
+            return None;
+        }
+
         // Comment run tracking
         if let TopLevel::Comment(c) = item {
             let row = c.node.start_position().row;
@@ -1034,6 +1048,7 @@ impl Cursor {
             TopLevel::SetDir(_) => unreachable!("handled above"),
             TopLevel::IgnoreDir(_) => unreachable!("handled above"),
             TopLevel::UjapiDir(_) => unreachable!("handled above"),
+            TopLevel::EntryDir(_) => unreachable!("handled above"),
             TopLevel::Other(_) => None,
         }
     }

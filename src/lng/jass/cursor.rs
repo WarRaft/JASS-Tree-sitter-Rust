@@ -446,6 +446,7 @@ impl Cursor {
             Statement::SetDir(s) => s.node,
             Statement::IgnoreDir(ig) => ig.node,
             Statement::UjapiImport(u) => u.node,
+            Statement::EntryDir(e) => e.node,
             Statement::Error(e) => e.node,
         }
     }
@@ -1210,6 +1211,19 @@ impl Cursor {
             return None;
         }
 
+        // EntryDir directives — skip comment tracking, add dedicated semantic
+        if let Statement::EntryDir(ed) = stmt {
+            self.flush_comment_run();
+            self.directive_nodes.insert(ed.node.start_byte());
+            crate::lng::directive::visit_entry_semantic(
+                ed,
+                &mut self.semantic,
+                &self.rope,
+            );
+            self.file_symbols.is_entry = true;
+            return None;
+        }
+
         // Comment tracking
         if let Statement::Comment(c) = stmt {
             let row = c.node.start_position().row;
@@ -1786,6 +1800,7 @@ impl Cursor {
             Statement::SetDir(_) => unreachable!("handled above"),
             Statement::IgnoreDir(_) => unreachable!("handled above"),
             Statement::UjapiImport(_) => unreachable!("handled above"),
+            Statement::EntryDir(_) => unreachable!("handled above"),
             Statement::Error(_) => None, // diagnostics already collected from ast.errors
         }
     }
@@ -2473,6 +2488,25 @@ impl Cursor {
                         }
                     }
                 }
+                Statement::VarStmt(v) => {
+                    for d in &v.decls {
+                        if let Some(name_id) = &d.name {
+                            let name = self.node_text(&name_id.node);
+                            if handle_locals.iter().any(|hl| hl.name == name) {
+                                if let Some(ref val) = d.value {
+                                    if Self::is_null_expr(val, &self.rope) {
+                                        null_map.insert(name, NullState::Null);
+                                    } else {
+                                        null_map.insert(name, NullState::NonNull);
+                                    }
+                                } else {
+                                    // No initializer → starts as null.
+                                    null_map.insert(name, NullState::Null);
+                                }
+                            }
+                        }
+                    }
+                }
                 Statement::Set(s) => {
                     if let Some(var_id) = &s.variable {
                         let name = self.node_text(&var_id.node);
@@ -2745,6 +2779,15 @@ impl Cursor {
                     }
                 }
             }
+            if let Statement::VarStmt(v) = stmt {
+                for d in &v.decls {
+                    if let Some(name_id) = &d.name {
+                        if self.node_text(&name_id.node) == name {
+                            return Some(name_id.node.to_range(&self.rope));
+                        }
+                    }
+                }
+            }
         }
         None
     }
@@ -2756,6 +2799,15 @@ impl Cursor {
                 if let Some(name_id) = &l.name {
                     if self.node_text(&name_id.node) == name {
                         return Some(l.node.start_position().row);
+                    }
+                }
+            }
+            if let Statement::VarStmt(v) = stmt {
+                for d in &v.decls {
+                    if let Some(name_id) = &d.name {
+                        if self.node_text(&name_id.node) == name {
+                            return Some(v.node.start_position().row);
+                        }
                     }
                 }
             }

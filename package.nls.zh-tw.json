@@ -6,6 +6,7 @@
   "command.build.execute": "建構",
   "command.ujapi.download": "下載 UjAPI common.j",
   "command.mpq.browse": "瀏覽 MPQ 封存",
+  "command.jass.restartServer": "重新啟動 JASS LSP 伺服器",
   "customEditor.blp.displayName": "BLP 圖片檢視器",
   "customEditor.doo.displayName": "DOO 放置檢視器",
   "customEditor.w3i.displayName": "W3I 地圖資訊檢視器",

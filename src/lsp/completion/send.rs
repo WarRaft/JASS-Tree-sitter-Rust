@@ -117,6 +117,14 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                 sort_text: Some("5".into()),
                 ..Default::default()
             },
+            CompletionItem {
+                label: "entry".into(),
+                kind: Some(CompletionItemKind::Keyword),
+                detail: Some(crate::util::i18n::completion_entry_point().into()),
+                insert_text: Some("entry".into()),
+                sort_text: Some("6".into()),
+                ..Default::default()
+            },
         ];
     }
 
