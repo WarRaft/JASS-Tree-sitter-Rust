@@ -1438,6 +1438,12 @@ impl Cursor {
                     self.check_redundant_if_return(&body);
                 }
 
+                // And-chain collapse check.
+                {
+                    let body = f.body.clone();
+                    self.check_and_chains(&body);
+                }
+
                 // hl: pop function scope
                 self.hl_pop_scope();
 
@@ -2645,6 +2651,195 @@ impl Cursor {
                 Statement::Loop(loop_stmt) => {
                     let body = loop_stmt.body.clone();
                     self.check_redundant_if_return(&body);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ─── Collapse and-chain detection ─────────────────────────────────
+
+    /// Detect chains of `if not(cond) then return false endif` followed
+    /// by a final `return <expr>` at the end of a statement list.
+    ///
+    /// Pattern (N ≥ 2 if-blocks):
+    /// ```jass
+    /// if not (cond1) then
+    ///     return false
+    /// endif
+    /// if not (cond2) then
+    ///     return false
+    /// endif
+    /// …
+    /// return exprN
+    /// ```
+    ///
+    /// Replacement: `return cond1 and cond2 and … and exprN`
+    ///
+    /// Emits a `Hint` diagnostic with `source = "collapse_and"` and
+    /// `data.collapse_and_new_text`.
+    fn check_and_chain_pattern(&mut self, stmts: &[Statement]) {
+        let n = stmts.len();
+        if n < 2 {
+            // Need at least 1 if-block + 1 trailing return.
+            return;
+        }
+
+        // The last statement must be a `return <expr>`.
+        let tail_ret = match &stmts[n - 1] {
+            Statement::Return(r) => r,
+            _ => return,
+        };
+        let tail_expr = match &tail_ret.value {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Walk backwards from stmts[n-2] collecting matching if-blocks.
+        // Each must be: `if not(cond) then return false endif`
+        // — no elseif/else, body is exactly one `return false`.
+        let mut cond_texts: Vec<String> = Vec::new();
+        let mut first_if_idx: Option<usize> = None;
+
+        let mut idx = n - 2; // start just before the final return
+        loop {
+            let if_stmt = match &stmts[idx] {
+                Statement::If(s) => s,
+                _ => break,
+            };
+            // Must be plain `if … then … endif` with no elseif/else.
+            if !if_stmt.branches.is_empty() || if_stmt.body.len() != 1 {
+                break;
+            }
+            // Body must be `return false`.
+            let body_ret = match &if_stmt.body[0] {
+                Statement::Return(r) => r,
+                _ => break,
+            };
+            let body_val = match &body_ret.value {
+                Some(v) => v,
+                None => break,
+            };
+            if self.as_bool_literal(body_val) != Some(false) {
+                break;
+            }
+            // Condition must be `not(cond)`.
+            let cond = match &if_stmt.condition {
+                Some(c) => c,
+                None => break,
+            };
+            let inner_text = match self.try_strip_not(cond) {
+                Some(t) => t,
+                None => break,
+            };
+
+            cond_texts.push(inner_text);
+            first_if_idx = Some(idx);
+
+            if idx == 0 {
+                break;
+            }
+            idx -= 1;
+        }
+
+        if cond_texts.is_empty() {
+            return;
+        }
+
+        // When there is exactly 1 matching if-block and the tail is a
+        // boolean literal, skip — `check_if_return_pattern` already
+        // produces a better simplification for that case.
+        if cond_texts.len() == 1 && self.as_bool_literal(tail_expr).is_some() {
+            return;
+        }
+
+        // `cond_texts` is in reverse order (last if first). Reverse it.
+        cond_texts.reverse();
+
+        // Build the replacement: `return cond1 and cond2 and … and tailExpr`
+        // Unwrap redundant parens from tail expression too, because `and`
+        // has the lowest logical precedence in JASS.
+        let tail_text = self.expr_text(&Self::unwrap_parens(tail_expr));
+        let mut parts = cond_texts;
+        parts.push(tail_text);
+        let new_text = format!("return {}", parts.join(" and "));
+
+        // Range: from the start of the first matching if to the end of the
+        // trailing return.
+        let first_idx = first_if_idx.unwrap();
+        let start_byte = match &stmts[first_idx] {
+            Statement::If(s) => s.node.start_byte(),
+            _ => return,
+        };
+        let end_byte = tail_ret.node.end_byte();
+        let range = Range::from_byte_offsets(&self.rope, start_byte, end_byte);
+
+        self.diagnostics.push(Diagnostic {
+            range,
+            message: crate::util::i18n::collapse_and_chain().to_string(),
+            severity: Some(DiagnosticSeverity::Hint),
+            source: Some("collapse_and".into()),
+            data: Some(serde_json::json!({
+                "collapse_and_new_text": new_text,
+            })),
+            ..Default::default()
+        });
+    }
+
+    /// If `expr` is `not <inner>`, return the source text of `<inner>`
+    /// with redundant outer parentheses stripped.
+    ///
+    /// In JASS `or` binds tighter than `and`, and `not` (unary) binds
+    /// tighter than both.  So `not (X)` where X is any expression can
+    /// safely be unwrapped to just `X` when used as an `and` operand.
+    fn try_strip_not(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Unary { node, operand } => {
+                let is_not = node
+                    .child(0)
+                    .and_then(|c| Kind::try_from(c.grammar_id()).ok())
+                    .map_or(false, |k| k == Kind::Not);
+                if is_not {
+                    // Unwrap one layer of parentheses if present:
+                    // `not (inner)` → text of `inner`, not `(inner)`.
+                    Some(self.expr_text(&Self::unwrap_parens(operand)))
+                } else {
+                    None
+                }
+            }
+            // `(not inner)` — outer parens around a not-expression.
+            Expr::Parens { inner, .. } => self.try_strip_not(inner),
+            _ => None,
+        }
+    }
+
+    /// Recursively strip outer `Parens` wrappers from an expression.
+    fn unwrap_parens<'a, 'x>(expr: &'a Expr<'x>) -> &'a Expr<'x> {
+        match expr {
+            Expr::Parens { inner, .. } => Self::unwrap_parens(inner),
+            other => other,
+        }
+    }
+
+    /// Walk a statement list looking for and-chain patterns.
+    /// Also recurses into nested `if`/`loop` bodies.
+    fn check_and_chains(&mut self, stmts: &[Statement]) {
+        // Check the current list for the chain pattern.
+        self.check_and_chain_pattern(stmts);
+
+        // Recurse into nested bodies.
+        for stmt in stmts {
+            match stmt {
+                Statement::If(if_stmt) => {
+                    let if_stmt = if_stmt.clone();
+                    self.check_and_chains(&if_stmt.body);
+                    for branch in &if_stmt.branches {
+                        self.check_and_chains(&branch.body);
+                    }
+                }
+                Statement::Loop(loop_stmt) => {
+                    let body = loop_stmt.body.clone();
+                    self.check_and_chains(&body);
                 }
                 _ => {}
             }

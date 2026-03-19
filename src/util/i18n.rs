@@ -1006,3 +1006,34 @@ pub fn simplify_all_bool_cmp() -> &'static str {
     )
 }
 
+// ─── Collapse and-chain ──────────────────────────────────────────────────────
+
+pub fn collapse_and_chain() -> &'static str {
+    pick(
+        "Simplify: collapse if-not-return-false chain into a single return with `and`",
+        "Упрощение: свернуть цепочку if-not-return-false в один return с `and`",
+        "Спрощення: згорнути ланцюжок if-not-return-false в один return з `and`",
+        "简化：将 if-not-return-false 链折叠为带 `and` 的单个 return",
+        "簡化：將 if-not-return-false 鏈折疊為帶 `and` 的單個 return",
+    )
+}
+
+pub fn collapse_and_chain_action() -> &'static str {
+    pick(
+        "Collapse into single return with `and`",
+        "Свернуть в один return с `and`",
+        "Згорнути в один return з `and`",
+        "折叠为带 `and` 的单个 return",
+        "折疊為帶 `and` 的單個 return",
+    )
+}
+
+pub fn collapse_all_and_chains_action() -> &'static str {
+    pick(
+        "Collapse all and-chains in file",
+        "Свернуть все and-цепочки в файле",
+        "Згорнути всі and-ланцюжки у файлі",
+        "折叠文件中所有 and 链",
+        "折疊檔案中所有 and 鏈",
+    )
+}

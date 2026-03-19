@@ -124,6 +124,12 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         actions.extend(compute_inline_fixes(params));
     }
 
+    // ── Collapse and-chain quick fixes ────────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_collapse_and_fixes(params));
+    }
+
     actions
 }
 
@@ -1322,3 +1328,109 @@ fn find_call_and_build_edit_excluding(
     None
 }
 
+/// Quick-fix and "fix all" actions for `if not(cond) then return false endif`
+/// chains that can be collapsed into a single `return … and … and …`.
+fn compute_collapse_and_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    let uri = &params.text_document.uri;
+    let _rope = match ROPE_MAP.get(uri) {
+        Some(r) => r,
+        None => return actions,
+    };
+
+    let collapse_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("collapse_and"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &collapse_diags {
+        if let Some(new_text) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("collapse_and_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            let edit = TextEdit {
+                range: diag.range.clone(),
+                new_text: new_text.to_string(),
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::collapse_and_chain_action().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    // "Fix all" action (needs ≥ 2 collapse_and patterns in the file).
+    if !collapse_diags.is_empty() {
+        if let Some(file_action) = compute_collapse_and_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that collapses ALL and-chains in the file.
+fn compute_collapse_and_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let collapse_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("collapse_and"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if collapse_diags.len() < 2 {
+        return None;
+    }
+
+    let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
+    for diag in &collapse_diags {
+        if let Some(new_text) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("collapse_and_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            edits.push((
+                diag.range.start.line,
+                diag.range.start.character,
+                TextEdit {
+                    range: diag.range.clone(),
+                    new_text: new_text.to_string(),
+                },
+            ));
+        }
+    }
+
+    edits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, _, e)| e).collect();
+
+    if text_edits.is_empty() {
+        return None;
+    }
+
+    let title = crate::util::i18n::collapse_all_and_chains_action().to_string();
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title,
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
