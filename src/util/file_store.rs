@@ -155,25 +155,20 @@ pub fn new_cancel_token(uri: &Url) -> CancellationToken {
     token
 }
 
-/// Ask the client to re-request semantic tokens and inlay hints for all open
-/// files, and **push** diagnostics for every known file.
+/// Ask the client to re-request semantic tokens for all open files,
+/// and **push** diagnostics and inlay hints for every known file.
 ///
-/// Diagnostics use the push model (`textDocument/publishDiagnostics`) so
-/// they are visible for both open and closed files.  Semantic tokens and
-/// inlay hints still use the pull/refresh model.
+/// Diagnostics and inlay hints use the push model so they are visible
+/// immediately without a round-trip pull request.
 pub async fn send_refresh_all() {
     let writer = match LSP_WRITER.get() {
         Some(w) => w,
         None => return,
     };
-    for method in [
-        "workspace/semanticTokens/refresh",
-        "workspace/inlayHint/refresh",
-    ] {
-        crate::lsp::send::send_request(writer, method).await;
-    }
+    crate::lsp::send::send_request(writer, "workspace/semanticTokens/refresh").await;
 
     push_diagnostics(writer).await;
+    push_inlay_hints(writer).await;
 }
 
 /// Send `textDocument/publishDiagnostics` for every file in `FILE_STORE`
@@ -233,6 +228,41 @@ async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
                 "params": {
                     "uri": uri,
                     "diagnostics": items
+                }
+            }),
+        )
+        .await;
+    }
+}
+
+/// Push `custom/publishInlayHints` for every file in `FILE_STORE`.
+///
+/// Uses the same push model as diagnostics so that the client can update
+/// hints atomically without the visual "jump" caused by the pull/refresh
+/// round-trip.
+async fn push_inlay_hints(writer: &Arc<Mutex<Stdout>>) {
+    use crate::lsp::inlay_hint::send::compute_all;
+    use serde_json::json;
+
+    let file_hints: Vec<(String, Vec<crate::lsp::inlay_hint::lsp::InlayHint>)> = FILE_STORE
+        .iter()
+        .map(|entry| {
+            let uri = entry.key().clone();
+            let hints = compute_all(&uri);
+            (uri.to_string(), hints)
+        })
+        .collect();
+    // DashMap guards dropped here.
+
+    for (uri, hints) in &file_hints {
+        crate::lsp::send::send(
+            writer,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "custom/publishInlayHints",
+                "params": {
+                    "uri": uri,
+                    "hints": hints
                 }
             }),
         )

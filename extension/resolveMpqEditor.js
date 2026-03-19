@@ -146,6 +146,18 @@ function renderMpqPage(data, fname, ext) {
         </div>`
     }
 
+    // ── Preview (war3mapPreview.tga / .blp) ─────────────
+    let previewHtml = ''
+    if (data.preview && data.preview.dataUrl) {
+        const p = data.preview
+        previewHtml = `
+        <h2>🖼 Preview</h2>
+        <div class="minimap-wrap">
+            <img src="${p.dataUrl}" alt="preview" class="preview-img" />
+            <span class="minimap-size">${p.width} × ${p.height} · ${p.format.toUpperCase()}</span>
+        </div>`
+    }
+
     // ── W3I summary (from archive) ──────────────────────
     let w3iHtml = ''
     if (data.w3i && data.w3i !== null && typeof data.w3i === 'object') {
@@ -217,6 +229,7 @@ function renderMpqPage(data, fname, ext) {
 
     ${headerHtml}
     ${minimapHtml}
+    ${previewHtml}
     ${w3iHtml}
     ${filesHtml}
 
@@ -387,6 +400,11 @@ function sharedStyles(accentColor) {
             max-width: 256px;
             max-height: 256px;
             image-rendering: pixelated;
+            display: block;
+        }
+        .preview-img {
+            max-width: 512px;
+            max-height: 512px;
             display: block;
         }
         .minimap-size {

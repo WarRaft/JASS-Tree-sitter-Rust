@@ -227,6 +227,7 @@ pub fn resolve_ujapi_directive(
                         kind: None,
                         padding_left: Some(true),
                         padding_right: Some(false),
+                        byte_offset: path_end_byte,
                     });
                 }
                 // File has tag but no cached release — show version as inlay hint
@@ -237,6 +238,7 @@ pub fn resolve_ujapi_directive(
                         kind: None,
                         padding_left: Some(true),
                         padding_right: Some(false),
+                        byte_offset: path_end_byte,
                     });
                 }
                 _ => {}

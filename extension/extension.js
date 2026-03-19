@@ -2,7 +2,8 @@
 // noinspection NpmUsedModulesInstalled
 const {
     window,
-    Uri, ExtensionMode, commands, ProgressLocation, workspace
+    Uri, ExtensionMode, commands, ProgressLocation, workspace,
+    languages, InlayHint, InlayHintKind, Position, EventEmitter
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
@@ -92,6 +93,43 @@ module.exports = {
             }
         })
 
+        // ── Inlay hints (push model) ─────────────────────────────────
+        // Server pushes `custom/publishInlayHints` notifications instead
+        // of relying on the pull/refresh round-trip, which caused hints
+        // to visually "jump" after edits.
+        /** @type {Map<string, import('vscode').InlayHint[]>} */
+        const inlayHintsCache = new Map()
+        const inlayHintsChanged = new EventEmitter()
+
+        client.onNotification('custom/publishInlayHints', ({uri, hints}) => {
+            const vscHints = (hints || []).map(h => {
+                const hint = new InlayHint(
+                    new Position(h.position.line, h.position.character),
+                    h.label,
+                    h.kind === 1 ? InlayHintKind.Type
+                        : h.kind === 2 ? InlayHintKind.Parameter
+                            : undefined
+                )
+                if (h.paddingLeft != null) hint.paddingLeft = h.paddingLeft
+                if (h.paddingRight != null) hint.paddingRight = h.paddingRight
+                return hint
+            })
+            inlayHintsCache.set(uri, vscHints)
+            inlayHintsChanged.fire()
+        })
+
+
+        const inlaySelector = [
+            {scheme: 'file', language: 'jass'},
+            {scheme: 'file', language: 'angelscript'},
+        ]
+        const inlayHintsProvider = languages.registerInlayHintsProvider(inlaySelector, {
+            onDidChangeInlayHints: inlayHintsChanged.event,
+            provideInlayHints(document, _range, _token) {
+                return inlayHintsCache.get(document.uri.toString()) || []
+            }
+        })
+
         // Start the client early so custom editors can send requests.
         const clientReady = client.start().catch(err => {
             window.showErrorMessage(`❌ Failed to start LSP client:\n\n${err.message}`)
@@ -104,6 +142,9 @@ module.exports = {
         const mpqProvider = new MpqFileSystemProvider(() => client, clientReady)
 
         context.subscriptions.push(
+            inlayHintsProvider,
+            inlayHintsChanged,
+
             workspace.registerFileSystemProvider('mpq', mpqProvider, {
                 isCaseSensitive: false,
                 isReadonly: true,

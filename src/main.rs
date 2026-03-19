@@ -114,11 +114,6 @@ async fn main() {
                                     document_highlight_provider: Some(true),
                                     definition_provider: Some(true),
                                     references_provider: Some(true),
-                                    inlay_hint_provider: Some(
-                                        crate::lsp::inlay_hint::lsp::InlayHintOptions {
-                                            resolve_provider: None,
-                                        },
-                                    ),
                                     rename_provider: Some(
                                         crate::lsp::rename::lsp::RenameOptions {
                                             prepare_provider: Some(true),

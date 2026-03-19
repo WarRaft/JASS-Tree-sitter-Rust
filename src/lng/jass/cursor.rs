@@ -26,7 +26,7 @@ use url::Url;
 // ─── Imported symbol descriptor ──────────────────────────────────────────────
 
 /// Whether an imported symbol is a function/native or a variable/type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ImportedKind {
     /// `function` or `native` — resolves in the function namespace.
     Func,
@@ -560,7 +560,7 @@ impl Cursor {
                 .push(sym);
         }
 
-        // Group unresolved refs by (name, namespace)
+        // Group unresolved refs by (name, namespace).
         let unresolved = std::mem::take(&mut self.unresolved_refs);
         let mut by_name: Map<(String, ImportedKind), Vec<UnresolvedRef>> = Map::new();
         for uref in unresolved {
@@ -570,9 +570,21 @@ impl Cursor {
                 .push(uref);
         }
 
+        // Sort groups by the position of the first occurrence so that
+        // `alloc_key()` / `ext_counter` assign keys in source order —
+        // deterministic regardless of HashMap seed, and stable across
+        // whitespace-only edits (formatting).
+        let mut sorted_groups: Vec<_> = by_name.into_iter().collect();
+        sorted_groups.sort_by(|a, b| {
+            let pos = |v: &Vec<UnresolvedRef>| {
+                v.first().map(|r| (r.range.start.line, r.range.start.character))
+            };
+            pos(&a.1).cmp(&pos(&b.1))
+        });
+
         let mut ext_counter: u32 = 0;
 
-        for ((name, ns), refs) in by_name {
+        for ((name, ns), refs) in sorted_groups {
             // 1. Check local forward declarations (global scope).
             let local_key = if let Some(scope) = self.hl_scopes.first() {
                 match ns {
@@ -878,6 +890,7 @@ impl Cursor {
             kind: Some(InlayHintKind::Type),
             padding_left: Some(true),
             padding_right: Some(false),
+            byte_offset: node.end_byte(),
         });
     }
 

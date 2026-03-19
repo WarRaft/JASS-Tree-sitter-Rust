@@ -14,7 +14,7 @@ pub async fn send(
     params: &InlayHintParams,
 ) {
     let uri = &params.text_document.uri;
-    let result = compute(uri, &params.range);
+    let result = compute(uri, Some(&params.range));
 
     lsp_send(
         writer,
@@ -28,9 +28,14 @@ pub async fn send(
     .await;
 }
 
+/// Compute all inlay hints for a file (no range filter).
+pub fn compute_all(uri: &url::Url) -> Vec<InlayHint> {
+    compute(uri, None)
+}
+
 fn compute(
     uri: &url::Url,
-    range: &crate::lsp::range::Range,
+    range: Option<&crate::lsp::range::Range>,
 ) -> Vec<InlayHint> {
     let snapshot = match FILE_STORE.get(uri) {
         Some(s) => s,
@@ -89,6 +94,7 @@ fn compute(
                 kind: Some(InlayHintKind::Type),
                 padding_left: Some(true),
                 padding_right: Some(false),
+                byte_offset: 0,
             });
         }
     }
@@ -106,10 +112,15 @@ fn compute(
 }
 
 /// Check whether a position falls inside the requested viewport range.
+/// When `range` is `None`, the position is always considered in range (no filter).
 fn in_range(
     pos: &crate::lsp::position::Position,
-    range: &crate::lsp::range::Range,
+    range: Option<&crate::lsp::range::Range>,
 ) -> bool {
+    let range = match range {
+        Some(r) => r,
+        None => return true,
+    };
     if pos.line < range.start.line {
         return false;
     }

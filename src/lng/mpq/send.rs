@@ -270,6 +270,54 @@ fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
         }
     }
 
+    // ── 6. Try to read preview image (war3mapPreview.tga / .blp) ──
+    let mut preview = json!(null);
+    if let Ok(tga_data) = archive.read_file("war3mapPreview.tga") {
+        if let Ok(dyn_img) = image::load_from_memory_with_format(&tga_data, image::ImageFormat::Tga) {
+            let rgba = dyn_img.to_rgba8();
+            let w = rgba.width();
+            let h = rgba.height();
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            if image::DynamicImage::ImageRgba8(rgba).write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
+                let png_bytes = cursor.into_inner();
+                let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png_bytes));
+                preview = json!({
+                    "format": "tga",
+                    "size": tga_data.len(),
+                    "dataUrl": data_url,
+                    "width": w,
+                    "height": h,
+                });
+            }
+        }
+    }
+    // Fallback: war3mapPreview.blp
+    if preview.is_null() {
+        if let Ok(blp_data) = archive.read_file("war3mapPreview.blp") {
+            if let Ok(mut img) = blp::core::image::ImageBlp::from_buf(&blp_data) {
+                if img.decode(&blp_data, &[]).is_ok() {
+                    if let Some(mip) = img.mipmaps.first() {
+                        if let Some(ref rgba) = mip.image {
+                            let dynamic = image::DynamicImage::ImageRgba8(rgba.clone());
+                            let mut cursor = std::io::Cursor::new(Vec::new());
+                            if dynamic.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
+                                let png_bytes = cursor.into_inner();
+                                let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png_bytes));
+                                preview = json!({
+                                    "format": "blp",
+                                    "size": blp_data.len(),
+                                    "dataUrl": data_url,
+                                    "width": mip.width,
+                                    "height": mip.height,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(json!({
         "header": header,
         "fileCount": file_count,
@@ -277,6 +325,7 @@ fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
         "files": files,
         "w3i": w3i,
         "minimap": minimap,
+        "preview": preview,
     }))
 }
 

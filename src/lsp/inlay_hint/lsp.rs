@@ -34,6 +34,13 @@ pub struct InlayHint {
     /// Render padding after the hint.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub padding_right: Option<bool>,
+
+    /// Byte offset of the AST node this hint is anchored to.
+    ///
+    /// Used internally to reposition hints instantly after incremental edits
+    /// (before the full re-parse completes).  Skipped during JSON serialization.
+    #[serde(skip)]
+    pub byte_offset: usize,
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#inlayHintOptions
