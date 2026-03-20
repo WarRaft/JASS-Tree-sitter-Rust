@@ -1,21 +1,19 @@
-use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
+use crate::lng::jass::ast::{Statement, build_ast, rewrite_imports};
 use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::ref_map::{build_ref_map, DeclKey, RefMap};
+use crate::lsp::ref_map::{DeclKey, RefMap, build_ref_map};
 use crate::util::file_cache;
 use crate::util::file_store::{
-    exports_changed, new_cancel_token, register_pending,
-    ParseSnapshot, FILE_STORE,
+    FILE_STORE, ParseSnapshot, exports_changed, new_cancel_token, register_pending,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
-    cascade_parse_and_notify, ensure_file_symbols,
-    file_symbols_to_entries, find_decl_key_by_name, resolve_import_directive,
-    ParseFn,
+    ParseFn, cascade_parse_and_notify, ensure_file_symbols, file_symbols_to_entries,
+    find_decl_key_by_name, resolve_import_directive,
 };
-use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::roper::node::NodeExt;
-use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
+use crate::util::roper::uri_map::ROPE_MAP;
+use crate::util::scope_resolver::{SCOPE_RESOLVER, SymbolNS};
 use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
@@ -25,7 +23,6 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 
 // ─── Main parse entry point ─────────────────────────────────────────────────
-
 
 /// Parse and store all LSP data for `uri`.
 ///
@@ -78,10 +75,11 @@ pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> 
 /// Cyclic cascades are prevented by [`CascadeGuard`] (RAII set guard).
 ///
 /// Intended to be called from a **spawned task** (not the main message loop).
-pub async fn parse_and_notify(uri: &Url, generation: Option<u64>) -> Result<(), Box<dyn Error + Send + Sync>> {
-    let parse_fn: ParseFn = Box::new(|u| {
-        Box::pin(async move { parse(&u).await })
-    });
+pub async fn parse_and_notify(
+    uri: &Url,
+    generation: Option<u64>,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let parse_fn: ParseFn = Box::new(|u| Box::pin(async move { parse(&u).await }));
     cascade_parse_and_notify(uri, &parse_fn, None, generation).await
 }
 
@@ -124,7 +122,9 @@ fn _parse(
     let mut ast = build_ast(root);
 
     // ── Cancellation checkpoint ──
-    if cancel.is_cancelled() { return Ok(vec![]); }
+    if cancel.is_cancelled() {
+        return Ok(vec![]);
+    }
 
     // 2. Rewrite leading `//import` / `//import!` comments into Import nodes
     let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
@@ -141,21 +141,35 @@ fn _parse(
     for item in &ast.items {
         if let Statement::Import(imp) = item {
             resolve_import_directive(
-                uri, imp, &src, rope,
-                &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
+                uri,
+                imp,
+                &src,
+                rope,
+                &mut imports,
+                &mut frozen_imports,
+                &mut links,
+                &mut import_diagnostics,
             );
         }
         if let Statement::UjapiImport(ud) = item {
             crate::util::parse::resolve_ujapi_directive(
-                uri, ud, &src, rope,
-                &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
+                uri,
+                ud,
+                &src,
+                rope,
+                &mut imports,
+                &mut frozen_imports,
+                &mut links,
+                &mut import_diagnostics,
                 &mut ujapi_hints,
             );
         }
     }
 
     // ── Cancellation checkpoint ──
-    if cancel.is_cancelled() { return Ok(vec![]); }
+    if cancel.is_cancelled() {
+        return Ok(vec![]);
+    }
 
     // Capture the old connected component BEFORE updating the graph,
     // so we can detect peers that lost visibility after import removal.
@@ -230,7 +244,9 @@ fn _parse(
     }
 
     // ── Cancellation checkpoint ──
-    if cancel.is_cancelled() { return Ok(vec![]); }
+    if cancel.is_cancelled() {
+        return Ok(vec![]);
+    }
 
     // 5. Single-pass cursor: diagnostics + symbols + folding + id_roles + scopes
     let mut cursor = Cursor::walk(&ast, rope, &imported_symbols);
@@ -249,7 +265,12 @@ fn _parse(
 
     // 7. Build ref_map.
     let func_decl_keys = cursor.func_decl_keys;
-    let ref_map = build_ref_map(cursor.ref_groups, cursor.ref_names, cursor.external_decls, rope);
+    let ref_map = build_ref_map(
+        cursor.ref_groups,
+        cursor.ref_names,
+        cursor.external_decls,
+        rope,
+    );
     let hash = file_cache::content_hash(rope);
 
     // 8. Call-graph diagnostics: unused functions & cyclic calls.
@@ -295,21 +316,48 @@ fn _parse(
             if let Some(decl_occ) = group.occurrences.iter().find(|o| o.is_decl) {
                 if func_diag.unused.contains(&group.name) {
                     // Check file-level suppression and per-declaration //@ignore unused
-                    let per_decl_suppressed = cursor.file_symbols.functions
+                    let per_decl_suppressed = cursor
+                        .file_symbols
+                        .functions
                         .iter()
                         .any(|f| f.name == group.name && f.ignore_tags.contains("unused"));
                     if !file_unused_suppressed && !per_decl_suppressed {
+                        // Find the full function range from the AST.
+                        let func_range = ast.items.iter().find_map(|item| {
+                            if let Statement::Function(f) = item {
+                                let fname = f.name.as_ref().map(|id| {
+                                    rope.slice_to_cow(id.node.start_byte()..id.node.end_byte())
+                                        .to_string()
+                                });
+                                if fname.as_deref() == Some(&group.name) {
+                                    Some(f.node.to_range(rope))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        });
+
                         all_diagnostics.push(Diagnostic {
                             range: decl_occ.range.clone(),
                             message: crate::util::i18n::unused_function(&group.name),
                             severity: Some(DiagnosticSeverity::Hint),
-                            tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                            tags: Some(vec![
+                                crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary,
+                            ]),
+                            source: Some("unused_func".into()),
+                            data: Some(serde_json::json!({
+                                "unused_func_range": func_range,
+                            })),
                             ..Default::default()
                         });
                     }
                 }
                 if func_diag.in_cycle.contains(&group.name) {
-                    let per_decl_suppressed = cursor.file_symbols.functions
+                    let per_decl_suppressed = cursor
+                        .file_symbols
+                        .functions
                         .iter()
                         .any(|f| f.name == group.name && f.ignore_tags.contains("cycle"));
                     if !file_cycle_suppressed && !per_decl_suppressed {
@@ -322,29 +370,32 @@ fn _parse(
                     }
                 }
                 if func_diag.inlinable.contains(&group.name) {
-                    let per_decl_suppressed = cursor.file_symbols.functions
+                    let per_decl_suppressed = cursor
+                        .file_symbols
+                        .functions
                         .iter()
                         .any(|f| f.name == group.name && f.ignore_tags.contains("inline"));
                     let file_inline_suppressed = cursor.file_ignore_tags.contains("inline");
                     if !file_inline_suppressed && !per_decl_suppressed {
                         // Find inline metadata from file_symbols.
-                        let func_sym = cursor.file_symbols.functions
+                        let func_sym = cursor
+                            .file_symbols
+                            .functions
                             .iter()
                             .find(|f| f.name == group.name);
                         let inline_expr = func_sym
                             .and_then(|f| f.inline_return_text.clone())
                             .unwrap_or_default();
-                        let inline_is_compound = func_sym
-                            .map(|f| f.inline_is_compound)
-                            .unwrap_or(false);
+                        let inline_is_compound =
+                            func_sym.map(|f| f.inline_is_compound).unwrap_or(false);
 
                         // Find the full function range from the AST.
                         let func_range = ast.items.iter().find_map(|item| {
                             if let Statement::Function(f) = item {
-                                let fname = f.name.as_ref()
-                                    .map(|id| rope.slice_to_cow(
-                                        id.node.start_byte()..id.node.end_byte(),
-                                    ).to_string());
+                                let fname = f.name.as_ref().map(|id| {
+                                    rope.slice_to_cow(id.node.start_byte()..id.node.end_byte())
+                                        .to_string()
+                                });
                                 if fname.as_deref() == Some(&group.name) {
                                     Some(f.node.to_range(rope))
                                 } else {
@@ -366,7 +417,9 @@ fn _parse(
                             range: decl_occ.range.clone(),
                             message: crate::util::i18n::inlinable_function(&group.name),
                             severity: Some(DiagnosticSeverity::Hint),
-                            tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                            tags: Some(vec![
+                                crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary,
+                            ]),
                             source: Some("inline".into()),
                             data: Some(data),
                             ..Default::default()
@@ -405,8 +458,12 @@ fn _parse(
         // Restore the pre-preliminary snapshot so the SemanticTokens handler
         // never reads an empty placeholder.
         match true_old_snapshot {
-            Some(snap) => { FILE_STORE.insert(uri.clone(), snap); }
-            None => { FILE_STORE.remove(uri); }
+            Some(snap) => {
+                FILE_STORE.insert(uri.clone(), snap);
+            }
+            None => {
+                FILE_STORE.remove(uri);
+            }
         }
         return Ok(vec![]);
     }
@@ -511,4 +568,3 @@ pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send
         _ = token.cancelled() => Ok(vec![]),
     }
 }
-

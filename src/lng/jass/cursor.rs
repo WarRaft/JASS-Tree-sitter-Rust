@@ -199,6 +199,9 @@ pub struct Cursor {
     imported_func_returns: HashMap<String, Option<String>>,
     /// Imported variable types: name → type_name.
     imported_var_types: HashMap<String, Option<String>>,
+    /// The declared return type of the function currently being visited.
+    /// `None` when outside a function.  `Some("nothing")` for `returns nothing`.
+    current_return_type: Option<String>,
 }
 
 /// Two-namespace scope: JASS separates variables and functions by name.
@@ -373,6 +376,7 @@ impl Cursor {
             unresolved_refs: Vec::new(),
             imported_func_returns: HashMap::new(),
             imported_var_types: HashMap::new(),
+            current_return_type: None,
         };
 
         // Pre-populate imported type lookup maps for Phase 1 type inference.
@@ -1421,9 +1425,19 @@ impl Cursor {
                     }));
                 }
 
+                // Track the declared return type so `Statement::Return`
+                // can check type compatibility.
+                let old_return_type = self.current_return_type.take();
+                self.current_return_type = Some(
+                    return_type.clone().unwrap_or_else(|| "nothing".to_string()),
+                );
+
                 vars.push(func_vars);
                 children.extend(self.visit_stmts(&f.body, vars));
                 let func_vars = vars.pop().unwrap_or_default();
+
+                // Restore the previous return type (for nested functions if any).
+                self.current_return_type = old_return_type;
 
                 let ann = extract_annotations(&self.rope, f.node.start_position().row);
 
@@ -1438,10 +1452,28 @@ impl Cursor {
                     self.check_redundant_if_return(&body);
                 }
 
+                // Empty else detection.
+                {
+                    let body = f.body.clone();
+                    self.check_empty_else(&body);
+                }
+
                 // And-chain collapse check.
                 {
                     let body = f.body.clone();
                     self.check_and_chains(&body);
+                }
+
+                // Or-chain collapse check.
+                {
+                    let body = f.body.clone();
+                    self.check_or_chains(&body);
+                }
+
+                // Dead code detection.
+                {
+                    let body = f.body.clone();
+                    self.check_dead_code(&body);
                 }
 
                 // hl: pop function scope
@@ -1805,6 +1837,20 @@ impl Cursor {
                         self.hl_reference_func(&fname, &name_id.node, DocumentHighlightKind::Read);
                     }
                     for arg in &fc.args {
+                        // Check: passing an array variable as an argument is forbidden
+                        // (see through parentheses).
+                        let inner = Self::unwrap_parens(arg);
+                        if let Expr::Id(id) = inner {
+                            let aname = self.node_text(&id.node);
+                            if self.is_var_array(&aname) {
+                                self.diagnostics.push(Diagnostic {
+                                    range: id.node.to_range(&self.rope),
+                                    message: crate::util::i18n::array_in_argument(&aname),
+                                    severity: Some(DiagnosticSeverity::Error),
+                                    ..Default::default()
+                                });
+                            }
+                        }
                         self.check_expr_hints(arg);
                         self.visit_expr(arg);
                     }
@@ -1837,8 +1883,57 @@ impl Cursor {
 
             Statement::Return(r) => {
                 if let Some(expr) = &r.value {
+                    // Check: returning an array variable is forbidden in JASS
+                    // (see through parentheses).
+                    let inner = Self::unwrap_parens(expr);
+                    if let Expr::Id(id) = inner {
+                        let name = self.node_text(&id.node);
+                        if self.is_var_array(&name) {
+                            self.diagnostics.push(Diagnostic {
+                                range: id.node.to_range(&self.rope),
+                                message: crate::util::i18n::array_in_return(&name),
+                                severity: Some(DiagnosticSeverity::Error),
+                                ..Default::default()
+                            });
+                        }
+                    }
                     self.check_expr_hints(expr);
-                    self.visit_expr(expr);
+                    let expr_type = self.visit_expr(expr);
+
+                    // Return type mismatch checks.
+                    if let Some(ref rt) = self.current_return_type {
+                        if rt == "nothing" {
+                            // Value returned from `returns nothing`.
+                            self.diagnostics.push(Diagnostic {
+                                range: r.node.to_range(&self.rope),
+                                message: crate::util::i18n::return_value_in_nothing(),
+                                severity: Some(DiagnosticSeverity::Error),
+                                ..Default::default()
+                            });
+                        } else if let Some(ref et) = expr_type {
+                            // Type mismatch: expression type vs declared return type.
+                            if !Self::is_type_assignable(rt, et) {
+                                self.diagnostics.push(Diagnostic {
+                                    range: expr.cst_node().to_range(&self.rope),
+                                    message: crate::util::i18n::return_type_mismatch(et, rt),
+                                    severity: Some(DiagnosticSeverity::Error),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                    }
+                } else {
+                    // Bare `return` in a function with a non-nothing return type.
+                    if let Some(ref rt) = self.current_return_type {
+                        if rt != "nothing" {
+                            self.diagnostics.push(Diagnostic {
+                                range: r.node.to_range(&self.rope),
+                                message: crate::util::i18n::return_missing_value(rt),
+                                severity: Some(DiagnosticSeverity::Error),
+                                ..Default::default()
+                            });
+                        }
+                    }
                 }
                 None
             }
@@ -1958,6 +2053,21 @@ impl Cursor {
         self.imported_var_types
             .get(name)
             .and_then(|t| t.clone())
+    }
+
+    /// Check whether a variable name refers to an array declaration.
+    fn is_var_array(&self, name: &str) -> bool {
+        let decl_key = self
+            .hl_scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.vars.get(name).copied());
+        if let Some(key) = decl_key {
+            if let Some(DeclType::Var(vt)) = self.type_map.get(&key) {
+                return vt.is_array;
+            }
+        }
+        false
     }
 
     /// Look up the return type of a function by name via highlight scopes + type map,
@@ -2132,6 +2242,20 @@ impl Cursor {
                     ret_type = self.lookup_func_return_type(&fname);
                 }
                 for arg in &fc.args {
+                    // Check: passing an array variable as an argument is forbidden
+                    // (see through parentheses).
+                    let inner = Self::unwrap_parens(arg);
+                    if let Expr::Id(id) = inner {
+                        let aname = self.node_text(&id.node);
+                        if self.is_var_array(&aname) {
+                            self.diagnostics.push(Diagnostic {
+                                range: id.node.to_range(&self.rope),
+                                message: crate::util::i18n::array_in_argument(&aname),
+                                severity: Some(DiagnosticSeverity::Error),
+                                ..Default::default()
+                            });
+                        }
+                    }
                     self.check_expr_hints(arg);
                     self.visit_expr(arg);
                 }
@@ -2170,6 +2294,12 @@ impl Cursor {
                     }
                 }
 
+                // type-tip: show inferred type + compile-time value
+                if let Some(ref t) = result {
+                    let cv = self.eval_expr(expr);
+                    self.emit_type_hint(node, t, cv.as_ref());
+                }
+
                 result
             }
             Expr::Unary { node, operand, .. } => {
@@ -2205,6 +2335,12 @@ impl Cursor {
                     }
                 }
 
+                // type-tip: show inferred type + compile-time value
+                if let Some(ref t) = result {
+                    let cv = self.eval_expr(expr);
+                    self.emit_type_hint(node, t, cv.as_ref());
+                }
+
                 result
             }
             Expr::Parens { inner, .. } => {
@@ -2214,6 +2350,9 @@ impl Cursor {
                 let arr_type = self.visit_expr(array);
                 self.visit_expr(index);
                 // Element type is the array variable's base type.
+                if let Some(ref t) = arr_type {
+                    self.emit_type_hint(expr.cst_node(), t, None);
+                }
                 arr_type
             }
             Expr::Literal(node) => {
@@ -2225,7 +2364,26 @@ impl Cursor {
                     _ => None,
                 };
                 if let Some(ref t) = ty {
-                    self.emit_type_hint(node, t, None);
+                    // Show comptime value only when it differs from the source
+                    // text (rawcodes, hex/octal literals). Plain decimals,
+                    // reals, and strings are already visible as-is.
+                    let cv = match kind {
+                        Some(Kind::Rawcode) => self.eval_literal(node),
+                        Some(Kind::Number) => {
+                            let text = self.node_text(node);
+                            if text.starts_with("0x") || text.starts_with("0X")
+                                || text.starts_with('$')
+                                || (text.starts_with('0') && text.len() > 1
+                                    && text.chars().all(|c| c.is_ascii_digit()))
+                            {
+                                self.eval_literal(node)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    self.emit_type_hint(node, t, cv.as_ref());
                 }
                 ty
             }
@@ -2648,9 +2806,141 @@ impl Cursor {
                         self.check_redundant_if_return(&branch.body.clone());
                     }
                 }
-                Statement::Loop(loop_stmt) => {
-                    let body = loop_stmt.body.clone();
+                Statement::Loop(l) => {
+                    let body = l.body.clone();
                     self.check_redundant_if_return(&body);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ─── Empty else detection ─────────────────────────────────────────
+
+    /// Walk a statement list looking for `if … else <nothing> endif` patterns.
+    ///
+    /// Emits a `Hint` diagnostic with `source = "empty_else"` on the `else`
+    /// keyword.  The diagnostic carries `data.empty_else_delete_range` — the
+    /// LSP range covering the `else` line (from its first character to the
+    /// start of the next non-blank line) that the quick-fix should delete.
+    fn check_empty_else(&mut self, stmts: &[Statement]) {
+        for stmt in stmts {
+            if let Statement::If(if_stmt) = stmt {
+                for branch in &if_stmt.branches {
+                    // Only plain `else` (condition == None) with an empty body.
+                    if branch.condition.is_some() || !branch.body.is_empty() {
+                        continue;
+                    }
+
+                    let else_node = &branch.node;
+                    let else_row = else_node.start_position().row;
+
+                    // Walk CST siblings of `else` to find the `endif` keyword.
+                    let mut endif_row = None;
+                    let mut sib = else_node.next_sibling();
+                    while let Some(n) = sib {
+                        if n.grammar_id() == crate::lng::jass::kind::Kind::Endif as u16 {
+                            endif_row = Some(n.start_position().row);
+                            break;
+                        }
+                        sib = n.next_sibling();
+                    }
+                    let endif_row = match endif_row {
+                        Some(r) => r,
+                        None => continue,
+                    };
+
+                    // Diagnostic range: highlight the `else` keyword itself.
+                    let diag_range = Range::from_byte_offsets(
+                        &self.rope,
+                        else_node.start_byte(),
+                        else_node.end_byte(),
+                    );
+
+                    // Delete range: from start of `else` line to start of `endif` line.
+                    let delete_start = self.rope.offset_of_line(else_row);
+                    let line_count = self.rope.line_of_offset(self.rope.len()) + 1;
+                    let delete_end = if endif_row < line_count {
+                        self.rope.offset_of_line(endif_row)
+                    } else {
+                        self.rope.len()
+                    };
+                    let delete_range = Range::from_byte_offsets(
+                        &self.rope,
+                        delete_start,
+                        delete_end,
+                    );
+
+                    self.diagnostics.push(Diagnostic {
+                        range: diag_range,
+                        message: crate::util::i18n::empty_else().to_string(),
+                        severity: Some(DiagnosticSeverity::Hint),
+                        tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                        source: Some("empty_else".into()),
+                        data: Some(serde_json::json!({
+                            "empty_else_delete_range": delete_range,
+                        })),
+                        ..Default::default()
+                    });
+                }
+
+                // Recurse into if body and branches.
+                let if_stmt = if_stmt.clone();
+                self.check_empty_else(&if_stmt.body);
+                for branch in &if_stmt.branches {
+                    self.check_empty_else(&branch.body);
+                }
+            } else if let Statement::Loop(l) = stmt {
+                let body = l.body.clone();
+                self.check_empty_else(&body);
+            }
+        }
+    }
+
+    // ─── Dead code detection ──────────────────────────────────────────
+
+    /// Walk a statement list looking for code after an unconditional `return`.
+    ///
+    /// Emits a `Hint` diagnostic with `Unnecessary` tag on each unreachable
+    /// statement, and recurses into if/loop bodies.
+    fn check_dead_code(&mut self, stmts: &[Statement]) {
+        let mut found_return = false;
+        for stmt in stmts {
+            if found_return {
+                // Skip comments/directives — don't flag them as dead.
+                match stmt {
+                    Statement::Comment(_) | Statement::Import(_)
+                    | Statement::SetDir(_) | Statement::IgnoreDir(_)
+                    | Statement::UjapiImport(_) | Statement::EntryDir(_) => continue,
+                    _ => {}
+                }
+                let node = Self::stmt_node(stmt);
+                self.diagnostics.push(Diagnostic {
+                    range: node.to_range(&self.rope),
+                    message: crate::util::i18n::dead_code().to_string(),
+                    severity: Some(DiagnosticSeverity::Hint),
+                    tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                    ..Default::default()
+                });
+                // Still recurse so we don't miss nested checks,
+                // but don't set found_return again.
+                continue;
+            }
+            if matches!(stmt, Statement::Return(_)) {
+                found_return = true;
+            }
+            // Recurse into nested bodies.
+            match stmt {
+                Statement::If(if_stmt) => {
+                    let if_stmt = if_stmt.clone();
+                    self.check_dead_code(&if_stmt.body);
+                    for branch in &if_stmt.branches {
+                        self.check_dead_code(&branch.body);
+                    }
+                }
+                Statement::Loop(l) => {
+                    let body = l.body.clone();
+                    self.check_dead_code(&body);
                 }
                 _ => {}
             }
@@ -2840,6 +3130,190 @@ impl Cursor {
                 Statement::Loop(loop_stmt) => {
                     let body = loop_stmt.body.clone();
                     self.check_and_chains(&body);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // ─── Collapse or-chain detection ──────────────────────────────────
+
+    /// Check whether an expression (after unwrapping parens) contains `and`
+    /// at the top level of its binary tree.  Used to decide whether an
+    /// or-operand needs parentheses because in JASS `or` binds tighter
+    /// than `and`.
+    fn expr_contains_and(expr: &Expr) -> bool {
+        let expr = Self::unwrap_parens(expr);
+        match expr {
+            Expr::Binary { node, left, right } => {
+                let op = Self::binary_op_kind(node);
+                if op == Some(Kind::And) {
+                    return true;
+                }
+                Self::expr_contains_and(left) || Self::expr_contains_and(right)
+            }
+            _ => false,
+        }
+    }
+
+    /// Return the source text of `expr` suitable for use as an `or`
+    /// operand.  If the unwrapped expression contains a top-level `and`
+    /// operator, wraps it in parentheses to preserve semantics (since
+    /// `or` has higher precedence than `and` in JASS).
+    ///
+    /// Outer `Parens` are stripped first to avoid double-wrapping.
+    fn or_operand_text(&self, expr: &Expr) -> String {
+        let inner = Self::unwrap_parens(expr);
+        let text = self.expr_text(inner);
+        if Self::expr_contains_and(inner) {
+            format!("({})", text)
+        } else {
+            text
+        }
+    }
+
+    /// Detect chains of `if (cond) then return true endif` followed
+    /// by a final `return <expr>` at the end of a statement list.
+    ///
+    /// Pattern (N ≥ 2 if-blocks):
+    /// ```jass
+    /// if cond1 then
+    ///     return true
+    /// endif
+    /// if cond2 then
+    ///     return true
+    /// endif
+    /// …
+    /// return exprN
+    /// ```
+    ///
+    /// Replacement: `return cond1 or cond2 or … or exprN`
+    ///
+    /// Emits a `Hint` diagnostic with `source = "collapse_or"` and
+    /// `data.collapse_or_new_text`.
+    fn check_or_chain_pattern(&mut self, stmts: &[Statement]) {
+        let n = stmts.len();
+        if n < 2 {
+            return;
+        }
+
+        // The last statement must be a `return <expr>`.
+        let tail_ret = match &stmts[n - 1] {
+            Statement::Return(r) => r,
+            _ => return,
+        };
+        let tail_expr = match &tail_ret.value {
+            Some(e) => e,
+            None => return,
+        };
+
+        // Walk backwards from stmts[n-2] collecting matching if-blocks.
+        // Each must be: `if (cond) then return true endif`
+        // — no elseif/else, body is exactly one `return true`.
+        let mut cond_texts: Vec<String> = Vec::new();
+        let mut first_if_idx: Option<usize> = None;
+
+        let mut idx = n - 2;
+        loop {
+            let if_stmt = match &stmts[idx] {
+                Statement::If(s) => s,
+                _ => break,
+            };
+            // Must be plain `if … then … endif` with no elseif/else.
+            if !if_stmt.branches.is_empty() || if_stmt.body.len() != 1 {
+                break;
+            }
+            // Body must be `return true`.
+            let body_ret = match &if_stmt.body[0] {
+                Statement::Return(r) => r,
+                _ => break,
+            };
+            let body_val = match &body_ret.value {
+                Some(v) => v,
+                None => break,
+            };
+            if self.as_bool_literal(body_val) != Some(true) {
+                break;
+            }
+            // Get condition expression.
+            let cond = match &if_stmt.condition {
+                Some(c) => c,
+                None => break,
+            };
+
+            // Condition text — wrap in parens if it contains `and`.
+            let cond_text = self.or_operand_text(cond);
+            cond_texts.push(cond_text);
+            first_if_idx = Some(idx);
+
+            if idx == 0 {
+                break;
+            }
+            idx -= 1;
+        }
+
+        if cond_texts.is_empty() {
+            return;
+        }
+
+        // When there is exactly 1 matching if-block and the tail is a
+        // boolean literal, skip — `check_if_return_pattern` already
+        // produces a better simplification for that case.
+        if cond_texts.len() == 1 && self.as_bool_literal(tail_expr).is_some() {
+            return;
+        }
+
+        // `cond_texts` is in reverse order (last if first). Reverse it.
+        cond_texts.reverse();
+
+        // Build the replacement: `return cond1 or cond2 or … or tailExpr`
+        // Tail expression also needs paren-wrapping if it contains `and`.
+        let tail_text = self.or_operand_text(tail_expr);
+        let mut parts = cond_texts;
+        parts.push(tail_text);
+        let new_text = format!("return {}", parts.join(" or "));
+
+        // Range: from the start of the first matching if to the end of the
+        // trailing return.
+        let first_idx = first_if_idx.unwrap();
+        let start_byte = match &stmts[first_idx] {
+            Statement::If(s) => s.node.start_byte(),
+            _ => return,
+        };
+        let end_byte = tail_ret.node.end_byte();
+        let range = Range::from_byte_offsets(&self.rope, start_byte, end_byte);
+
+        self.diagnostics.push(Diagnostic {
+            range,
+            message: crate::util::i18n::collapse_or_chain().to_string(),
+            severity: Some(DiagnosticSeverity::Hint),
+            source: Some("collapse_or".into()),
+            data: Some(serde_json::json!({
+                "collapse_or_new_text": new_text,
+            })),
+            ..Default::default()
+        });
+    }
+
+    /// Walk a statement list looking for or-chain patterns.
+    /// Also recurses into nested `if`/`loop` bodies.
+    fn check_or_chains(&mut self, stmts: &[Statement]) {
+        // Check the current list for the chain pattern.
+        self.check_or_chain_pattern(stmts);
+
+        // Recurse into nested bodies.
+        for stmt in stmts {
+            match stmt {
+                Statement::If(if_stmt) => {
+                    let if_stmt = if_stmt.clone();
+                    self.check_or_chains(&if_stmt.body);
+                    for branch in &if_stmt.branches {
+                        self.check_or_chains(&branch.body);
+                    }
+                }
+                Statement::Loop(loop_stmt) => {
+                    let body = loop_stmt.body.clone();
+                    self.check_or_chains(&body);
                 }
                 _ => {}
             }

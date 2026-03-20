@@ -140,6 +140,36 @@ pub fn cannot_assign_type(expr_type: &str, declared_type: &str) -> String {
     }
 }
 
+pub fn return_type_mismatch(expr_type: &str, declared_type: &str) -> String {
+    match locale() {
+        Locale::En => format!("Cannot return type `{}` from function returning `{}`", expr_type, declared_type),
+        Locale::Ru => format!("Невозможно вернуть тип `{}` из функции, возвращающей `{}`", expr_type, declared_type),
+        Locale::Uk => format!("Неможливо повернути тип `{}` з функції, що повертає `{}`", expr_type, declared_type),
+        Locale::Zh => format!("无法从返回 `{}` 的函数返回类型 `{}`", declared_type, expr_type),
+        Locale::Tc => format!("無法從返回 `{}` 的函數返回類型 `{}`", declared_type, expr_type),
+    }
+}
+
+pub fn return_value_in_nothing() -> String {
+    match locale() {
+        Locale::En => "Cannot return a value from a function that returns `nothing`".to_string(),
+        Locale::Ru => "Невозможно вернуть значение из функции, возвращающей `nothing`".to_string(),
+        Locale::Uk => "Неможливо повернути значення з функції, що повертає `nothing`".to_string(),
+        Locale::Zh => "无法从返回 `nothing` 的函数返回值".to_string(),
+        Locale::Tc => "無法從返回 `nothing` 的函數返回值".to_string(),
+    }
+}
+
+pub fn return_missing_value(declared_type: &str) -> String {
+    match locale() {
+        Locale::En => format!("Function returns `{}`, but `return` has no value", declared_type),
+        Locale::Ru => format!("Функция возвращает `{}`, но `return` не содержит значения", declared_type),
+        Locale::Uk => format!("Функція повертає `{}`, але `return` не містить значення", declared_type),
+        Locale::Zh => format!("函数返回 `{}`, 但 `return` 没有值", declared_type),
+        Locale::Tc => format!("函數返回 `{}`, 但 `return` 沒有值", declared_type),
+    }
+}
+
 pub fn operator_binary_error(op: &str, left: &str, right: &str) -> String {
     match locale() {
         Locale::En => format!("Operator `{}` cannot be applied to `{}` and `{}`", op, left, right),
@@ -244,6 +274,56 @@ pub fn unused_function(name: &str) -> String {
         Locale::Zh => format!("未使用的函数 `{}`", name),
         Locale::Tc => format!("未使用的函式 `{}`", name),
     }
+}
+
+pub fn remove_unused_function() -> &'static str {
+    pick(
+        "Remove unused function",
+        "Удалить неиспользуемую функцию",
+        "Видалити невикористану функцію",
+        "删除未使用的函数",
+        "刪除未使用的函式",
+    )
+}
+
+pub fn remove_all_unused_functions() -> &'static str {
+    pick(
+        "Remove all unused functions in file",
+        "Удалить все неиспользуемые функции в файле",
+        "Видалити всі невикористані функції у файлі",
+        "删除文件中所有未使用的函数",
+        "刪除檔案中所有未使用的函式",
+    )
+}
+
+pub fn array_in_return(name: &str) -> String {
+    match locale() {
+        Locale::En => format!("Cannot return array variable `{}`", name),
+        Locale::Ru => format!("Нельзя вернуть переменную-массив `{}`", name),
+        Locale::Uk => format!("Не можна повернути змінну-масив `{}`", name),
+        Locale::Zh => format!("无法返回数组变量 `{}`", name),
+        Locale::Tc => format!("無法返回陣列變數 `{}`", name),
+    }
+}
+
+pub fn array_in_argument(name: &str) -> String {
+    match locale() {
+        Locale::En => format!("Cannot pass array variable `{}` as an argument", name),
+        Locale::Ru => format!("Нельзя передать переменную-массив `{}` аргументом", name),
+        Locale::Uk => format!("Не можна передати змінну-масив `{}` аргументом", name),
+        Locale::Zh => format!("无法将数组变量 `{}` 作为参数传递", name),
+        Locale::Tc => format!("無法將陣列變數 `{}` 作為參數傳遞", name),
+    }
+}
+
+pub fn dead_code() -> &'static str {
+    pick(
+        "Unreachable code",
+        "Недостижимый код",
+        "Недосяжний код",
+        "不可达代码",
+        "不可達代碼",
+    )
 }
 
 pub fn cyclic_call_chain(name: &str) -> String {
@@ -1037,3 +1117,80 @@ pub fn collapse_all_and_chains_action() -> &'static str {
         "折疊檔案中所有 and 鏈",
     )
 }
+
+// ─── Collapse or-chain ───────────────────────────────────────────────────────
+
+pub fn collapse_or_chain() -> &'static str {
+    pick(
+        "Simplify: collapse if-return-true chain into a single return with `or`",
+        "Упрощение: свернуть цепочку if-return-true в один return с `or`",
+        "Спрощення: згорнути ланцюжок if-return-true в один return з `or`",
+        "简化：将 if-return-true 链折叠为带 `or` 的单个 return",
+        "簡化：將 if-return-true 鏈折疊為帶 `or` 的單個 return",
+    )
+}
+
+pub fn collapse_or_chain_action() -> &'static str {
+    pick(
+        "Collapse into single return with `or`",
+        "Свернуть в один return с `or`",
+        "Згорнути в один return з `or`",
+        "折叠为带 `or` 的单个 return",
+        "折疊為帶 `or` 的單個 return",
+    )
+}
+
+pub fn collapse_all_or_chains_action() -> &'static str {
+    pick(
+        "Collapse all or-chains in file",
+        "Свернуть все or-цепочки в файле",
+        "Згорнути всі or-ланцюжки у файлі",
+        "折叠文件中所有 or 链",
+        "折疊檔案中所有 or 鏈",
+    )
+}
+
+// ─── Empty else ──────────────────────────────────────────────────────────────
+
+pub fn empty_else() -> &'static str {
+    pick(
+        "Empty else block",
+        "Пустой блок else",
+        "Порожній блок else",
+        "空的 else 块",
+        "空的 else 區塊",
+    )
+}
+
+pub fn remove_empty_else() -> &'static str {
+    pick(
+        "Remove empty else",
+        "Удалить пустой else",
+        "Видалити порожній else",
+        "删除空的 else",
+        "刪除空的 else",
+    )
+}
+
+pub fn remove_all_empty_else() -> &'static str {
+    pick(
+        "Remove all empty else blocks in file",
+        "Удалить все пустые else в файле",
+        "Видалити всі порожні else у файлі",
+        "删除文件中所有空的 else 块",
+        "刪除檔案中所有空的 else 區塊",
+    )
+}
+
+// ─── Remove else branch ─────────────────────────────────────────────────────
+
+pub fn remove_else_branch() -> &'static str {
+    pick(
+        "Remove else branch",
+        "Удалить ветку else",
+        "Видалити гілку else",
+        "删除 else 分支",
+        "刪除 else 分支",
+    )
+}
+

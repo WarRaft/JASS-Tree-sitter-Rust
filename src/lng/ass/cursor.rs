@@ -403,7 +403,7 @@ impl Cursor {
         "void", "int", "int8", "int16", "int32", "int64",
         "uint", "uint8", "uint16", "uint32", "uint64",
         "float", "double", "bool", "string", "auto",
-        "array", "dictionary", "ref", "weakref", "const_weakref",
+        "array", "dictionary", "table", "ref", "weakref", "const_weakref",
         // Built-in funcdef (delegate) types
         "CallbackFunc", "BoolexprFunc",
     ];
@@ -411,7 +411,7 @@ impl Cursor {
     /// Recursively walk a `type` CST node (kind_id=193) and mark every
     /// inner identifier as `TypeRef`, calling `hl_reference_type` for each
     /// component name.  This correctly handles composite types such as
-    /// `array<unit>`, `dictionary<string, int>`, etc.
+    /// `array<unit>`, `dictionary<string, int>`, `table<int, unit>`, etc.
     fn visit_type_node(&mut self, node: &Node) {
         let kind = Kind::try_from(node.kind_id()).ok();
         match kind {

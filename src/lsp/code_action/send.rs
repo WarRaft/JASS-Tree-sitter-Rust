@@ -100,6 +100,12 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         actions.extend(compute_leak_fixes(params));
     }
 
+    // ── Unused function quick fixes ───────────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_unused_func_fixes(params));
+    }
+
     // ── Simplify if-return quick fixes ──────────────────────────────────
     let uri = &params.text_document.uri;
     if !is_as_uri(uri) {
@@ -128,6 +134,26 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
     let uri = &params.text_document.uri;
     if !is_as_uri(uri) {
         actions.extend(compute_collapse_and_fixes(params));
+    }
+
+    // ── Collapse or-chain quick fixes ─────────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_collapse_or_fixes(params));
+    }
+
+    // ── Empty else quick fixes ──────────────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_empty_else_fixes(params));
+    }
+
+    // ── Remove else branch refactoring ──────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        if let Some(action) = compute_remove_else_action(params) {
+            actions.push(action);
+        }
     }
 
     actions
@@ -876,6 +902,111 @@ fn compute_fix_all_leaks(
     })
 }
 
+// ─── Unused function fixes ───────────────────────────────────────────────────
+
+/// Quick-fix and "fix all" actions for unused function diagnostics.
+fn compute_unused_func_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+    let uri = &params.text_document.uri;
+    let rope = match ROPE_MAP.get(uri) {
+        Some(r) => r,
+        None => return actions,
+    };
+    let rope = rope.value();
+
+    let diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("unused_func"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &diags {
+        if let Some(func_range) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("unused_func_range"))
+            .and_then(|v| serde_json::from_value::<Range>(v.clone()).ok())
+        {
+            let edit = func_delete_edit(rope, &func_range);
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::remove_unused_function().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    if !diags.is_empty() {
+        if let Some(file_action) = compute_unused_func_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that removes ALL unused functions in the file.
+fn compute_unused_func_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let unused_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("unused_func"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if unused_diags.len() < 2 {
+        return None;
+    }
+
+    let rope = ROPE_MAP.get(uri)?;
+    let rope = rope.value();
+
+    let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
+    for diag in &unused_diags {
+        if let Some(func_range) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("unused_func_range"))
+            .and_then(|v| serde_json::from_value::<Range>(v.clone()).ok())
+        {
+            let edit = func_delete_edit(rope, &func_range);
+            edits.push((
+                edit.range.start.line,
+                edit.range.start.character,
+                edit,
+            ));
+        }
+    }
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    // Sort descending so deletions don't shift earlier positions.
+    edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, _, e)| e).collect();
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title: crate::util::i18n::remove_all_unused_functions().to_string(),
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
+
 // ─── Inline single-call function fixes ───────────────────────────────────────
 
 /// Extract inline metadata from a diagnostic's `data` field.
@@ -1429,6 +1560,349 @@ fn compute_collapse_and_fix_all(uri: &url::Url) -> Option<CodeAction> {
     Some(CodeAction {
         title,
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
+
+// ─── Collapse or-chain fixes ─────────────────────────────────────────────────
+
+/// Quick-fix and "fix all" actions for `if (cond) then return true endif`
+/// chains that can be collapsed into a single `return … or … or …`.
+fn compute_collapse_or_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    let uri = &params.text_document.uri;
+    let _rope = match ROPE_MAP.get(uri) {
+        Some(r) => r,
+        None => return actions,
+    };
+
+    let collapse_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("collapse_or"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &collapse_diags {
+        if let Some(new_text) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("collapse_or_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            let edit = TextEdit {
+                range: diag.range.clone(),
+                new_text: new_text.to_string(),
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::collapse_or_chain_action().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    // "Fix all" action (needs ≥ 2 collapse_or patterns in the file).
+    if !collapse_diags.is_empty() {
+        if let Some(file_action) = compute_collapse_or_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that collapses ALL or-chains in the file.
+fn compute_collapse_or_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let collapse_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("collapse_or"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if collapse_diags.len() < 2 {
+        return None;
+    }
+
+    let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
+    for diag in &collapse_diags {
+        if let Some(new_text) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("collapse_or_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            edits.push((
+                diag.range.start.line,
+                diag.range.start.character,
+                TextEdit {
+                    range: diag.range.clone(),
+                    new_text: new_text.to_string(),
+                },
+            ));
+        }
+    }
+
+    edits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, _, e)| e).collect();
+
+    if text_edits.is_empty() {
+        return None;
+    }
+
+    let title = crate::util::i18n::collapse_all_or_chains_action().to_string();
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title,
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
+
+// ─── Empty else fixes ────────────────────────────────────────────────────────
+
+/// Quick-fix and "fix all" actions for empty `else` blocks.
+fn compute_empty_else_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+    let uri = &params.text_document.uri;
+
+    let diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("empty_else"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &diags {
+        if let Some(delete_range) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("empty_else_delete_range"))
+            .and_then(|v| serde_json::from_value::<Range>(v.clone()).ok())
+        {
+            let edit = TextEdit {
+                range: delete_range,
+                new_text: String::new(),
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::remove_empty_else().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    if !diags.is_empty() {
+        if let Some(file_action) = compute_empty_else_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that removes ALL empty else blocks in the file.
+fn compute_empty_else_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let empty_else_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("empty_else"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if empty_else_diags.len() < 2 {
+        return None;
+    }
+
+    let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
+    for diag in &empty_else_diags {
+        if let Some(delete_range) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("empty_else_delete_range"))
+            .and_then(|v| serde_json::from_value::<Range>(v.clone()).ok())
+        {
+            edits.push((
+                delete_range.start.line,
+                delete_range.start.character,
+                TextEdit {
+                    range: delete_range,
+                    new_text: String::new(),
+                },
+            ));
+        }
+    }
+
+    if edits.is_empty() {
+        return None;
+    }
+
+    // Sort descending so later deletions don't shift earlier positions.
+    edits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, _, e)| e).collect();
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title: crate::util::i18n::remove_all_empty_else().to_string(),
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
+
+// ─── Remove else branch refactoring ──────────────────────────────────────────
+
+const JASS_ELSE_KIND: u16 = crate::lng::jass::kind::Kind::Else as u16;
+const JASS_ENDIF_KIND: u16 = crate::lng::jass::kind::Kind::Endif as u16;
+const JASS_IF_STATEMENT_KIND: u16 = crate::lng::jass::kind::Kind::IfStatement as u16;
+
+/// Position-based refactoring: if the cursor is on an `else` keyword, offer
+/// to remove the else branch.
+///
+/// The edit:
+///   1. Replaces `else` with `endif` (same indentation).
+///   2. Removes the old `endif` line.
+///   3. De-indents the old else body so it aligns with the new `endif`.
+fn compute_remove_else_action(params: &CodeActionParams) -> Option<CodeAction> {
+    let uri = &params.text_document.uri;
+    let rope = ROPE_MAP.get(uri)?;
+    let rope = rope.value();
+    let tree = TREE_MAP.get(uri)?;
+    let tree = tree.value();
+
+    let point = Point {
+        row: params.range.start.line,
+        column: params.range.start.character,
+    };
+
+    let root = tree.root_node();
+    let node = root.descendant_for_point_range(point, point)?;
+
+    // Check if we're on an `else` keyword.
+    if node.grammar_id() != JASS_ELSE_KIND {
+        return None;
+    }
+
+    // The parent must be an `if_statement`.
+    let if_stmt = node.parent()?;
+    if if_stmt.grammar_id() != JASS_IF_STATEMENT_KIND {
+        return None;
+    }
+
+    // Find the `endif` keyword among siblings after `else`.
+    let mut endif_node = None;
+    let mut sib = node.next_sibling();
+    while let Some(n) = sib {
+        if n.grammar_id() == JASS_ENDIF_KIND {
+            endif_node = Some(n);
+            break;
+        }
+        sib = n.next_sibling();
+    }
+    let endif_node = endif_node?;
+
+    let else_line = node.start_position().row;
+    let endif_line = endif_node.start_position().row;
+
+    let else_indent = line_indent(rope, else_line);
+
+    // ── Build replacement text ──────────────────────────────────────────
+    let mut new_text = format!("{}endif\n", else_indent);
+
+    let body_start = else_line + 1;
+    let body_end = endif_line; // exclusive
+
+    if body_start < body_end {
+        // Find minimum indentation among non-empty body lines.
+        let line_count = rope.line_of_offset(rope.len()) + 1;
+        let mut min_indent = usize::MAX;
+        for line_num in body_start..body_end {
+            if line_num >= line_count {
+                break;
+            }
+            let ls = rope.offset_of_line(line_num);
+            let le = rope.offset_of_line(line_num + 1).min(rope.len());
+            let text = rope.slice_to_cow(ls..le);
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let indent_len = text
+                .bytes()
+                .take_while(|b| *b == b' ' || *b == b'\t')
+                .count();
+            min_indent = min_indent.min(indent_len);
+        }
+
+        let excess = if min_indent == usize::MAX {
+            0
+        } else {
+            min_indent.saturating_sub(else_indent.len())
+        };
+
+        for line_num in body_start..body_end {
+            if line_num >= line_count {
+                break;
+            }
+            let ls = rope.offset_of_line(line_num);
+            let le = rope.offset_of_line(line_num + 1).min(rope.len());
+            let text = rope.slice_to_cow(ls..le);
+            let text_ref = text.as_ref();
+
+            // Strip `excess` leading whitespace bytes.
+            let leading_ws = text_ref
+                .bytes()
+                .take_while(|b| *b == b' ' || *b == b'\t')
+                .count();
+            let to_strip = excess.min(leading_ws);
+            new_text.push_str(&text_ref[to_strip..]);
+        }
+    }
+
+    // ── Edit range: from start of `else` line to end of `endif` line ────
+    let edit_start = rope.offset_of_line(else_line);
+    let line_count = rope.line_of_offset(rope.len()) + 1;
+    let edit_end = if endif_line + 1 < line_count {
+        rope.offset_of_line(endif_line + 1)
+    } else {
+        rope.len()
+    };
+
+    let range = Range::from_byte_offsets(rope, edit_start, edit_end);
+
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![TextEdit { range, new_text }]);
+
+    Some(CodeAction {
+        title: crate::util::i18n::remove_else_branch().to_string(),
+        kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
         diagnostics: None,
         edit: Some(WorkspaceEdit { changes: Some(changes) }),
         command: None,
