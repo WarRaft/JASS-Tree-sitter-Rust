@@ -45,7 +45,7 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
     // ── UjAPI download / re-download actions ──────────────────────────────
     // Diagnostics with source="ujapi" carry { ujapi_uri, ujapi_path } in `data`.
     let ujapi_diags: Vec<_> = params.context.diagnostics.iter()
-        .filter(|d| d.source.as_deref() == Some("ujapi"))
+        .filter(|d| d.has_code("ujapi"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -156,6 +156,12 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         }
     }
 
+    // ── Fold StringHash refactoring ──────────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_string_hash_fold(params));
+    }
+
     actions
 }
 
@@ -177,7 +183,7 @@ fn compute_simplify_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("simplify"))
+        .filter(|d| d.has_code("simplify"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -222,7 +228,7 @@ fn compute_simplify_fix_all(uri: &url::Url) -> Option<CodeAction> {
 
     let simplify_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("simplify"))
+        .filter(|d| d.has_code("simplify"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -299,7 +305,7 @@ fn compute_parens_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("parens"))
+        .filter(|d| d.has_code("parens"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -344,7 +350,7 @@ fn compute_parens_fix_all(uri: &url::Url) -> Option<CodeAction> {
 
     let parens_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("parens"))
+        .filter(|d| d.has_code("parens"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -396,7 +402,7 @@ fn compute_bool_cmp_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("bool_cmp"))
+        .filter(|d| d.has_code("bool-cmp"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -438,7 +444,7 @@ fn compute_bool_cmp_fix_all(uri: &url::Url) -> Option<CodeAction> {
 
     let bool_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("bool_cmp"))
+        .filter(|d| d.has_code("bool-cmp"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -799,7 +805,7 @@ fn compute_leak_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("leak"))
+        .filter(|d| d.has_code("leak"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -853,7 +859,7 @@ fn compute_fix_all_leaks(
 
     let leak_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("leak"))
+        .filter(|d| d.has_code("leak"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -918,7 +924,7 @@ fn compute_unused_func_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("unused_func"))
+        .filter(|d| d.has_code("unused-function"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -959,7 +965,7 @@ fn compute_unused_func_fix_all(uri: &url::Url) -> Option<CodeAction> {
 
     let unused_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("unused_func"))
+        .filter(|d| d.has_code("unused-function"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -1155,7 +1161,7 @@ fn compute_inline_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("inline"))
+        .filter(|d| d.has_code("inline"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -1197,7 +1203,7 @@ fn compute_inline_fix_all(uri: &url::Url) -> Option<CodeAction> {
 
     let inline_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("inline"))
+        .filter(|d| d.has_code("inline"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -1474,7 +1480,7 @@ fn compute_collapse_and_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("collapse_and"))
+        .filter(|d| d.has_code("collapse-and"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -1519,7 +1525,7 @@ fn compute_collapse_and_fix_all(uri: &url::Url) -> Option<CodeAction> {
 
     let collapse_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("collapse_and"))
+        .filter(|d| d.has_code("collapse-and"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -1583,7 +1589,7 @@ fn compute_collapse_or_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("collapse_or"))
+        .filter(|d| d.has_code("collapse-or"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -1628,7 +1634,7 @@ fn compute_collapse_or_fix_all(uri: &url::Url) -> Option<CodeAction> {
 
     let collapse_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("collapse_or"))
+        .filter(|d| d.has_code("collapse-or"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -1686,7 +1692,7 @@ fn compute_empty_else_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         .context
         .diagnostics
         .iter()
-        .filter(|d| d.source.as_deref() == Some("empty_else"))
+        .filter(|d| d.has_code("empty-else"))
         .filter(|d| d.data.is_some())
         .cloned()
         .collect();
@@ -1730,7 +1736,7 @@ fn compute_empty_else_fix_all(uri: &url::Url) -> Option<CodeAction> {
 
     let empty_else_diags: Vec<_> = all_diags
         .iter()
-        .filter(|d| d.source.as_deref() == Some("empty_else"))
+        .filter(|d| d.has_code("empty-else"))
         .filter(|d| d.data.is_some())
         .collect();
 
@@ -1908,3 +1914,209 @@ fn compute_remove_else_action(params: &CodeActionParams) -> Option<CodeAction> {
         command: None,
     })
 }
+
+// ─── Fold StringHash ─────────────────────────────────────────────────────────
+
+use crate::lng::jass::kind::{Field, Kind};
+use crate::util::string_hash::{
+    blizzard_string_hash, collect_constants, eval_const_expr, ConstValue,
+};
+
+const FIELD_NAME: u16 = Field::Name as u16;
+const FIELD_ARGS: u16 = Field::Args as u16;
+
+/// Info about a single foldable site in the file.
+struct StringHashSite {
+    /// Byte range to replace.
+    start: usize,
+    end: usize,
+    /// The evaluated hash value.
+    hash: i32,
+}
+
+/// Build a signature map: `func_name → [param_type, …]` from all known functions/natives.
+fn build_signature_map_for_uri(uri: &url::Url) -> HashMap<String, Vec<String>> {
+    let mut map = HashMap::new();
+    // Collect from the file itself and all connected files.
+    let component = crate::util::import_graph::IMPORT_GRAPH.connected_component(uri);
+    for file_uri in &component {
+        if let Some(entry) = FILE_STORE.get(file_uri) {
+            let symbols = &entry.value().file_symbols;
+            for f in &symbols.functions {
+                let types: Vec<String> = f.params.iter().map(|p| p.type_name.clone()).collect();
+                map.insert(f.name.clone(), types);
+            }
+            for n in &symbols.natives {
+                let types: Vec<String> = n.params.iter().map(|p| p.type_name.clone()).collect();
+                map.insert(n.name.clone(), types);
+            }
+        }
+    }
+    // Also check the file itself in case it's not yet in the graph.
+    if let Some(entry) = FILE_STORE.get(uri) {
+        let symbols = &entry.value().file_symbols;
+        for f in &symbols.functions {
+            let types: Vec<String> = f.params.iter().map(|p| p.type_name.clone()).collect();
+            map.entry(f.name.clone()).or_insert(types);
+        }
+        for n in &symbols.natives {
+            let types: Vec<String> = n.params.iter().map(|p| p.type_name.clone()).collect();
+            map.entry(n.name.clone()).or_insert(types);
+        }
+    }
+    map
+}
+
+/// Compute code actions for folding `StringHash(expr)` → integer constant
+/// and for replacing string arguments in integer parameter positions.
+fn compute_string_hash_fold(params: &CodeActionParams) -> Vec<CodeAction> {
+    let uri = &params.text_document.uri;
+    let rope = match ROPE_MAP.get(uri) {
+        Some(r) => r,
+        None => return vec![],
+    };
+    let tree = match TREE_MAP.get(uri) {
+        Some(t) => t,
+        None => return vec![],
+    };
+
+    // Collect constant values from globals in the file text.
+    let text = rope.to_string();
+    let const_lines: Vec<String> = text.lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| l.starts_with("constant "))
+        .collect();
+    let constants = collect_constants(&const_lines);
+
+    // Build function signature map.
+    let signatures = build_signature_map_for_uri(uri);
+
+    // Walk the tree and collect all foldable sites.
+    let root = tree.root_node();
+    let mut sites: Vec<StringHashSite> = Vec::new();
+    collect_string_hash_sites(&root, &text, &constants, &signatures, &mut sites);
+
+    if sites.is_empty() {
+        return vec![];
+    }
+
+    let mut actions = Vec::new();
+
+    // Find the site under the cursor.
+    let cursor_byte = rope.offset_of_line(params.range.start.line) + params.range.start.character;
+    if let Some(site) = sites.iter().find(|s| cursor_byte >= s.start && cursor_byte <= s.end) {
+        let range = Range::from_byte_offsets(&rope, site.start, site.end);
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), vec![TextEdit {
+            range,
+            new_text: site.hash.to_string(),
+        }]);
+        actions.push(CodeAction {
+            title: crate::util::i18n::fold_string_hash().to_string(),
+            kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
+            diagnostics: None,
+            edit: Some(WorkspaceEdit { changes: Some(changes) }),
+            command: None,
+        });
+    }
+
+    // File-wide: fold all sites — only when the cursor is on a site
+    // (single action was added) and there are more sites in the file.
+    if sites.len() >= 2 && !actions.is_empty() {
+        let edits: Vec<TextEdit> = sites.iter().map(|s| {
+            TextEdit {
+                range: Range::from_byte_offsets(&rope, s.start, s.end),
+                new_text: s.hash.to_string(),
+            }
+        }).collect();
+        let mut changes = HashMap::new();
+        changes.insert(uri.clone(), edits);
+        actions.push(CodeAction {
+            title: crate::util::i18n::fold_string_hash_all().to_string(),
+            kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
+            diagnostics: None,
+            edit: Some(WorkspaceEdit { changes: Some(changes) }),
+            command: None,
+        });
+    }
+
+    actions
+}
+
+/// Recursively walk the tree and collect foldable sites:
+/// 1. `StringHash(expr)` calls where the argument evaluates to a string
+/// 2. String expressions passed to integer parameter positions
+fn collect_string_hash_sites(
+    node: &tree_sitter::Node,
+    source: &str,
+    constants: &std::collections::HashMap<String, ConstValue>,
+    signatures: &HashMap<String, Vec<String>>,
+    sites: &mut Vec<StringHashSite>,
+) {
+    if let Ok(Kind::FunctionCall) = Kind::try_from(node.kind_id()) {
+        if let Some(name_node) = node.child_by_field_id(FIELD_NAME) {
+            let name = &source[name_node.start_byte()..name_node.end_byte()];
+
+            // Case 1: StringHash(expr) — fold the entire call.
+            if name == "StringHash" {
+                if let Some(args_node) = node.child_by_field_id(FIELD_ARGS) {
+                    let mut arg_text = None;
+                    for i in 0..args_node.child_count() {
+                        if let Some(child) = args_node.child(i as u32) {
+                            if let Ok(Kind::Expr) = Kind::try_from(child.kind_id()) {
+                                arg_text = Some(&source[child.start_byte()..child.end_byte()]);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(expr) = arg_text {
+                        if let Some(ConstValue::Str(s)) = eval_const_expr(expr, constants) {
+                            let hash = blizzard_string_hash(&s);
+                            sites.push(StringHashSite {
+                                start: node.start_byte(),
+                                end: node.end_byte(),
+                                hash,
+                            });
+                            return;
+                        }
+                    }
+                }
+            }
+
+            // Case 2: func(... string_arg ...) where param expects integer.
+            if let Some(param_types) = signatures.get(name) {
+                if let Some(args_node) = node.child_by_field_id(FIELD_ARGS) {
+                    let mut arg_index = 0usize;
+                    for i in 0..args_node.child_count() {
+                        if let Some(child) = args_node.child(i as u32) {
+                            if let Ok(Kind::Expr) = Kind::try_from(child.kind_id()) {
+                                if arg_index < param_types.len()
+                                    && param_types[arg_index] == "integer"
+                                {
+                                    let arg_text = &source[child.start_byte()..child.end_byte()];
+                                    if let Some(ConstValue::Str(s)) = eval_const_expr(arg_text, constants) {
+                                        let hash = blizzard_string_hash(&s);
+                                        sites.push(StringHashSite {
+                                            start: child.start_byte(),
+                                            end: child.end_byte(),
+                                            hash,
+                                        });
+                                    }
+                                }
+                                arg_index += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Recurse into children.
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i as u32) {
+            collect_string_hash_sites(&child, source, constants, signatures, sites);
+        }
+    }
+}
+

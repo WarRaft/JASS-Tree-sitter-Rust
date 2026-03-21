@@ -8,7 +8,7 @@ use crate::lng::jass::symbol::{
 use crate::lng::jass::type_map::{
     ComptimeValue, DeclType, FuncType, ParamPair, TypeDeclInfo, TypeMap, VarType, UNKNOWN_TYPE,
 };
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
+use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
 use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
 use crate::lsp::folding::lsp::{FoldingRange, FoldingRangeKind};
 use crate::lsp::highlight::lsp::DocumentHighlightKind;
@@ -401,7 +401,7 @@ impl Cursor {
                 range: e.node.to_range(rope),
                 message: e.message.clone(),
                 severity: Some(DiagnosticSeverity::Error),
-                ..Default::default()
+                ..Diagnostic::new("jass", "syntax")
             });
         }
 
@@ -674,7 +674,7 @@ impl Cursor {
                             &name,
                         ),
                         severity: Some(DiagnosticSeverity::Error),
-                        ..Default::default()
+                        ..Diagnostic::new("jass", "undeclared")
                     });
                 }
             }
@@ -1847,7 +1847,7 @@ impl Cursor {
                                     range: id.node.to_range(&self.rope),
                                     message: crate::util::i18n::array_in_argument(&aname),
                                     severity: Some(DiagnosticSeverity::Error),
-                                    ..Default::default()
+                                    ..Diagnostic::new("jass", "array-in-arg")
                                 });
                             }
                         }
@@ -1893,7 +1893,7 @@ impl Cursor {
                                 range: id.node.to_range(&self.rope),
                                 message: crate::util::i18n::array_in_return(&name),
                                 severity: Some(DiagnosticSeverity::Error),
-                                ..Default::default()
+                                ..Diagnostic::new("jass", "array-in-return")
                             });
                         }
                     }
@@ -1908,7 +1908,7 @@ impl Cursor {
                                 range: r.node.to_range(&self.rope),
                                 message: crate::util::i18n::return_value_in_nothing(),
                                 severity: Some(DiagnosticSeverity::Error),
-                                ..Default::default()
+                                ..Diagnostic::new("jass", "return-nothing")
                             });
                         } else if let Some(ref et) = expr_type {
                             // Type mismatch: expression type vs declared return type.
@@ -1917,7 +1917,7 @@ impl Cursor {
                                     range: expr.cst_node().to_range(&self.rope),
                                     message: crate::util::i18n::return_type_mismatch(et, rt),
                                     severity: Some(DiagnosticSeverity::Error),
-                                    ..Default::default()
+                                    ..Diagnostic::new("jass", "return-type-mismatch")
                                 });
                             }
                         }
@@ -1930,7 +1930,7 @@ impl Cursor {
                                 range: r.node.to_range(&self.rope),
                                 message: crate::util::i18n::return_missing_value(rt),
                                 severity: Some(DiagnosticSeverity::Error),
-                                ..Default::default()
+                                ..Diagnostic::new("jass", "return-missing-value")
                             });
                         }
                     }
@@ -2029,7 +2029,7 @@ impl Cursor {
                     range,
                     message: crate::util::i18n::cannot_assign_type(et, declared_type),
                     severity: Some(DiagnosticSeverity::Error),
-                    ..Default::default()
+                    ..Diagnostic::new("jass", "type-mismatch")
                 });
             }
         }
@@ -2252,7 +2252,7 @@ impl Cursor {
                                 range: id.node.to_range(&self.rope),
                                 message: crate::util::i18n::array_in_argument(&aname),
                                 severity: Some(DiagnosticSeverity::Error),
-                                ..Default::default()
+                                ..Diagnostic::new("jass", "array-in-arg")
                             });
                         }
                     }
@@ -2288,7 +2288,7 @@ impl Cursor {
                                 range: op_range,
                                 message: crate::util::i18n::operator_binary_error(&op_text, l, r),
                                 severity: Some(DiagnosticSeverity::Error),
-                                ..Default::default()
+                                ..Diagnostic::new("jass", "operator-type")
                             });
                         }
                     }
@@ -2329,7 +2329,7 @@ impl Cursor {
                                 range: op_n.to_range(&self.rope),
                                 message: crate::util::i18n::operator_unary_error(&op_text, t),
                                 severity: Some(DiagnosticSeverity::Error),
-                                ..Default::default()
+                                ..Diagnostic::new("jass", "operator-type")
                             });
                         }
                     }
@@ -2576,7 +2576,8 @@ impl Cursor {
                 range: full_range,
                 message: crate::util::i18n::redundant_parens().to_string(),
                 severity: Some(DiagnosticSeverity::Hint),
-                source: Some("parens".into()),
+                source: Some("jass".into()),
+                code: Some(DiagnosticCode::String("parens".into())),
                 data: Some(serde_json::json!({
                     "parens_open":  open_range,
                     "parens_close": close_range,
@@ -2631,7 +2632,8 @@ impl Cursor {
             range,
             message: crate::util::i18n::redundant_bool_cmp().to_string(),
             severity: Some(DiagnosticSeverity::Warning),
-            source: Some("bool_cmp".into()),
+            source: Some("jass".into()),
+            code: Some(DiagnosticCode::String("bool-cmp".into())),
             data: Some(serde_json::json!({ "bool_cmp_new_text": new_text })),
             ..Default::default()
         });
@@ -2772,7 +2774,8 @@ impl Cursor {
             range,
             message: crate::util::i18n::simplify_if_return().to_string(),
             severity: Some(DiagnosticSeverity::Hint),
-            source: Some("simplify".into()),
+            source: Some("jass".into()),
+            code: Some(DiagnosticCode::String("simplify".into())),
             data: Some(serde_json::json!({
                 "simplify_new_text": new_text,
             })),
@@ -2876,7 +2879,8 @@ impl Cursor {
                         message: crate::util::i18n::empty_else().to_string(),
                         severity: Some(DiagnosticSeverity::Hint),
                         tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
-                        source: Some("empty_else".into()),
+                        source: Some("jass".into()),
+                        code: Some(DiagnosticCode::String("empty-else".into())),
                         data: Some(serde_json::json!({
                             "empty_else_delete_range": delete_range,
                         })),
@@ -2920,7 +2924,7 @@ impl Cursor {
                     message: crate::util::i18n::dead_code().to_string(),
                     severity: Some(DiagnosticSeverity::Hint),
                     tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
-                    ..Default::default()
+                    ..Diagnostic::new("jass", "dead-code")
                 });
                 // Still recurse so we don't miss nested checks,
                 // but don't set found_return again.
@@ -3068,7 +3072,8 @@ impl Cursor {
             range,
             message: crate::util::i18n::collapse_and_chain().to_string(),
             severity: Some(DiagnosticSeverity::Hint),
-            source: Some("collapse_and".into()),
+            source: Some("jass".into()),
+            code: Some(DiagnosticCode::String("collapse-and".into())),
             data: Some(serde_json::json!({
                 "collapse_and_new_text": new_text,
             })),
@@ -3287,7 +3292,8 @@ impl Cursor {
             range,
             message: crate::util::i18n::collapse_or_chain().to_string(),
             severity: Some(DiagnosticSeverity::Hint),
-            source: Some("collapse_or".into()),
+            source: Some("jass".into()),
+            code: Some(DiagnosticCode::String("collapse-or".into())),
             data: Some(serde_json::json!({
                 "collapse_or_new_text": new_text,
             })),
@@ -3420,7 +3426,8 @@ impl Cursor {
                             &hl.name, &hl.type_name,
                         ),
                         severity: Some(DiagnosticSeverity::Error),
-                        source: Some("leak".into()),
+                        source: Some("jass".into()),
+                        code: Some(DiagnosticCode::String("leak".into())),
                         data: Some(serde_json::json!({
                             "leak_var": hl.name,
                             "leak_kind": "endfunction",
@@ -3527,7 +3534,8 @@ impl Cursor {
                                     &hl.name, &hl.type_name,
                                 ),
                                 severity: Some(DiagnosticSeverity::Error),
-                                source: Some("leak".into()),
+                                source: Some("jass".into()),
+                                code: Some(DiagnosticCode::String("leak".into())),
                                 data: Some(serde_json::json!({
                                     "leak_var": hl.name,
                                     "leak_kind": "return",

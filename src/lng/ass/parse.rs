@@ -133,17 +133,20 @@ fn _parse(
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() { return Ok(vec![]); }
 
-    // Capture the old connected component BEFORE updating the graph.
-    let old_component = IMPORT_GRAPH.connected_component(uri);
+    // Capture the old visible component BEFORE updating the graph.
+    let old_component = IMPORT_GRAPH.visible_component(uri);
 
     IMPORT_GRAPH.update(uri, imports);
 
-    let component = IMPORT_GRAPH.connected_component(uri);
+    // Refresh entry cache so that visible_component reads the updated graph.
+    IMPORT_GRAPH.recompute_entry_cache();
+
+    let component = IMPORT_GRAPH.visible_component(uri);
 
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() { return Ok(vec![]); }
 
-    // 4. Gather symbols from the **entire connected component** (unified scope).
+    // 4. Gather symbols from the **visible component** (entry-aware scope).
     //    Symbols from `.j` files are placed under the `Jass` namespace;
     //    symbols from `.as` files keep their original namespace.
     //    JASS types are also promoted to top-level (namespace = "") so that

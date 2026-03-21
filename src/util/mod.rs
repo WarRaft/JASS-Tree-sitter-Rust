@@ -10,6 +10,7 @@ pub(crate) mod open;
 pub(crate) mod parse;
 pub(crate) mod roper;
 pub(crate) mod scope_resolver;
+pub(crate) mod string_hash;
 pub(crate) mod tree_map;
 pub(crate) mod type_graph;
 pub(crate) mod ujapi;
@@ -19,4 +20,6 @@ pub(crate) mod uri_map;
 mod import_graph_test;
 #[cfg(test)]
 mod scope_resolver_test;
+#[cfg(test)]
+mod string_hash_test;
 

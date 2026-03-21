@@ -1194,3 +1194,24 @@ pub fn remove_else_branch() -> &'static str {
     )
 }
 
+// ─── Fold StringHash ─────────────────────────────────────────────────────────
+
+pub fn fold_string_hash() -> &'static str {
+    pick(
+        "Compute StringHash",
+        "Вычислить StringHash",
+        "Обчислити StringHash",
+        "计算 StringHash",
+        "計算 StringHash",
+    )
+}
+
+pub fn fold_string_hash_all() -> &'static str {
+    pick(
+        "Compute all StringHash in file",
+        "Вычислить все StringHash в файле",
+        "Обчислити всі StringHash у файлі",
+        "计算文件中所有 StringHash",
+        "計算檔案中所有 StringHash",
+    )
+}

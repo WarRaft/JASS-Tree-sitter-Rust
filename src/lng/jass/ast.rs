@@ -422,7 +422,7 @@ fn build_statement<'tree>(
 
 /// Convert a bare `expr` at statement level.
 /// If it's an assignment (`id = value`), produce `Statement::Set`.
-/// Otherwise, wrap the whole thing as `Statement::Set` with only the expression.
+/// If it's a function call (`Func(args)`), produce `Statement::Call`.
 fn build_expr_statement<'tree>(node: &Node<'tree>) -> Option<Statement<'tree>> {
     // Look for assignment pattern: child0=expr(id), child1='=', child2=expr(value)
     let count = node.child_count();
@@ -461,7 +461,18 @@ fn build_expr_statement<'tree>(node: &Node<'tree>) -> Option<Statement<'tree>> {
             }
         }
     }
-    // Not an assignment — still process as expression for ref tracking
+    // Not an assignment — check if the expression is a bare function call.
+    // Walk children to find a FunctionCall node (e.g. `SaveInteger(...)` without `call`).
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if Kind::try_from(child.kind_id()) == Ok(Kind::FunctionCall) {
+                return Some(Statement::Call(CallStmt {
+                    node: *node,
+                    func: Some(build_function_call(&child)),
+                }));
+            }
+        }
+    }
     None
 }
 

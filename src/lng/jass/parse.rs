@@ -171,17 +171,20 @@ fn _parse(
         return Ok(vec![]);
     }
 
-    // Capture the old connected component BEFORE updating the graph,
+    // Capture the old visible component BEFORE updating the graph,
     // so we can detect peers that lost visibility after import removal.
-    let old_component = IMPORT_GRAPH.connected_component(uri);
+    let old_component = IMPORT_GRAPH.visible_component(uri);
 
     IMPORT_GRAPH.update(uri, imports.clone());
 
-    // 4. Gather symbols from the **entire connected component** (unified scope).
+    // Refresh entry cache so that visible_component reads the updated graph.
+    IMPORT_GRAPH.recompute_entry_cache();
+
+    // 4. Gather symbols from the **visible component** (entry-aware scope).
     let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
     let component: HashSet<Url>;
     {
-        component = IMPORT_GRAPH.connected_component(uri);
+        component = IMPORT_GRAPH.visible_component(uri);
 
         // Ensure every PEER is in the scope resolver.
         // Skip `uri` itself to avoid clobbering current-file data with stale cache.
@@ -346,7 +349,8 @@ fn _parse(
                             tags: Some(vec![
                                 crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary,
                             ]),
-                            source: Some("unused_func".into()),
+                            source: Some("jass".into()),
+                            code: Some(crate::lsp::diagnostic::lsp::DiagnosticCode::String("unused-function".into())),
                             data: Some(serde_json::json!({
                                 "unused_func_range": func_range,
                             })),
@@ -365,7 +369,7 @@ fn _parse(
                             range: decl_occ.range.clone(),
                             message: crate::util::i18n::cyclic_call_chain(&group.name),
                             severity: Some(DiagnosticSeverity::Warning),
-                            ..Default::default()
+                            ..Diagnostic::new("jass", "cyclic-call")
                         });
                     }
                 }
@@ -420,7 +424,8 @@ fn _parse(
                             tags: Some(vec![
                                 crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary,
                             ]),
-                            source: Some("inline".into()),
+                            source: Some("jass".into()),
+                            code: Some(crate::lsp::diagnostic::lsp::DiagnosticCode::String("inline".into())),
                             data: Some(data),
                             ..Default::default()
                         });
@@ -444,7 +449,7 @@ fn _parse(
                                 range: sd.node.to_range(rope),
                                 message: crate::util::i18n::build_requires_entry(key),
                                 severity: Some(DiagnosticSeverity::Error),
-                                ..Default::default()
+                                ..Diagnostic::new("jass", "build-not-entry")
                             });
                         }
                     }

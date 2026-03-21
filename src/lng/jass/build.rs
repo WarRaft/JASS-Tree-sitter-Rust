@@ -26,6 +26,7 @@ use crate::lng::jass::ast::{
 use crate::lng::jass::kind::Kind;
 use crate::util::file_store::{is_uri_frozen, FILE_STORE};
 use crate::util::import_graph::IMPORT_GRAPH;
+use crate::util::string_hash::{collect_constants, fold_string_hash, fold_string_integer_args};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -88,6 +89,9 @@ pub fn build_jass(uri: &Url) -> BuildResult {
 
     // 4b. Inline single-call-site trivial functions.
     apply_inlines(&mut fragments);
+
+    // 4c. Fold StringHash("literal") → integer constant.
+    fold_string_hash_in_fragments(&mut fragments);
 
     // 5. Topological sort of functions.
     let sorted_funcs = topo_sort_functions(&fragments.functions);
@@ -186,6 +190,9 @@ pub fn build_as(uri: &Url) -> BuildResult {
 
     // 4b. Inline single-call-site trivial functions.
     apply_inlines(&mut fragments);
+
+    // 4c. Fold StringHash("literal") → integer constant.
+    fold_string_hash_in_fragments(&mut fragments);
 
     // 5. Topological sort of functions.
     let sorted_funcs = topo_sort_functions(&fragments.functions);
@@ -1155,6 +1162,69 @@ fn apply_inlines(fragments: &mut Fragments) {
     for name in &to_inline {
         fragments.functions.remove(name);
     }
+}
+
+/// Fold `StringHash(expr)` → integer constant in all fragments.
+///
+/// First collects compile-time constant values (`constant string`, `constant integer`)
+/// from globals, then evaluates `StringHash(...)` argument expressions.
+/// Also folds string expressions that appear in integer parameter positions.
+fn fold_string_hash_in_fragments(fragments: &mut Fragments) {
+    let constants = collect_constants(&fragments.globals_out);
+
+    // Build signature map: func_name → [param_type, …]
+    let signatures = build_signature_map();
+
+    // Pass 1: fold explicit StringHash(...) calls.
+    for frag in fragments.functions.values_mut() {
+        let folded = fold_string_hash(&frag.source, &constants);
+        if folded != frag.source {
+            frag.source = folded;
+        }
+    }
+    for stmt in fragments.bare_stmts.iter_mut() {
+        let folded = fold_string_hash(stmt, &constants);
+        if folded != *stmt {
+            *stmt = folded;
+        }
+    }
+    for g in fragments.globals_out.iter_mut() {
+        let folded = fold_string_hash(g, &constants);
+        if folded != *g {
+            *g = folded;
+        }
+    }
+
+    // Pass 2: fold string arguments in integer parameter positions.
+    for frag in fragments.functions.values_mut() {
+        let folded = fold_string_integer_args(&frag.source, &constants, &signatures);
+        if folded != frag.source {
+            frag.source = folded;
+        }
+    }
+    for stmt in fragments.bare_stmts.iter_mut() {
+        let folded = fold_string_integer_args(stmt, &constants, &signatures);
+        if folded != *stmt {
+            *stmt = folded;
+        }
+    }
+}
+
+/// Build a map of `func_name → [param_type, …]` from all known functions/natives.
+fn build_signature_map() -> HashMap<String, Vec<String>> {
+    let mut map = HashMap::new();
+    for entry in FILE_STORE.iter() {
+        let symbols = &entry.value().file_symbols;
+        for f in &symbols.functions {
+            let types: Vec<String> = f.params.iter().map(|p| p.type_name.clone()).collect();
+            map.insert(f.name.clone(), types);
+        }
+        for n in &symbols.natives {
+            let types: Vec<String> = n.params.iter().map(|p| p.type_name.clone()).collect();
+            map.insert(n.name.clone(), types);
+        }
+    }
+    map
 }
 
 /// Simple topological sort of functions by callees using DFS.

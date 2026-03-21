@@ -330,7 +330,7 @@ pub fn visit_import_semantic(
             range: node.to_range(rope),
             message: crate::util::i18n::missing_import_path().into(),
             severity: Some(DiagnosticSeverity::Error),
-            ..Default::default()
+            ..Diagnostic::new("jass", "import-missing-path")
         });
     } else {
         // String token for the path (skip whitespace between prefix and path)
@@ -417,14 +417,14 @@ pub fn visit_set_semantic(
             range: node.to_range(rope),
             message: crate::util::i18n::missing_setting_key().into(),
             severity: Some(DiagnosticSeverity::Error),
-            ..Default::default()
+            ..Diagnostic::new("jass", "setting-missing-key")
         });
     } else if sd.value.is_empty() {
         diagnostics.push(Diagnostic {
             range: node.to_range(rope),
             message: crate::util::i18n::missing_setting_value(&sd.key),
             severity: Some(DiagnosticSeverity::Warning),
-            ..Default::default()
+            ..Diagnostic::new("jass", "setting-missing-value")
         });
     } else {
         // Validate against the registry
@@ -434,7 +434,7 @@ pub fn visit_set_semantic(
                     range: node.to_range(rope),
                     message: err_msg,
                     severity: Some(DiagnosticSeverity::Warning),
-                    ..Default::default()
+                    ..Diagnostic::new("jass", "setting-invalid")
                 });
             }
         }
@@ -480,7 +480,7 @@ pub fn visit_ignore_semantic(
             range: node.to_range(rope),
             message: crate::util::i18n::missing_ignore_tag().into(),
             severity: Some(DiagnosticSeverity::Warning),
-            ..Default::default()
+            ..Diagnostic::new("jass", "ignore-missing-tag")
         });
     } else {
         for tag in &ig.tags {
@@ -548,7 +548,7 @@ pub fn process_imports<'a>(
                         range: path_range,
                         message: crate::util::i18n::file_not_found(&imp.path),
                         severity: Some(DiagnosticSeverity::Error),
-                        ..Default::default()
+                        ..Diagnostic::new("jass", "import-not-found")
                     });
                 }
             }
@@ -557,7 +557,7 @@ pub fn process_imports<'a>(
                     range: path_range,
                     message: crate::util::i18n::cannot_resolve_import(&imp.path),
                     severity: Some(DiagnosticSeverity::Error),
-                    ..Default::default()
+                    ..Diagnostic::new("jass", "import-resolve")
                 });
             }
         }
@@ -583,7 +583,7 @@ pub fn visit_ujapi_semantic(
             range: node.to_range(rope),
             message: crate::util::i18n::ujapi_missing_path().into(),
             severity: Some(DiagnosticSeverity::Error),
-            ..Default::default()
+            ..Diagnostic::new("jass", "ujapi-missing-path")
         });
     } else {
         // String token for the path

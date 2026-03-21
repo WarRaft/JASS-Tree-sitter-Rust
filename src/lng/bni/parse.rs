@@ -55,7 +55,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                 range: node.to_range(&rope),
                 message: crate::util::i18n::missing_token(expected),
                 severity: Some(DiagnosticSeverity::Error),
-                ..Default::default()
+                ..Diagnostic::new("bni", "syntax")
             });
             continue;
         }
@@ -65,7 +65,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                 range: node.to_range(&rope),
                 message: crate::util::i18n::syntax_error().into(),
                 severity: Some(DiagnosticSeverity::Error),
-                ..Default::default()
+                ..Diagnostic::new("bni", "syntax")
             });
         }
 

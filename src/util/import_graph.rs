@@ -556,6 +556,36 @@ impl ImportGraph {
         !self.entry_cache.read().unwrap().is_empty()
     }
 
+    /// Entry-point-aware visible component for `uri`.
+    ///
+    /// When entry points exist, returns every URI reachable (outgoing-only)
+    /// from the same entry point(s) that own `uri`, **excluding** `uri` itself.
+    /// This prevents files like `common.j` from leaking in via incoming edges
+    /// when they are not part of the entry's import chain.
+    ///
+    /// When no entry points exist, falls back to the full bidirectional
+    /// [`connected_component`].
+    pub fn visible_component(&self, uri: &Url) -> HashSet<Url> {
+        let cache = self.entry_cache.read().unwrap();
+        if cache.is_empty() {
+            drop(cache);
+            return self.connected_component(uri);
+        }
+
+        let my_entries = cache.get(uri).cloned().unwrap_or_default();
+        if my_entries.is_empty() {
+            drop(cache);
+            return self.connected_component(uri);
+        }
+
+        // All files that share at least one entry point with `uri`.
+        cache
+            .iter()
+            .filter(|(k, entries)| *k != uri && entries.iter().any(|e| my_entries.contains(e)))
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
     /// Return the set of URIs **transitively reachable** from all entry-point
     /// files (files with `//entry` directive), reading from the cached map.
     ///

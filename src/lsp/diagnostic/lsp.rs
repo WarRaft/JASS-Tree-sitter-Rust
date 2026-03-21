@@ -120,11 +120,34 @@ pub enum DiagnosticTag {
     Deprecated = 2,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DiagnosticCode {
     Int(i64),
     String(String),
+}
+
+impl DiagnosticCode {
+    /// Check if this code is a specific string value.
+    pub fn is_str(&self, s: &str) -> bool {
+        matches!(self, DiagnosticCode::String(v) if v == s)
+    }
+}
+
+impl Diagnostic {
+    /// Check if the diagnostic has a specific string code.
+    pub fn has_code(&self, s: &str) -> bool {
+        self.code.as_ref().map_or(false, |c| c.is_str(s))
+    }
+
+    /// Create a new diagnostic with the standard source and a string code.
+    pub fn new(source: &str, code: &str) -> Self {
+        Self {
+            source: Some(source.into()),
+            code: Some(DiagnosticCode::String(code.into())),
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

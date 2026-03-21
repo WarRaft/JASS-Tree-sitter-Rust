@@ -507,9 +507,9 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
         }
     }
 
-    // ── Imported symbols (connected component) ───────────────────────────
+    // ── Imported symbols (visible component) ───────────────────────────
     {
-        let component = IMPORT_GRAPH.connected_component(uri);
+        let component = IMPORT_GRAPH.visible_component(uri);
         if !component.is_empty() {
             let mut visible = component;
             visible.insert(uri.clone());

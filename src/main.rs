@@ -154,7 +154,7 @@ async fn main() {
                         &writer,
                         &ResponseMessage {
                             jsonrpc: "2.0".into(),
-                            id: None,
+                            id: call.id,
                             result: Some(json!(null)),
                             error: None,
                         },
@@ -1187,12 +1187,11 @@ async fn main() {
                     "shutdown" | "exit" => {
                         send(
                             &writer,
-                            &ResponseMessage {
-                                jsonrpc: "2.0".into(),
-                                id: None,
-                                result: Some(json!(null)),
-                                error: None,
-                            },
+                            &json!({
+                                "jsonrpc": "2.0",
+                                "id": msg.id,
+                                "result": null
+                            }),
                         )
                         .await;
                         break;

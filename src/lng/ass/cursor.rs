@@ -177,7 +177,7 @@ impl Cursor {
                 range: e.node.to_range(rope),
                 message: e.message.clone(),
                 severity: Some(DiagnosticSeverity::Error),
-                ..Default::default()
+                ..Diagnostic::new("as", "syntax")
             });
         }
 
@@ -701,7 +701,7 @@ impl Cursor {
                             &name,
                         ),
                         severity: Some(DiagnosticSeverity::Error),
-                        ..Default::default()
+                        ..Diagnostic::new("as", "undeclared")
                     });
                 }
             }

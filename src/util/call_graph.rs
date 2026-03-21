@@ -68,12 +68,12 @@ pub struct FuncDiagnostics {
 
 /// Lightweight analysis: return unused / cyclic function names declared in `uri`.
 ///
-/// Reads `FILE_STORE` for every file in the connected component that
+/// Reads `FILE_STORE` for every file in the visible component that
 /// contains `uri` (must already be populated).
 pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     let mut result = FuncDiagnostics::default();
 
-    let mut component: HashSet<Url> = IMPORT_GRAPH.connected_component(uri);
+    let mut component: HashSet<Url> = IMPORT_GRAPH.visible_component(uri);
     component.insert(uri.clone());
 
     // Frozen URIs.
@@ -262,10 +262,10 @@ pub struct CallGraphResult {
 
 // ─── Builder ─────────────────────────────────────────────────────────────────
 
-/// Build the call graph for the connected component that includes `uri`.
+/// Build the call graph for the visible component that includes `uri`.
 pub fn build_call_graph(uri: &Url) -> CallGraphResult {
-    // All files connected via imports (+ self).
-    let mut component: HashSet<Url> = IMPORT_GRAPH.connected_component(uri);
+    // All files visible via imports (+ self).
+    let mut component: HashSet<Url> = IMPORT_GRAPH.visible_component(uri);
     component.insert(uri.clone());
 
     // Frozen URIs — any file imported via `//import!` by anyone in component.

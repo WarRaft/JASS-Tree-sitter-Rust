@@ -37,7 +37,7 @@ pub struct TypeGraphResult {
 
 /// Build a type inheritance graph for the connected component of `uri`.
 pub fn build_type_graph(uri: &Url) -> TypeGraphResult {
-    let mut component: HashSet<Url> = IMPORT_GRAPH.connected_component(uri);
+    let mut component: HashSet<Url> = IMPORT_GRAPH.visible_component(uri);
     component.insert(uri.clone());
 
     // Frozen URIs.

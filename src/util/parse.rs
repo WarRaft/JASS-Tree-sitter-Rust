@@ -94,7 +94,7 @@ pub fn resolve_import_directive(
                     range: path_range,
                     message: crate::util::i18n::file_not_found(&imp.path),
                     severity: Some(DiagnosticSeverity::Error),
-                    ..Default::default()
+                    ..Diagnostic::new("jass", "import-not-found")
                 });
             }
         }
@@ -103,7 +103,7 @@ pub fn resolve_import_directive(
                 range: path_range,
                 message: crate::util::i18n::cannot_resolve_import(&imp.path),
                 severity: Some(DiagnosticSeverity::Error),
-                ..Default::default()
+                ..Diagnostic::new("jass", "import-resolve")
             });
         }
     }
@@ -181,9 +181,8 @@ pub fn resolve_ujapi_directive(
                     range: path_range,
                     message: crate::util::i18n::ujapi_file_not_found(&ud.path),
                     severity: Some(DiagnosticSeverity::Error),
-                    source: Some("ujapi".into()),
                     data: Some(ujapi_data),
-                    ..Default::default()
+                    ..Diagnostic::new("jass", "ujapi")
                 });
                 return;
             }
@@ -203,9 +202,8 @@ pub fn resolve_ujapi_directive(
                         range: path_range.clone(),
                         message: crate::util::i18n::ujapi_no_version_tag().into(),
                         severity: Some(DiagnosticSeverity::Warning),
-                        source: Some("ujapi".into()),
                         data: Some(ujapi_data.clone()),
-                        ..Default::default()
+                        ..Diagnostic::new("jass", "ujapi")
                     });
                 }
                 // We have both tags and they differ → outdated
@@ -214,9 +212,8 @@ pub fn resolve_ujapi_directive(
                         range: path_range.clone(),
                         message: crate::util::i18n::ujapi_outdated(ft, &rel.tag),
                         severity: Some(DiagnosticSeverity::Warning),
-                        source: Some("ujapi".into()),
                         data: Some(ujapi_data.clone()),
-                        ..Default::default()
+                        ..Diagnostic::new("jass", "ujapi")
                     });
                 }
                 // Tags match → show version as inlay hint ✓
@@ -269,7 +266,7 @@ pub fn resolve_ujapi_directive(
                 range: path_range,
                 message: crate::util::i18n::ujapi_cannot_resolve(&ud.path),
                 severity: Some(DiagnosticSeverity::Error),
-                ..Default::default()
+                ..Diagnostic::new("jass", "ujapi-resolve")
             });
         }
     }
@@ -301,7 +298,7 @@ pub fn resolve_path_import(
                     range: path_range,
                     message: crate::util::i18n::file_not_found(path_text),
                     severity: Some(DiagnosticSeverity::Error),
-                    ..Default::default()
+                    ..Diagnostic::new("jass", "import-not-found")
                 });
             }
         }
@@ -310,7 +307,7 @@ pub fn resolve_path_import(
                 range: path_range,
                 message: crate::util::i18n::cannot_resolve_import(path_text),
                 severity: Some(DiagnosticSeverity::Error),
-                ..Default::default()
+                ..Diagnostic::new("jass", "import-resolve")
             });
         }
     }
