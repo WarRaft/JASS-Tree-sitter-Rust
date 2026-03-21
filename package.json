@@ -184,6 +184,21 @@
           "light": "./icons/mpq.svg",
           "dark": "./icons/mpq.svg"
         }
+      },
+      {
+        "id": "wts",
+        "aliases": [
+          "WarCraft III Strings",
+          "WTS"
+        ],
+        "extensions": [
+          ".wts"
+        ],
+        "icon": {
+          "light": "./icons/wts.svg",
+          "dark": "./icons/wts.svg"
+        },
+        "configuration": "./syntaxes/wts.language-configuration.json"
       }
     ],
     "configurationDefaults": {
@@ -194,6 +209,9 @@
         "editor.selectionHighlight": false
       },
       "[angelscript]": {
+        "editor.selectionHighlight": false
+      },
+      "[wts]": {
         "editor.selectionHighlight": false
       }
     },
@@ -301,6 +319,11 @@
         "command": "mpq.browse",
         "title": "%command.mpq.browse%",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "mpq.openFile",
+        "title": "%command.mpq.openFile%",
+        "icon": "$(go-to-file)"
       },
       {
         "command": "jass.restartServer",

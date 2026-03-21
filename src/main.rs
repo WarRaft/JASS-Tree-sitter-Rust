@@ -216,6 +216,20 @@ async fn main() {
                                 mark_parse_done(&uri, parse_gen);
                             });
                         }
+                    } else if params.text_document.language_id == "wts" {
+                        let text = params.text_document.text;
+                        let uri = params.text_document.uri;
+                        if let Err(e) = lng::wts::open::init(&uri, &text) {
+                            error!("wts init: {}", e);
+                        } else {
+                            let parse_gen = mark_parse_pending(&uri);
+                            tokio::spawn(async move {
+                                if let Err(e) = lng::wts::parse::parse_and_notify(&uri).await {
+                                    error!("wts parse: {}", e);
+                                }
+                                mark_parse_done(&uri, parse_gen);
+                            });
+                        }
                     }
                 }
 
@@ -258,6 +272,18 @@ async fn main() {
                                 tokio::spawn(async move {
                                     if let Err(e) = lng::ass::parse::parse_and_notify(&uri, Some(parse_gen)).await {
                                         error!("as parse: {}", e);
+                                    }
+                                    mark_parse_done(&uri, parse_gen);
+                                });
+                            }
+                        } else if lng_val == "wts" {
+                            if let Err(e) = lng::wts::change::apply_edits(&uri, params.content_changes) {
+                                error!("wts edit: {}", e);
+                            } else {
+                                let parse_gen = mark_parse_pending(&uri);
+                                tokio::spawn(async move {
+                                    if let Err(e) = lng::wts::parse::parse_and_notify(&uri).await {
+                                        error!("wts parse: {}", e);
                                     }
                                     mark_parse_done(&uri, parse_gen);
                                 });
@@ -334,7 +360,7 @@ async fn main() {
                             }
 
                             MethodCall::W3iRender(param) => {
-                                w3i_send(&writer, call.id, &param.uri).await;
+                                w3i_send(&writer, call.id, &param.uri, param.archive_path.as_deref()).await;
                             }
 
                             MethodCall::Initialized(_) => {

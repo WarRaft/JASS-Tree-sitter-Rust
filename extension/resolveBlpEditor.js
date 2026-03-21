@@ -28,9 +28,25 @@
 // eslint-disable-next-line no-unused-vars
 async function resolveBlpEditor(document, webviewPanel, _token, client) {
     /** @type {BlpRenderResult} */
-    const result = await client.sendRequest('blp/render', {
-        uri: document.uri.toString()
-    })
+    let result
+    try {
+        result = await client.sendRequest('blp/render', {
+            uri: document.uri.toString()
+        })
+    } catch (e) {
+        webviewPanel.webview.html = errorHtml(`Failed to render BLP: ${e}`)
+        return
+    }
+
+    if (result.error) {
+        webviewPanel.webview.html = errorHtml(result.error.message || JSON.stringify(result.error))
+        return
+    }
+
+    if (!result.mipmaps) {
+        webviewPanel.webview.html = errorHtml('No mipmaps returned by server.')
+        return
+    }
 
     const items = result.mipmaps.map((mip, index) => {
         return `
@@ -222,3 +238,13 @@ async function resolveBlpEditor(document, webviewPanel, _token, client) {
 module.exports = {
     resolveBlpEditor
 }
+
+function errorHtml(msg) {
+    const s = String(msg).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/></head>
+<body style="background:var(--vscode-editor-background);color:var(--vscode-errorForeground);font-family:var(--vscode-font-family);padding:2rem;">
+<h2>⚠ Error</h2><pre>${s}</pre>
+</body></html>`
+}
+

@@ -6,6 +6,7 @@
   "command.build.execute": "Сборка",
   "command.ujapi.download": "Скачать UjAPI common.j",
   "command.mpq.browse": "Обзор архива MPQ",
+  "command.mpq.openFile": "Открыть файл из архива MPQ",
   "command.jass.restartServer": "Перезапустить JASS LSP сервер",
   "customEditor.blp.displayName": "Просмотр BLP-изображений",
   "customEditor.doo.displayName": "Просмотр DOO-размещений",

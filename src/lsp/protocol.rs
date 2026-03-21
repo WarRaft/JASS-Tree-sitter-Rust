@@ -21,6 +21,7 @@ use crate::lsp::text_document::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use url::Url;
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
 #[derive(Debug, Serialize, Deserialize)]
@@ -63,7 +64,7 @@ pub enum MethodCall {
 
     /// W3I
     #[serde(rename = "w3i/render")]
-    W3iRender(TextDocumentIdentifier),
+    W3iRender(W3iRenderParams),
 
     /// LSP
     #[serde(rename = "initialize")]
@@ -215,5 +216,16 @@ pub struct MpqReadParams {
     pub archive_path: String,
     /// Internal path inside the archive (e.g. "war3map.j").
     pub file_path: String,
+}
+
+/// Params for `w3i/render`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3iRenderParams {
+    pub uri: Url,
+    /// When opened from an MPQ archive, the absolute path to the archive
+    /// so the server can read `war3map.wts` and resolve TRIGSTR references.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<String>,
 }
 

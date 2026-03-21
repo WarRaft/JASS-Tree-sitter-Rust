@@ -6,9 +6,11 @@
  */
 async function resolveW3iEditor(document, webviewPanel, _token, client) {
     /** @type {Object} */
-    const result = await client.sendRequest('w3i/render', {
-        uri: document.uri.toString()
-    })
+    const params = {uri: document.uri.toString()}
+    if (document._mpqArchivePath) {
+        params.archivePath = document._mpqArchivePath
+    }
+    const result = await client.sendRequest('w3i/render', params)
 
     if (result.error) {
         webviewPanel.webview.html = errorHtml(result.error.message)
@@ -306,13 +308,19 @@ function sharedStyles() {
         table.info {
             border-collapse: collapse;
             margin-bottom: 1rem;
+            width: 100%;
+            table-layout: fixed;
         }
         table.info td {
             padding: 0.15rem 0.75rem 0.15rem 0;
+            word-break: break-word;
+            white-space: pre-wrap;
         }
         table.info .key {
             color: var(--vscode-descriptionForeground);
             white-space: nowrap;
+            width: 10rem;
+            vertical-align: top;
         }
 
         .table-wrap {

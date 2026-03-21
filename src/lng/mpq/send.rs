@@ -201,7 +201,7 @@ fn read_file(archive_path: &str, file_path: &str) -> Result<Vec<u8>, String> {
 /// Gather archive metadata for the custom editor page.
 fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
     // ── 1. Parse W3X/W3M file header (before the MPQ data) ──
-    let header = parse_w3x_header(archive_path);
+    let mut header = parse_w3x_header(archive_path);
 
     // ── 2. Open as MPQ archive ──────────────────────────────
     let archive = storm_rs::MpqArchive::open(archive_path)
@@ -240,6 +240,17 @@ fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
                 w3i = val;
             }
         }
+    }
+
+    // ── 4b. Read war3map.wts and resolve TRIGSTR_ references ─
+    let wts_map = archive
+        .read_file("war3map.wts")
+        .map(|data| crate::lng::wts::trigstr_resolve::parse_wts_strings(&data))
+        .unwrap_or_default();
+
+    if !wts_map.is_empty() {
+        crate::lng::wts::trigstr_resolve::resolve_trigstr_json(&mut header, &wts_map);
+        crate::lng::wts::trigstr_resolve::resolve_trigstr_json(&mut w3i, &wts_map);
     }
 
     // ── 5. Try to read minimap image ────────────────────────
@@ -441,4 +452,5 @@ fn parse_w3x_header(path: &str) -> serde_json::Value {
     // Not a recognized W3X/W3M/W3N header — might be a plain MPQ
     json!({ "signature": format!("{:02X}{:02X}{:02X}{:02X}", sig[0], sig[1], sig[2], sig[3]) })
 }
+
 

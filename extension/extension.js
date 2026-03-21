@@ -75,6 +75,10 @@ module.exports = {
                     {scheme: 'file', language: 'bni'},
                     {scheme: 'file', language: 'jass'},
                     {scheme: 'file', language: 'angelscript'},
+                    {scheme: 'file', language: 'wts'},
+                    {scheme: 'mpq', language: 'jass'},
+                    {scheme: 'mpq', language: 'angelscript'},
+                    {scheme: 'mpq', language: 'wts'},
                 ],
                 outputChannelName: 'JASS-Tree-Sitter-Rust Logs',
                 traceOutputChannel: window.createOutputChannel('JASS-Tree-Sitter-Rust Trace'),
@@ -122,6 +126,8 @@ module.exports = {
         const inlaySelector = [
             {scheme: 'file', language: 'jass'},
             {scheme: 'file', language: 'angelscript'},
+            {scheme: 'mpq', language: 'jass'},
+            {scheme: 'mpq', language: 'angelscript'},
         ]
         const inlayHintsProvider = languages.registerInlayHintsProvider(inlaySelector, {
             onDidChangeInlayHints: inlayHintsChanged.event,
@@ -182,6 +188,16 @@ module.exports = {
                         {uri: rootUri, name: `📦 ${name}`}
                     )
                 }
+            }),
+
+            commands.registerCommand('mpq.openFile', async (archivePath, internalPath) => {
+                if (!archivePath || !internalPath) {
+                    window.showWarningMessage('Missing archive path or internal path.')
+                    return
+                }
+                await clientReady
+                const uri = MpqFileSystemProvider.makeUri(archivePath, internalPath)
+                await commands.executeCommand('vscode.open', uri)
             })
         )
 
@@ -194,6 +210,34 @@ module.exports = {
                     async resolveCustomEditor(document, webviewPanel, _token) {
                         webviewPanel.webview.options = {enableScripts: true}
                         await clientReady
+
+                        // For mpq:// URIs the LSP server cannot read the file
+                        // directly (it only handles file:// paths). Extract the
+                        // file content via the virtual filesystem, write it to a
+                        // temp file, and pass the temp-file document to the resolver.
+                        if (document.uri.scheme === 'mpq') {
+                            const fs = require('fs')
+                            const os = require('os')
+                            const content = await workspace.fs.readFile(document.uri)
+                            const fname = document.uri.path.split('/').pop() || 'temp'
+                            const tmpDir = path.join(os.tmpdir(), `vscode-mpq-${Date.now()}`)
+                            fs.mkdirSync(tmpDir, {recursive: true})
+                            const tmpPath = path.join(tmpDir, fname)
+                            fs.writeFileSync(tmpPath, Buffer.from(content))
+
+                            const tmpDoc = {
+                                uri: Uri.file(tmpPath),
+                                _mpqArchivePath: MpqFileSystemProvider.decodeAuthority(document.uri.authority),
+                                dispose() {}
+                            }
+                            try {
+                                return await resolver(tmpDoc, webviewPanel, _token, client)
+                            } finally {
+                                try { fs.unlinkSync(tmpPath) } catch {}
+                                try { fs.rmdirSync(tmpDir) } catch {}
+                            }
+                        }
+
                         return resolver(document, webviewPanel, _token, client)
                     }
                 },

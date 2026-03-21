@@ -106,6 +106,65 @@ pub fn tokenize_string_literal(node: &Node, rope: &Rope, hub: &mut Hub) {
     }
 }
 
+/// Tokenize an **unquoted** string node (e.g. WTS `string_text`), emitting
+/// `String` for plain text and `Keyword` for `|cAARRGGBB` / `|r` / `|n`.
+///
+/// Unlike [`tokenize_string_literal`], the node is NOT expected to have
+/// surrounding quotes — the entire byte range is treated as content.
+pub fn tokenize_raw_string(node: &Node, rope: &Rope, hub: &mut Hub) {
+    let sb = node.start_byte();
+    let eb = node.end_byte();
+    if eb <= sb {
+        return;
+    }
+
+    let text = rope.slice_to_cow(sb..eb);
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+
+    let mut i = 0usize;
+    let mut plain_start = 0usize;
+
+    while i < len {
+        let b = bytes[i];
+
+        // ── Warcraft pipe codes (|cAARRGGBB, |r, |n) ────────────────────
+        if b == b'|' && i + 1 < len {
+            let next = bytes[i + 1];
+            // |c or |C followed by 8 hex digits
+            if (next == b'c' || next == b'C') && i + 10 <= len {
+                let hex_slice = &bytes[i + 2..i + 10];
+                if hex_slice.iter().all(|b| b.is_ascii_hexdigit()) {
+                    if i > plain_start {
+                        hub.add_range(sb + plain_start, i - plain_start, rope, TokenKind::String, 0u32);
+                    }
+                    hub.add_range(sb + i, 10, rope, TokenKind::Keyword, 0u32);
+                    i += 10;
+                    plain_start = i;
+                    continue;
+                }
+            }
+            // |r or |R, |n or |N
+            if next == b'r' || next == b'R' || next == b'n' || next == b'N' {
+                if i > plain_start {
+                    hub.add_range(sb + plain_start, i - plain_start, rope, TokenKind::String, 0u32);
+                }
+                hub.add_range(sb + i, 2, rope, TokenKind::Keyword, 0u32);
+                i += 2;
+                plain_start = i;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    // Flush remaining plain text
+    if len > plain_start {
+        hub.add_range(sb + plain_start, len - plain_start, rope, TokenKind::String, 0u32);
+    }
+}
+
 // ─── Color extraction ────────────────────────────────────────────────────────
 
 /// Collect color information from a string literal node (`|cAARRGGBB`).
@@ -142,6 +201,52 @@ pub fn collect_string_colors(node: &Node, rope: &Rope) -> Vec<ColorInformation> 
         if b == b'|' && i + 1 < inner_end {
             let next = bytes[i + 1];
             if (next == b'c' || next == b'C') && i + 10 <= inner_end {
+                let hex_slice = &bytes[i + 2..i + 10];
+                if hex_slice.iter().all(|b| b.is_ascii_hexdigit()) {
+                    if let Some(color) = parse_aarrggbb(hex_slice) {
+                        let range = Range::from_byte_offsets(rope, sb + i, sb + i + 10);
+                        colors.push(ColorInformation { range, color });
+                    }
+                    i += 10;
+                    continue;
+                }
+            }
+            // |r, |n — skip
+            if next == b'r' || next == b'R' || next == b'n' || next == b'N' {
+                i += 2;
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+
+    colors
+}
+
+/// Collect color information from an **unquoted** string node (WTS `string_text`).
+///
+/// Same as [`collect_string_colors`] but does not skip surrounding quotes.
+pub fn collect_raw_string_colors(node: &Node, rope: &Rope) -> Vec<ColorInformation> {
+    let sb = node.start_byte();
+    let eb = node.end_byte();
+    if eb <= sb {
+        return vec![];
+    }
+
+    let text = rope.slice_to_cow(sb..eb);
+    let bytes = text.as_bytes();
+    let mut colors = Vec::new();
+    let len = bytes.len();
+
+    let mut i = 0usize;
+    while i < len {
+        let b = bytes[i];
+
+        // |cAARRGGBB
+        if b == b'|' && i + 1 < len {
+            let next = bytes[i + 1];
+            if (next == b'c' || next == b'C') && i + 10 <= len {
                 let hex_slice = &bytes[i + 2..i + 10];
                 if hex_slice.iter().all(|b| b.is_ascii_hexdigit()) {
                     if let Some(color) = parse_aarrggbb(hex_slice) {

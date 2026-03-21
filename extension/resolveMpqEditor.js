@@ -1,5 +1,6 @@
 // noinspection NpmUsedModulesInstalled
 const vscode = require('vscode')
+const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
 
 /**
  * @param {import('vscode').CustomDocument} document
@@ -29,10 +30,13 @@ async function resolveMpqEditor(document, webviewPanel, _token, client) {
     webviewPanel.webview.options = {enableScripts: true}
     webviewPanel.webview.html = renderMpqPage(result, fname, ext)
 
-    // Handle messages from the webview (Browse button)
+    // Handle messages from the webview
     webviewPanel.webview.onDidReceiveMessage(async (msg) => {
         if (msg.command === 'browse') {
             await vscode.commands.executeCommand('mpq.browse', document.uri)
+        } else if (msg.command === 'openFile') {
+            const uri = MpqFileSystemProvider.makeUri(archivePath, msg.name)
+            await vscode.commands.executeCommand('vscode.open', uri)
         }
     })
 }
@@ -189,9 +193,9 @@ function renderMpqPage(data, fname, ext) {
     if (files.length > 0) {
         const fRows = files.map((f, i) => {
             const name = f.name || ''
-            return `<tr>
+            return `<tr class="file-row" data-name="${esc(name)}">
                 <td class="num">${i + 1}</td>
-                <td class="code">${esc(name)}</td>
+                <td class="code file-link">${esc(name)}</td>
                 <td class="num">${fmtSize(f.size)}</td>
             </tr>`
         }).join('')
@@ -237,6 +241,14 @@ function renderMpqPage(data, fname, ext) {
         const vscode = acquireVsCodeApi();
         document.getElementById('browseBtn').addEventListener('click', () => {
             vscode.postMessage({ command: 'browse' });
+        });
+        document.querySelectorAll('.file-row').forEach(row => {
+            row.addEventListener('click', () => {
+                const name = row.dataset.name;
+                if (name) {
+                    vscode.postMessage({ command: 'openFile', name });
+                }
+            });
         });
     </script>
 </body>
@@ -317,13 +329,19 @@ function sharedStyles(accentColor) {
         table.info {
             border-collapse: collapse;
             margin-bottom: 1rem;
+            width: 100%;
+            table-layout: fixed;
         }
         table.info td {
             padding: 0.15rem 0.75rem 0.15rem 0;
+            word-break: break-word;
+            white-space: pre-wrap;
         }
         table.info .key {
             color: var(--vscode-descriptionForeground);
             white-space: nowrap;
+            width: 10rem;
+            vertical-align: top;
         }
 
         .table-wrap {
@@ -358,6 +376,19 @@ function sharedStyles(accentColor) {
         }
         tr:hover td {
             background: var(--vscode-list-hoverBackground);
+        }
+        .file-row {
+            cursor: pointer;
+        }
+        .file-row:active td {
+            background: var(--vscode-list-activeSelectionBackground);
+        }
+        .file-link {
+            color: var(--vscode-textLink-foreground);
+        }
+        .file-row:hover .file-link {
+            color: var(--vscode-textLink-activeForeground);
+            text-decoration: underline;
         }
         .num { text-align: right; font-variant-numeric: tabular-nums; }
         .code {
