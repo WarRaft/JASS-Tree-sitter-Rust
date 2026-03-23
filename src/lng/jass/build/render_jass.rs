@@ -19,7 +19,21 @@ pub(super) fn render_jass_expr(expr: &IRExpr) -> String {
         }
         IRExpr::FuncRef(s) => format!("function {}", s),
         IRExpr::Binary { left, op, right } => {
-            format!("{} {} {}", render_jass_expr(left), op, render_jass_expr(right))
+            // Parenthesise `or` operands of `and` so that JASS precedence
+            // (where `or` binds tighter) is preserved when the text is later
+            // converted to AngelScript (where `and` binds tighter).
+            // In JASS the parens are redundant but harmless.
+            let left_str = if op == "and" && matches!(left.as_ref(), IRExpr::Binary { op: o, .. } if o == "or") {
+                format!("({})", render_jass_expr(left))
+            } else {
+                render_jass_expr(left)
+            };
+            let right_str = if op == "and" && matches!(right.as_ref(), IRExpr::Binary { op: o, .. } if o == "or") {
+                format!("({})", render_jass_expr(right))
+            } else {
+                render_jass_expr(right)
+            };
+            format!("{} {} {}", left_str, op, right_str)
         }
         IRExpr::Unary { op, operand } => {
             format!("{} {}", op, render_jass_expr(operand))

@@ -87,6 +87,40 @@ pub(super) fn default_for_as_type(as_type: &str) -> &str {
 
 // ─── IR → AngelScript rendering ──────────────────────────────────────────────
 
+/// Render an expression, wrapping any `arr[idx]` table reads with a type cast.
+///
+/// `table` is untyped, so reading from it requires an explicit cast:
+/// `int(myTable[i])`.  The cast is applied to every `Index` node found
+/// in the expression tree, while non-index sub-expressions are left as-is.
+#[allow(dead_code)]
+pub(super) fn render_as_expr_cast(expr: &IRExpr, cast_type: &str) -> String {
+    match expr {
+        IRExpr::Index { array, index } => {
+            format!("{}({}[{}])", cast_type, render_as_expr(array), render_as_expr(index))
+        }
+        IRExpr::Binary { left, op, right } => {
+            let left_str = if op == "and" && matches!(left.as_ref(), IRExpr::Binary { op: o, .. } if o == "or") {
+                format!("({})", render_as_expr_cast(left, cast_type))
+            } else {
+                render_as_expr_cast(left, cast_type)
+            };
+            let right_str = if op == "and" && matches!(right.as_ref(), IRExpr::Binary { op: o, .. } if o == "or") {
+                format!("({})", render_as_expr_cast(right, cast_type))
+            } else {
+                render_as_expr_cast(right, cast_type)
+            };
+            format!("{} {} {}", left_str, op, right_str)
+        }
+        IRExpr::Unary { op, operand } => {
+            format!("{} {}", op, render_as_expr_cast(operand, cast_type))
+        }
+        IRExpr::Parens(inner) => {
+            format!("({})", render_as_expr_cast(inner, cast_type))
+        }
+        _ => render_as_expr(expr),
+    }
+}
+
 #[allow(dead_code)]
 pub(super) fn render_as_expr(expr: &IRExpr) -> String {
     match expr {
@@ -127,13 +161,10 @@ pub(super) fn render_as_stmt(stmt: &IRStmt, indent: &str, rename_map: &HashMap<S
             let as_type = jass_type_to_as_type(type_name);
             let as_name = as_rename(name, rename_map);
             if *is_array {
-                match value {
-                    Some(v) => vec![format!("{}array<{}> {} = {};", indent, as_type, as_name, render_as_expr(v))],
-                    None => vec![format!("{}array<{}> {};", indent, as_type, as_name)],
-                }
+                vec![format!("{}table {} = {{}};", indent, as_name)]
             } else {
                 match value {
-                    Some(v) => vec![format!("{}{} {} = {};", indent, as_type, as_name, render_as_expr(v))],
+                    Some(v) => vec![format!("{}{} {} = {};", indent, as_type, as_name, render_as_expr_cast(v, as_type))],
                     None => vec![format!("{}{} {};", indent, as_type, as_name)],
                 }
             }
@@ -184,10 +215,7 @@ pub(super) fn render_as_stmt(stmt: &IRStmt, indent: &str, rename_map: &HashMap<S
             decls.iter().map(|d| {
                 let as_name = as_rename(&d.name, rename_map);
                 if *is_array {
-                    match &d.value {
-                        Some(v) => format!("{}array<{}> {} = {};", indent, as_type, as_name, render_as_expr(v)),
-                        None => format!("{}array<{}> {};", indent, as_type, as_name),
-                    }
+                    format!("{}table {} = {{}};", indent, as_name)
                 } else {
                     match &d.value {
                         Some(v) => format!("{}{} {} = {};", indent, as_type, as_name, render_as_expr(v)),

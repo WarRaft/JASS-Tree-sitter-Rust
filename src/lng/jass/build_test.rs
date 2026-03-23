@@ -521,5 +521,108 @@ endfunction
         let result = inline_call_in_source_text(source, "MyFunc", "DoSomething(x)", false);
         assert_eq!(result, "    call DoSomething(x)\n");
     }
+
+    // ─── JASS → AS text pipeline ────────────────────────────────────────────────
+
+    #[test]
+    fn jass_to_as_precedence_false_and_true_or_true() {
+        // JASS: `false and true or true` = `false and (true or true)` = false
+        // AS without fix: `false and true or true` = `(false and true) or true` = true  ← WRONG
+        // AS with fix: `false and (true or true)` = `false and true` = false  ← CORRECT
+        let src = "\
+function A takes nothing returns nothing
+    local boolean x = false and true or true
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("(true or true)"),
+            "expected parenthesised `(true or true)` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_to_as_array_becomes_table() {
+        // JASS `integer array arr` → AS `table arr = {};`
+        let src = "\
+function A takes nothing returns nothing
+    local integer array arr
+endfunction
+";
+        let result = build_single_function_as(src);
+        let expected = "table arr = {};";
+        assert!(
+            result.contains(expected),
+            "expected `{expected}` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_to_as_global_array_becomes_table() {
+        let result = jass_var_decl_to_as_text("unit array myUnits");
+        let expected = "table myUnits = {};";
+        assert_eq!(
+            result.trim(),
+            expected,
+            "expected global `{expected}`, got: {result}"
+        );
+    }
+
+    #[test]
+    fn jass_to_as_function_signature() {
+        let jass = "\
+function Foo takes integer a, real b returns boolean
+    return true
+endfunction";
+        let result = jass_function_to_as_text(jass);
+        assert!(
+            result.starts_with("bool Foo(int a, float b) {"),
+            "expected AS signature, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_to_as_basic_statements() {
+        let jass = "\
+function A takes nothing returns nothing
+    local integer x = 5
+    set x = 10
+    call Foo(x)
+    return
+endfunction";
+        let result = jass_function_to_as_text(jass);
+        assert!(result.contains("int x = 5;"), "local → typed decl: {result}");
+        assert!(result.contains("x = 10;"), "set → assignment: {result}");
+        assert!(result.contains("Foo(x);"), "call → call: {result}");
+        assert!(result.contains("return;"), "return: {result}");
+    }
+
+    #[test]
+    fn jass_to_as_loop_and_exitwhen() {
+        let jass = "\
+function A takes nothing returns nothing
+    loop
+        exitwhen true
+    endloop
+endfunction";
+        let result = jass_function_to_as_text(jass);
+        assert!(result.contains("while (true) {"), "loop → while: {result}");
+        assert!(result.contains("if (true) break;"), "exitwhen → if break: {result}");
+    }
+
+    #[test]
+    fn jass_to_as_if_else() {
+        let jass = "\
+function A takes nothing returns nothing
+    if x then
+        call Foo()
+    else
+        call Bar()
+    endif
+endfunction";
+        let result = jass_function_to_as_text(jass);
+        assert!(result.contains("if (x) {"), "if: {result}");
+        assert!(result.contains("} else {"), "else: {result}");
+    }
 }
 

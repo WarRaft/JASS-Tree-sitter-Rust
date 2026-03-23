@@ -3,8 +3,12 @@
 //! Searches the entire connected component of the import tree for
 //! `//set build-jass <path>` / `//set build-as <path>` directives.
 //!
-//! **Frozen files (`//import!`)** are excluded from the build entirely
-//! in both JASS and AS modes — they are engine-provided / read-only.
+//! **Frozen files (`//import!`)** handling depends on the build mode:
+//! - **JASS**: frozen files are excluded from the build entirely —
+//!   they are engine-provided / read-only.
+//! - **AS**: frozen files contribute their functions and global variables
+//!   to the output (types and natives are still skipped).  Native function
+//!   calls are prefixed with the `Jass::` namespace.
 //!
 //! **`type` and `native` declarations** are never included in the build
 //! output — they are engine-provided and do not belong in the merged file.
@@ -41,7 +45,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use url::Url;
 
-use self::convert::collect_ir;
+use self::convert::{collect_ir, resolve_frozen_deps};
 use self::inline::{apply_inlines, fold_string_hash_in_fragments};
 use self::io::{
     collect_file_order, is_archive_path, resolve_output_path, write_output, write_output_archive,
@@ -61,14 +65,55 @@ pub use self::inline::{
 };
 #[cfg(test)]
 pub use self::render_jass::hoist_jass_locals_text;
+#[cfg(test)]
+pub use self::jass_to_as::{jass_function_to_as_text, jass_var_decl_to_as_text};
+
+/// Test-only: parse JASS source → AST → IR → render JASS text → convert to AS.
+///
+/// This mirrors the real `build_as` pipeline for a single function.
+#[cfg(test)]
+pub fn build_single_function_as(src: &str) -> String {
+    use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
+    use std::collections::HashSet;
+
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_jass::language().into())
+        .expect("Failed to set language");
+    let tree = parser.parse(src, None).expect("Failed to parse");
+    let mut ast = build_ast(tree.root_node());
+    let src_bytes = src.as_bytes().to_vec();
+    rewrite_imports(&mut ast, &src_bytes);
+
+    let func = ast
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Statement::Function(f) => Some(f),
+            _ => None,
+        })
+        .expect("No function found");
+
+    // AST → IR
+    let ir_func = convert::convert_function(src, func, HashSet::new());
+
+    // IR → JASS text (with precedence parenthesization)
+    let jass_text = render_jass::render_jass_function(&ir_func);
+    let jass_text = render_jass::hoist_jass_locals(&jass_text);
+
+    // JASS text → AS text
+    let rename_map = std::collections::HashMap::new();
+    jass_to_as::jass_function_to_as(&jass_text, &rename_map)
+}
 
 /// Build mode — determines how frozen (`//import!`) files are handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(self) enum BuildMode {
     /// JASS build: frozen files are skipped entirely.
     Jass,
-    /// AngelScript build: frozen files contribute only function forward
-    /// declarations (as stubs), so the AS compiler knows their signatures.
+    /// AngelScript build: frozen files contribute only **reachable** functions
+    /// (transitively called from user code) and the global variables those
+    /// functions use.  Native calls are prefixed with `Jass::`.
     As,
 }
 
@@ -260,7 +305,7 @@ pub fn build_as(uri: &Url) -> BuildResult {
     // 3. Collect ordered file list from import tree.
     let file_order = collect_file_order(&trigger_uri);
 
-    // 4. Parse all files → IR.
+    // 4. Parse non-frozen files → IR.
     let mut ir = collect_ir(&trigger_uri, &file_order);
 
     // 5. Ensure main exists; if archive — ensure config too.
@@ -298,10 +343,22 @@ pub fn build_as(uri: &Url) -> BuildResult {
         main_func.body.extend(bare);
     }
 
+    // 7b. Resolve frozen-file dependencies — AFTER augmentation so that
+    //     generated calls (InitBlizzard, SetPlayerAllianceStateBJ, …) are
+    //     included in the reachability analysis.
+    resolve_frozen_deps(&mut ir, &file_order);
+
     // 8. Build rename map for AS reserved-word conflicts.
     let mut all_names: Vec<&str> = ir.functions.keys().map(|s| s.as_str()).collect();
     all_names.sort();
-    let rename_map = build_as_rename_map(&all_names);
+    let mut rename_map = build_as_rename_map(&all_names);
+
+    // 8b. Add Jass:: namespace prefix for all native function names.
+    // This uses the existing word-boundary replacement in apply_rename_to_line
+    // so every occurrence of a native identifier becomes Jass::NativeName.
+    for name in &ir.native_names {
+        rename_map.insert(name.clone(), format!("Jass::{}", name));
+    }
 
     // 9. Render to text for inlining / StringHash passes.
     // For inlining we render to JASS text (the canonical form),

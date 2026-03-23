@@ -243,7 +243,6 @@ pub(super) fn augment_config(ir: &mut BuildIR, md: &MapData) {
 pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
     let func = ir.functions.get_mut("main").expect("main must exist");
     let w = &md.w3i;
-    let cb = &w.cam_bounds;
 
     // We'll collect locals and body separately, then prepend locals + body
     // to the existing function body (before user statements / bare_stmts).
@@ -251,15 +250,32 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
     let mut stmts: Vec<IRStmt> = Vec::new();
 
     // ── SetCameraBounds ──────────────────────────────────────
+    // Camera bounds are computed from map dimensions and non-playable margins,
+    // NOT from the cam_bounds field in w3i (which is the editor viewport).
+    // Formula: left  = 64*(A - E - B),  right = 64*(A + E - B)
+    //          bottom= 64*(C - F - D),  top   = 64*(C + F - D)
+    // where A,B,C,D = map_size margins, E = map_width, F = map_height.
+    let a = w.map_size[0] as f32;
+    let b = w.map_size[1] as f32;
+    let c = w.map_size[2] as f32;
+    let d = w.map_size[3] as f32;
+    let e = w.map_width as f32;
+    let f = w.map_height as f32;
+
+    let cam_left   = 64.0 * (a - e - b);
+    let cam_bottom = 64.0 * (c - f - d);
+    let cam_right  = 64.0 * (a + e - b);
+    let cam_top    = 64.0 * (c + f - d);
+
     stmts.push(IRStmt::call("SetCameraBounds", vec![
-        IRExpr::binary(IRExpr::float1(cb.lb.x), "+", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_LEFT")])),
-        IRExpr::binary(IRExpr::float1(cb.lb.y), "+", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_BOTTOM")])),
-        IRExpr::binary(IRExpr::float1(cb.rt.x), "-", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_RIGHT")])),
-        IRExpr::binary(IRExpr::float1(cb.rt.y), "-", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_TOP")])),
-        IRExpr::binary(IRExpr::float1(cb.lt.x), "+", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_LEFT")])),
-        IRExpr::binary(IRExpr::float1(cb.lt.y), "-", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_TOP")])),
-        IRExpr::binary(IRExpr::float1(cb.rb.x), "-", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_RIGHT")])),
-        IRExpr::binary(IRExpr::float1(cb.rb.y), "+", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_BOTTOM")])),
+        IRExpr::binary(IRExpr::float1(cam_left),   "+", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_LEFT")])),
+        IRExpr::binary(IRExpr::float1(cam_bottom), "+", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_BOTTOM")])),
+        IRExpr::binary(IRExpr::float1(cam_right),  "-", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_RIGHT")])),
+        IRExpr::binary(IRExpr::float1(cam_top),    "-", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_TOP")])),
+        IRExpr::binary(IRExpr::float1(cam_left),   "+", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_LEFT")])),
+        IRExpr::binary(IRExpr::float1(cam_top),    "-", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_TOP")])),
+        IRExpr::binary(IRExpr::float1(cam_right),  "-", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_RIGHT")])),
+        IRExpr::binary(IRExpr::float1(cam_bottom), "+", IRExpr::call("GetCameraMargin", vec![IRExpr::id("CAMERA_MARGIN_BOTTOM")])),
     ]));
 
     // Day/night cycle models & ambient sounds.
@@ -312,10 +328,13 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
             ])));
             if de.health < 100 {
                 let pct = de.health as f64 / 100.0;
-                stmts.push(IRStmt::set("life", IRExpr::call("GetDestructableLife", vec![IRExpr::id("d")])));
                 stmts.push(IRStmt::call("SetDestructableLife", vec![
                     IRExpr::id("d"),
-                    IRExpr::binary(IRExpr::Literal(format!("{:.2}", pct)), "*", IRExpr::id("life")),
+                    IRExpr::binary(
+                        IRExpr::Literal(format!("{:.2}", pct)),
+                        "*",
+                        IRExpr::call("GetDestructableLife", vec![IRExpr::id("d")]),
+                    ),
                 ]));
             }
         }
@@ -354,12 +373,15 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
                     if ue.health != 0xFFFFFFFF {
                         let pct = ue.health as f64 / 100.0;
                         if (pct - 1.0).abs() > 0.001 {
-                            stmts.push(IRStmt::set("life", IRExpr::call("GetUnitState", vec![
-                                IRExpr::id("u"), IRExpr::id("UNIT_STATE_LIFE"),
-                            ])));
                             stmts.push(IRStmt::call("SetUnitState", vec![
                                 IRExpr::id("u"), IRExpr::id("UNIT_STATE_LIFE"),
-                                IRExpr::binary(IRExpr::Literal(format!("{:.2}", pct)), "*", IRExpr::id("life")),
+                                IRExpr::binary(
+                                    IRExpr::Literal(format!("{:.2}", pct)),
+                                    "*",
+                                    IRExpr::call("GetUnitState", vec![
+                                        IRExpr::id("u"), IRExpr::id("UNIT_STATE_LIFE"),
+                                    ]),
+                                ),
                             ]));
                         }
                     }
@@ -396,9 +418,6 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
     // Build locals list.
     if need_destr_local {
         locals.push(IRStmt::local("destructable", "d"));
-    }
-    if need_destr_local || need_unit_local {
-        locals.push(IRStmt::local("real", "life"));
     }
     if need_unit_local {
         locals.push(IRStmt::local("unit", "u"));

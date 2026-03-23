@@ -164,6 +164,9 @@ pub(super) struct BuildIR {
     pub globals: Vec<IRStmt>,                   // VarDecl entries
     pub functions: HashMap<String, IRFunc>,
     pub bare_stmts: Vec<IRStmt>,
+    /// Names of all `native` declarations across the import tree.
+    /// Used by the AS build to prefix calls with `Jass::`.
+    pub native_names: HashSet<String>,
 }
 
 // ─── Topological sort ────────────────────────────────────────────────────────

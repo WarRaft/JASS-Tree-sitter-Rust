@@ -174,7 +174,7 @@ pub(super) fn jass_function_to_as(source: &str, rename_map: &HashMap<String, Str
     for (as_type, as_name, is_array) in &hoisted {
         out.push('\n');
         if *is_array {
-            out.push_str(&format!("    array<{}> {};", as_type, as_name));
+            out.push_str(&format!("    table {} = {{}};", as_name));
         } else {
             out.push_str(&format!(
                 "    {} {} = {};",
@@ -354,9 +354,24 @@ fn jass_var_decl_to_as_inner(decl: &str, rename_map: &HashMap<String, String>) -
 
     let as_type = jass_type_to_as_type(type_name);
     if is_array {
-        format!("array<{}> {}", as_type, apply_rename_to_line(rest, rename_map))
+        format!("table {} = {{}}", apply_rename_to_line(rest, rename_map))
     } else {
         format!("{} {}", as_type, apply_rename_to_line(rest, rename_map))
     }
 }
 
+// ─── Test-only wrappers ──────────────────────────────────────────────────────
+
+/// Test-only: convert a JASS function source to AS via the text pipeline.
+#[cfg(test)]
+pub fn jass_function_to_as_text(jass_source: &str) -> String {
+    let rename_map = std::collections::HashMap::new();
+    jass_function_to_as(jass_source, &rename_map)
+}
+
+/// Test-only: convert a JASS global var declaration to AS.
+#[cfg(test)]
+pub fn jass_var_decl_to_as_text(decl: &str) -> String {
+    let rename_map = std::collections::HashMap::new();
+    jass_var_decl_to_as(decl, &rename_map)
+}
