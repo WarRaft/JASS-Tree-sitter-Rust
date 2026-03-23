@@ -1,4 +1,4 @@
-use crate::lng::doo::DooData;
+use crate::lng::doo::parse::DooData;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
