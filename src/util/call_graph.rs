@@ -203,12 +203,12 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
         if info.uri != *uri || info.is_native {
             continue;
         }
-        if is_entry_function(name, &info.uri, &component) {
-            continue;
-        }
         if let Some(&ni) = name_to_idx.get(name) {
             let deg = *in_degree.get(&ni).unwrap_or(&0);
-            if deg == 0 {
+            // `main` and `config` are engine entry points — they are
+            // called by the Warcraft III runtime, so they can never be
+            // considered unused even when no other function references them.
+            if deg == 0 && !is_entry_function(name, &info.uri, &component) {
                 result.unused.insert(name.clone());
             }
             if cycle_nodes.contains(&ni) {

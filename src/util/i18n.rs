@@ -742,6 +742,16 @@ pub fn set_def_build_as() -> &'static str {
     )
 }
 
+pub fn set_def_backup() -> &'static str {
+    pick(
+        "Backup path for map archive before injecting script",
+        "Путь для резервной копии карты перед записью скрипта",
+        "Шлях для резервної копії карти перед записом скрипта",
+        "注入脚本前地图存档的备份路径",
+        "注入腳本前地圖存檔的備份路徑",
+    )
+}
+
 /// Get the localized detail for a `SetDef` by key.
 pub fn set_def_detail(key: &str) -> &'static str {
     match key {
@@ -749,6 +759,7 @@ pub fn set_def_detail(key: &str) -> &'static str {
         "type-tip" => set_def_type_tip(),
         "build-jass" => set_def_build_jass(),
         "build-as" => set_def_build_as(),
+        "backup" => set_def_backup(),
         _ => "",
     }
 }
@@ -875,6 +886,57 @@ pub fn build_write_failed(path: &str, err: &str) -> String {
         Locale::Uk => format!("Помилка запису {}: {}", path, err),
         Locale::Zh => format!("写入 {} 失败：{}", path, err),
         Locale::Tc => format!("寫入 {} 失敗：{}", path, err),
+    }
+}
+
+pub fn build_archive_ok(globals: usize, functions: usize, bare_stmts: usize, script_name: &str) -> String {
+    let stmts_part = if bare_stmts > 0 {
+        match locale() {
+            Locale::En => format!(", {} statements → main", bare_stmts),
+            Locale::Ru => format!(", {} инструкций → main", bare_stmts),
+            Locale::Uk => format!(", {} інструкцій → main", bare_stmts),
+            Locale::Zh => format!("，{} 条语句 → main", bare_stmts),
+            Locale::Tc => format!("，{} 條語句 → main", bare_stmts),
+        }
+    } else {
+        String::new()
+    };
+    match locale() {
+        Locale::En => format!("Build OK → {} — {} globals, {} functions{}", script_name, globals, functions, stmts_part),
+        Locale::Ru => format!("Сборка ОК → {} — {} глобальных, {} функций{}", script_name, globals, functions, stmts_part),
+        Locale::Uk => format!("Збірка ОК → {} — {} глобальних, {} функцій{}", script_name, globals, functions, stmts_part),
+        Locale::Zh => format!("构建成功 → {} — {} 个全局变量，{} 个函数{}", script_name, globals, functions, stmts_part),
+        Locale::Tc => format!("建構成功 → {} — {} 個全域變數，{} 個函式{}", script_name, globals, functions, stmts_part),
+    }
+}
+
+pub fn build_backup_failed(path: &str, err: &str) -> String {
+    match locale() {
+        Locale::En => format!("Failed to create backup {}: {}", path, err),
+        Locale::Ru => format!("Ошибка создания резервной копии {}: {}", path, err),
+        Locale::Uk => format!("Помилка створення резервної копії {}: {}", path, err),
+        Locale::Zh => format!("创建备份 {} 失败：{}", path, err),
+        Locale::Tc => format!("建立備份 {} 失敗：{}", path, err),
+    }
+}
+
+pub fn build_archive_open_failed(path: &str, err: &str) -> String {
+    match locale() {
+        Locale::En => format!("Failed to open archive {}: {}", path, err),
+        Locale::Ru => format!("Ошибка открытия архива {}: {}", path, err),
+        Locale::Uk => format!("Помилка відкриття архіву {}: {}", path, err),
+        Locale::Zh => format!("打开存档 {} 失败：{}", path, err),
+        Locale::Tc => format!("開啟存檔 {} 失敗：{}", path, err),
+    }
+}
+
+pub fn build_archive_inject_failed(script_name: &str, err: &str) -> String {
+    match locale() {
+        Locale::En => format!("Failed to inject {} into archive: {}", script_name, err),
+        Locale::Ru => format!("Ошибка записи {} в архив: {}", script_name, err),
+        Locale::Uk => format!("Помилка запису {} в архів: {}", script_name, err),
+        Locale::Zh => format!("向存档注入 {} 失败：{}", script_name, err),
+        Locale::Tc => format!("向存檔注入 {} 失敗：{}", script_name, err),
     }
 }
 

@@ -83,6 +83,12 @@ pub static SET_DEFS: &[SetDef] = &[
         default: "./",
         sort_order: 3,
     },
+    SetDef {
+        key: "backup",
+        kind: SetValueKind::Path,
+        default: "./",
+        sort_order: 4,
+    },
 ];
 
 /// Look up a `SetDef` by key name.
