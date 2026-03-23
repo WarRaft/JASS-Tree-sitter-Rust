@@ -162,6 +162,12 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         actions.extend(compute_string_hash_fold(params));
     }
 
+    // ── ExecuteFunc quick fixes ──────────────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_execute_func_fixes(params));
+    }
+
     actions
 }
 
@@ -1909,6 +1915,117 @@ fn compute_remove_else_action(params: &CodeActionParams) -> Option<CodeAction> {
     Some(CodeAction {
         title: crate::util::i18n::remove_else_branch().to_string(),
         kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
+        diagnostics: None,
+        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        command: None,
+    })
+}
+
+// ─── ExecuteFunc quick fixes ─────────────────────────────────────────────────
+
+/// Quick-fix and "fix all" actions for `ExecuteFunc("FuncName")` → `call FuncName()`.
+fn compute_execute_func_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    let uri = &params.text_document.uri;
+
+    // Per-diagnostic quick fixes from the current request context.
+    let exec_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.has_code("execute-func"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &exec_diags {
+        if let Some(new_text) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("execute_func_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            // Extract function name for the title (strip "call " and "()")
+            let func_name = new_text
+                .strip_prefix("call ")
+                .and_then(|s| s.strip_suffix("()"))
+                .unwrap_or(new_text);
+
+            let edit = TextEdit {
+                range: diag.range.clone(),
+                new_text: new_text.to_string(),
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::execute_func_replace(func_name),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    // "Fix all" action (needs ≥ 2 fixable patterns in the file).
+    if !exec_diags.is_empty() {
+        if let Some(file_action) = compute_execute_func_fix_all(uri) {
+            actions.push(file_action);
+        }
+    }
+
+    actions
+}
+
+/// Build a single code action that fixes ALL `ExecuteFunc` calls in the file.
+fn compute_execute_func_fix_all(uri: &url::Url) -> Option<CodeAction> {
+    let snap = FILE_STORE.get(uri)?;
+    let all_diags = &snap.value().diagnostics;
+
+    let exec_diags: Vec<_> = all_diags
+        .iter()
+        .filter(|d| d.has_code("execute-func"))
+        .filter(|d| d.data.is_some())
+        .collect();
+
+    if exec_diags.len() < 2 {
+        return None;
+    }
+
+    let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
+    for diag in &exec_diags {
+        if let Some(new_text) = diag
+            .data
+            .as_ref()
+            .and_then(|d| d.get("execute_func_new_text"))
+            .and_then(|v| v.as_str())
+        {
+            edits.push((
+                diag.range.start.line,
+                diag.range.start.character,
+                TextEdit {
+                    range: diag.range.clone(),
+                    new_text: new_text.to_string(),
+                },
+            ));
+        }
+    }
+
+    edits.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, _, e)| e).collect();
+
+    if text_edits.is_empty() {
+        return None;
+    }
+
+    let title = crate::util::i18n::execute_func_replace_all().to_string();
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), text_edits);
+
+    Some(CodeAction {
+        title,
+        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
         edit: Some(WorkspaceEdit { changes: Some(changes) }),
         command: None,

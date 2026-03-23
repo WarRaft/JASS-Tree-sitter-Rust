@@ -1835,6 +1835,35 @@ impl Cursor {
                         self.record_callee(&fname);
                         // hl: reference function as Read
                         self.hl_reference_func(&fname, &name_id.node, DocumentHighlightKind::Read);
+
+                        // ── ExecuteFunc diagnostic ───────────────────────
+                        if fname == "ExecuteFunc"
+                            && !self.file_ignore_tags.contains("execute-func")
+                        {
+                            if fc.args.len() == 1 {
+                                if let Some(ComptimeValue::Str(target)) = self.eval_expr(&fc.args[0]) {
+                                    // Argument is a computable string literal → hint + quick fix data
+                                    let new_text = format!("call {}()", target);
+                                    self.diagnostics.push(Diagnostic {
+                                        range: c.node.to_range(&self.rope),
+                                        message: crate::util::i18n::execute_func_hint(&target),
+                                        severity: Some(DiagnosticSeverity::Hint),
+                                        data: Some(serde_json::json!({
+                                            "execute_func_new_text": new_text,
+                                        })),
+                                        ..Diagnostic::new("jass", "execute-func")
+                                    });
+                                } else {
+                                    // Argument is NOT computable → warning
+                                    self.diagnostics.push(Diagnostic {
+                                        range: c.node.to_range(&self.rope),
+                                        message: crate::util::i18n::execute_func_bad_hack().to_string(),
+                                        severity: Some(DiagnosticSeverity::Warning),
+                                        ..Diagnostic::new("jass", "execute-func-bad")
+                                    });
+                                }
+                            }
+                        }
                     }
                     for arg in &fc.args {
                         // Check: passing an array variable as an argument is forbidden

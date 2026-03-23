@@ -1215,3 +1215,46 @@ pub fn fold_string_hash_all() -> &'static str {
         "計算檔案中所有 StringHash",
     )
 }
+
+// ─── ExecuteFunc ─────────────────────────────────────────────────────────────
+
+pub fn execute_func_replace(name: &str) -> String {
+    match locale() {
+        Locale::En => format!("Replace with `call {name}()`"),
+        Locale::Ru => format!("Заменить на `call {name}()`"),
+        Locale::Uk => format!("Замінити на `call {name}()`"),
+        Locale::Zh => format!("替换为 `call {name}()`"),
+        Locale::Tc => format!("替換為 `call {name}()`"),
+    }
+}
+
+pub fn execute_func_replace_all() -> &'static str {
+    pick(
+        "Replace all ExecuteFunc in file",
+        "Заменить все ExecuteFunc в файле",
+        "Замінити всі ExecuteFunc у файлі",
+        "替换文件中所有 ExecuteFunc",
+        "替換檔案中所有 ExecuteFunc",
+    )
+}
+
+pub fn execute_func_hint(name: &str) -> String {
+    match locale() {
+        Locale::En => format!("Use direct call `{name}()` instead of `ExecuteFunc`"),
+        Locale::Ru => format!("Используйте прямой вызов `{name}()` вместо `ExecuteFunc`"),
+        Locale::Uk => format!("Використовуйте прямий виклик `{name}()` замість `ExecuteFunc`"),
+        Locale::Zh => format!("使用直接调用 `{name}()` 代替 `ExecuteFunc`"),
+        Locale::Tc => format!("使用直接呼叫 `{name}()` 代替 `ExecuteFunc`"),
+    }
+}
+
+pub fn execute_func_bad_hack() -> &'static str {
+    pick(
+        "ExecuteFunc is a bad hack: argument is not a computable string literal",
+        "ExecuteFunc — костыль: аргумент не является вычислимой строкой",
+        "ExecuteFunc — костиль: аргумент не є обчислюваним рядком",
+        "ExecuteFunc 是个糟糕的做法：参数不是可计算的字符串字面量",
+        "ExecuteFunc 是個糟糕的做法：參數不是可計算的字串字面量",
+    )
+}
+
