@@ -6,6 +6,7 @@ target/
 
 # Node artifacts
 build/
+!src/**/build/
 prebuilds/
 node_modules/
 
