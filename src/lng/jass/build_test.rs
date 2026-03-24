@@ -624,5 +624,138 @@ endfunction";
         assert!(result.contains("if (x) {"), "if: {result}");
         assert!(result.contains("} else {"), "else: {result}");
     }
+
+    // ─── null → nil for handle types ──────────────────────────────────────────
+
+    #[test]
+    fn as_null_to_nil_local_handle() {
+        // `local unit u = null` → `unit u = nil;`
+        let src = "\
+function A takes nothing returns nothing
+    local unit u = null
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("unit u = nil;"),
+            "expected `unit u = nil;` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_to_nil_set_handle() {
+        // `set u = null` where u is a handle → `u = nil;`
+        let src = "\
+function A takes nothing returns nothing
+    local unit u = null
+    set u = null
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("u = nil;"),
+            "expected `u = nil;` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_to_nil_return_handle() {
+        // `return null` in a function returning a handle → `return nil;`
+        let src = "\
+function A takes nothing returns unit
+    return null
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("return nil;"),
+            "expected `return nil;` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_stays_for_primitives() {
+        // `local string s = null` should keep `null` (string is not a handle type).
+        let src = "\
+function A takes nothing returns nothing
+    local string s = null
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("string s = null;"),
+            "expected `string s = null;` (string is not handle), got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_to_nil_comparison_eq() {
+        // `if u == null then` → `if (u == nil) {` when u is handle
+        let src = "\
+function A takes nothing returns nothing
+    local unit u = null
+    if u == null then
+        return
+    endif
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("u == nil"),
+            "expected `u == nil` in AS comparison, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_to_nil_comparison_neq() {
+        // `if u != null then` → `if (u != nil) {`
+        let src = "\
+function A takes nothing returns nothing
+    local trigger t = null
+    if t != null then
+        return
+    endif
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("t != nil"),
+            "expected `t != nil` in AS comparison, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_to_nil_hoisted_default() {
+        // Hoisted handle-type variable should use `nil` as default.
+        let src = "\
+function A takes nothing returns nothing
+    local integer x = 1
+    set x = 2
+    local unit u = null
+endfunction
+";
+        let result = build_single_function_as(src);
+        // The hoisted declaration should have nil as default.
+        assert!(
+            result.contains("unit u = nil;"),
+            "expected hoisted `unit u = nil;` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_to_nil_in_parens() {
+        // `(null)` in a handle context → `(nil)`
+        let src = "\
+function A takes nothing returns nothing
+    local unit u = (null)
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("(nil)"),
+            "expected `(nil)` in AS output, got:\n{result}"
+        );
+    }
 }
+
 

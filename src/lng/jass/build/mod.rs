@@ -36,6 +36,7 @@ mod io;
 mod ir;
 mod jass_to_as;
 mod map_data;
+mod null_to_nil;
 mod render_as;
 mod render_jass;
 
@@ -95,13 +96,15 @@ pub fn build_single_function_as(src: &str) -> String {
         .expect("No function found");
 
     // AST → IR
-    let ir_func = convert::convert_function(src, func, HashSet::new());
+    let mut ir_func = convert::convert_function(src, func, HashSet::new());
+
+    // Rewrite null → nil for handle-typed contexts.
+    null_to_nil::rewrite_func_null_to_nil(&mut ir_func);
 
     // IR → JASS text (with precedence parenthesization)
     let jass_text = render_jass::render_jass_function(&ir_func);
-    let jass_text = render_jass::hoist_jass_locals(&jass_text);
 
-    // JASS text → AS text
+    // JASS text → AS text (jass_function_to_as does its own AS-level hoisting)
     let rename_map = std::collections::HashMap::new();
     jass_to_as::jass_function_to_as(&jass_text, &rename_map)
 }
@@ -347,6 +350,9 @@ pub fn build_as(uri: &Url) -> BuildResult {
     //     generated calls (InitBlizzard, SetPlayerAllianceStateBJ, …) are
     //     included in the reachability analysis.
     resolve_frozen_deps(&mut ir, &file_order);
+
+    // 7c. Rewrite `null` → `nil` for handle-typed contexts.
+    null_to_nil::rewrite_null_to_nil(&mut ir);
 
     // 8. Build rename map for AS reserved-word conflicts.
     let mut all_names: Vec<&str> = ir.functions.keys().map(|s| s.as_str()).collect();

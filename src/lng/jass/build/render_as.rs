@@ -74,14 +74,15 @@ pub(super) fn jass_type_to_as_type(t: &str) -> &str {
 /// Default literal for an AngelScript type (used for hoisted declarations).
 ///
 /// - `int` → `0`, `float` → `0`, `bool` → `false`, `string` → `""`,
-///   everything else → `null`.
+///   `funcdef` → `null`, everything else (handle-derived) → `nil`.
 pub(super) fn default_for_as_type(as_type: &str) -> &str {
     match as_type {
         "int" => "0",
         "float" => "0",
         "bool" => "false",
         "string" => "\"\"",
-        _ => "null",
+        "funcdef" => "null",
+        _ => "nil",
     }
 }
 
