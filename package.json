@@ -199,6 +199,21 @@
           "dark": "./icons/wts.svg"
         },
         "configuration": "./syntaxes/wts.language-configuration.json"
+      },
+      {
+        "id": "slk",
+        "aliases": [
+          "SLK",
+          "SYLK"
+        ],
+        "extensions": [
+          ".slk"
+        ],
+        "icon": {
+          "light": "./icons/slk.svg",
+          "dark": "./icons/slk.svg"
+        },
+        "configuration": "./syntaxes/slk.language-configuration.json"
       }
     ],
     "configurationDefaults": {
@@ -212,6 +227,9 @@
         "editor.selectionHighlight": false
       },
       "[wts]": {
+        "editor.selectionHighlight": false
+      },
+      "[slk]": {
         "editor.selectionHighlight": false
       }
     },

@@ -6,5 +6,6 @@ pub(crate) mod directive;
 pub(crate) mod w3i;
 pub(crate) mod doo;
 pub(crate) mod mpq;
+pub(crate) mod slk;
 pub(crate) mod string_colors;
 pub(crate) mod wts;

@@ -13,6 +13,7 @@ tree-sitter-bni = { path = "./../tree-sitter-bni" }
 tree-sitter-jass = { path = "./../tree-sitter-jass" }
 tree-sitter-as = { path = "./../tree-sitter-as" }
 tree-sitter-wts = { path = "./../tree-sitter-wts" }
+tree-sitter-slk = { path = "./../tree-sitter-slk" }
 storm-rs = { path = "./../storm-rs" }
 strum = "0.28.0"
 strum_macros = "0.28.0"
@@ -20,7 +21,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_repr = "0.1.20"
 tokio = { version = "1.50.0", features = ["full"] }
-env_logger = "0.11.9"
+env_logger = "0.11.10"
 image = "0.25.10"
 lapce-xi-rope = "0.4.0"
 log = "0.4.29"

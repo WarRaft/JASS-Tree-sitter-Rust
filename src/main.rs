@@ -230,6 +230,20 @@ async fn main() {
                                 mark_parse_done(&uri, parse_gen);
                             });
                         }
+                    } else if params.text_document.language_id == "slk" {
+                        let text = params.text_document.text;
+                        let uri = params.text_document.uri;
+                        if let Err(e) = lng::slk::open::init(&uri, &text) {
+                            error!("slk init: {}", e);
+                        } else {
+                            let parse_gen = mark_parse_pending(&uri);
+                            tokio::spawn(async move {
+                                if let Err(e) = lng::slk::parse::parse_and_notify(&uri).await {
+                                    error!("slk parse: {}", e);
+                                }
+                                mark_parse_done(&uri, parse_gen);
+                            });
+                        }
                     }
                 }
 
@@ -284,6 +298,18 @@ async fn main() {
                                 tokio::spawn(async move {
                                     if let Err(e) = lng::wts::parse::parse_and_notify(&uri).await {
                                         error!("wts parse: {}", e);
+                                    }
+                                    mark_parse_done(&uri, parse_gen);
+                                });
+                            }
+                        } else if lng_val == "slk" {
+                            if let Err(e) = lng::slk::change::apply_edits(&uri, params.content_changes) {
+                                error!("slk edit: {}", e);
+                            } else {
+                                let parse_gen = mark_parse_pending(&uri);
+                                tokio::spawn(async move {
+                                    if let Err(e) = lng::slk::parse::parse_and_notify(&uri).await {
+                                        error!("slk parse: {}", e);
                                     }
                                     mark_parse_done(&uri, parse_gen);
                                 });
