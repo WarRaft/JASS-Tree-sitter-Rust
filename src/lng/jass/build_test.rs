@@ -756,6 +756,172 @@ endfunction
             "expected `(nil)` in AS output, got:\n{result}"
         );
     }
+
+    #[test]
+    fn as_null_stays_for_code_local() {
+        // `local code c = null` → `funcdef c = null;`  (code does NOT inherit handle)
+        let src = "\
+function A takes nothing returns nothing
+    local code c = null
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("funcdef c = null;"),
+            "expected `funcdef c = null;` (code is not handle), got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_stays_for_code_return() {
+        // `return null` in a function returning code → stays `null`
+        let src = "\
+function A takes nothing returns code
+    return null
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("return null;"),
+            "expected `return null;` (code is not handle), got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_to_nil_call_args_handle_vs_code() {
+        // Self-call with mixed handle/code params:
+        // 1st arg (unit) → nil, 2nd arg (code) → null
+        let src = "\
+function A takes unit u, code c returns nothing
+    call A(null, null)
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("A(nil, null)"),
+            "expected `A(nil, null)` — handle arg → nil, code arg → null, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_null_to_nil_mixed_locals() {
+        // Handle → nil, code → null, string → null, integer stays as-is
+        let src = "\
+function A takes nothing returns nothing
+    local unit u = null
+    local code c = null
+    local string s = null
+    local trigger t = null
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(result.contains("unit u = nil;"), "unit → nil: {result}");
+        assert!(result.contains("funcdef c = null;"), "code → null: {result}");
+        assert!(result.contains("string s = null;"), "string → null: {result}");
+        assert!(result.contains("trigger t = nil;"), "trigger → nil: {result}");
+    }
+
+    // ─── function NAME → @NAME (funcref) ─────────────────────────────────────
+
+    #[test]
+    fn as_funcref_in_call() {
+        // `call ForGroup(g, function Foo)` → `ForGroup(g, @Foo);`
+        let src = "\
+function A takes nothing returns nothing
+    call ForGroup(g, function Foo)
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("@Foo"),
+            "expected `@Foo` in AS output, got:\n{result}"
+        );
+        assert!(
+            !result.contains("function Foo"),
+            "should NOT contain `function Foo` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_funcref_in_set() {
+        // `set c = function Callback` → `c = @Callback;`
+        let src = "\
+function A takes nothing returns nothing
+    local code c = null
+    set c = function Callback
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("@Callback"),
+            "expected `@Callback` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_funcref_in_return() {
+        // `return function Callback` → `return @Callback;`
+        let src = "\
+function A takes nothing returns code
+    return function Callback
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("return @Callback;"),
+            "expected `return @Callback;` in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_funcref_in_local_init() {
+        // `local code c = function Callback` → `funcdef c = @Callback;`
+        let src = "\
+function A takes nothing returns nothing
+    local code c = function Callback
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("funcdef c = @Callback;"),
+            "expected `funcdef c = @Callback;` in AS output, got:\n{result}"
+        );
+    }
+
+    // ─── array/table read casts ───────────────────────────────────────────────
+
+    #[test]
+    fn as_array_read_gets_cast() {
+        // `integer array arr` → `table arr = {};`
+        // read: `arr[i]` → `int(arr[i])`
+        let src = "\
+function A takes nothing returns nothing
+    local integer array arr
+    local integer x = arr[0]
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("int(arr[0])"),
+            "expected `int(arr[0])` cast in AS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn as_array_write_no_cast() {
+        // Write to array should NOT have a cast on the LHS.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array arr
+    set arr[0] = 5
+endfunction
+";
+        let result = build_single_function_as(src);
+        assert!(
+            result.contains("arr[0] = 5;"),
+            "expected `arr[0] = 5;` without cast on LHS, got:\n{result}"
+        );
+    }
 }
 
 

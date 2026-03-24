@@ -276,6 +276,10 @@ fn rewrite_expr(expr: &mut IRExpr, expected_type: Option<&str>, ctx: &FuncCtx) {
             rewrite_expr(index, None, ctx);
         }
 
+        IRExpr::Cast { inner, .. } => {
+            rewrite_expr(inner, expected_type, ctx);
+        }
+
         _ => {}
     }
 }
@@ -401,11 +405,16 @@ pub(super) fn rewrite_null_to_nil(ir: &mut BuildIR) {
 
 /// Rewrite `null` → `nil` in a single function (test pipeline).
 ///
-/// Only local context is available — external function signatures and
-/// global variables are not resolved.
+/// Registers the function's own signature so that recursive calls and
+/// local variable types can be resolved.  External function signatures
+/// and global variables are not available.
 #[cfg(test)]
 pub(super) fn rewrite_func_null_to_nil(func: &mut IRFunc) {
-    let global_ctx = GlobalCtx::empty();
+    let mut global_ctx = GlobalCtx::empty();
+    // Register the function's own signature.
+    let param_types: Vec<String> = func.params.iter().map(|(t, _)| t.clone()).collect();
+    global_ctx.func_params.insert(func.name.clone(), param_types);
+    global_ctx.func_returns.insert(func.name.clone(), func.return_type.clone());
     rewrite_function(func, &global_ctx);
 }
 

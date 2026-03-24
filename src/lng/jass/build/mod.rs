@@ -29,6 +29,7 @@
 //! 2. Functions in topological order
 //! 3. Bare top-level statements → synthesized `void main() { … }`
 
+mod array_cast;
 mod convert;
 mod emit;
 mod inline;
@@ -100,6 +101,9 @@ pub fn build_single_function_as(src: &str) -> String {
 
     // Rewrite null → nil for handle-typed contexts.
     null_to_nil::rewrite_func_null_to_nil(&mut ir_func);
+
+    // Wrap array reads with type casts (table is untyped in AS).
+    array_cast::insert_array_casts_func(&mut ir_func);
 
     // IR → JASS text (with precedence parenthesization)
     let jass_text = render_jass::render_jass_function(&ir_func);
@@ -353,6 +357,9 @@ pub fn build_as(uri: &Url) -> BuildResult {
 
     // 7c. Rewrite `null` → `nil` for handle-typed contexts.
     null_to_nil::rewrite_null_to_nil(&mut ir);
+
+    // 7d. Wrap array reads with type casts (`table` is untyped in AS).
+    array_cast::insert_array_casts(&mut ir);
 
     // 8. Build rename map for AS reserved-word conflicts.
     let mut all_names: Vec<&str> = ir.functions.keys().map(|s| s.as_str()).collect();

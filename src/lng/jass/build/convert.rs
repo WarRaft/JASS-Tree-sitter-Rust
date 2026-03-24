@@ -372,6 +372,35 @@ pub(super) fn resolve_frozen_deps(ir: &mut BuildIR, file_order: &[Url]) {
             referenced.extend(collect_referenced_globals(func));
         }
 
+        // Also scan existing (user) global initializers for references.
+        for stmt in &ir.globals {
+            collect_ids_in_global_init(stmt, &mut referenced);
+        }
+
+        // Transitively include frozen globals whose names appear in the
+        // initializers of other included frozen globals.
+        // Repeat until no new globals are added.
+        loop {
+            let mut newly_referenced = HashSet::new();
+            for stmt in &frozen_globals {
+                if let IRStmt::VarDecl { decls, .. } = stmt {
+                    if decls.iter().any(|d| frozen_global_names.contains(&d.name)
+                        && referenced.contains(&d.name))
+                    {
+                        // This global will be included — scan its initializers
+                        // for more references.
+                        collect_ids_in_global_init(stmt, &mut newly_referenced);
+                    }
+                }
+            }
+            // Keep only names that are actually frozen globals and not yet referenced.
+            let added: Vec<String> = newly_referenced.into_iter()
+                .filter(|n| frozen_global_names.contains(n) && !referenced.contains(n))
+                .collect();
+            if added.is_empty() { break; }
+            referenced.extend(added);
+        }
+
         // Prepend only the frozen globals that are actually used.
         // (Frozen files are logically "earlier" — their globals go first.)
         let user_globals = std::mem::take(&mut ir.globals);
@@ -454,6 +483,9 @@ fn collect_call_names_in_expr(expr: &IRExpr, out: &mut Vec<String>) {
         IRExpr::Index { array, index } => {
             collect_call_names_in_expr(array, out);
             collect_call_names_in_expr(index, out);
+        }
+        IRExpr::Cast { inner, .. } => {
+            collect_call_names_in_expr(inner, out);
         }
         IRExpr::Id(_) | IRExpr::Literal(_) => {}
     }
@@ -556,7 +588,22 @@ fn collect_ids_in_expr(expr: &IRExpr, locals: &HashSet<String>, out: &mut HashSe
             collect_ids_in_expr(array, locals, out);
             collect_ids_in_expr(index, locals, out);
         }
+        IRExpr::Cast { inner, .. } => {
+            collect_ids_in_expr(inner, locals, out);
+        }
         IRExpr::Literal(_) | IRExpr::FuncRef(_) => {}
+    }
+}
+
+/// Collect identifiers referenced in a global variable's initializer(s).
+fn collect_ids_in_global_init(stmt: &IRStmt, out: &mut HashSet<String>) {
+    if let IRStmt::VarDecl { decls, .. } = stmt {
+        let empty = HashSet::new();
+        for d in decls {
+            if let Some(ref v) = d.value {
+                collect_ids_in_expr(v, &empty, out);
+            }
+        }
     }
 }
 

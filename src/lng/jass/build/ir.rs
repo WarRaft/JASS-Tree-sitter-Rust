@@ -63,6 +63,10 @@ pub(super) enum IRExpr {
     Parens(Box<IRExpr>),
     /// Array index: `array[index]`.
     Index { array: Box<IRExpr>, index: Box<IRExpr> },
+    /// Type cast: `type_name(inner)` — used in AS for typed reads from `table`.
+    /// In JASS rendering this is transparent: emits `type_name(inner)` which
+    /// looks like a function call and passes through the text pipeline safely.
+    Cast { type_name: String, inner: Box<IRExpr> },
 }
 
 /// Escape a string for use inside a JASS/AS string literal.

@@ -9,12 +9,9 @@ use super::render_as::{as_rename, default_for_as_type, jass_type_to_as_type};
 use super::render_jass::is_var_decl_line;
 use std::collections::{HashMap, HashSet};
 
-/// Apply renames to identifiers in a line of code.
-/// Simple word-boundary replacement.
+/// Apply renames to identifiers in a line of code and convert JASS
+/// function references (`function NAME`) to AS syntax (`@NAME`).
 pub(super) fn apply_rename_to_line(line: &str, rename_map: &HashMap<String, String>) -> String {
-    if rename_map.is_empty() {
-        return line.to_string();
-    }
     let mut result = String::with_capacity(line.len());
     let mut chars = line.char_indices().peekable();
 
@@ -31,6 +28,39 @@ pub(super) fn apply_rename_to_line(line: &str, rename_map: &HashMap<String, Stri
                 }
             }
             let word = &line[start..end];
+
+            // Convert JASS `function NAME` → AS `@NAME`.
+            if word == "function" {
+                if let Some(&(_, ' ')) = chars.peek() {
+                    chars.next(); // consume space
+                    if let Some(&(id_start, id_ch)) = chars.peek() {
+                        if id_ch.is_ascii_alphabetic() || id_ch == '_' {
+                            chars.next();
+                            let mut id_end = id_start + id_ch.len_utf8();
+                            while let Some(&(_, nc)) = chars.peek() {
+                                if nc.is_ascii_alphanumeric() || nc == '_' {
+                                    id_end += nc.len_utf8();
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                            let func_name = &line[id_start..id_end];
+                            result.push('@');
+                            if let Some(replacement) = rename_map.get(func_name) {
+                                result.push_str(replacement);
+                            } else {
+                                result.push_str(func_name);
+                            }
+                            continue;
+                        }
+                    }
+                    // `function` followed by space but not an identifier — keep as-is.
+                    result.push_str("function ");
+                    continue;
+                }
+            }
+
             if let Some(replacement) = rename_map.get(word) {
                 result.push_str(replacement);
             } else {

@@ -131,7 +131,7 @@ pub(super) fn render_as_expr(expr: &IRExpr) -> String {
             let a: Vec<String> = args.iter().map(render_as_expr).collect();
             format!("{}({})", name, a.join(", "))
         }
-        IRExpr::FuncRef(s) => format!("function {}", s),
+        IRExpr::FuncRef(s) => format!("@{}", s),
         IRExpr::Binary { left, op, right } => {
             // Precedence fix: in JASS `or` binds tighter than `and`,
             // in AS `&&` binds tighter than `||`.  Wrap `or` children of `and`.
@@ -151,6 +151,9 @@ pub(super) fn render_as_expr(expr: &IRExpr) -> String {
         IRExpr::Parens(inner) => format!("({})", render_as_expr(inner)),
         IRExpr::Index { array, index } => {
             format!("{}[{}]", render_as_expr(array), render_as_expr(index))
+        }
+        IRExpr::Cast { type_name, inner } => {
+            format!("{}({})", jass_type_to_as_type(type_name), render_as_expr(inner))
         }
     }
 }

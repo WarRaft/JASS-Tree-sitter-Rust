@@ -5,6 +5,7 @@
 //! any executable statement (a JASS requirement).
 
 use super::ir::*;
+use super::render_as::jass_type_to_as_type;
 use std::collections::HashSet;
 
 // ─── IR → JASS rendering ────────────────────────────────────────────────────
@@ -41,6 +42,9 @@ pub(super) fn render_jass_expr(expr: &IRExpr) -> String {
         IRExpr::Parens(inner) => format!("({})", render_jass_expr(inner)),
         IRExpr::Index { array, index } => {
             format!("{}[{}]", render_jass_expr(array), render_jass_expr(index))
+        }
+        IRExpr::Cast { type_name, inner } => {
+            format!("{}({})", jass_type_to_as_type(type_name), render_jass_expr(inner))
         }
     }
 }
