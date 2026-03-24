@@ -1,33 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::lng::jass::ast::{build_ast, rewrite_imports};
     use crate::lng::jass::build::*;
 
-    /// Parse JASS source → AST → emit_function → hoist_jass_locals → final text.
-    /// This mirrors the real build pipeline for a single function.
-    fn build_function(src: &str) -> String {
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_jass::language().into())
-            .expect("Failed to set language");
-        let tree = parser.parse(src, None).expect("Failed to parse");
-        let mut ast = build_ast(tree.root_node());
-        let src_bytes = src.as_bytes().to_vec();
-        rewrite_imports(&mut ast, &src_bytes);
-
-        use crate::lng::jass::ast::Statement;
-        let func = ast
-            .items
-            .iter()
-            .find_map(|item| match item {
-                Statement::Function(f) => Some(f),
-                _ => None,
-            })
-            .expect("No function found in source");
-
-        let emitted = emit_function_text(src, func);
-        hoist_jass_locals_text(&emitted)
-    }
 
     /// Normalize whitespace: trim each line, drop empty lines, join with `\n`.
     fn norm(s: &str) -> String {
@@ -49,7 +23,7 @@ function A takes nothing returns nothing
     set x = 3
 endfunction
 ";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         assert_eq!(
             norm(&result),
             norm(
@@ -73,7 +47,7 @@ function A takes nothing returns nothing
     local real y = 3.0
 endfunction
 ";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
         // Hoisted `y` must appear before `set x = 2`.
         assert!(lines.contains(&"local real y = 0"), "hoisted `local real y = 0` missing: {lines:?}");
@@ -103,7 +77,7 @@ function A takes nothing returns nothing
     A = 21
 endfunction
 ";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
         // `B` must be declared exactly once.
         let local_b_count = lines.iter().filter(|l| l.starts_with("local real B")).count();
@@ -125,7 +99,7 @@ function A takes nothing returns nothing
     integer x = 99
 endfunction
 ";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
         // `x` was already declared early — no hoisted duplicate.
         let local_x_count = lines.iter().filter(|l| l.starts_with("local integer x")).count();
@@ -143,7 +117,7 @@ function A takes nothing returns nothing
     integer x = 5
 endfunction
 ";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
         assert!(
             lines.contains(&"local integer x = 5"),
@@ -164,7 +138,7 @@ function A takes nothing returns nothing
     endloop
 endfunction
 ";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
         let local_i_count = lines.iter().filter(|l| l.starts_with("local integer i")).count();
         assert_eq!(local_i_count, 1, "expected exactly 1 `local integer i`, got {local_i_count}: {lines:?}");
@@ -182,7 +156,7 @@ function A takes nothing returns nothing
     real x
 endfunction
 ";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
         assert!(lines.contains(&"local real x = 0"), "hoisted `local real x = 0` missing: {lines:?}");
         // No `set x = ...` because original had no initializer.
@@ -200,7 +174,7 @@ function A takes nothing returns nothing
     integer array arr
 endfunction
 ";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
         assert!(
             lines.contains(&"local integer array arr"),
@@ -210,58 +184,12 @@ endfunction
 
     // ── AS precedence: `or` inside `and` gets parenthesized ─────────────────
 
-    /// Helper: parse a global var decl and emit it in AS mode.
-    fn emit_global_var_as(src: &str) -> String {
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_jass::language().into())
-            .expect("Failed to set language");
-        let tree = parser.parse(src, None).expect("Failed to parse");
-        let mut ast = build_ast(tree.root_node());
-        let src_bytes = src.as_bytes().to_vec();
-        rewrite_imports(&mut ast, &src_bytes);
-
-        use crate::lng::jass::ast::Statement;
-        let var = ast
-            .items
-            .iter()
-            .find_map(|item| match item {
-                Statement::VarStmt(v) => Some(v),
-                _ => None,
-            })
-            .expect("No VarStmt found");
-        emit_var_text_as(src, var)
-    }
-
-    /// Helper: parse source, emit function body in AS mode.
-    fn build_function_as(src: &str) -> String {
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&tree_sitter_jass::language().into())
-            .expect("Failed to set language");
-        let tree = parser.parse(src, None).expect("Failed to parse");
-        let mut ast = build_ast(tree.root_node());
-        let src_bytes = src.as_bytes().to_vec();
-        rewrite_imports(&mut ast, &src_bytes);
-
-        use crate::lng::jass::ast::Statement;
-        let func = ast
-            .items
-            .iter()
-            .find_map(|item| match item {
-                Statement::Function(f) => Some(f),
-                _ => None,
-            })
-            .expect("No function found");
-        emit_function_text_as(src, func)
-    }
-
     #[test]
     fn as_or_inside_and_gets_parens() {
         // In JASS: `false and true or true` means `false and (true or true)`.
         // In AS:   without parens it would mean `(false and true) or true`.
         let src = "boolean T = false and true or true\n";
-        let result = emit_global_var_as(src);
+        let result = build_global_var_as(src);
         assert!(
             result.contains("(true or true)"),
             "expected `(true or true)` in AS output, got: {result}"
@@ -278,7 +206,7 @@ endfunction
         // The `or` is the child of `and` in the AST, so it gets parens.
         // But `and` inside `or` is fine in AS (and already binds tighter).
         let src = "boolean T = true or false and true\n";
-        let result = emit_global_var_as(src);
+        let result = build_global_var_as(src);
         // Should NOT double-wrap `and` — it already binds tighter in AS.
         assert!(
             !result.contains("(("),
@@ -290,7 +218,7 @@ endfunction
     fn as_no_parens_when_no_or() {
         // Pure `and` — no precedence issue.
         let src = "boolean T = true and false and true\n";
-        let result = emit_global_var_as(src);
+        let result = build_global_var_as(src);
         assert!(
             !result.contains('('),
             "no parens expected for pure `and`, got: {result}"
@@ -304,7 +232,7 @@ function A takes nothing returns nothing
     local boolean x = false and true or true
 endfunction
 ";
-        let result = build_function_as(src);
+        let result = build_single_function_as(src);
         assert!(
             result.contains("(true or true)"),
             "expected `(true or true)` in function body, got: {result}"
@@ -312,13 +240,14 @@ endfunction
     }
 
     #[test]
-    fn as_jass_mode_no_parens() {
-        // JASS mode: no parentheses added (precedence is correct as-is).
+    fn as_jass_mode_parens_defensive() {
+        // IR renderer adds defensive parens for `or` inside `and` even in JASS
+        // output — harmless in JASS, necessary for AS correctness.
         let src = "function A takes nothing returns nothing\n    local boolean x = false and true or true\nendfunction\n";
-        let result = build_function(src);
+        let result = build_single_function_jass(src);
         assert!(
-            !result.contains("(true or true)"),
-            "JASS mode should NOT add parens, got: {result}"
+            result.contains("(true or true)"),
+            "IR renderer should add defensive parens for `or` inside `and`, got: {result}"
         );
     }
 

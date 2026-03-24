@@ -395,13 +395,13 @@ fn jass_var_decl_to_as_inner(decl: &str, rename_map: &HashMap<String, String>) -
 /// Test-only: convert a JASS function source to AS via the text pipeline.
 #[cfg(test)]
 pub fn jass_function_to_as_text(jass_source: &str) -> String {
-    let rename_map = std::collections::HashMap::new();
+    let rename_map = HashMap::new();
     jass_function_to_as(jass_source, &rename_map)
 }
 
 /// Test-only: convert a JASS global var declaration to AS.
 #[cfg(test)]
 pub fn jass_var_decl_to_as_text(decl: &str) -> String {
-    let rename_map = std::collections::HashMap::new();
+    let rename_map = HashMap::new();
     jass_var_decl_to_as(decl, &rename_map)
 }

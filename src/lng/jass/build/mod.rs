@@ -60,15 +60,43 @@ use self::render_jass::{hoist_jass_locals, render_jass_function, render_jass_stm
 
 // Re-export test-only wrappers so `build_test.rs` can use `use crate::lng::jass::build::*`.
 #[cfg(test)]
-pub use self::emit::{emit_function_text, emit_function_text_as, emit_var_text_as};
-#[cfg(test)]
 pub use self::inline::{
     detect_inline_candidate_text, inline_call_in_source_text, is_top_level_call_text,
 };
 #[cfg(test)]
-pub use self::render_jass::hoist_jass_locals_text;
-#[cfg(test)]
 pub use self::jass_to_as::{jass_function_to_as_text, jass_var_decl_to_as_text};
+
+/// Test-only: parse JASS source → AST → IR → render JASS text → hoist locals.
+///
+/// This mirrors the real `build_jass` pipeline for a single function.
+#[cfg(test)]
+pub fn build_single_function_jass(src: &str) -> String {
+    use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
+    use std::collections::HashSet;
+
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_jass::language().into())
+        .expect("Failed to set language");
+    let tree = parser.parse(src, None).expect("Failed to parse");
+    let mut ast = build_ast(tree.root_node());
+    let src_bytes = src.as_bytes().to_vec();
+    rewrite_imports(&mut ast, &src_bytes);
+
+    let func = ast
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Statement::Function(f) => Some(f),
+            _ => None,
+        })
+        .expect("No function found");
+
+    // AST → IR → JASS text → hoist locals
+    let ir_func = convert::convert_function(src, func, HashSet::new());
+    let jass_text = render_jass::render_jass_function(&ir_func);
+    render_jass::hoist_jass_locals(&jass_text)
+}
 
 /// Test-only: parse JASS source → AST → IR → render JASS text → convert to AS.
 ///
@@ -111,6 +139,42 @@ pub fn build_single_function_as(src: &str) -> String {
     // JASS text → AS text (jass_function_to_as does its own AS-level hoisting)
     let rename_map = std::collections::HashMap::new();
     jass_to_as::jass_function_to_as(&jass_text, &rename_map)
+}
+
+/// Test-only: parse a JASS global var declaration → AST → IR → render JASS → convert to AS.
+#[cfg(test)]
+pub fn build_global_var_as(src: &str) -> String {
+    use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
+
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_jass::language().into())
+        .expect("Failed to set language");
+    let tree = parser.parse(src, None).expect("Failed to parse");
+    let mut ast = build_ast(tree.root_node());
+    let src_bytes = src.as_bytes().to_vec();
+    rewrite_imports(&mut ast, &src_bytes);
+
+    let var = ast
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Statement::VarStmt(v) => Some(v),
+            _ => None,
+        })
+        .expect("No VarStmt found");
+
+    // AST → IR
+    let ir_stmt = convert::convert_stmt(src, &Statement::VarStmt(var.clone()))
+        .expect("Failed to convert VarStmt");
+
+    // IR → JASS text
+    let jass_lines = render_jass::render_jass_stmt(&ir_stmt, "");
+    let jass_text = jass_lines.join("\n");
+
+    // JASS text → AS text
+    let rename_map = std::collections::HashMap::new();
+    jass_to_as::jass_var_decl_to_as(&jass_text, &rename_map)
 }
 
 /// Build mode — determines how frozen (`//import!`) files are handled.

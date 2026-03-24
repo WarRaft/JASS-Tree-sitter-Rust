@@ -141,6 +141,69 @@ pub(super) fn convert_body(src: &str, stmts: &[Statement]) -> Vec<IRStmt> {
     stmts.iter().filter_map(|s| convert_stmt(src, s)).collect()
 }
 
+/// Convert `VarDecl` statements into `Local` statements inside function bodies.
+///
+/// In the AST, `integer x = 5` (without the `local` keyword) parses as
+/// `VarStmt` which maps to `IRStmt::VarDecl`.  However, inside a function
+/// body all declarations are locals and must be rendered with the `local`
+/// prefix.  This function expands each `VarDecl` into one `Local` per
+/// initializer.
+fn localize_var_decls(body: &mut Vec<IRStmt>) {
+    let mut i = 0;
+    while i < body.len() {
+        match &body[i] {
+            IRStmt::VarDecl { is_array, type_name, decls, .. } => {
+                let is_array = *is_array;
+                let type_name = type_name.clone();
+                let locals: Vec<IRStmt> = decls
+                    .iter()
+                    .map(|d| IRStmt::Local {
+                        type_name: type_name.clone(),
+                        is_array,
+                        name: d.name.clone(),
+                        value: d.value.clone(),
+                    })
+                    .collect();
+                let count = locals.len();
+                body.splice(i..i + 1, locals);
+                i += count;
+            }
+            IRStmt::If { body: if_body, branches, .. } => {
+                // Recurse into nested blocks — declarations inside
+                // `if`/`loop` are still function-local.
+                let mut ib = if_body.clone();
+                localize_var_decls(&mut ib);
+                let mut new_branches: Vec<IRBranch> = branches.clone();
+                for b in &mut new_branches {
+                    localize_var_decls(&mut b.body);
+                }
+                body[i] = match &body[i] {
+                    IRStmt::If { condition, .. } => IRStmt::If {
+                        condition: condition.clone(),
+                        body: ib,
+                        branches: new_branches,
+                    },
+                    _ => unreachable!(),
+                };
+                i += 1;
+            }
+            IRStmt::Loop(_) => {
+                let inner = match &body[i] {
+                    IRStmt::Loop(b) => b.clone(),
+                    _ => unreachable!(),
+                };
+                let mut inner = inner;
+                localize_var_decls(&mut inner);
+                body[i] = IRStmt::Loop(inner);
+                i += 1;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+}
+
 pub(super) fn convert_function(
     src: &str,
     f: &FunctionDecl,
@@ -155,11 +218,14 @@ pub(super) fn convert_function(
     let return_type = f.return_type.as_ref()
         .map(|id| id_text(src, id))
         .unwrap_or_else(|| "nothing".into());
-    let body = convert_body(src, &f.body);
+    let mut body = convert_body(src, &f.body);
+
+    // Convert VarDecl → Local inside function body (JASS requires `local` prefix).
+    localize_var_decls(&mut body);
 
     // Detect inline candidate: takes nothing + single `return expr`.
     let inline_expr = if f.params.is_empty() {
-        detect_inline_candidate(src, &f.body, false)
+        detect_inline_candidate(&body)
     } else {
         None
     };

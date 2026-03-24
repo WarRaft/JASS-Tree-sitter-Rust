@@ -391,21 +391,3 @@ pub(super) fn emit_function(src: &str, f: &FunctionDecl, for_as: bool) -> String
     out
 }
 
-/// Test-only wrapper for [`emit_function`].
-#[cfg(test)]
-pub fn emit_function_text(src: &str, f: &FunctionDecl) -> String {
-    emit_function(src, f, false)
-}
-
-/// Test-only wrapper for [`emit_function`] in AS mode (with precedence fix).
-#[cfg(test)]
-pub fn emit_function_text_as(src: &str, f: &FunctionDecl) -> String {
-    emit_function(src, f, true)
-}
-
-/// Test-only wrapper for [`emit_var`] in AS mode.
-#[cfg(test)]
-pub fn emit_var_text_as(src: &str, v: &VarStmt) -> String {
-    emit_var(src, v, true)
-}
-

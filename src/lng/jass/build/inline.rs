@@ -3,34 +3,30 @@
 //! Provides the inline-candidate detection, single-call-site inlining pass,
 //! and compile-time `StringHash(…)` folding across all build fragments.
 
-use crate::lng::jass::ast::{Expr, Statement};
 use crate::util::file_store::FILE_STORE;
 use crate::util::string_hash::{collect_constants, fold_string_hash, fold_string_integer_args};
 use std::collections::HashMap;
 
-#[cfg(test)]
-use crate::lng::jass::ast::{build_ast, rewrite_imports};
-
-use super::emit::emit_expr;
 use super::ir::*;
+use super::render_jass::render_jass_expr;
 
 // ─── Inline candidate detection ──────────────────────────────────────────────
 
 /// Detect whether a function body is a single `return expr` and, if so,
 /// return the [`InlineCandidate`] with the expression text and compoundness.
+///
+/// Operates on the owned IR (not the CST), so it can be called after
+/// `convert_body` has already transformed the AST into IR nodes.
 pub(super) fn detect_inline_candidate(
-    src: &str,
-    body: &[Statement],
-    for_as: bool,
+    body: &[IRStmt],
 ) -> Option<InlineCandidate> {
     // Body must contain exactly one statement: `return <expr>`.
     if body.len() != 1 {
         return None;
     }
-    if let Statement::Return(r) = &body[0] {
-        let expr = r.value.as_ref()?;
-        let expr_text = emit_expr(src, expr, for_as);
-        let is_compound = matches!(expr, Expr::Binary { .. } | Expr::Unary { .. });
+    if let IRStmt::Return(Some(expr)) = &body[0] {
+        let expr_text = render_jass_expr(expr);
+        let is_compound = matches!(expr, IRExpr::Binary { .. } | IRExpr::Unary { .. });
         Some(InlineCandidate { expr_text, is_compound })
     } else {
         None
@@ -272,6 +268,10 @@ fn build_signature_map() -> HashMap<String, Vec<String>> {
 /// Test-only: detect an inline candidate from source code.
 #[cfg(test)]
 pub fn detect_inline_candidate_text(src: &str) -> Option<(String, bool)> {
+    use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
+    use super::convert::convert_function;
+    use std::collections::HashSet;
+
     let mut parser = tree_sitter::Parser::new();
     parser
         .set_language(&tree_sitter_jass::language().into())
@@ -284,7 +284,8 @@ pub fn detect_inline_candidate_text(src: &str) -> Option<(String, bool)> {
     for item in &ast.items {
         if let Statement::Function(f) = item {
             if f.params.is_empty() {
-                if let Some(ic) = detect_inline_candidate(src, &f.body, false) {
+                let ir_func = convert_function(src, f, HashSet::new());
+                if let Some(ic) = detect_inline_candidate(&ir_func.body) {
                     return Some((ic.expr_text, ic.is_compound));
                 }
             }

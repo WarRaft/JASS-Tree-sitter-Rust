@@ -330,9 +330,3 @@ pub(super) fn hoist_jass_locals(source: &str) -> String {
     out
 }
 
-/// Test-only wrapper for [`hoist_jass_locals`].
-#[cfg(test)]
-pub fn hoist_jass_locals_text(source: &str) -> String {
-    hoist_jass_locals(source)
-}
-
