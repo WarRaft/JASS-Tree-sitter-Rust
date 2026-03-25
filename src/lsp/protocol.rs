@@ -181,6 +181,13 @@ pub enum MethodCall {
 
     #[serde(rename = "mpq/read")]
     MpqRead(MpqReadParams),
+
+    /// SLK table editor
+    #[serde(rename = "slk/render")]
+    SlkRender(TextDocumentIdentifier),
+
+    #[serde(rename = "slk/edit")]
+    SlkEdit(SlkEditParams),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
@@ -227,5 +234,17 @@ pub struct W3iRenderParams {
     /// so the server can read `war3map.wts` and resolve TRIGSTR references.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive_path: Option<String>,
+}
+
+/// Params for `slk/edit` — edit a single cell in the SLK table.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SlkEditParams {
+    pub uri: Url,
+    /// Byte offset of the old value in the document.
+    pub start: usize,
+    /// Byte length of the old value.
+    pub len: usize,
+    /// New cell value (raw text to insert).
+    pub value: String,
 }
 

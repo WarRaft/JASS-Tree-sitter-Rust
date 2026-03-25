@@ -65,11 +65,10 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
 
         if let Ok(kind) = Kind::try_from(node.grammar_id()) {
             match kind {
-                // Record type keywords: ID, B, C, E, F, O, P
+                // Record type keywords: ID, B, C, F, O, P
                 Kind::IdKeyword
                 | Kind::BKeyword
                 | Kind::CKeyword
-                | Kind::EKeyword
                 | Kind::FKeyword
                 | Kind::OKeyword
                 | Kind::PKeyword => {
@@ -153,6 +152,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                     });
                 }
                 Kind::EndRecord => {
+                    semantic.add_node(&node, &rope, TokenKind::Keyword, 0u32);
                     symbols.push(DocumentSymbol {
                         name: "E".into(),
                         kind: SymbolKind::Struct,
@@ -160,6 +160,10 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                         selection_range: node.to_range(&rope),
                         ..Default::default()
                     });
+                }
+
+                Kind::TailContent => {
+                    semantic.add_node(&node, &rope, TokenKind::Comment, 0u32);
                 }
 
                 _ => {}

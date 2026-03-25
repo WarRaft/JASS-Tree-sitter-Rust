@@ -11,6 +11,9 @@
   "customEditor.blp.displayName": "Перегляд BLP-зображень",
   "customEditor.doo.displayName": "Перегляд DOO-розміщень",
   "customEditor.w3i.displayName": "Перегляд W3I-інформації карти",
-  "customEditor.mpq.displayName": "Перегляд MPQ-архівів"
+  "customEditor.mpq.displayName": "Перегляд MPQ-архівів",
+  "customEditor.slk.displayName": "Табличний редактор SLK",
+  "command.slk.openTable": "Відкрити як таблицю",
+  "command.slk.openText": "Відкрити як текст"
 }
 

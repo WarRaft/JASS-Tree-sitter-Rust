@@ -32,6 +32,7 @@
     "publish": "vsce publish patch"
   },
   "dependencies": {
+    "canvas-datagrid": "^0.4.7",
     "vscode-languageclient": "^9.0.1"
   },
   "devDependencies": {
@@ -294,13 +295,24 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "slk.preview",
+        "displayName": "%customEditor.slk.displayName%",
+        "selector": [
+          {
+            "filenamePattern": "*.slk"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "activationEvents": [
       "onCustomEditor:blp.preview",
       "onCustomEditor:doo.preview",
       "onCustomEditor:w3i.preview",
-      "onCustomEditor:mpq.preview"
+      "onCustomEditor:mpq.preview",
+      "onCustomEditor:slk.preview"
     ],
     "commands": [
       {
@@ -347,6 +359,16 @@
         "command": "jass.restartServer",
         "title": "%command.jass.restartServer%",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "slk.openTable",
+        "title": "%command.slk.openTable%",
+        "icon": "$(table)"
+      },
+      {
+        "command": "slk.openText",
+        "title": "%command.slk.openText%",
+        "icon": "$(code)"
       }
     ],
     "menus": {
@@ -381,6 +403,16 @@
         {
           "command": "build.execute",
           "when": "resourceLangId == jass || resourceLangId == angelscript",
+          "group": "navigation"
+        },
+        {
+          "command": "slk.openTable",
+          "when": "resourceLangId == slk && activeCustomEditorId != slk.preview",
+          "group": "navigation"
+        },
+        {
+          "command": "slk.openText",
+          "when": "activeCustomEditorId == slk.preview",
           "group": "navigation"
         }
       ]

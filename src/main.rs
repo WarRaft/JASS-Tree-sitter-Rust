@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::lng::blp::send::send as blp_send;
 use crate::lng::doo::send::send as doo_send;
+use crate::lng::slk::send::send as slk_send;
 use crate::lng::w3i::send::send as w3i_send;
 use crate::lng::mpq::send::{send_info as mpq_info_send, send_list as mpq_list_send, send_read as mpq_read_send};
 use crate::lsp::cancel::CancelCheck;
@@ -387,6 +388,24 @@ async fn main() {
 
                             MethodCall::W3iRender(param) => {
                                 w3i_send(&writer, call.id, &param.uri, param.archive_path.as_deref()).await;
+                            }
+
+                            MethodCall::SlkRender(param) => {
+                                slk_send(&writer, call.id, &param.uri).await;
+                            }
+
+                            MethodCall::SlkEdit(param) => {
+                                let result = crate::lng::slk::edit::apply_cell_edit(&param);
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(serde_json::json!(result)),
+                                        error: None,
+                                    },
+                                )
+                                .await;
                             }
 
                             MethodCall::Initialized(_) => {

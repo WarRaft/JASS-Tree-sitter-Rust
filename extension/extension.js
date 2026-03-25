@@ -16,6 +16,7 @@ const {showCallGraph} = require('./callGraphPanel.js')
 const {showTypeGraph} = require('./typeGraphPanel.js')
 const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
 const {resolveMpqEditor} = require('./resolveMpqEditor.js')
+const {resolveSlkEditor} = require('./resolveSlkEditor.js')
 
 const path = require('path')
 
@@ -255,6 +256,41 @@ module.exports = {
             binaryEditor('doo.preview', resolveDooEditor),
             binaryEditor('w3i.preview', resolveW3iEditor),
             binaryEditor('mpq.preview', resolveMpqEditor),
+
+            // SLK table editor (text-based — uses CustomTextEditorProvider for undo/redo)
+            window.registerCustomEditorProvider(
+                'slk.preview',
+                {
+                    async resolveCustomTextEditor(document, webviewPanel, token) {
+                        webviewPanel.webview.options = {enableScripts: true}
+                        await clientReady
+                        return resolveSlkEditor(document, webviewPanel, token, client, context)
+                    }
+                },
+                {
+                    webviewOptions: {retainContextWhenHidden: true},
+                    supportsMultipleEditorsPerDocument: false
+                }
+            ),
+
+            // SLK: Open as Table (from text editor)
+            commands.registerCommand('slk.openTable', () => {
+                const editor = window.activeTextEditor
+                if (editor && editor.document.languageId === 'slk') {
+                    commands.executeCommand('vscode.openWith', editor.document.uri, 'slk.preview')
+                }
+            }),
+
+            // SLK: Open as Text (from table editor)
+            commands.registerCommand('slk.openText', () => {
+                // The active custom editor resource URI is available via activeTextEditor
+                // but when a custom editor is active, we need to use the document URI.
+                // VS Code exposes the resource via the tab API.
+                const tab = window.tabGroups.activeTabGroup.activeTab
+                if (tab && tab.input && tab.input.uri) {
+                    commands.executeCommand('vscode.openWith', tab.input.uri, 'default')
+                }
+            }),
 
             // Import Graph panel
             commands.registerCommand('importGraph.show', () => {
