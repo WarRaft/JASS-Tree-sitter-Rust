@@ -37,6 +37,12 @@ Grammar — [tree-sitter-bni](https://github.com/WarRaft/tree-sitter-bni).
 
 Built-in image viewer for the **BLP** texture format used by WarCraft III.
 
+### SLK — `.slk`
+
+Built-in table editor for the **SLK** (SYLK) spreadsheet format used by WarCraft III for game data.
+Displays the data in an interactive canvas-based grid with resizable columns, sorting, and configurable hidden columns.
+Settings (column widths, hidden columns, etc.) are persisted directly in the file. Switching between table view and text view is available via the editor title bar.
+
 ### DOO — `.doo`
 
 Built-in viewer for **DOO** placement files (`war3map.doo`, `war3mapUnits.doo`).
@@ -46,6 +52,15 @@ Displays unit/doodad placements, positions, rawcodes, and cliff decorations in a
 
 Built-in viewer for **W3I** map information files (`war3map.w3i`).
 Displays map metadata: name, author, players, forces, camera bounds, fog/weather settings, random groups, and more.
+
+### MPQ / W3X / W3M / W3N — `.mpq`, `.w3x`, `.w3m`, `.w3n`
+
+Built-in archive viewer/browser for **MPQ** archives, including WarCraft III map (`.w3x`, `.w3m`) and campaign (`.w3n`) files.
+Provides a virtual file system to browse and open files inside the archive directly from the VS Code explorer.
+
+### WTS — `.wts`
+
+Syntax support for **WTS** (WarCraft III Trigger Strings) files used for localization.
 
 ---
 
@@ -67,6 +82,9 @@ The extension ships a standalone Rust-based LSP server (Linux, macOS, Windows) t
 | **Completion** | ✅ | ✅ | — |
 | **Inlay hints** | ✅ | ✅ | — |
 | **Document links** | ✅ | ✅ | — |
+| **Code actions** | ✅ | — | — |
+| **Formatting** | ✅ | — | — |
+| **Color picker** | ✅ | — | — |
 
 ---
 
@@ -77,10 +95,12 @@ JASS files can be linked together using special comment-based directives:
 ```jass
 //import path/to/file.j
 //import! blizzard/common.j
+//import-ujapi! ujapi/common.j
 ```
 
 - `//import` — links another file into a shared scope. All top-level declarations (functions, globals, types, natives) become available.
 - `//import!` — **frozen** import. Same as `//import`, but the target file is treated as read-only and will not be modified by refactoring or auto-rename.
+- `//import-ujapi!` — **UjAPI frozen import**. Downloads and imports a UjAPI file. If the file does not exist locally, a code action is offered to download it.
 
 Directives must appear at the very beginning of the file, before any language statements.
 
@@ -99,17 +119,48 @@ Directives must appear at the very beginning of the file, before any language st
 
 ```jass
 //set ref-tip 1
+//set type-tip 1
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
-//set unused 0
+//set backup ./backup
 ```
 
 | Key | Values | Description |
 |-----|--------|-------------|
-| `ref-tip` | `1` / `0` | Show / hide reference-ID inlay hints next to each identifier — useful for debugging symbol resolution. |
-| `unused` | `1` / `0` | Enable / disable unused-function diagnostics for the entire file. Default `1` (enabled). |
-| `build-jass` | `<path>` | Output path for the JASS build. Merges the entire import tree into a single `.j` file. |
-| `build-as` | `<path>` | Output path for the AngelScript build. Same merge logic, but emits `.as` syntax. |
+| `ref-tip` | `1` / `0` | Show / hide reference-ID inlay hints next to each identifier — useful for debugging symbol resolution. Default `0`. |
+| `type-tip` | `1` / `0` | Show / hide type-annotation inlay hints for variables and parameters (e.g. `: integer`, `: constant real array`). Default `0`. |
+| `build-jass` | `<path>` | Output path for the JASS build. Merges the entire import tree into a single `.j` file. If the path is a directory, `war3map.j` is appended. When the path points to a `.w3x` / `.w3m` archive, the script is injected directly into the map. |
+| `build-as` | `<path>` | Output path for the AngelScript build. Same merge logic, but emits `.as` syntax. Reserved-word conflicts are resolved by appending a numeric suffix. When the path points to a `.w3x` / `.w3m` archive, the script is injected directly into the map. |
+| `backup` | `<path>` | Backup directory for the map archive before build injection. A date-prefixed copy (`YYYY_MM_DD_FileName.w3x`) is saved before modifying the archive. |
+
+---
+
+## `//entry` — Build Entry Point
+
+```jass
+//entry
+//import common/natives.j
+//set build-jass ./out/war3map.j
+```
+
+The `//entry` directive marks a file as the **root of the build** and tree-shaking scope.
+
+- The build starts from an `//entry` file. The `//set build-jass` / `//set build-as` directives are only honoured in entry files.
+- Only files transitively reachable via `//import` from an entry point are included in the build output.
+- Only `main` / `config` functions **declared in entry-point files** are considered live roots for unused-function analysis.
+- If no `//entry` directives exist in the project, the old behaviour is preserved: all `main` / `config` functions are treated as entry points everywhere.
+
+---
+
+## `//ignore` — File-Level Diagnostic Suppression
+
+```jass
+//ignore unused leak
+```
+
+The `//ignore` directive suppresses entire categories of diagnostics for the whole file. It must appear at the beginning of the file, alongside `//import` and `//set`.
+
+Multiple tags can be listed on one line, separated by spaces. Supported tags are the same as for `//@ignore` (see below).
 
 ---
 
@@ -151,6 +202,8 @@ Tags are space-separated. Currently supported tags:
 | Tag | Suppresses |
 |-----|-----------|
 | `unused` | "Unused function" hint |
+| `leak` | Handle-leak diagnostic — local handle-type variables not nullified before function exit |
+| `cycle` | Cyclic call chain diagnostic |
 
 `//@ignore` can be combined with `//*` doc comments in any order:
 
@@ -183,6 +236,18 @@ The server builds a function call graph across the connected component:
 - **Topological sort** — used by the build system to ensure callees appear before callers (required by JASS).
 
 A D3.js-powered **Call Graph** panel is available via the editor title bar button.
+
+---
+
+## Handle Leak Detection
+
+JASS does not run destructors on local variables. If a local handle-type variable holds a non-null reference when the function exits, the underlying object is never released — a **handle leak**.
+
+The server performs data-flow analysis on every function body to detect handle variables not nullified (`set v = null`) before every exit point (`return` and implicit `endfunction`).
+
+- **Per-variable quick fix** — a code action inserts `set v = null` before the return.
+- **Fix all leaks** — a single code action fixes all handle leaks in the file.
+- Suppressed with `//@ignore leak` (per-function) or `//ignore leak` (whole file).
 
 ---
 
@@ -240,6 +305,12 @@ Open **Keyboard Shortcuts** (`Ctrl+K Ctrl+S` / `⌘K ⌘S`), search for the comm
 | `typeGraph.show` | Show Type Graph |
 | `rescan.execute` | Rescan All Files |
 | `build.execute` | Build (JASS / AngelScript) |
+| `ujapi.download` | Download UjAPI common.j |
+| `jass.restartServer` | Restart JASS LSP Server |
+| `mpq.browse` | Browse MPQ Archive |
+| `mpq.openFile` | Open File from MPQ Archive |
+| `slk.openTable` | Open SLK as Table |
+| `slk.openText` | Open SLK as Text |
 
 Alternatively, add bindings directly to `keybindings.json` (`Ctrl+Shift+P` → *Preferences: Open Keyboard Shortcuts (JSON)*):
 

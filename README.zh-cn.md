@@ -36,6 +36,12 @@ WarCraft III 的主要脚本语言。基于专用的
 
 内置的 **BLP** 纹理格式图像查看器，BLP 是 WarCraft III 使用的纹理格式。
 
+### SLK — `.slk`
+
+内置的 **SLK**（SYLK）电子表格格式表格编辑器，WarCraft III 使用该格式存储游戏数据。
+以基于 canvas 的交互式网格显示数据，支持可调列宽、排序和可配置的隐藏列。
+设置（列宽、隐藏列等）直接保存在文件中。可通过编辑器标题栏在表格视图和文本视图之间切换。
+
 ### DOO — `.doo`
 
 内置的 **DOO** 放置文件查看器（`war3map.doo`、`war3mapUnits.doo`）。
@@ -45,6 +51,15 @@ WarCraft III 的主要脚本语言。基于专用的
 
 内置的 **W3I** 地图信息文件查看器（`war3map.w3i`）。
 显示地图元数据：名称、作者、玩家、势力、摄像机边界、雾/天气设置、随机组等。
+
+### MPQ / W3X / W3M / W3N — `.mpq`、`.w3x`、`.w3m`、`.w3n`
+
+内置的 **MPQ** 存档查看器/浏览器，包括 WarCraft III 地图（`.w3x`、`.w3m`）和战役（`.w3n`）文件。
+提供虚拟文件系统，可直接在 VS Code 资源管理器中浏览和打开存档内的文件。
+
+### WTS — `.wts`
+
+**WTS**（WarCraft III Trigger Strings）文件的语法支持，用于本地化。
 
 ---
 
@@ -66,6 +81,9 @@ WarCraft III 的主要脚本语言。基于专用的
 | **自动补全** | ✅ | ✅ | — |
 | **内联提示** | ✅ | ✅ | — |
 | **文档链接** | ✅ | ✅ | — |
+| **代码操作** | ✅ | — | — |
+| **格式化** | ✅ | — | — |
+| **颜色选择器** | ✅ | — | — |
 
 ---
 
@@ -76,10 +94,12 @@ JASS 文件可以通过特殊的注释指令相互链接：
 ```jass
 //import path/to/file.j
 //import! blizzard/common.j
+//import-ujapi! ujapi/common.j
 ```
 
 - `//import` — 将另一个文件链接到共享作用域。所有顶层声明（函数、全局变量、类型、原生函数）都将可用。
 - `//import!` — **冻结**导入。与 `//import` 相同，但目标文件被视为只读，不会被重构或自动重命名修改。
+- `//import-ujapi!` — **冻结 UjAPI 导入**。下载并导入 UjAPI 文件。如果文件在本地不存在，将提供代码操作来下载它。
 
 指令必须出现在文件最开头，在任何语言语句之前。
 
@@ -98,17 +118,48 @@ JASS 文件可以通过特殊的注释指令相互链接：
 
 ```jass
 //set ref-tip 1
+//set type-tip 1
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
-//set unused 0
+//set backup ./backup
 ```
 
 | 键 | 值 | 说明 |
 |----|-----|------|
-| `ref-tip` | `1` / `0` | 显示/隐藏每个标识符旁的引用 ID 内联提示——对调试符号解析很有用。 |
-| `unused` | `1` / `0` | 启用/禁用整个文件的未使用函数诊断。默认 `1`（启用）。 |
-| `build-jass` | `<路径>` | JASS 构建的输出路径。将整个导入树合并为单个 `.j` 文件。 |
-| `build-as` | `<路径>` | AngelScript 构建的输出路径。相同的合并逻辑，但输出 `.as` 语法。 |
+| `ref-tip` | `1` / `0` | 显示/隐藏每个标识符旁的引用 ID 内联提示——对调试符号解析很有用。默认 `0`。 |
+| `type-tip` | `1` / `0` | 显示/隐藏变量和参数的类型注解内联提示（如 `: integer`、`: constant real array`）。默认 `0`。 |
+| `build-jass` | `<路径>` | JASS 构建的输出路径。将整个导入树合并为单个 `.j` 文件。如果路径是目录，则追加 `war3map.j`。当路径指向 `.w3x` / `.w3m` 存档时，脚本直接注入地图。 |
+| `build-as` | `<路径>` | AngelScript 构建的输出路径。相同的合并逻辑，但输出 `.as` 语法。保留字冲突通过追加数字后缀解决。当路径指向 `.w3x` / `.w3m` 存档时，脚本直接注入地图。 |
+| `backup` | `<路径>` | 构建注入前地图存档的备份目录。修改存档前，以日期前缀保存副本（`YYYY_MM_DD_FileName.w3x`）。 |
+
+---
+
+## `//entry` — 构建入口点
+
+```jass
+//entry
+//import common/natives.j
+//set build-jass ./out/war3map.j
+```
+
+`//entry` 指令将文件标记为**构建的根**和 tree-shaking 范围。
+
+- 构建从 `//entry` 文件开始。`//set build-jass` / `//set build-as` 指令仅在入口文件中生效。
+- 仅通过 `//import` 从入口点可传递到达的文件会包含在构建输出中。
+- 仅在**入口点文件中声明的** `main` / `config` 函数被视为未使用函数分析的活跃根。
+- 如果项目中没有 `//entry` 指令，则保留旧行为：所有 `main` / `config` 函数在所有位置都被视为入口点。
+
+---
+
+## `//ignore` — 文件级诊断抑制
+
+```jass
+//ignore unused leak
+```
+
+`//ignore` 指令抑制整个文件的诊断类别。它必须出现在文件开头，与 `//import` 和 `//set` 一起。
+
+一行可以列出多个标签，用空格分隔。支持的标签与 `//@ignore` 相同（见下文）。
 
 ---
 
@@ -150,6 +201,8 @@ endfunction
 | 标签 | 抑制 |
 |------|------|
 | `unused` | 「Unused function」提示 |
+| `leak` | 句柄泄漏诊断——函数退出前未置空的 handle 类型局部变量 |
+| `cycle` | 循环调用链诊断 |
 
 `//@ignore` 可以与 `//*` 文档注释以任意顺序组合：
 
@@ -182,6 +235,18 @@ endfunction
 - **拓扑排序** — 构建系统使用它来确保被调用函数出现在调用函数之前（JASS 要求）。
 
 基于 D3.js 的**调用图**面板可通过编辑器标题栏按钮访问。
+
+---
+
+## 句柄泄漏检测
+
+JASS 不会对局部变量运行析构函数。如果 handle 类型的局部变量在函数退出时持有非空引用，底层对象永远不会被释放——这就是**句柄泄漏**。
+
+服务器对每个函数体执行数据流分析，检测在每个退出点（`return` 和隐式 `endfunction`）之前未置空（`set v = null`）的 handle 变量。
+
+- **按变量快速修复** — 代码操作在 return 之前插入 `set v = null`。
+- **修复所有泄漏** — 单个代码操作修复文件中的所有句柄泄漏。
+- 通过 `//@ignore leak`（按函数）或 `//ignore leak`（整个文件）抑制。
 
 ---
 
@@ -239,6 +304,12 @@ endfunction
 | `typeGraph.show` | 显示类型图 |
 | `rescan.execute` | 重新扫描所有文件 |
 | `build.execute` | 构建（JASS / AngelScript） |
+| `ujapi.download` | 下载 UjAPI common.j |
+| `jass.restartServer` | 重启 JASS LSP 服务器 |
+| `mpq.browse` | 浏览 MPQ 存档 |
+| `mpq.openFile` | 从 MPQ 存档打开文件 |
+| `slk.openTable` | 以表格方式打开 SLK |
+| `slk.openText` | 以文本方式打开 SLK |
 
 或者直接在 `keybindings.json` 中添加绑定（`Ctrl+Shift+P` → *Preferences: Open Keyboard Shortcuts (JSON)*）：
 

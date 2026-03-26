@@ -36,6 +36,12 @@ WarCraft III 的主要腳本語言。基於專用的
 
 內建的 **BLP** 紋理格式圖片檢視器，BLP 是 WarCraft III 使用的紋理格式。
 
+### SLK — `.slk`
+
+內建的 **SLK**（SYLK）電子表格格式表格編輯器，WarCraft III 使用該格式儲存遊戲資料。
+以基於 canvas 的互動式網格顯示資料，支援可調欄寬、排序和可設定的隱藏欄。
+設定（欄寬、隱藏欄等）直接儲存在檔案中。可透過編輯器標題列在表格檢視和文字檢視之間切換。
+
 ### DOO — `.doo`
 
 內建的 **DOO** 放置檔案檢視器（`war3map.doo`、`war3mapUnits.doo`）。
@@ -45,6 +51,15 @@ WarCraft III 的主要腳本語言。基於專用的
 
 內建的 **W3I** 地圖資訊檔案檢視器（`war3map.w3i`）。
 顯示地圖中繼資料：名稱、作者、玩家、勢力、攝影機邊界、霧/天氣設定、隨機群組等。
+
+### MPQ / W3X / W3M / W3N — `.mpq`、`.w3x`、`.w3m`、`.w3n`
+
+內建的 **MPQ** 封存檔檢視器/瀏覽器，包括 WarCraft III 地圖（`.w3x`、`.w3m`）和戰役（`.w3n`）檔案。
+提供虛擬檔案系統，可直接在 VS Code 檔案總管中瀏覽和開啟封存檔內的檔案。
+
+### WTS — `.wts`
+
+**WTS**（WarCraft III Trigger Strings）檔案的語法支援，用於在地化。
 
 ---
 
@@ -66,6 +81,9 @@ WarCraft III 的主要腳本語言。基於專用的
 | **自動完成** | ✅ | ✅ | — |
 | **內嵌提示** | ✅ | ✅ | — |
 | **文件連結** | ✅ | ✅ | — |
+| **程式碼動作** | ✅ | — | — |
+| **格式化** | ✅ | — | — |
+| **色彩選擇器** | ✅ | — | — |
 
 ---
 
@@ -76,10 +94,12 @@ JASS 檔案可以透過特殊的註解指令相互連結：
 ```jass
 //import path/to/file.j
 //import! blizzard/common.j
+//import-ujapi! ujapi/common.j
 ```
 
 - `//import` — 將另一個檔案連結到共享作用域。所有頂層宣告（函式、全域變數、型別、原生函式）都將可用。
 - `//import!` — **凍結**匯入。與 `//import` 相同，但目標檔案被視為唯讀，不會被重構或自動重新命名修改。
+- `//import-ujapi!` — **凍結 UjAPI 匯入**。下載並匯入 UjAPI 檔案。如果檔案在本機不存在，將提供程式碼動作來下載它。
 
 指令必須出現在檔案最開頭，在任何語言陳述式之前。
 
@@ -98,17 +118,48 @@ JASS 檔案可以透過特殊的註解指令相互連結：
 
 ```jass
 //set ref-tip 1
+//set type-tip 1
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
-//set unused 0
+//set backup ./backup
 ```
 
 | 鍵 | 值 | 說明 |
 |----|-----|------|
-| `ref-tip` | `1` / `0` | 顯示/隱藏每個識別碼旁的參考 ID 內嵌提示——對偵錯符號解析很有用。 |
-| `unused` | `1` / `0` | 啟用/停用整個檔案的未使用函式診斷。預設 `1`（啟用）。 |
-| `build-jass` | `<路徑>` | JASS 建置的輸出路徑。將整個匯入樹合併為單一 `.j` 檔案。 |
-| `build-as` | `<路徑>` | AngelScript 建置的輸出路徑。相同的合併邏輯，但輸出 `.as` 語法。 |
+| `ref-tip` | `1` / `0` | 顯示/隱藏每個識別碼旁的參考 ID 內嵌提示——對偵錯符號解析很有用。預設 `0`。 |
+| `type-tip` | `1` / `0` | 顯示/隱藏變數和參數的型別註解內嵌提示（如 `: integer`、`: constant real array`）。預設 `0`。 |
+| `build-jass` | `<路徑>` | JASS 建置的輸出路徑。將整個匯入樹合併為單一 `.j` 檔案。如果路徑是目錄，則追加 `war3map.j`。當路徑指向 `.w3x` / `.w3m` 封存檔時，腳本直接注入地圖。 |
+| `build-as` | `<路徑>` | AngelScript 建置的輸出路徑。相同的合併邏輯，但輸出 `.as` 語法。保留字衝突透過追加數字後綴解決。當路徑指向 `.w3x` / `.w3m` 封存檔時，腳本直接注入地圖。 |
+| `backup` | `<路徑>` | 建置注入前地圖封存檔的備份目錄。修改封存檔前，以日期前綴儲存副本（`YYYY_MM_DD_FileName.w3x`）。 |
+
+---
+
+## `//entry` — 建置進入點
+
+```jass
+//entry
+//import common/natives.j
+//set build-jass ./out/war3map.j
+```
+
+`//entry` 指令將檔案標記為**建置的根**和 tree-shaking 範圍。
+
+- 建置從 `//entry` 檔案開始。`//set build-jass` / `//set build-as` 指令僅在進入點檔案中生效。
+- 僅透過 `//import` 從進入點可傳遞到達的檔案會包含在建置輸出中。
+- 僅在**進入點檔案中宣告的** `main` / `config` 函式被視為未使用函式分析的活躍根。
+- 如果專案中沒有 `//entry` 指令，則保留舊行為：所有 `main` / `config` 函式在所有位置都被視為進入點。
+
+---
+
+## `//ignore` — 檔案級診斷抑制
+
+```jass
+//ignore unused leak
+```
+
+`//ignore` 指令抑制整個檔案的診斷類別。它必須出現在檔案開頭，與 `//import` 和 `//set` 一起。
+
+一行可以列出多個標籤，用空格分隔。支援的標籤與 `//@ignore` 相同（見下文）。
 
 ---
 
@@ -150,6 +201,8 @@ endfunction
 | 標籤 | 抑制 |
 |------|------|
 | `unused` | 「Unused function」提示 |
+| `leak` | 句柄洩漏診斷——函式退出前未置空的 handle 型別區域變數 |
+| `cycle` | 循環呼叫鏈診斷 |
 
 `//@ignore` 可以與 `//*` 文件註解以任意順序組合：
 
@@ -182,6 +235,18 @@ endfunction
 - **拓撲排序** — 建置系統使用它來確保被呼叫函式出現在呼叫函式之前（JASS 要求）。
 
 基於 D3.js 的**呼叫圖**面板可透過編輯器標題列按鈕存取。
+
+---
+
+## 句柄洩漏偵測
+
+JASS 不會對區域變數執行解構子。如果 handle 型別的區域變數在函式退出時持有非空參考，底層物件永遠不會被釋放——這就是**句柄洩漏**。
+
+伺服器對每個函式主體執行資料流分析，偵測在每個退出點（`return` 和隱式 `endfunction`）之前未置空（`set v = null`）的 handle 變數。
+
+- **按變數快速修復** — 程式碼動作在 return 之前插入 `set v = null`。
+- **修復所有洩漏** — 單一程式碼動作修復檔案中的所有句柄洩漏。
+- 透過 `//@ignore leak`（按函式）或 `//ignore leak`（整個檔案）抑制。
 
 ---
 
@@ -239,6 +304,12 @@ endfunction
 | `typeGraph.show` | 顯示型別圖 |
 | `rescan.execute` | 重新掃描所有檔案 |
 | `build.execute` | 建置（JASS / AngelScript） |
+| `ujapi.download` | 下載 UjAPI common.j |
+| `jass.restartServer` | 重新啟動 JASS LSP 伺服器 |
+| `mpq.browse` | 瀏覽 MPQ 封存檔 |
+| `mpq.openFile` | 從 MPQ 封存檔開啟檔案 |
+| `slk.openTable` | 以表格方式開啟 SLK |
+| `slk.openText` | 以文字方式開啟 SLK |
 
 或者直接在 `keybindings.json` 中新增繫結（`Ctrl+Shift+P` → *Preferences: Open Keyboard Shortcuts (JSON)*）：
 
