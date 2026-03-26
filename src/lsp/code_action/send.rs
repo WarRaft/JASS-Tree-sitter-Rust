@@ -1140,8 +1140,8 @@ fn build_inline_edits(
         return Some(changes);
     }
 
-    // Search other files in the connected component for the call site.
-    let component = crate::util::import_graph::IMPORT_GRAPH.connected_component(uri);
+    // Search other files in the visible component for the call site.
+    let component = crate::util::import_graph::IMPORT_GRAPH.visible_component(uri);
     for peer_uri in &component {
         if peer_uri == uri { continue; }
         if let Some(peer_rope) = ROPE_MAP.get(peer_uri) {
@@ -1281,7 +1281,7 @@ fn compute_inline_fix_all(uri: &url::Url) -> Option<CodeAction> {
             edits.push(call_edit);
         } else {
             // Call site might be in another file.
-            let component = crate::util::import_graph::IMPORT_GRAPH.connected_component(uri);
+            let component = crate::util::import_graph::IMPORT_GRAPH.visible_component(uri);
             for peer_uri in &component {
                 if peer_uri == uri { continue; }
                 if let Some(peer_rope) = ROPE_MAP.get(peer_uri) {
@@ -2055,7 +2055,7 @@ struct StringHashSite {
 fn build_signature_map_for_uri(uri: &url::Url) -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
     // Collect from the file itself and all connected files.
-    let component = crate::util::import_graph::IMPORT_GRAPH.connected_component(uri);
+    let component = crate::util::import_graph::IMPORT_GRAPH.visible_component(uri);
     for file_uri in &component {
         if let Some(entry) = FILE_STORE.get(file_uri) {
             let symbols = &entry.value().file_symbols;

@@ -507,8 +507,8 @@ fn find_build_setting(uri: &Url, key: &str) -> Option<(Url, String)> {
             }
         }
     }
-    // Search the connected component.
-    let component = IMPORT_GRAPH.connected_component(uri);
+    // Search the visible component (entry-point-aware).
+    let component = IMPORT_GRAPH.visible_component(uri);
     for u in &component {
         if let Some(fs) = FILE_STORE.get(u) {
             if fs.file_symbols.is_entry {

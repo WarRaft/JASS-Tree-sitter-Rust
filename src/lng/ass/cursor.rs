@@ -271,6 +271,7 @@ impl Cursor {
     fn id_name(&self, id: &Option<Id>) -> String {
         id.as_ref()
             .map(|id| self.node_text(&id.node))
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "<unnamed>".into())
     }
 
@@ -1106,6 +1107,7 @@ impl Cursor {
             }
             if let Some(ref id) = p.name {
                 let pname = self.node_text(&id.node);
+                if pname.is_empty() { continue; }
                 self.hl_declare_var(&pname, &id.node);
                 self.id_roles.insert(id.node.start_byte(), IdRole::Param);
 
