@@ -43,10 +43,95 @@ use crate::lsp::semantic::send::send as semantic_send;
 use crate::lsp::send::send;
 use crate::lsp::send::send_cancelled;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
-use crate::util::file_store::{mark_parse_pending, mark_parse_done, wait_for_parse, FILE_STORE, LSP_WRITER};
+use crate::util::debug_log::{send_debug_log, DebugStatus, DEBUG_LOG_ENABLED};
+use crate::util::file_store::{
+    cancel_uri_requests, mark_parse_pending, mark_parse_done,
+    uri_request_token, wait_for_parse_cancellable, FILE_STORE, LSP_WRITER,
+};
 use crate::util::uri_map::LNG_URI_MAP;
 use log::{error, info};
+use std::sync::atomic::Ordering;
+use tokio_util::sync::CancellationToken;
 use url::Url;
+
+/// Map a `MethodCall` variant to its LSP method name string.
+fn method_name(call: &MethodCall) -> &'static str {
+    match call {
+        MethodCall::Initialize(_) => "initialize",
+        MethodCall::Shutdown() => "shutdown",
+        MethodCall::Exit() => "exit",
+        MethodCall::Initialized(_) => "initialized",
+        MethodCall::SetTrace(_) => "$/setTrace",
+        MethodCall::Cancel(_) => "$/cancelRequest",
+        MethodCall::DidClose(_) => "textDocument/didClose",
+        MethodCall::DidOpen(_) => "textDocument/didOpen",
+        MethodCall::DidChange(_) => "textDocument/didChange",
+        MethodCall::DidChangeWatchedFiles(_) => "workspace/didChangeWatchedFiles",
+        MethodCall::SemanticFull(_) => "textDocument/semanticTokens/full",
+        MethodCall::SemanticRange(_) => "textDocument/semanticTokens/range",
+        MethodCall::Diagnostic(_) => "textDocument/diagnostic",
+        MethodCall::DocumentSymbol(_) => "textDocument/documentSymbol",
+        MethodCall::Folding(_) => "textDocument/foldingRange",
+        MethodCall::Completion(_) => "textDocument/completion",
+        MethodCall::Hover(_) => "textDocument/hover",
+        MethodCall::DocumentHighlight(_) => "textDocument/documentHighlight",
+        MethodCall::Definition(_) => "textDocument/definition",
+        MethodCall::References(_) => "textDocument/references",
+        MethodCall::InlayHint(_) => "textDocument/inlayHint",
+        MethodCall::DocumentLink(_) => "textDocument/documentLink",
+        MethodCall::Formatting(_) => "textDocument/formatting",
+        MethodCall::PrepareRename(_) => "textDocument/prepareRename",
+        MethodCall::Rename(_) => "textDocument/rename",
+        MethodCall::WillRenameFiles(_) => "workspace/willRenameFiles",
+        MethodCall::ImportGraphSubgraph(_) => "importGraph/subgraph",
+        MethodCall::CallGraphSubgraph(_) => "callGraph/subgraph",
+        MethodCall::TypeGraphSubgraph(_) => "typeGraph/subgraph",
+        MethodCall::BuildExecute(_) => "build/execute",
+        MethodCall::RescanExecute(_) => "rescan/execute",
+        MethodCall::UjapiDownload(_) => "ujapi/download",
+        MethodCall::DocumentColor(_) => "textDocument/documentColor",
+        MethodCall::ColorPresentation(_) => "textDocument/colorPresentation",
+        MethodCall::CodeAction(_) => "textDocument/codeAction",
+        MethodCall::MpqInfo(_) => "mpq/info",
+        MethodCall::MpqList(_) => "mpq/list",
+        MethodCall::MpqRead(_) => "mpq/read",
+        MethodCall::SlkRender(_) => "slk/render",
+        MethodCall::SlkEdit(_) => "slk/edit",
+        MethodCall::BlpRender(_) => "blp/render",
+        MethodCall::DooRender(_) => "doo/render",
+        MethodCall::W3iRender(_) => "w3i/render",
+        MethodCall::DebugLogEnable(_) => "custom/debugLogEnable",
+        MethodCall::DebugInit(_) => "custom/debugInit",
+    }
+}
+
+/// Extract the document URI from a `MethodCall` (if it has one).
+///
+/// Used to obtain the per-URI request cancellation token **before** the
+/// payload is moved into the spawned handler.
+fn extract_uri(call: &MethodCall) -> Option<&Url> {
+    match call {
+        MethodCall::SemanticFull(p) => Some(&p.text_document.uri),
+        MethodCall::SemanticRange(p) => Some(&p.text_document.uri),
+        MethodCall::DocumentSymbol(p) => Some(&p.text_document.uri),
+        MethodCall::Folding(p) => Some(&p.text_document.uri),
+        MethodCall::Completion(p) => Some(&p.text_document.uri),
+        MethodCall::Hover(p) => Some(&p.text_document.uri),
+        MethodCall::DocumentHighlight(p) => Some(&p.text_document.uri),
+        MethodCall::Definition(p) => Some(&p.text_document.uri),
+        MethodCall::References(p) => Some(&p.text_document.uri),
+        MethodCall::InlayHint(p) => Some(&p.text_document.uri),
+        MethodCall::DocumentLink(p) => Some(&p.text_document.uri),
+        MethodCall::Formatting(p) => Some(&p.text_document.uri),
+        MethodCall::PrepareRename(p) => Some(&p.text_document.uri),
+        MethodCall::Rename(p) => Some(&p.text_document.uri),
+        MethodCall::DocumentColor(p) => Some(&p.text_document.uri),
+        MethodCall::ColorPresentation(p) => Some(&p.text_document.uri),
+        MethodCall::CodeAction(p) => Some(&p.text_document.uri),
+        MethodCall::Diagnostic(p) => Some(&p.text_document.uri),
+        _ => None,
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -76,74 +161,94 @@ async fn main() {
         let writer: Arc<Mutex<Stdout>> = writer.clone();
 
         match parsed {
-            LspMessage::Call(call) => match call.payload {
+            LspMessage::Call(call) => {
+                // ── Debug: log every incoming call ────────────────────
+                let m_name = method_name(&call.payload);
+                let dbg_uri_str = extract_uri(&call.payload).map(|u| u.to_string());
+                send_debug_log(m_name, DebugStatus::Created, &call.id, None, dbg_uri_str).await;
+
+                match call.payload {
                 MethodCall::Initialize(_) => {
+                    // Store the raw initialize request for debug panel
+                    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&msg) {
+                        if let Some(params) = raw.get("params").cloned() {
+                            crate::util::debug_log::store_init_request(params);
+                        }
+                    }
+
+                    let result = InitializeResult {
+                        capabilities: ServerCapabilities {
+                            text_document_sync: Some(TextDocumentSyncOptions {
+                                open_close: Some(true),
+                                change: Some(TextDocumentSyncKind::Incremental),
+                            }),
+                            semantic_tokens_provider: Some(SemanticTokensOptions {
+                                legend: SemanticTokensLegend {
+                                    token_types: <Kind as ToCamelVec>::get_vec(),
+                                    token_modifiers: <Mod as ToCamelVec>::get_vec(),
+                                },
+                                range: Some(SemanticTokensRangeProviderCapability::Simple(
+                                    true,
+                                )),
+                                full: Some(SemanticTokensFullOptions::Options(
+                                    SemanticTokensFullOptionsObject { delta: Some(false) },
+                                )),
+                            }),
+                            document_symbol_provider: Some(DocumentSymbolOptions {
+                                label: None,
+                            }),
+                            folding_range_provider: Some(FoldingRangeOptions {}),
+                            completion_provider: Some(CompletionOptions {
+                                trigger_characters: Some(vec![
+                                    "/".into(),
+                                    "\\".into(),
+                                ]),
+                            }),
+                            hover_provider: Some(true),
+                            document_highlight_provider: Some(true),
+                            definition_provider: Some(true),
+                            references_provider: Some(true),
+                            rename_provider: Some(
+                                crate::lsp::rename::lsp::RenameOptions {
+                                    prepare_provider: Some(true),
+                                },
+                            ),
+                            document_link_provider: Some(DocumentLinkOptions {
+                                resolve_provider: Some(false),
+                            }),
+                            code_action_provider: Some(true),
+                            document_formatting_provider: Some(
+                                DocumentFormattingOptions {},
+                            ),
+                            color_provider: Some(true),
+                            workspace: Some(WorkspaceServerCapabilities {
+                                file_operations: Some(FileOperationOptions {
+                                    will_rename: Some(FileOperationRegistrationOptions {
+                                        filters: vec![FileOperationFilter {
+                                            scheme: Some("file".into()),
+                                            pattern: FileOperationPattern {
+                                                glob: "**/*".into(),
+                                                matches: None,
+                                            },
+                                        }],
+                                    }),
+                                }),
+                            }),
+                            ..Default::default()
+                        },
+                    };
+
+                    // Store the init response for debug panel
+                    if let Ok(val) = serde_json::to_value(&result) {
+                        crate::util::debug_log::store_init_response(val);
+                    }
+
                     send(
                         &writer,
                         &ResponseMessage {
                             jsonrpc: "2.0".into(),
                             id: call.id,
-                            result: Some(InitializeResult {
-                                capabilities: ServerCapabilities {
-                                    text_document_sync: Some(TextDocumentSyncOptions {
-                                        open_close: Some(true),
-                                        change: Some(TextDocumentSyncKind::Incremental),
-                                    }),
-                                    semantic_tokens_provider: Some(SemanticTokensOptions {
-                                        legend: SemanticTokensLegend {
-                                            token_types: <Kind as ToCamelVec>::get_vec(),
-                                            token_modifiers: <Mod as ToCamelVec>::get_vec(),
-                                        },
-                                        range: Some(SemanticTokensRangeProviderCapability::Simple(
-                                            true,
-                                        )),
-                                        full: Some(SemanticTokensFullOptions::Options(
-                                            SemanticTokensFullOptionsObject { delta: Some(false) },
-                                        )),
-                                    }),
-                                    document_symbol_provider: Some(DocumentSymbolOptions {
-                                        label: None,
-                                    }),
-                                    folding_range_provider: Some(FoldingRangeOptions {}),
-                                    completion_provider: Some(CompletionOptions {
-                                        trigger_characters: Some(vec![
-                                            "/".into(),
-                                            "\\".into(),
-                                        ]),
-                                    }),
-                                    hover_provider: Some(true),
-                                    document_highlight_provider: Some(true),
-                                    definition_provider: Some(true),
-                                    references_provider: Some(true),
-                                    rename_provider: Some(
-                                        crate::lsp::rename::lsp::RenameOptions {
-                                            prepare_provider: Some(true),
-                                        },
-                                    ),
-                                    document_link_provider: Some(DocumentLinkOptions {
-                                        resolve_provider: Some(false),
-                                    }),
-                                    code_action_provider: Some(true),
-                                    document_formatting_provider: Some(
-                                        DocumentFormattingOptions {},
-                                    ),
-                                    color_provider: Some(true),
-                                    workspace: Some(WorkspaceServerCapabilities {
-                                        file_operations: Some(FileOperationOptions {
-                                            will_rename: Some(FileOperationRegistrationOptions {
-                                                filters: vec![FileOperationFilter {
-                                                    scheme: Some("file".into()),
-                                                    pattern: FileOperationPattern {
-                                                        glob: "**/*".into(),
-                                                        matches: None,
-                                                    },
-                                                }],
-                                            }),
-                                        }),
-                                    }),
-                                    ..Default::default()
-                                },
-                            }),
+                            result: Some(result),
                             error: None,
                         },
                     )
@@ -173,6 +278,10 @@ async fn main() {
                 MethodCall::SetTrace(_) => {}
 
                 MethodCall::DidClose(_) => {}
+
+                MethodCall::DebugLogEnable(params) => {
+                    DEBUG_LOG_ENABLED.store(params.enabled, Ordering::Relaxed);
+                }
 
                 MethodCall::DidOpen(params) => {
                     if params.text_document.language_id == "bni" {
@@ -250,6 +359,10 @@ async fn main() {
 
                 MethodCall::DidChange(params) => {
                     let uri = params.text_document.uri;
+
+                    // Cancel all in-flight request handlers for this URI —
+                    // they're working with stale data.
+                    cancel_uri_requests(&uri);
 
                     if let Some(lng) = LNG_URI_MAP.get(&uri) {
                         let lng_val = lng.value().clone();
@@ -376,7 +489,28 @@ async fn main() {
                 // ─── All other methods spawned as concurrent request handlers ─
 
                 other => {
+                    let dbg_method: &'static str = m_name;
+                    let dbg_id = call.id.clone();
+                    let dbg_uri = extract_uri(&other).map(|u| u.to_string());
+
+                    // Obtain the per-URI cancellation token BEFORE moving
+                    // the payload into the spawned task.  When the next
+                    // `didChange` for this URI arrives, the token will be
+                    // cancelled and the handler bails out immediately.
+                    let ct: Option<CancellationToken> =
+                        extract_uri(&other).map(|u| uri_request_token(u));
+
                     tokio::spawn(async move {
+                        send_debug_log(dbg_method, DebugStatus::Running, &dbg_id, None, dbg_uri.clone()).await;
+
+                        // ── Early cancellation check ──────────────────────
+                        if let Some(ref ct) = ct {
+                            if ct.is_cancelled() || call.id.was_cancelled().await {
+                                send_cancelled(&writer, call.id).await;
+                                return;
+                            }
+                        }
+
                         match other {
                             MethodCall::BlpRender(param) => {
                                 blp_send(&writer, call.id, &param.uri).await;
@@ -588,13 +722,17 @@ async fn main() {
                             }
 
                             MethodCall::SemanticFull(params) => {
-                                if call.id.was_cancelled().await {
+                                let uri = &params.text_document.uri;
+                                let ct = ct.as_ref().unwrap();
+                                if ct.is_cancelled() || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
-                                let uri = &params.text_document.uri;
-                                wait_for_parse(uri, Duration::from_secs(5)).await;
-                                if call.id.was_cancelled().await {
+                                if !wait_for_parse_cancellable(uri, Duration::from_secs(5), ct).await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                if ct.is_cancelled() || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -602,13 +740,17 @@ async fn main() {
                             }
 
                             MethodCall::SemanticRange(params) => {
-                                if call.id.was_cancelled().await {
+                                let uri = &params.text_document.uri;
+                                let ct = ct.as_ref().unwrap();
+                                if ct.is_cancelled() || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
-                                let uri = &params.text_document.uri;
-                                wait_for_parse(uri, Duration::from_secs(5)).await;
-                                if call.id.was_cancelled().await {
+                                if !wait_for_parse_cancellable(uri, Duration::from_secs(5), ct).await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                if ct.is_cancelled() || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -617,7 +759,7 @@ async fn main() {
 
 
                             MethodCall::DocumentSymbol(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -640,7 +782,7 @@ async fn main() {
                             }
 
                             MethodCall::Folding(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -666,7 +808,7 @@ async fn main() {
                             }
 
                             MethodCall::Completion(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -675,7 +817,7 @@ async fn main() {
                             }
 
                             MethodCall::Hover(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -684,7 +826,7 @@ async fn main() {
                             }
 
                             MethodCall::DocumentHighlight(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -692,7 +834,7 @@ async fn main() {
                             }
 
                             MethodCall::Definition(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -750,7 +892,7 @@ async fn main() {
                             }
 
                             MethodCall::References(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -790,7 +932,7 @@ async fn main() {
                             }
 
                             MethodCall::InlayHint(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -798,7 +940,7 @@ async fn main() {
                             }
 
                             MethodCall::DocumentLink(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -825,7 +967,7 @@ async fn main() {
                             }
 
                             MethodCall::Formatting(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -833,7 +975,7 @@ async fn main() {
                             }
 
                             MethodCall::PrepareRename(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -857,7 +999,7 @@ async fn main() {
                             }
 
                             MethodCall::Rename(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -895,7 +1037,7 @@ async fn main() {
                             }
 
                             MethodCall::DocumentColor(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -905,7 +1047,7 @@ async fn main() {
                             }
 
                             MethodCall::ColorPresentation(params) => {
-                                if call.id.was_cancelled().await {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
                                     send_cancelled(&writer, call.id).await;
                                     return;
                                 }
@@ -1245,11 +1387,26 @@ async fn main() {
                                 mpq_read_send(&writer, call.id, &params.archive_path, &params.file_path).await;
                             }
 
+                            MethodCall::DebugInit(_) => {
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(crate::util::debug_log::get_init_data()),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
                             _ => {
                                 error!("Unexpected method call: {:?}", other);
                             }
                         }
+                        send_debug_log(dbg_method, DebugStatus::Completed, &dbg_id, None, dbg_uri).await;
                     });
+                }
                 }
             },
 

@@ -14,6 +14,7 @@ const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
 const {showTypeGraph} = require('./typeGraphPanel.js')
+const {DebugSidebarProvider, pushEntry} = require('./debugSidebarProvider.js')
 const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
 const {resolveMpqEditor} = require('./resolveMpqEditor.js')
 const {resolveSlkEditor} = require('./resolveSlkEditor.js')
@@ -123,6 +124,11 @@ module.exports = {
             })
             inlayHintsCache.set(uri, vscHints)
             inlayHintsChanged.fire()
+        })
+
+        // ── Debug log (push model) ─────────────────────────────────
+        client.onNotification('custom/debugLog', (entry) => {
+            pushEntry(entry)
         })
 
 
@@ -305,6 +311,17 @@ module.exports = {
             // Type Graph panel
             commands.registerCommand('typeGraph.show', () => {
                 showTypeGraph(client, context.extensionUri, context)
+            }),
+
+            // Debug Log sidebar
+            window.registerWebviewViewProvider(
+                DebugSidebarProvider.viewType,
+                new DebugSidebarProvider(client, clientReady),
+                {webviewOptions: {retainContextWhenHidden: true}}
+            ),
+
+            commands.registerCommand('debug.showPanel', () => {
+                commands.executeCommand('jassDebugSidebar.focus')
             }),
 
             // Rescan all files

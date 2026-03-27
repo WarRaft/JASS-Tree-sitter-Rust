@@ -1,4 +1,6 @@
 {
+  "viewContainer.jassDebug.title": "JASS Debug Log",
+  "view.jassDebugSidebar.name": "Debug Log",
   "command.importGraph.show": "Show Import Graph",
   "command.callGraph.show": "Show Call Graph",
   "command.typeGraph.show": "Show Type Graph",
@@ -14,6 +16,7 @@
   "customEditor.mpq.displayName": "MPQ Archive Viewer",
   "customEditor.slk.displayName": "SLK Table Editor",
   "command.slk.openTable": "Open as Table",
-  "command.slk.openText": "Open as Text"
+  "command.slk.openText": "Open as Text",
+  "command.debug.showPanel": "Show Debug Panel"
 }
 

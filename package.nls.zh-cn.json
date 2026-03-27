@@ -1,4 +1,6 @@
 {
+  "viewContainer.jassDebug.title": "JASS 调试日志",
+  "view.jassDebugSidebar.name": "调试日志",
   "command.importGraph.show": "显示导入图",
   "command.callGraph.show": "显示调用图",
   "command.typeGraph.show": "显示类型图",
@@ -14,6 +16,7 @@
   "customEditor.mpq.displayName": "MPQ 存档查看器",
   "customEditor.slk.displayName": "SLK 表格编辑器",
   "command.slk.openTable": "以表格打开",
-  "command.slk.openText": "以文本打开"
+  "command.slk.openText": "以文本打开",
+  "command.debug.showPanel": "显示调试面板"
 }
 

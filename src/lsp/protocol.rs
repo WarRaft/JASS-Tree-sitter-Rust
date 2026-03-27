@@ -188,6 +188,14 @@ pub enum MethodCall {
 
     #[serde(rename = "slk/edit")]
     SlkEdit(SlkEditParams),
+
+    /// Debug log toggle
+    #[serde(rename = "custom/debugLogEnable")]
+    DebugLogEnable(DebugLogEnableParams),
+
+    /// Debug init data request
+    #[serde(rename = "custom/debugInit")]
+    DebugInit(serde_json::Value),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
@@ -246,5 +254,11 @@ pub struct SlkEditParams {
     pub len: usize,
     /// New cell value (raw text to insert).
     pub value: String,
+}
+
+/// Params for `custom/debugLogEnable` — toggle debug log streaming.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DebugLogEnableParams {
+    pub enabled: bool,
 }
 

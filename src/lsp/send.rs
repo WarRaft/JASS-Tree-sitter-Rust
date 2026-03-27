@@ -40,7 +40,17 @@ pub async fn send_request(writer: &Arc<Mutex<Stdout>>, method: &str) {
 /// Send a `RequestCancelled` error response (code −32800) for a cancelled request.
 ///
 /// The LSP spec requires the server to always respond, even if the request was cancelled.
+/// Also emits a debug log entry with status `Cancelled`.
 pub async fn send_cancelled(writer: &Arc<Mutex<Stdout>>, id: Option<CancelId>) {
+    crate::util::debug_log::send_debug_log(
+        "response",
+        crate::util::debug_log::DebugStatus::Cancelled,
+        &id,
+        None,
+        None,
+    )
+    .await;
+
     send(
         writer,
         &serde_json::json!({

@@ -76,6 +76,39 @@ pub static FILE_STORE: Lazy<DashMap<Url, Arc<ParseSnapshot>>> = Lazy::new(DashMa
 /// Per-URI cancellation token.
 pub static CANCEL_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(DashMap::new);
 
+/// ─── Per-URI request cancellation ────────────────────────────────────────────
+///
+/// When `textDocument/didChange` arrives, ALL in-flight LSP request handlers for
+/// the same URI are stale — the client will discard their responses anyway.
+/// We keep a single `CancellationToken` per URI that request handlers poll;
+/// `cancel_uri_requests` replaces it with a fresh one, instantly cancelling
+/// every handler that captured the old token.
+///
+/// Per-URI cancellation token for in-flight LSP request handlers.
+static REQUEST_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(DashMap::new);
+
+/// Cancel all in-flight request handlers for `uri` and install a fresh token.
+///
+/// Called from the `DidChange` handler on the main loop, **before** applying
+/// edits — so handlers that are already spawned see `is_cancelled()` immediately.
+pub fn cancel_uri_requests(uri: &Url) {
+    if let Some(old) = REQUEST_TOKENS.get(uri) {
+        old.cancel();
+    }
+    REQUEST_TOKENS.insert(uri.clone(), CancellationToken::new());
+}
+
+/// Get (or create) the current request cancellation token for `uri`.
+///
+/// Spawned request handlers call this once at the start to obtain a token
+/// they can poll with `is_cancelled()` or race with `cancelled().await`.
+pub fn uri_request_token(uri: &Url) -> CancellationToken {
+    REQUEST_TOKENS
+        .entry(uri.clone())
+        .or_insert_with(CancellationToken::new)
+        .clone()
+}
+
 /// Pending-import waiters: dependency URI → set of files waiting for it.
 ///
 /// When [`ensure_file_symbols`](crate::lng::jass::parse) cannot load symbols
@@ -378,39 +411,53 @@ pub fn is_parse_in_flight(uri: &Url) -> bool {
     desired > done
 }
 
-/// Wait until the latest desired parse for `uri` has completed.
+
+/// Like [`wait_for_parse`], but also aborts early if `cancel` fires.
 ///
-/// Returns immediately if there is no in-flight parse.  Otherwise blocks
-/// (up to `timeout`) until the watch channel signals that the completed
-/// generation has caught up with (or exceeded) the desired generation.
-///
-/// The desired generation is **re-read on every loop iteration** so that if a
-/// new `DidChange` arrives while we are waiting (bumping the desired counter),
-/// we keep waiting for the *newest* parse rather than returning with a stale
-/// snapshot.
-pub async fn wait_for_parse(uri: &Url, timeout: Duration) {
+/// Returns `true` if the parse completed normally, `false` if the token
+/// was cancelled (meaning a new `didChange` arrived and this request is stale).
+pub async fn wait_for_parse_cancellable(
+    uri: &Url,
+    timeout: Duration,
+    cancel: &CancellationToken,
+) -> bool {
+    if cancel.is_cancelled() {
+        return false;
+    }
+
     let mut rx = match PARSE_DONE_TX.get(uri) {
         Some(tx) => tx.subscribe(),
-        None => return,
+        None => return true, // no parse pending — proceed
     };
 
     let uri = uri.clone();
-    let _ = tokio::time::timeout(timeout, async {
+    let cancel = cancel.clone();
+
+    let result = tokio::time::timeout(timeout, async {
         loop {
-            // Re-read the latest desired generation on every iteration so that
-            // a concurrent DidChange (which bumps desired) is respected.
+            if cancel.is_cancelled() {
+                return false;
+            }
             let desired = match PARSE_DESIRED.get(&uri) {
                 Some(v) => *v,
-                None => return,
+                None => return true,
             };
             if *rx.borrow() >= desired {
-                return;
+                return true;
             }
-            if rx.changed().await.is_err() {
-                return;
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return false,
+                res = rx.changed() => {
+                    if res.is_err() { return true; }
+                }
             }
         }
     })
     .await;
-}
 
+    match result {
+        Ok(completed) => completed,
+        Err(_) => true, // timeout — proceed with what we have
+    }
+}

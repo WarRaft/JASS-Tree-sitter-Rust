@@ -1,0 +1,748 @@
+{
+  // Параметры запроса `initialize` протокола LSP (Language Server Protocol).
+  // Клиент (редактор) отправляет этот запрос серверу при запуске,
+  // чтобы сообщить о своих возможностях и настройках.
+  "capabilities": {
+
+    // Общие возможности клиента, не привязанные к конкретному документу.
+    "general": {
+      // Информация о поддерживаемом парсере Markdown.
+      // Сервер может использовать это для корректной генерации Markdown-контента.
+      "markdown": {
+        // Имя парсера Markdown, используемого клиентом.
+        "parser": "marked",
+        // Версия парсера.
+        "version": "1.1.0"
+      },
+      // Список поддерживаемых кодировок позиций в документе.
+      // Сервер выберет одну из них для общения с клиентом.
+      // "utf-16" — позиции символов считаются в единицах UTF-16 (стандарт LSP).
+      "positionEncodings": [
+        "utf-16"
+      ],
+      // Информация о движке регулярных выражений, используемом клиентом.
+      // Сервер должен учитывать это при отправке regex-паттернов.
+      "regularExpressions": {
+        // Движок регулярных выражений.
+        "engine": "ECMAScript",
+        // Версия спецификации.
+        "version": "ES2020"
+      },
+      // Поддержка обработки устаревших (stale) запросов.
+      // Запрос считается устаревшим, если документ изменился с момента отправки.
+      "staleRequestSupport": {
+        // Клиент умеет отменять устаревшие запросы.
+        "cancel": true,
+        // Список методов, для которых клиент автоматически повторит запрос
+        // при изменении содержимого документа.
+        "retryOnContentModified": [
+          "textDocument/semanticTokens/full",
+          "textDocument/semanticTokens/range",
+          "textDocument/semanticTokens/full/delta"
+        ]
+      }
+    },
+
+    // Возможности клиента для работы с notebook-документами (Jupyter и т.п.).
+    "notebookDocument": {
+      // Синхронизация notebook-документов.
+      "synchronization": {
+        // Клиент поддерживает динамическую регистрацию для синхронизации notebook.
+        "dynamicRegistration": true,
+        // Клиент поддерживает отображение итогов выполнения ячеек (execution summary).
+        "executionSummarySupport": true
+      }
+    },
+
+    // Возможности клиента, относящиеся к текстовым документам.
+    "textDocument": {
+
+      // Иерархия вызовов (Call Hierarchy) — позволяет видеть,
+      // кто вызывает функцию и что она вызывает.
+      "callHierarchy": { // NEED
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Code Action — быстрые исправления и рефакторинги (лампочка в редакторе).
+      "codeAction": {
+        // Поддержка литеральных типов code action.
+        "codeActionLiteralSupport": {
+          // Поддерживаемые виды code action.
+          "codeActionKind": {
+            // Набор поддерживаемых значений CodeActionKind:
+            "valueSet": [
+              "",                        // Пустая строка — базовый вид (все действия).
+              "quickfix",                // Быстрое исправление ошибки.
+              "refactor",                // Рефакторинг (общий).
+              "refactor.extract",        // Извлечение кода (в переменную, функцию и т.д.).
+              "refactor.inline",         // Встраивание (inline) кода.
+              "refactor.rewrite",        // Перезапись/преобразование кода.
+              "source",                  // Действие на уровне исходного файла.
+              "source.organizeImports"   // Организация/сортировка импортов.
+            ]
+          }
+        },
+        // Клиент поддерживает поле `data` в CodeAction (для отложенного разрешения).
+        "dataSupport": true,
+        // Клиент умеет показывать отключённые (disabled) code actions с пояснением.
+        "disabledSupport": true,
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент учитывает аннотации изменений (change annotations) от сервера.
+        "honorsChangeAnnotations": true,
+        // Клиент поддерживает пометку code action как «предпочтительное» (isPreferred).
+        "isPreferredSupport": true,
+        // Свойства CodeAction, которые клиент может разрешить (resolve) отдельным запросом.
+        "resolveSupport": {
+          "properties": [
+            "edit" // Клиент умеет отложенно запрашивать поле `edit` у code action.
+          ]
+        }
+      },
+
+      // Code Lens — встроенные подсказки/действия над строками кода
+      // (например, «3 references» над функцией).
+      "codeLens": { // NEED
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Цветовой провайдер (Color Provider) — подсветка цветовых значений в документе
+      // и возможность их редактирования через палитру.
+      "colorProvider": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Автодополнение (Completion).
+      "completion": {
+        // Возможности отдельного элемента автодополнения.
+        "completionItem": {
+          // Клиент поддерживает символы подтверждения (commit characters),
+          // при вводе которых элемент автоматически принимается.
+          "commitCharactersSupport": true,
+          // Клиент поддерживает пометку элементов как устаревших (deprecated).
+          "deprecatedSupport": true,
+          // Форматы документации, которые клиент умеет отображать.
+          "documentationFormat": [
+            "markdown",    // Markdown-разметка.
+            "plaintext"    // Простой текст.
+          ],
+          // Клиент поддерживает InsertReplaceEdit — вставка с одновременной заменой.
+          "insertReplaceSupport": true,
+          // Поддерживаемые режимы вставки текста.
+          "insertTextModeSupport": {
+            "valueSet": [
+              1, // asIs — текст вставляется как есть.
+              2  // adjustIndentation — клиент подстраивает отступы при вставке.
+            ]
+          },
+          // Клиент поддерживает дополнительные детали метки (labelDetails).
+          "labelDetailsSupport": true,
+          // Клиент поддерживает предварительный выбор (preselect) элемента в списке.
+          "preselectSupport": true,
+          // Свойства CompletionItem, которые клиент может разрешить отдельным запросом
+          // (completionItem/resolve), чтобы не загружать всё сразу.
+          "resolveSupport": {
+            "properties": [
+              "documentation",        // Документация элемента.
+              "detail",               // Детальная информация.
+              "additionalTextEdits"   // Дополнительные правки (например, авто-импорт).
+            ]
+          },
+          // Клиент поддерживает сниппеты (шаблоны с табуляцией) в автодополнении.
+          "snippetSupport": true,
+          // Поддержка тегов для элементов автодополнения.
+          "tagSupport": {
+            "valueSet": [
+              1 // Deprecated — элемент помечен как устаревший.
+            ]
+          }
+        },
+        // Поддерживаемые типы (kind) элементов автодополнения.
+        "completionItemKind": {
+          // Набор поддерживаемых CompletionItemKind:
+          // 1=Text, 2=Method, 3=Function, 4=Constructor, 5=Field,
+          // 6=Variable, 7=Class, 8=Interface, 9=Module, 10=Property,
+          // 11=Unit, 12=Value, 13=Enum, 14=Keyword, 15=Snippet,
+          // 16=Color, 17=File, 18=Reference, 19=Folder, 20=EnumMember,
+          // 21=Constant, 22=Struct, 23=Event, 24=Operator, 25=TypeParameter
+          "valueSet": [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+            21, 22, 23, 24, 25
+          ]
+        },
+        // Поддержка значений по умолчанию для списка автодополнения.
+        // Сервер может задать общие свойства для всех элементов в списке.
+        "completionList": {
+          // Свойства, которые клиент принимает как значения по умолчанию.
+          "itemDefaults": [
+            "commitCharacters",   // Символы подтверждения по умолчанию для всех элементов.
+            "editRange",          // Диапазон редактирования по умолчанию.
+            "insertTextFormat",   // Формат вставляемого текста (plain / snippet).
+            "insertTextMode",     // Режим вставки текста.
+            "data"                // Данные по умолчанию для resolve-запроса.
+          ]
+        },
+        // Клиент отправляет контекст (CompletionContext) вместе с запросом автодополнения,
+        // например, был ли это триггер по символу или ручной вызов.
+        "contextSupport": true,
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Режим вставки текста по умолчанию.
+        // 2 = adjustIndentation — автоматическая подстройка отступов.
+        "insertTextMode": 2
+      },
+
+      // Переход к объявлению (Declaration) — Go to Declaration.
+      "declaration": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент поддерживает LocationLink (расширенный формат с originSelectionRange).
+        "linkSupport": true
+      },
+
+      // Переход к определению (Definition) — Go to Definition.
+      "definition": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент поддерживает LocationLink.
+        "linkSupport": true
+      },
+
+      // Pull-модель диагностики — клиент сам запрашивает диагностику у сервера.
+      "diagnostic": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент НЕ поддерживает диагностику связанных документов
+        // (диагностика для файлов, связанных с текущим).
+        "relatedDocumentSupport": false
+      },
+
+      // Подсветка совпадений (Document Highlight) — при наведении на символ
+      // подсвечиваются все его вхождения в файле.
+      "documentHighlight": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Ссылки в документе (Document Link) — кликабельные ссылки в коде.
+      "documentLink": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент поддерживает тултипы (всплывающие подсказки) на ссылках.
+        "tooltipSupport": true
+      },
+
+      // Символы документа (Document Symbol) — структура/outline документа
+      // (список функций, классов и т.д.).
+      "documentSymbol": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент поддерживает иерархические символы (дерево вместо плоского списка).
+        "hierarchicalDocumentSymbolSupport": true,
+        // Клиент поддерживает метку (label) для символа.
+        "labelSupport": true,
+        // Поддерживаемые типы символов (SymbolKind):
+        // 1=File, 2=Module, 3=Namespace, 4=Package, 5=Class,
+        // 6=Method, 7=Property, 8=Field, 9=Constructor, 10=Enum,
+        // 11=Interface, 12=Function, 13=Variable, 14=Constant, 15=String,
+        // 16=Number, 17=Boolean, 18=Array, 19=Object, 20=Key,
+        // 21=Null, 22=EnumMember, 23=Struct, 24=Event, 25=Operator,
+        // 26=TypeParameter
+        "symbolKind": {
+          "valueSet": [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+            21, 22, 23, 24, 25, 26
+          ]
+        },
+        // Поддержка тегов для символов.
+        "tagSupport": {
+          "valueSet": [
+            1 // Deprecated — символ помечен как устаревший.
+          ]
+        }
+      },
+
+      // Сворачивание кода (Folding Range).
+      "foldingRange": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Дополнительные настройки сворачивания.
+        "foldingRange": {
+          // Клиент НЕ поддерживает отображение текста вместо свёрнутого блока.
+          "collapsedText": false
+        },
+        // Поддерживаемые виды сворачиваемых регионов.
+        "foldingRangeKind": {
+          "valueSet": [
+            "comment",  // Блоки комментариев.
+            "imports",  // Блоки импортов.
+            "region"    // Пользовательские регионы (#region / #endregion).
+          ]
+        },
+        // Клиент поддерживает только построчное сворачивание
+        // (нельзя свернуть часть строки).
+        "lineFoldingOnly": true,
+        // Максимальное количество сворачиваемых диапазонов, которое клиент обработает.
+        "rangeLimit": 5000
+      },
+
+      // Форматирование документа (Formatting) — форматирование всего файла.
+      "formatting": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Hover — всплывающая подсказка при наведении на символ.
+      "hover": {
+        // Форматы контента, которые клиент умеет отображать в hover.
+        "contentFormat": [
+          "markdown",    // Markdown-разметка.
+          "plaintext"    // Простой текст.
+        ],
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Переход к реализации (Implementation) — Go to Implementation.
+      "implementation": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент поддерживает LocationLink.
+        "linkSupport": true
+      },
+
+      // Inlay Hints — подсказки внутри кода (типы параметров, имена и т.д.).
+      "inlayHint": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Свойства InlayHint, которые клиент может разрешить отдельным запросом.
+        "resolveSupport": {
+          "properties": [
+            "tooltip",          // Всплывающая подсказка для хинта.
+            "textEdits",        // Правки при принятии хинта.
+            "label.tooltip",    // Подсказка для отдельной части метки.
+            "label.location",   // Локация (ссылка) для части метки.
+            "label.command"     // Команда для части метки.
+          ]
+        }
+      },
+
+      // Inline Value — отображение значений переменных прямо в коде (при отладке).
+      "inlineValue": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Linked Editing Range — одновременное редактирование связанных диапазонов
+      // (например, открывающий и закрывающий HTML-тег).
+      "linkedEditingRange": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // On Type Formatting — автоматическое форматирование при вводе
+      // определённых символов (например, ";" или "}").
+      "onTypeFormatting": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Push-модель диагностики — сервер сам отправляет диагностику клиенту
+      // через уведомление `textDocument/publishDiagnostics`.
+      "publishDiagnostics": {
+        // Клиент поддерживает ссылку на описание кода ошибки (CodeDescription.href).
+        "codeDescriptionSupport": true,
+        // Клиент поддерживает поле `data` в Diagnostic (для передачи дополнительных данных).
+        "dataSupport": true,
+        // Клиент поддерживает связанную информацию (related information)
+        // — дополнительные локации, связанные с ошибкой.
+        "relatedInformation": true,
+        // Поддержка тегов для диагностики.
+        "tagSupport": {
+          "valueSet": [
+            1, // Unnecessary — код помечен как ненужный (затемняется).
+            2  // Deprecated — код помечен как устаревший (перечёркивается).
+          ]
+        },
+        // Клиент НЕ поддерживает версионирование диагностики.
+        "versionSupport": false
+      },
+
+      // Форматирование выделенного диапазона (Range Formatting).
+      "rangeFormatting": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент поддерживает форматирование нескольких диапазонов за один запрос.
+        "rangesSupport": true
+      },
+
+      // Поиск ссылок (References) — Find All References.
+      "references": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Переименование (Rename).
+      "rename": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент учитывает аннотации изменений при переименовании.
+        "honorsChangeAnnotations": true,
+        // Клиент поддерживает предварительный запрос (prepareRename)
+        // для проверки возможности переименования и получения текущего имени.
+        "prepareSupport": true,
+        // Поведение по умолчанию при подготовке переименования:
+        // 1 = Identifier — используется идентификатор под курсором.
+        "prepareSupportDefaultBehavior": 1
+      },
+
+      // Выделение диапазона (Selection Range) — умное расширение выделения.
+      "selectionRange": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      },
+
+      // Семантические токены (Semantic Tokens) — расширенная подсветка синтаксиса
+      // на основе семантического анализа кода.
+      "semanticTokens": {
+        // Семантические токены дополняют (а не заменяют) подсветку TextMate.
+        "augmentsSyntaxTokens": true,
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Поддерживаемые форматы кодирования токенов.
+        "formats": [
+          "relative" // Относительное кодирование (каждый токен относительно предыдущего).
+        ],
+        // Клиент НЕ поддерживает токены, занимающие несколько строк.
+        "multilineTokenSupport": false,
+        // Клиент НЕ поддерживает перекрывающиеся токены на одной позиции.
+        "overlappingTokenSupport": false,
+        // Типы запросов семантических токенов.
+        "requests": {
+          // Полный набор токенов для документа.
+          "full": {
+            // Клиент поддерживает дельта-обновления (только изменения).
+            "delta": true
+          },
+          // Клиент поддерживает запрос токенов для диапазона строк.
+          "range": true
+        },
+        // Сервер может отменять запросы семантических токенов.
+        "serverCancelSupport": true,
+        // Поддерживаемые модификаторы токенов (по индексу в массиве):
+        "tokenModifiers": [
+          "declaration",      // 0 — Объявление символа.
+          "definition",       // 1 — Определение символа.
+          "readonly",         // 2 — Только для чтения.
+          "static",           // 3 — Статический член.
+          "deprecated",       // 4 — Устаревший.
+          "abstract",         // 5 — Абстрактный.
+          "async",            // 6 — Асинхронный.
+          "modification",     // 7 — Символ модифицируется (запись).
+          "documentation",    // 8 — Упоминание в документации.
+          "defaultLibrary"    // 9 — Из стандартной библиотеки.
+        ],
+        // Поддерживаемые типы токенов (по индексу в массиве):
+        "tokenTypes": [
+          "namespace",        // 0 — Пространство имён.
+          "type",             // 1 — Тип.
+          "class",            // 2 — Класс.
+          "enum",             // 3 — Перечисление.
+          "interface",        // 4 — Интерфейс.
+          "struct",           // 5 — Структура.
+          "typeParameter",    // 6 — Параметр типа (generic).
+          "parameter",        // 7 — Параметр функции.
+          "variable",         // 8 — Переменная.
+          "property",         // 9 — Свойство.
+          "enumMember",       // 10 — Член перечисления.
+          "event",            // 11 — Событие.
+          "function",         // 12 — Функция.
+          "method",           // 13 — Метод.
+          "macro",            // 14 — Макрос.
+          "keyword",          // 15 — Ключевое слово.
+          "modifier",         // 16 — Модификатор доступа.
+          "comment",          // 17 — Комментарий.
+          "string",           // 18 — Строка.
+          "number",           // 19 — Число.
+          "regexp",           // 20 — Регулярное выражение.
+          "operator",         // 21 — Оператор.
+          "decorator"         // 22 — Декоратор/аннотация.
+        ]
+      },
+
+      // Справка по сигнатуре (Signature Help) — подсказка с параметрами функции
+      // при вводе аргументов.
+      "signatureHelp": { // NEED
+        // Клиент отправляет контекст (SignatureHelpContext) вместе с запросом.
+        "contextSupport": true,
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Возможности отображения информации о сигнатуре.
+        "signatureInformation": {
+          // Клиент поддерживает выделение активного параметра.
+          "activeParameterSupport": true,
+          // Форматы документации, поддерживаемые клиентом.
+          "documentationFormat": [
+            "markdown",
+            "plaintext"
+          ],
+          // Информация о параметрах.
+          "parameterInformation": {
+            // Клиент поддерживает смещения (offsets) в метке для выделения параметра,
+            // а не только строковую метку.
+            "labelOffsetSupport": true
+          }
+        }
+      },
+
+      // Синхронизация текстовых документов — как клиент уведомляет сервер
+      // об изменениях в документах.
+      "synchronization": {
+        // Клиент отправляет уведомление `textDocument/didSave` при сохранении файла.
+        "didSave": true,
+        // Поддержка динамической регистрации.
+        "dynamicRegistration": true,
+        // Клиент отправляет уведомление `textDocument/willSave` перед сохранением.
+        "willSave": true,
+        // Клиент поддерживает запрос `textDocument/willSaveWaitUntil` —
+        // сервер может вернуть правки, которые применяются перед сохранением.
+        "willSaveWaitUntil": true
+      },
+
+      // Переход к определению типа (Type Definition) — Go to Type Definition.
+      "typeDefinition": {
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true,
+        // Клиент поддерживает LocationLink.
+        "linkSupport": true
+      },
+
+      // Иерархия типов (Type Hierarchy) — дерево наследования типов.
+      "typeHierarchy": { // NEED
+        // Поддержка динамической регистрации провайдера.
+        "dynamicRegistration": true
+      }
+    },
+
+    // Возможности окна (Window) — управление UI клиента.
+    "window": {
+      // Клиент поддерживает запрос `window/showDocument` —
+      // сервер может попросить клиент открыть документ или URL.
+      "showDocument": {
+        "support": true
+      },
+      // Клиент поддерживает `window/showMessage` — показ сообщений пользователю.
+      "showMessage": {
+        // Элементы действий в сообщении поддерживают дополнительные свойства.
+        "messageActionItem": {
+          "additionalPropertiesSupport": true
+        }
+      },
+      // Клиент поддерживает прогресс-бары (WorkDoneProgress) —
+      // сервер может показывать индикатор выполнения задачи.
+      "workDoneProgress": true
+    },
+
+    // Возможности рабочего пространства (Workspace).
+    "workspace": {
+      // Клиент поддерживает запрос `workspace/applyEdit` —
+      // сервер может попросить клиент применить правки к файлам.
+      "applyEdit": true,
+
+      // Code Lens на уровне рабочего пространства.
+      "codeLens": { // NEED
+        // Клиент поддерживает запрос обновления (refresh) code lens.
+        "refreshSupport": true
+      },
+
+      // Клиент поддерживает запрос `workspace/configuration` —
+      // сервер может запрашивать настройки у клиента.
+      "configuration": true,
+
+      // Диагностика на уровне рабочего пространства.
+      "diagnostics": {
+        // Клиент поддерживает запрос обновления (refresh) диагностики.
+        "refreshSupport": true
+      },
+
+      // Уведомление `workspace/didChangeConfiguration` —
+      // клиент сообщает серверу об изменении настроек.
+      "didChangeConfiguration": {
+        // Поддержка динамической регистрации.
+        "dynamicRegistration": true
+      },
+
+      // Уведомление `workspace/didChangeWatchedFiles` —
+      // клиент сообщает серверу об изменениях в отслеживаемых файлах.
+      "didChangeWatchedFiles": {
+        // Поддержка динамической регистрации.
+        "dynamicRegistration": true,
+        // Клиент поддерживает относительные паттерны (relative patterns)
+        // для наблюдения за файлами.
+        "relativePatternSupport": true
+      },
+
+      // Выполнение команд (Execute Command) — запуск команд на сервере.
+      "executeCommand": {
+        // Поддержка динамической регистрации.
+        "dynamicRegistration": true
+      },
+
+      // Операции с файлами (File Operations) — уведомления и запросы
+      // при создании, переименовании и удалении файлов.
+      "fileOperations": {
+        // Клиент отправляет уведомление после создания файла.
+        "didCreate": true,
+        // Клиент отправляет уведомление после удаления файла.
+        "didDelete": true,
+        // Клиент отправляет уведомление после переименования файла.
+        "didRename": true,
+        // Поддержка динамической регистрации.
+        "dynamicRegistration": true,
+        // Клиент отправляет запрос перед созданием файла
+        // (сервер может вернуть правки).
+        "willCreate": true,
+        // Клиент отправляет запрос перед удалением файла.
+        "willDelete": true,
+        // Клиент отправляет запрос перед переименованием файла.
+        "willRename": true
+      },
+
+      // Сворачивание кода на уровне рабочего пространства.
+      "foldingRange": {
+        // Клиент поддерживает запрос обновления (refresh) folding ranges.
+        "refreshSupport": true
+      },
+
+      // Inlay Hints на уровне рабочего пространства.
+      "inlayHint": {
+        // Клиент поддерживает запрос обновления (refresh) inlay hints.
+        "refreshSupport": true
+      },
+
+      // Inline Value на уровне рабочего пространства.
+      "inlineValue": {
+        // Клиент поддерживает запрос обновления (refresh) inline values.
+        "refreshSupport": true
+      },
+
+      // Семантические токены на уровне рабочего пространства.
+      "semanticTokens": {
+        // Клиент поддерживает запрос обновления (refresh) семантических токенов.
+        "refreshSupport": true
+      },
+
+      // Символы рабочего пространства (Workspace Symbol) — глобальный поиск символов.
+      "symbol": {
+        // Поддержка динамической регистрации.
+        "dynamicRegistration": true,
+        // Свойства WorkspaceSymbol, которые клиент может разрешить отдельным запросом.
+        "resolveSupport": {
+          "properties": [
+            "location.range" // Диапазон внутри файла можно разрешить позже.
+          ]
+        },
+        // Поддерживаемые типы символов (SymbolKind):
+        // 1=File, 2=Module, 3=Namespace, 4=Package, 5=Class,
+        // 6=Method, 7=Property, 8=Field, 9=Constructor, 10=Enum,
+        // 11=Interface, 12=Function, 13=Variable, 14=Constant, 15=String,
+        // 16=Number, 17=Boolean, 18=Array, 19=Object, 20=Key,
+        // 21=Null, 22=EnumMember, 23=Struct, 24=Event, 25=Operator,
+        // 26=TypeParameter
+        "symbolKind": {
+          "valueSet": [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+            11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+            21, 22, 23, 24, 25, 26
+          ]
+        },
+        // Поддержка тегов для символов.
+        "tagSupport": {
+          "valueSet": [
+            1 // Deprecated — символ помечен как устаревший.
+          ]
+        }
+      },
+
+      // Редактирование рабочего пространства (Workspace Edit) — массовые правки файлов.
+      "workspaceEdit": {
+        // Клиент поддерживает аннотации изменений (описание правок для пользователя).
+        "changeAnnotationSupport": {
+          // Клиент группирует изменения с одинаковой меткой.
+          "groupsOnLabel": true
+        },
+        // Клиент поддерживает `documentChanges` (вместо простого `changes`) —
+        // расширенный формат с версионированием и операциями над файлами.
+        "documentChanges": true,
+        // Стратегия обработки ошибок при применении правок:
+        // "textOnlyTransactional" — текстовые правки атомарны (все или ничего),
+        // но операции с файлами (создание/удаление) могут быть частично применены.
+        "failureHandling": "textOnlyTransactional",
+        // Клиент нормализует окончания строк при применении правок.
+        "normalizesLineEndings": true,
+        // Поддерживаемые операции над ресурсами (файлами).
+        "resourceOperations": [
+          "create",  // Создание файла.
+          "rename",  // Переименование файла.
+          "delete"   // Удаление файла.
+        ]
+      },
+
+      // Клиент поддерживает рабочие папки (workspace folders) —
+      // мульти-root workspace.
+      "workspaceFolders": true
+    }
+  },
+
+  // Информация о клиенте (редакторе).
+  "clientInfo": {
+    // Название клиента.
+    "name": "Visual Studio Code",
+    // Версия клиента.
+    "version": "1.113.0"
+  },
+
+  // Пользовательские параметры инициализации, специфичные для сервера.
+  // Пустой объект означает, что никаких дополнительных настроек не передаётся.
+  "initializationOptions": {},
+
+  // Локаль (язык) интерфейса клиента (IETF BCP 47).
+  "locale": "en",
+
+  // PID процесса клиента. Сервер может использовать для привязки к процессу
+  // и автоматического завершения, если процесс клиента умирает.
+  "processId": 67416,
+
+  // @deprecated — Устаревшее поле. Корневой путь рабочего пространства.
+  // Используйте `rootUri` или `workspaceFolders` вместо него.
+  "rootPath": "/Users/nazarpunk/Downloads/JassTest",
+
+  // URI корневой папки рабочего пространства.
+  // @deprecated — заменён на `workspaceFolders`, но всё ещё используется для совместимости.
+  "rootUri": "file:///Users/nazarpunk/Downloads/JassTest",
+
+  // Уровень трассировки (логирования) сообщений LSP.
+  // "off" — трассировка отключена.
+  // Возможные значения: "off", "messages", "verbose".
+  "trace": "off",
+
+  // Токен для отслеживания прогресса выполнения инициализации.
+  // Сервер может отправлять уведомления о прогрессе с этим токеном.
+  "workDoneToken": "080e3c69-0f96-46e8-94b9-474af8053dac",
+
+  // Список рабочих папок (workspace folders).
+  // Поддерживает мульти-root — несколько корневых папок в одном workspace.
+  "workspaceFolders": [
+    {
+      // Отображаемое имя рабочей папки.
+      "name": "JassTest",
+      // URI рабочей папки.
+      "uri": "file:///Users/nazarpunk/Downloads/JassTest"
+    }
+  ]
+}
