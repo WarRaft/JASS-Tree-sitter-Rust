@@ -135,6 +135,20 @@
         }
       },
       {
+        "id": "w3e",
+        "aliases": [
+          "W3E Terrain",
+          "W3E"
+        ],
+        "extensions": [
+          ".w3e"
+        ],
+        "icon": {
+          "light": "./icons/w3e.svg",
+          "dark": "./icons/w3e.svg"
+        }
+      },
+      {
         "id": "w3i",
         "aliases": [
           "W3I Map Info",
@@ -296,6 +310,16 @@
         "priority": "default"
       },
       {
+        "viewType": "w3e.preview",
+        "displayName": "%customEditor.w3e.displayName%",
+        "selector": [
+          {
+            "filenamePattern": "*.w3e"
+          }
+        ],
+        "priority": "default"
+      },
+      {
         "viewType": "mpq.preview",
         "displayName": "%customEditor.mpq.displayName%",
         "selector": [
@@ -330,6 +354,7 @@
       "onCustomEditor:blp.preview",
       "onCustomEditor:doo.preview",
       "onCustomEditor:w3i.preview",
+      "onCustomEditor:w3e.preview",
       "onCustomEditor:mpq.preview",
       "onCustomEditor:slk.preview"
     ],

@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use crate::lng::blp::send::send as blp_send;
 use crate::lng::doo::send::send as doo_send;
 use crate::lng::slk::send::send as slk_send;
+use crate::lng::w3e::send::send as w3e_send;
 use crate::lng::w3i::send::send as w3i_send;
 use crate::lng::mpq::send::{send_info as mpq_info_send, send_list as mpq_list_send, send_read as mpq_read_send};
 use crate::lsp::cancel::CancelCheck;
@@ -100,6 +101,7 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::BlpRender(_) => "blp/render",
         MethodCall::DooRender(_) => "doo/render",
         MethodCall::W3iRender(_) => "w3i/render",
+        MethodCall::W3eRender(_) => "w3e/render",
         MethodCall::DebugLogEnable(_) => "custom/debugLogEnable",
         MethodCall::DebugInit(_) => "custom/debugInit",
     }
@@ -522,6 +524,10 @@ async fn main() {
 
                             MethodCall::W3iRender(param) => {
                                 w3i_send(&writer, call.id, &param.uri, param.archive_path.as_deref()).await;
+                            }
+
+                            MethodCall::W3eRender(param) => {
+                                w3e_send(&writer, call.id, &param.uri).await;
                             }
 
                             MethodCall::SlkRender(param) => {

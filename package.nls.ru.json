@@ -13,6 +13,7 @@
   "customEditor.blp.displayName": "Просмотр BLP-изображений",
   "customEditor.doo.displayName": "Просмотр DOO-размещений",
   "customEditor.w3i.displayName": "Просмотр W3I-информации карты",
+  "customEditor.w3e.displayName": "Просмотр W3E-рельефа карты",
   "customEditor.mpq.displayName": "Просмотр MPQ-архивов",
   "customEditor.slk.displayName": "Табличный редактор SLK",
   "command.slk.openTable": "Открыть как таблицу",

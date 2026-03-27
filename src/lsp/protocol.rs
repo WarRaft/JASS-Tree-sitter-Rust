@@ -66,6 +66,10 @@ pub enum MethodCall {
     #[serde(rename = "w3i/render")]
     W3iRender(W3iRenderParams),
 
+    /// W3E
+    #[serde(rename = "w3e/render")]
+    W3eRender(TextDocumentIdentifier),
+
     /// LSP
     #[serde(rename = "initialize")]
     Initialize(InitializeParams),

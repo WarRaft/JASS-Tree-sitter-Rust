@@ -13,6 +13,7 @@
   "customEditor.blp.displayName": "BLP 圖片檢視器",
   "customEditor.doo.displayName": "DOO 放置檢視器",
   "customEditor.w3i.displayName": "W3I 地圖資訊檢視器",
+  "customEditor.w3e.displayName": "W3E 地形檢視器",
   "customEditor.mpq.displayName": "MPQ 封存檢視器",
   "customEditor.slk.displayName": "SLK 表格編輯器",
   "command.slk.openTable": "以表格開啟",

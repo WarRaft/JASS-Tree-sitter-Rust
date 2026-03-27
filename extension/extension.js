@@ -10,6 +10,7 @@ const {LanguageClient, Trace} = require('vscode-languageclient')
 const {resolveBlpEditor} = require('./resolveBlpEditor.js')
 const {resolveDooEditor} = require('./resolveDooEditor.js')
 const {resolveW3iEditor} = require('./resolveW3iEditor.js')
+const {resolveW3eEditor} = require('./resolveW3eEditor.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
@@ -240,14 +241,14 @@ module.exports = {
                                 dispose() {}
                             }
                             try {
-                                return await resolver(tmpDoc, webviewPanel, _token, client)
+                                return await resolver(tmpDoc, webviewPanel, _token, client, context.extensionUri)
                             } finally {
                                 try { fs.unlinkSync(tmpPath) } catch {}
                                 try { fs.rmdirSync(tmpDir) } catch {}
                             }
                         }
 
-                        return resolver(document, webviewPanel, _token, client)
+                        return resolver(document, webviewPanel, _token, client, context.extensionUri)
                     }
                 },
                 {
@@ -261,6 +262,7 @@ module.exports = {
             binaryEditor('blp.preview', resolveBlpEditor),
             binaryEditor('doo.preview', resolveDooEditor),
             binaryEditor('w3i.preview', resolveW3iEditor),
+            binaryEditor('w3e.preview', resolveW3eEditor),
             binaryEditor('mpq.preview', resolveMpqEditor),
 
             // SLK table editor (text-based — uses CustomTextEditorProvider for undo/redo)
