@@ -1,5 +1,10 @@
+use crate::lsp::call_hierarchy::lsp::{
+    CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams,
+    CallHierarchyPrepareParams,
+};
 use crate::lsp::cancel::{CancelId, CancelParams};
 use crate::lsp::code_action::lsp::{CodeActionParams, UjapiDownloadParams};
+use crate::lsp::code_lens::lsp::CodeLensParams;
 use crate::lsp::color::lsp::{ColorPresentationParams, DocumentColorParams};
 use crate::lsp::completion::lsp::CompletionParams;
 use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
@@ -15,9 +20,13 @@ use crate::lsp::initialized::InitializedParams;
 use crate::lsp::rename::lsp::{PrepareRenameParams, RenameFilesParams, RenameParams};
 use crate::lsp::semantic::lsp::{SemanticTokensParams, SemanticTokensRangeParams};
 use crate::lsp::set_trace::SetTraceParams;
+use crate::lsp::signature_help::lsp::SignatureHelpParams;
 use crate::lsp::text_document::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
     DidOpenTextDocumentParams, TextDocumentIdentifier,
+};
+use crate::lsp::type_hierarchy::lsp::{
+    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -175,6 +184,30 @@ pub enum MethodCall {
 
     #[serde(rename = "textDocument/codeAction")]
     CodeAction(CodeActionParams),
+
+    #[serde(rename = "textDocument/signatureHelp")]
+    SignatureHelp(SignatureHelpParams),
+
+    #[serde(rename = "textDocument/codeLens")]
+    CodeLens(CodeLensParams),
+
+    #[serde(rename = "textDocument/prepareCallHierarchy")]
+    PrepareCallHierarchy(CallHierarchyPrepareParams),
+
+    #[serde(rename = "callHierarchy/incomingCalls")]
+    IncomingCalls(CallHierarchyIncomingCallsParams),
+
+    #[serde(rename = "callHierarchy/outgoingCalls")]
+    OutgoingCalls(CallHierarchyOutgoingCallsParams),
+
+    #[serde(rename = "textDocument/prepareTypeHierarchy")]
+    PrepareTypeHierarchy(TypeHierarchyPrepareParams),
+
+    #[serde(rename = "typeHierarchy/supertypes")]
+    Supertypes(TypeHierarchySupertypesParams),
+
+    #[serde(rename = "typeHierarchy/subtypes")]
+    Subtypes(TypeHierarchySubtypesParams),
 
     /// MPQ archive browsing
     #[serde(rename = "mpq/info")]

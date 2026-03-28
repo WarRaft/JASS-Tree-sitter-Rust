@@ -1,5 +1,7 @@
+pub(crate) mod call_hierarchy;
 pub(crate) mod cancel;
 pub(crate) mod code_action;
+pub(crate) mod code_lens;
 pub(crate) mod color;
 pub(crate) mod completion;
 pub(crate) mod diagnostic;
@@ -23,4 +25,6 @@ pub(crate) mod rename;
 pub(crate) mod semantic;
 pub(crate) mod send;
 pub(crate) mod set_trace;
+pub(crate) mod signature_help;
 pub(crate) mod text_document;
+pub(crate) mod type_hierarchy;

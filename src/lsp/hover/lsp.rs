@@ -22,7 +22,7 @@ pub struct Hover {
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#markupContent
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MarkupContent {
     pub kind: MarkupKind,
@@ -30,7 +30,7 @@ pub struct MarkupContent {
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#markupKind
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MarkupKind {
     #[serde(rename = "plaintext")]
     PlainText,

@@ -1,3 +1,5 @@
+use crate::lsp::call_hierarchy::lsp::CallHierarchyOptions;
+use crate::lsp::code_lens::lsp::CodeLensOptions;
 use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
@@ -6,7 +8,9 @@ use crate::lsp::formatting::lsp::DocumentFormattingOptions;
 use crate::lsp::inlay_hint::lsp::InlayHintOptions;
 use crate::lsp::rename::lsp::{RenameOptions, WorkspaceServerCapabilities};
 use crate::lsp::semantic::lsp::SemanticTokensOptions;
+use crate::lsp::signature_help::lsp::SignatureHelpOptions;
 use crate::lsp::text_document::TextDocumentSyncOptions;
+use crate::lsp::type_hierarchy::lsp::TypeHierarchyOptions;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -57,4 +61,12 @@ pub struct ServerCapabilities {
     pub color_provider: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceServerCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature_help_provider: Option<SignatureHelpOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code_lens_provider: Option<CodeLensOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_hierarchy_provider: Option<CallHierarchyOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub type_hierarchy_provider: Option<TypeHierarchyOptions>,
 }

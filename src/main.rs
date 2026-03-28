@@ -17,6 +17,7 @@ use crate::lng::w3i::send::send as w3i_send;
 use crate::lng::mpq::send::{send_info as mpq_info_send, send_list as mpq_list_send, send_read as mpq_read_send};
 use crate::lsp::cancel::CancelCheck;
 use crate::lsp::code_action::send::send as code_action_send;
+use crate::lsp::code_lens::send::send as code_lens_send;
 use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::completion::send::send as completion_send;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
@@ -43,6 +44,7 @@ use crate::lsp::semantic::lsp::{
 use crate::lsp::semantic::send::send as semantic_send;
 use crate::lsp::send::send;
 use crate::lsp::send::send_cancelled;
+use crate::lsp::signature_help::send::send as signature_help_send;
 use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::util::debug_log::{send_debug_log, DebugStatus, DEBUG_LOG_ENABLED};
 use crate::util::file_store::{
@@ -93,6 +95,14 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::DocumentColor(_) => "textDocument/documentColor",
         MethodCall::ColorPresentation(_) => "textDocument/colorPresentation",
         MethodCall::CodeAction(_) => "textDocument/codeAction",
+        MethodCall::SignatureHelp(_) => "textDocument/signatureHelp",
+        MethodCall::CodeLens(_) => "textDocument/codeLens",
+        MethodCall::PrepareCallHierarchy(_) => "textDocument/prepareCallHierarchy",
+        MethodCall::IncomingCalls(_) => "callHierarchy/incomingCalls",
+        MethodCall::OutgoingCalls(_) => "callHierarchy/outgoingCalls",
+        MethodCall::PrepareTypeHierarchy(_) => "textDocument/prepareTypeHierarchy",
+        MethodCall::Supertypes(_) => "typeHierarchy/supertypes",
+        MethodCall::Subtypes(_) => "typeHierarchy/subtypes",
         MethodCall::MpqInfo(_) => "mpq/info",
         MethodCall::MpqList(_) => "mpq/list",
         MethodCall::MpqRead(_) => "mpq/read",
@@ -130,6 +140,10 @@ fn extract_uri(call: &MethodCall) -> Option<&Url> {
         MethodCall::DocumentColor(p) => Some(&p.text_document.uri),
         MethodCall::ColorPresentation(p) => Some(&p.text_document.uri),
         MethodCall::CodeAction(p) => Some(&p.text_document.uri),
+        MethodCall::SignatureHelp(p) => Some(&p.text_document.uri),
+        MethodCall::CodeLens(p) => Some(&p.text_document.uri),
+        MethodCall::PrepareCallHierarchy(p) => Some(&p.text_document.uri),
+        MethodCall::PrepareTypeHierarchy(p) => Some(&p.text_document.uri),
         MethodCall::Diagnostic(p) => Some(&p.text_document.uri),
         _ => None,
     }
@@ -236,6 +250,25 @@ async fn main() {
                                     }),
                                 }),
                             }),
+                            signature_help_provider: Some(
+                                crate::lsp::signature_help::lsp::SignatureHelpOptions {
+                                    trigger_characters: Some(vec![
+                                        "(".into(),
+                                        ",".into(),
+                                    ]),
+                                },
+                            ),
+                            code_lens_provider: Some(
+                                crate::lsp::code_lens::lsp::CodeLensOptions {
+                                    resolve_provider: Some(false),
+                                },
+                            ),
+                            call_hierarchy_provider: Some(
+                                crate::lsp::call_hierarchy::lsp::CallHierarchyOptions {},
+                            ),
+                            type_hierarchy_provider: Some(
+                                crate::lsp::type_hierarchy::lsp::TypeHierarchyOptions {},
+                            ),
                             ..Default::default()
                         },
                     };
@@ -1319,6 +1352,70 @@ async fn main() {
 
                             MethodCall::CodeAction(params) => {
                                 code_action_send(&writer, call.id, &params).await;
+                            }
+
+                            MethodCall::SignatureHelp(params) => {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                signature_help_send(&writer, call.id, uri, &params.position).await;
+                            }
+
+                            MethodCall::CodeLens(params) => {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                code_lens_send(&writer, call.id, uri).await;
+                            }
+
+                            MethodCall::PrepareCallHierarchy(params) => {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                crate::lsp::call_hierarchy::send::send_prepare(
+                                    &writer, call.id, uri, &params.position,
+                                ).await;
+                            }
+
+                            MethodCall::IncomingCalls(params) => {
+                                crate::lsp::call_hierarchy::send::send_incoming(
+                                    &writer, call.id, &params.item,
+                                ).await;
+                            }
+
+                            MethodCall::OutgoingCalls(params) => {
+                                crate::lsp::call_hierarchy::send::send_outgoing(
+                                    &writer, call.id, &params.item,
+                                ).await;
+                            }
+
+                            MethodCall::PrepareTypeHierarchy(params) => {
+                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                let uri = &params.text_document.uri;
+                                crate::lsp::type_hierarchy::send::send_prepare(
+                                    &writer, call.id, uri, &params.position,
+                                ).await;
+                            }
+
+                            MethodCall::Supertypes(params) => {
+                                crate::lsp::type_hierarchy::send::send_supertypes(
+                                    &writer, call.id, &params.item,
+                                ).await;
+                            }
+
+                            MethodCall::Subtypes(params) => {
+                                crate::lsp::type_hierarchy::send::send_subtypes(
+                                    &writer, call.id, &params.item,
+                                ).await;
                             }
 
                             MethodCall::UjapiDownload(params) => {
