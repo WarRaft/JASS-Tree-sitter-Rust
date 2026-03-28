@@ -243,7 +243,6 @@ async function resolveSlkEditor(document, webviewPanel, _token, client, context)
         if (msg.command === 'saveSettings') {
             suppressRefresh = true
             await writeSettings(document, msg.settings)
-            await workspace.save(document.uri)
             suppressRefresh = false
         }
 
@@ -252,10 +251,12 @@ async function resolveSlkEditor(document, webviewPanel, _token, client, context)
         }
     })
 
-    // Re-render when the document changes externally
+    // Re-render when the document changes externally (debounced)
+    let refreshTimer = null
     const changeDisposable = workspace.onDidChangeTextDocument(e => {
         if (e.document.uri.toString() === document.uri.toString() && !suppressRefresh) {
-            setTimeout(() => refreshData(), 200)
+            if (refreshTimer) clearTimeout(refreshTimer)
+            refreshTimer = setTimeout(() => refreshData(), 300)
         }
     })
 
@@ -786,8 +787,12 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
                 });
             });
 
-            // ── column resize persistence (immediate) ──
-            grid.addEventListener('resizecolumn', persistSettings);
+            // ── column resize persistence (debounced) ──
+            var resizeTimer = null;
+            grid.addEventListener('resizecolumn', function() {
+                if (resizeTimer) clearTimeout(resizeTimer);
+                resizeTimer = setTimeout(persistSettings, 300);
+            });
 
             // ── context menu: hide / show columns + sort reset ──
             grid.addEventListener('contextmenu', function(e) {
