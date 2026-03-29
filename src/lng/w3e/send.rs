@@ -9,8 +9,13 @@ use tokio::io::Stdout;
 use tokio::sync::Mutex;
 use url::Url;
 
-pub async fn send(writer: &Arc<Mutex<Stdout>>, call_id: Option<CancelId>, uri: &Url) {
-    let result_json = _send(uri).await.unwrap_or_else(|e| {
+pub async fn send(
+    writer: &Arc<Mutex<Stdout>>,
+    call_id: Option<CancelId>,
+    uri: &Url,
+    archive_path: Option<&str>,
+) {
+    let result_json = _send(uri, archive_path).await.unwrap_or_else(|e| {
         json!({
             "error": {
                 "message": e.to_string(),
@@ -29,12 +34,55 @@ pub async fn send(writer: &Arc<Mutex<Stdout>>, call_id: Option<CancelId>, uri: &
     let _ = lsp_send(writer, &response).await;
 }
 
-async fn _send(uri: &Url) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
-    let path = uri.to_file_path().map_err(|()| "Invalid file URI")?;
-    let buf = tokio::fs::read(&path).await?;
-    let (data, meta) = W3eData::read(&buf)?;
-    let mut val = to_value(data)?;
-    val["_meta"] = to_value(meta)?;
-    Ok(val)
-}
+async fn _send(
+    uri: &Url,
+    archive_path: Option<&str>,
+) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+    if let Some(ap) = archive_path {
+        // Opened from an MPQ archive — extract war3map.w3e
+        let ap = ap.to_string();
+        let file_name = uri
+            .to_file_path()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "war3map.w3e".into());
 
+        // When the URI points to the archive itself (.w3x / .w3m / .w3n / .mpq),
+        // the internal file we want is always "war3map.w3e".
+        let file_name = {
+            let lower = file_name.to_ascii_lowercase();
+            if lower.ends_with(".w3x")
+                || lower.ends_with(".w3m")
+                || lower.ends_with(".w3n")
+                || lower.ends_with(".mpq")
+            {
+                "war3map.w3e".to_string()
+            } else {
+                file_name
+            }
+        };
+
+        let buf = tokio::task::spawn_blocking(move || {
+            let archive = storm_rs::MpqArchive::open(&ap)
+                .map_err(|e| format!("Cannot open archive: {e}"))?;
+            archive
+                .read_file(&file_name)
+                .map_err(|e| format!("Cannot read {file_name}: {e}"))
+        })
+        .await
+        .map_err(|e| format!("spawn_blocking: {e}"))??;
+
+        let (data, meta) = W3eData::read(&buf)?;
+        let mut val = to_value(data)?;
+        val["_meta"] = to_value(meta)?;
+        Ok(val)
+    } else {
+        // Standalone file — read from disk.
+        let path = uri.to_file_path().map_err(|()| "Invalid file URI")?;
+        let buf = tokio::fs::read(&path).await?;
+        let (data, meta) = W3eData::read(&buf)?;
+        let mut val = to_value(data)?;
+        val["_meta"] = to_value(meta)?;
+        Ok(val)
+    }
+}

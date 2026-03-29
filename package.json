@@ -249,6 +249,16 @@
         "configuration": "./syntaxes/slk.language-configuration.json"
       }
     ],
+    "configuration": {
+      "title": "Map Editor",
+      "properties": {
+        "jassTerrainEditor.gamePath": {
+          "type": "string",
+          "default": "",
+          "description": "%config.gamePath.description%"
+        }
+      }
+    },
     "configurationDefaults": {
       "[bni]": {
         "editor.selectionHighlight": false
@@ -315,14 +325,7 @@
         "selector": [
           {
             "filenamePattern": "*.w3e"
-          }
-        ],
-        "priority": "default"
-      },
-      {
-        "viewType": "mpq.preview",
-        "displayName": "%customEditor.mpq.displayName%",
-        "selector": [
+          },
           {
             "filenamePattern": "*.w3x"
           },
@@ -355,7 +358,6 @@
       "onCustomEditor:doo.preview",
       "onCustomEditor:w3i.preview",
       "onCustomEditor:w3e.preview",
-      "onCustomEditor:mpq.preview",
       "onCustomEditor:slk.preview"
     ],
     "commands": [

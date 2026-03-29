@@ -1901,6 +1901,43 @@ impl Cursor {
                     }
                     let _body = self.visit_stmts(&branch.body, vars);
                 }
+                // `else if` detected → diagnostic with quick-fix data.
+                if let Some(fix) = &i.else_if_fix {
+                    let if_range = fix.if_node.to_range(&self.rope);
+                    let else_start: Position = fix.else_node.start_position().into();
+                    let if_start: Position = fix.if_node.start_position().into();
+                    let if_end: Position = fix.if_node.end_position().into();
+                    let outer_end: Position = i.node.end_position().into();
+
+                    let mut data = serde_json::json!({
+                        "else_start_line": else_start.line,
+                        "else_start_char": else_start.character,
+                        "if_start_line": if_start.line,
+                        "if_start_char": if_start.character,
+                        "if_end_line": if_end.line,
+                        "if_end_char": if_end.character,
+                        "insert_endif_line": outer_end.line,
+                        "insert_endif_char": else_start.character,
+                    });
+
+                    // Inner endif position (needed for indentation adjustment).
+                    if let Some(ei) = &fix.inner_endif {
+                        let ei_start: Position = ei.start_position().into();
+                        let ei_end: Position = ei.end_position().into();
+                        data["inner_endif_start_line"] = serde_json::json!(ei_start.line);
+                        data["inner_endif_start_char"] = serde_json::json!(ei_start.character);
+                        data["inner_endif_end_line"] = serde_json::json!(ei_end.line);
+                        data["inner_endif_end_char"] = serde_json::json!(ei_end.character);
+                    }
+
+                    self.diagnostics.push(Diagnostic {
+                        range: if_range,
+                        message: crate::util::i18n::else_if_should_be_elseif().into(),
+                        severity: Some(DiagnosticSeverity::Error),
+                        data: Some(data),
+                        ..Diagnostic::new("jass", "else-if")
+                    });
+                }
                 None
             }
 

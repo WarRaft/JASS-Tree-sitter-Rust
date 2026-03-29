@@ -574,7 +574,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
 
     // Parse from disk.
     let path = match dep_uri.to_file_path() {
-        Ok(p) if p.exists() => p,
+        Ok(p) if p.is_file() => p,
         _ => return false,
     };
     let content = match std::fs::read_to_string(&path) {

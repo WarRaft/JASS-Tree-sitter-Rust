@@ -59,6 +59,12 @@ pub enum Kind {
     EscapeSequence = 52,
     Rawcode = 53,
 
+    // virtual closing tokens emitted by the external scanner
+    VirtualEndloop = 54,
+    VirtualEndglobals = 55,
+    VirtualEndfunction = 56,
+    VirtualEndif = 57,
+
     // named / non-terminal symbols
     Program = 58,
     //_Statement = 59,

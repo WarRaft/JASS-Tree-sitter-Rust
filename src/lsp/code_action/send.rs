@@ -168,6 +168,12 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         actions.extend(compute_execute_func_fixes(params));
     }
 
+    // ── `else if` → `elseif` quick fixes ─────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_else_if_fixes(params));
+    }
+
     actions
 }
 
@@ -2237,3 +2243,176 @@ fn collect_string_hash_sites(
     }
 }
 
+// ─── `else if` → `elseif` quick fixes ────────────────────────────────────────
+
+fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+    let uri = &params.text_document.uri;
+
+    let else_if_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.has_code("else-if"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    for diag in &else_if_diags {
+        let data = match &diag.data {
+            Some(d) => d,
+            None => continue,
+        };
+
+        let else_start_line = data.get("else_start_line").and_then(|v| v.as_u64());
+        let else_start_char = data.get("else_start_char").and_then(|v| v.as_u64());
+        let if_start_line = data.get("if_start_line").and_then(|v| v.as_u64());
+        let if_start_char = data.get("if_start_char").and_then(|v| v.as_u64());
+        let if_end_line = data.get("if_end_line").and_then(|v| v.as_u64());
+        let if_end_char = data.get("if_end_char").and_then(|v| v.as_u64());
+        let ei_el = data.get("inner_endif_end_line").and_then(|v| v.as_u64());
+
+        // ── Fix 1: replace `else if` → `elseif` ─────────────────────────
+        if let (Some(esl), Some(esc), Some(isl), Some(isc), Some(iel), Some(iec)) =
+            (else_start_line, else_start_char, if_start_line, if_start_char, if_end_line, if_end_char)
+        {
+            let mut edits = vec![TextEdit {
+                range: Range {
+                    start: Position { line: esl as usize, character: esc as usize },
+                    end: Position { line: iel as usize, character: iec as usize },
+                },
+                new_text: "elseif".into(),
+            }];
+
+            // Re-indent lines when `else` and `if` are on different lines.
+            // The delta is the column difference between the inner `if` and
+            // the outer `else` (which sits at the same level as the outer `if`).
+            let delta = (isc as usize).saturating_sub(esc as usize);
+            if delta > 0 && esl != isl {
+                if let (Some(reindent_end), Some(rope_ref)) = (ei_el, ROPE_MAP.get(uri)) {
+                    let rope = rope_ref.value();
+                    let line_count = rope.line_of_offset(rope.len()) + 1;
+                    let reindent_start = (iel as usize) + 1;
+                    let reindent_end = reindent_end as usize;
+
+                    for line_num in reindent_start..=reindent_end {
+                        if line_num >= line_count { break; }
+                        let ls = rope.offset_of_line(line_num);
+                        let le = if line_num + 1 < line_count {
+                            rope.offset_of_line(line_num + 1)
+                        } else {
+                            rope.len()
+                        };
+                        let text = rope.slice_to_cow(ls..le);
+                        if text.trim().is_empty() { continue; }
+                        let leading_ws: usize = text.bytes()
+                            .take_while(|b| *b == b' ' || *b == b'\t')
+                            .count();
+                        let to_strip = delta.min(leading_ws);
+                        if to_strip > 0 {
+                            edits.push(TextEdit {
+                                range: Range {
+                                    start: Position { line: line_num, character: 0 },
+                                    end: Position { line: line_num, character: to_strip },
+                                },
+                                new_text: String::new(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), edits);
+            actions.push(CodeAction {
+                title: crate::util::i18n::fix_else_if_to_elseif().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+
+        // ── Fix 2: add missing `endif` ───────────────────────────────────
+        let insert_char = data.get("insert_endif_char").and_then(|v| v.as_u64());
+
+        if let (Some(esc), Some(esl), Some(isl), Some(isc), Some(iel), Some(ic)) =
+            (else_start_char, else_start_line, if_start_line, if_start_char, if_end_line, insert_char)
+        {
+            let mut edits = Vec::new();
+            let indent = " ".repeat(ic as usize);
+
+            // Re-indent the inner block when `else if` is on the same line.
+            // The body was indented relative to the outer `if`; after adding
+            // the outer `endif` we must push it deeper so it nests under the
+            // inner `if` keyword.
+            let delta = (isc as usize).saturating_sub(esc as usize);
+            if delta > 0 && esl == isl {
+                if let (Some(reindent_end), Some(rope_ref)) = (ei_el, ROPE_MAP.get(uri)) {
+                    let rope = rope_ref.value();
+                    let line_count = rope.line_of_offset(rope.len()) + 1;
+                    let indent_add = " ".repeat(delta);
+                    let reindent_start = (iel as usize) + 1;
+                    let reindent_end = reindent_end as usize;
+
+                    for line_num in reindent_start..=reindent_end {
+                        if line_num >= line_count { break; }
+                        let ls = rope.offset_of_line(line_num);
+                        let le = if line_num + 1 < line_count {
+                            rope.offset_of_line(line_num + 1)
+                        } else {
+                            rope.len()
+                        };
+                        let text = rope.slice_to_cow(ls..le);
+                        if text.trim().is_empty() { continue; }
+                        edits.push(TextEdit {
+                            range: Range {
+                                start: Position { line: line_num, character: 0 },
+                                end: Position { line: line_num, character: 0 },
+                            },
+                            new_text: indent_add.clone(),
+                        });
+                    }
+                }
+            }
+
+            // Insert the outer `endif` after the inner `endif`.
+            let ei_ec = data.get("inner_endif_end_char").and_then(|v| v.as_u64());
+            if let (Some(ei_end_line), Some(ei_end_char)) = (ei_el, ei_ec) {
+                edits.push(TextEdit {
+                    range: Range {
+                        start: Position { line: ei_end_line as usize, character: ei_end_char as usize },
+                        end: Position { line: ei_end_line as usize, character: ei_end_char as usize },
+                    },
+                    new_text: format!("\n{}endif", indent),
+                });
+            } else {
+                // No inner `endif` — use the original insertion point.
+                let insert_line = data.get("insert_endif_line").and_then(|v| v.as_u64());
+                if let Some(line) = insert_line {
+                    edits.push(TextEdit {
+                        range: Range {
+                            start: Position { line: line as usize, character: 0 },
+                            end: Position { line: line as usize, character: 0 },
+                        },
+                        new_text: format!("{}endif\n", indent),
+                    });
+                }
+            }
+
+            if !edits.is_empty() {
+                let mut changes = HashMap::new();
+                changes.insert(uri.clone(), edits);
+                actions.push(CodeAction {
+                    title: crate::util::i18n::fix_add_endif().to_string(),
+                    kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                    diagnostics: Some(vec![diag.clone()]),
+                    edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                    command: None,
+                });
+            }
+        }
+    }
+
+    actions
+}

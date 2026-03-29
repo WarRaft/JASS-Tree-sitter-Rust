@@ -162,3 +162,15 @@ pub struct DiagnosticRelatedInformation {
     pub location: Location,
     pub message: String,
 }
+
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#diagnosticOptions
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticOptions {
+    /// Whether the language has inter-file dependencies.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inter_file_dependencies: Option<bool>,
+    /// Whether the server provides workspace-wide diagnostics.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_diagnostics: Option<bool>,
+}

@@ -269,6 +269,12 @@ async fn main() {
                             type_hierarchy_provider: Some(
                                 crate::lsp::type_hierarchy::lsp::TypeHierarchyOptions {},
                             ),
+                            diagnostic_provider: Some(
+                                crate::lsp::diagnostic::lsp::DiagnosticOptions {
+                                    inter_file_dependencies: Some(true),
+                                    workspace_diagnostics: Some(false),
+                                },
+                            ),
                             ..Default::default()
                         },
                     };
@@ -560,7 +566,7 @@ async fn main() {
                             }
 
                             MethodCall::W3eRender(param) => {
-                                w3e_send(&writer, call.id, &param.uri).await;
+                                w3e_send(&writer, call.id, &param.uri, param.archive_path.as_deref()).await;
                             }
 
                             MethodCall::SlkRender(param) => {
@@ -776,6 +782,40 @@ async fn main() {
                                     return;
                                 }
                                 semantic_send(&writer, call.id, uri, None).await
+                            }
+
+                            MethodCall::Diagnostic(params) => {
+                                let uri = &params.text_document.uri;
+                                let ct = ct.as_ref().unwrap();
+                                if ct.is_cancelled() || call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                if !wait_for_parse_cancellable(uri, Duration::from_secs(5), ct).await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                if ct.is_cancelled() || call.id.was_cancelled().await {
+                                    send_cancelled(&writer, call.id).await;
+                                    return;
+                                }
+                                let items = FILE_STORE
+                                    .get(uri)
+                                    .map(|s| s.diagnostics.clone())
+                                    .unwrap_or_default();
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(json!({
+                                            "kind": "full",
+                                            "items": items
+                                        })),
+                                        error: None,
+                                    },
+                                )
+                                .await;
                             }
 
                             MethodCall::SemanticRange(params) => {
@@ -1239,6 +1279,10 @@ async fn main() {
                                     ).await;
 
                                     match uri.to_file_path() {
+                                        Ok(path) if path.is_dir() => {
+                                            // Skip directories that accidentally ended up in the import graph.
+                                            continue;
+                                        }
                                         Ok(path) => match std::fs::read_to_string(&path) {
                                             Ok(content) => {
                                                 if let Err(e) = crate::util::open::open_by_uri(uri, &content).await {

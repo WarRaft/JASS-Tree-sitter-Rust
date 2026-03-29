@@ -1,6 +1,7 @@
 use crate::lsp::call_hierarchy::lsp::CallHierarchyOptions;
 use crate::lsp::code_lens::lsp::CodeLensOptions;
 use crate::lsp::completion::lsp::CompletionOptions;
+use crate::lsp::diagnostic::lsp::DiagnosticOptions;
 use crate::lsp::document_link::lsp::DocumentLinkOptions;
 use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
 use crate::lsp::folding::lsp::FoldingRangeOptions;
@@ -69,4 +70,6 @@ pub struct ServerCapabilities {
     pub call_hierarchy_provider: Option<CallHierarchyOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_hierarchy_provider: Option<TypeHierarchyOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic_provider: Option<DiagnosticOptions>,
 }

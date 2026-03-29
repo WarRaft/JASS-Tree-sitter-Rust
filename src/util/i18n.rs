@@ -95,6 +95,36 @@ pub fn unexpected_node(kind: &str) -> String {
     }
 }
 
+pub fn else_if_should_be_elseif() -> &'static str {
+    match locale() {
+        Locale::En => "`else if` → use `elseif`",
+        Locale::Ru => "`else if` → используйте `elseif`",
+        Locale::Uk => "`else if` → використовуйте `elseif`",
+        Locale::Zh => "`else if` → 请使用 `elseif`",
+        Locale::Tc => "`else if` → 請使用 `elseif`",
+    }
+}
+
+pub fn fix_else_if_to_elseif() -> &'static str {
+    pick(
+        "Replace `else if` with `elseif`",
+        "Заменить `else if` на `elseif`",
+        "Замінити `else if` на `elseif`",
+        "将 `else if` 替换为 `elseif`",
+        "將 `else if` 替換為 `elseif`",
+    )
+}
+
+pub fn fix_add_endif() -> &'static str {
+    pick(
+        "Add missing `endif`",
+        "Добавить `endif`",
+        "Додати `endif`",
+        "添加缺少的 `endif`",
+        "添加缺少的 `endif`",
+    )
+}
+
 // ─── Undeclared symbol ──────────────────────────────────────────────────────
 
 fn undeclared_label_type() -> &'static str {

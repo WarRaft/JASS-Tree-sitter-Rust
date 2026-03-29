@@ -10,14 +10,13 @@ const {LanguageClient, Trace} = require('vscode-languageclient')
 const {resolveBlpEditor} = require('./resolveBlpEditor.js')
 const {resolveDooEditor} = require('./resolveDooEditor.js')
 const {resolveW3iEditor} = require('./resolveW3iEditor.js')
-const {resolveW3eEditor} = require('./resolveW3eEditor.js')
+const {resolveW3eEditor} = require('./w3e/index.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
 const {showTypeGraph} = require('./typeGraphPanel.js')
 const {DebugSidebarProvider, pushEntry} = require('./debugSidebarProvider.js')
 const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
-const {resolveMpqEditor} = require('./resolveMpqEditor.js')
 const {resolveSlkEditor} = require('./resolveSlkEditor.js')
 
 const path = require('path')
@@ -218,7 +217,12 @@ module.exports = {
                 {
                     openCustomDocument,
                     async resolveCustomEditor(document, webviewPanel, _token) {
-                        webviewPanel.webview.options = {enableScripts: true}
+                        webviewPanel.webview.options = {
+                            enableScripts: true,
+                            localResourceRoots: [
+                                Uri.joinPath(context.extensionUri, 'extension'),
+                            ]
+                        }
                         await clientReady
 
                         // For mpq:// URIs the LSP server cannot read the file
@@ -263,7 +267,6 @@ module.exports = {
             binaryEditor('doo.preview', resolveDooEditor),
             binaryEditor('w3i.preview', resolveW3iEditor),
             binaryEditor('w3e.preview', resolveW3eEditor),
-            binaryEditor('mpq.preview', resolveMpqEditor),
 
             // SLK table editor (text-based — uses CustomTextEditorProvider for undo/redo)
             window.registerCustomEditorProvider(

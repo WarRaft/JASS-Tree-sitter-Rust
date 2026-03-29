@@ -173,6 +173,23 @@ pub struct IfStmt<'tree> {
     pub body: Vec<Statement<'tree>>,
     /// `elseif` and `else` branches (in source order).
     pub branches: Vec<ElseBranch<'tree>>,
+    /// When the user writes `else if` instead of `elseif`, carries the
+    /// CST nodes needed for diagnostics and quick-fix code actions.
+    pub else_if_fix: Option<ElseIfFix<'tree>>,
+}
+
+/// Information captured when the user writes `else if` (two words) instead
+/// of `elseif`.  Used to generate a diagnostic and two quick-fix actions:
+///   1. Replace `else if` → `elseif` (and remove the inner `endif`)
+///   2. Add a missing `endif` for the outer block
+#[derive(Debug, Clone)]
+pub struct ElseIfFix<'tree> {
+    /// The `else` keyword node of the outer if_statement.
+    pub else_node: Node<'tree>,
+    /// The `if` keyword node of the nested if_statement (diagnostic target).
+    pub if_node: Node<'tree>,
+    /// The `endif` keyword node inside the nested if_statement (removed by fix 1).
+    pub inner_endif: Option<Node<'tree>>,
 }
 
 /// `loop ... endloop`
@@ -745,7 +762,15 @@ fn build_if_stmt<'tree>(
     let mut branches: Vec<ElseBranch<'tree>> = Vec::new();
 
     // State machine: which section are we collecting into?
-    enum Phase { SkipToThen, FirstBody, ElseifCond, ElseifBody, ElseBody }
+    //
+    // Phases:
+    //   SkipToThen  – skip `if` keyword and condition, waiting for `then`
+    //   FirstBody   – collecting statements of the first (if) branch
+    //   ElseifCond  – inside `elseif`, waiting for its condition + `then`
+    //   ElseifBody  – collecting statements of an `elseif` branch
+    //   ElseBody    – collecting statements of the `else` branch
+    //   Done        – `endif` was found, stop collecting
+    enum Phase { SkipToThen, FirstBody, ElseifCond, ElseifBody, ElseBody, Done }
     let mut phase = Phase::SkipToThen;
     let mut pending_cond: Option<Expr<'tree>> = None;
     let mut pending_stmts: Vec<Statement<'tree>> = Vec::new();
@@ -782,7 +807,7 @@ fn build_if_stmt<'tree>(
                 pending_stmts = Vec::new();
                 phase = Phase::ElseBody;
             }
-            (Phase::FirstBody, Some(Kind::Endif)) => { /* done */ }
+            (Phase::FirstBody, Some(Kind::Endif)) => { phase = Phase::Done; }
             (Phase::FirstBody, _) => {
                 if let Some(stmt) = build_statement(&child, errors) {
                     first_body.push(stmt);
@@ -821,12 +846,13 @@ fn build_if_stmt<'tree>(
                 phase = Phase::ElseBody;
             }
             (Phase::ElseifBody, Some(Kind::Endif)) => {
-                // Flush last elseif branch.
+                // Flush last elseif branch, then stop — `endif` found.
                 branches.push(ElseBranch {
                     node: branch_node.unwrap_or(child),
                     condition: pending_cond.take(),
                     body: std::mem::take(&mut pending_stmts),
                 });
+                phase = Phase::Done;
             }
             (Phase::ElseifBody, _) => {
                 if let Some(stmt) = build_statement(&child, errors) {
@@ -834,18 +860,94 @@ fn build_if_stmt<'tree>(
                 }
             }
 
-            // Else body — collect statements.
+            // Else body — collect statements until `endif`.
             (Phase::ElseBody, Some(Kind::Endif)) => {
+                // Flush else branch, then stop — `endif` found.
                 branches.push(ElseBranch {
                     node: branch_node.unwrap_or(child),
                     condition: None, // else has no condition
                     body: std::mem::take(&mut pending_stmts),
                 });
+                phase = Phase::Done;
             }
             (Phase::ElseBody, _) => {
                 if let Some(stmt) = build_statement(&child, errors) {
                     pending_stmts.push(stmt);
                 }
+            }
+
+            // `endif` already processed — ignore any remaining children.
+            (Phase::Done, _) => {}
+        }
+    }
+
+    // Post-loop flush: if we ended in a branch-collecting phase without
+    // seeing a real `endif` (e.g. the block was closed by a virtual
+    // `_virtual_endif`), flush the pending branch so its statements are
+    // not silently lost, and report a "missing endif" error.
+    //
+    // `Done` / `FirstBody` — `endif` was already handled inside the loop,
+    // nothing to flush.
+    let mut else_if_fix: Option<ElseIfFix<'tree>> = None;
+
+    match phase {
+        // `endif` was found — nothing to do.
+        Phase::Done | Phase::FirstBody | Phase::SkipToThen => {}
+
+        Phase::ElseifBody | Phase::ElseifCond => {
+            branches.push(ElseBranch {
+                node: branch_node.unwrap_or(*node),
+                condition: pending_cond.take(),
+                body: std::mem::take(&mut pending_stmts),
+            });
+            errors.push(CstError {
+                node: *node,
+                message: crate::util::i18n::missing_token("endif"),
+            });
+        }
+        Phase::ElseBody => {
+            // Detect `else if` pattern: the first statement in the else
+            // block is a nested if_statement → user wrote `else if`
+            // instead of `elseif`.
+            let detected = if let Some(Statement::If(inner)) = pending_stmts.first() {
+                let inner_node = inner.node;
+                let cc = inner_node.child_count();
+                // Find `if` keyword
+                let if_kw = (0..cc as u32).find_map(|i| {
+                    inner_node.child(i).filter(|c| {
+                        Kind::try_from(c.grammar_id()) == Ok(Kind::If)
+                    })
+                });
+                // Find `endif` keyword
+                let endif_kw = (0..cc as u32).find_map(|i| {
+                    inner_node.child(i).filter(|c| {
+                        Kind::try_from(c.grammar_id()) == Ok(Kind::Endif)
+                    })
+                });
+                if_kw.map(|ik| (ik, endif_kw))
+            } else {
+                None
+            };
+
+            branches.push(ElseBranch {
+                node: branch_node.unwrap_or(*node),
+                condition: None,
+                body: std::mem::take(&mut pending_stmts),
+            });
+
+            if let Some((if_kw, inner_endif)) = detected {
+                // `else if` pattern — diagnostic + quick fix will be
+                // generated by cursor.rs (not a generic CstError).
+                else_if_fix = Some(ElseIfFix {
+                    else_node: branch_node.unwrap_or(*node),
+                    if_node: if_kw,
+                    inner_endif,
+                });
+            } else {
+                errors.push(CstError {
+                    node: *node,
+                    message: crate::util::i18n::missing_token("endif"),
+                });
             }
         }
     }
@@ -855,6 +957,7 @@ fn build_if_stmt<'tree>(
         condition,
         body: first_body,
         branches,
+        else_if_fix,
     }
 }
 

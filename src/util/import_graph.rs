@@ -265,7 +265,7 @@ impl ImportGraph {
             .keys()
             .filter(|uri| {
                 uri.to_file_path()
-                    .map(|p| !p.exists())
+                    .map(|p| !p.is_file())
                     .unwrap_or(true) // non-file URI → treat as dead
             })
             .cloned()
@@ -799,10 +799,11 @@ pub fn resolve_import(base_uri: &Url, raw_path: &str) -> Option<ResolvedImport> 
     // Build the file:// URL from the normalised path.
     let url = Url::parse(&format!("file://{}", normalised)).ok()?;
 
-    // Check whether the file actually exists on disk.
+    // Check whether the file actually exists on disk (must be a regular file,
+    // not a directory).
     let exists = url
         .to_file_path()
-        .map(|p| p.exists())
+        .map(|p| p.is_file())
         .unwrap_or(false);
 
     Some(ResolvedImport { url, exists })

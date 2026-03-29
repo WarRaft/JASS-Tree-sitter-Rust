@@ -77,7 +77,7 @@ pub enum MethodCall {
 
     /// W3E
     #[serde(rename = "w3e/render")]
-    W3eRender(TextDocumentIdentifier),
+    W3eRender(W3eRenderParams),
 
     /// LSP
     #[serde(rename = "initialize")]
@@ -277,6 +277,17 @@ pub struct W3iRenderParams {
     pub uri: Url,
     /// When opened from an MPQ archive, the absolute path to the archive
     /// so the server can read `war3map.wts` and resolve TRIGSTR references.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<String>,
+}
+
+/// Params for `w3e/render`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3eRenderParams {
+    pub uri: Url,
+    /// When opened from an MPQ archive, the absolute path to the archive
+    /// so the server can extract `war3map.w3e` from it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub archive_path: Option<String>,
 }

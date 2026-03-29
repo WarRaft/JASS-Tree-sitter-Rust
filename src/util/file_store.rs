@@ -204,17 +204,31 @@ pub async fn send_refresh_all() {
     push_inlay_hints(writer).await;
 }
 
-/// Send `textDocument/publishDiagnostics` for every file in `FILE_STORE`.
+/// Send `textDocument/publishDiagnostics` for closed files in `FILE_STORE`.
+///
+/// Open files (present in `ROPE_MAP`) use the pull model — the client
+/// requests diagnostics via `textDocument/diagnostic`.  We send
+/// `workspace/diagnostic/refresh` so the client re-pulls for open files.
 ///
 /// **Important**: we snapshot the data first and drop the DashMap guards
 /// *before* awaiting any IO.  Holding a DashMap read-lock across `.await`
 /// would deadlock with concurrent `insert()` calls from parse tasks.
 async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
+    use crate::util::roper::uri_map::ROPE_MAP;
     use serde_json::json;
 
+    let mut has_open = false;
     let file_diags: Vec<(String, Vec<Diagnostic>)> = FILE_STORE
         .iter()
-        .map(|entry| (entry.key().to_string(), entry.value().diagnostics.clone()))
+        .filter_map(|entry| {
+            if ROPE_MAP.contains_key(entry.key()) {
+                // Open file → pull model; skip push.
+                has_open = true;
+                None
+            } else {
+                Some((entry.key().to_string(), entry.value().diagnostics.clone()))
+            }
+        })
         .collect();
     // DashMap guards dropped here.
 
@@ -231,6 +245,11 @@ async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
             }),
         )
         .await;
+    }
+
+    // Ask the client to re-pull diagnostics for open files.
+    if has_open {
+        crate::lsp::send::send_request(writer, "workspace/diagnostic/refresh").await;
     }
 }
 
