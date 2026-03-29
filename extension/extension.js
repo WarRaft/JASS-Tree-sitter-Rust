@@ -3,7 +3,7 @@
 const {
     window,
     Uri, ExtensionMode, commands, ProgressLocation, workspace,
-    languages, InlayHint, InlayHintKind, Position, EventEmitter
+    languages, InlayHint, InlayHintKind, Position, Range, Location, EventEmitter
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
@@ -86,7 +86,36 @@ module.exports = {
                 ],
                 outputChannelName: 'JASS-Tree-Sitter-Rust Logs',
                 traceOutputChannel: window.createOutputChannel('JASS-Tree-Sitter-Rust Trace'),
-                trace: Trace.Verbose
+                trace: Trace.Verbose,
+                middleware: {
+                    provideCodeLenses(document, token, next) {
+                        return Promise.resolve(next(document, token)).then(lenses => {
+                            if (!lenses) return lenses
+                            for (const lens of lenses) {
+                                if (lens.command && lens.command.command === 'editor.action.showReferences' && lens.command.arguments) {
+                                    const args = lens.command.arguments
+                                    // arg[0]: uri string → vscode.Uri
+                                    if (typeof args[0] === 'string') args[0] = Uri.parse(args[0])
+                                    // arg[1]: {line, character} → vscode.Position
+                                    if (args[1] && !(args[1] instanceof Position)) {
+                                        args[1] = new Position(args[1].line, args[1].character)
+                                    }
+                                    // arg[2]: array of {uri, range} → vscode.Location[]
+                                    if (Array.isArray(args[2])) {
+                                        args[2] = args[2].map(loc => new Location(
+                                            typeof loc.uri === 'string' ? Uri.parse(loc.uri) : loc.uri,
+                                            new Range(
+                                                loc.range.start.line, loc.range.start.character,
+                                                loc.range.end.line, loc.range.end.character
+                                            )
+                                        ))
+                                    }
+                                }
+                            }
+                            return lenses
+                        })
+                    }
+                }
             }
         )
 

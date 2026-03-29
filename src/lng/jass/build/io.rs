@@ -1,12 +1,103 @@
 //! File I/O, archive writing, path resolution, and file collection.
 
-use super::ir::Fragments;
+use super::ir::{Fragments, FrozenImportEntry};
 use super::BuildMode;
 use super::BuildResult;
 use crate::util::import_graph::IMPORT_GRAPH;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use url::Url;
+
+/// Emit the frozen import header for the build output.
+///
+/// For each frozen import directive (`//import!` / `//import-ujapi!`),
+/// compute a relative path from `out_dir` to the frozen file and emit
+/// the directive line.  Returns the header text (empty when there are no
+/// frozen imports).
+pub(super) fn emit_frozen_import_header(
+    entries: &[FrozenImportEntry],
+    out_dir: &Path,
+) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    let mut header = String::new();
+
+    for entry in entries {
+        let frozen_path = match entry.url.to_file_path() {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        // Compute relative path from the output directory to the frozen file.
+        let rel = relative_path(out_dir, &frozen_path);
+
+        let directive = if entry.is_ujapi {
+            "//import-ujapi!"
+        } else {
+            "//import!"
+        };
+
+        header.push_str(directive);
+        header.push(' ');
+        // Always use forward slashes in the directive.
+        header.push_str(&rel.replace('\\', "/"));
+        header.push('\n');
+    }
+    header.push('\n');
+
+    header
+}
+
+/// Compute a relative path from `from_dir` to `to_file`.
+///
+/// Both paths should be absolute.  The result uses forward slashes.
+fn relative_path(from_dir: &Path, to_file: &Path) -> String {
+    // Canonicalize both paths as much as possible.
+    let from = from_dir
+        .canonicalize()
+        .unwrap_or_else(|_| from_dir.to_path_buf());
+    let to = to_file
+        .canonicalize()
+        .unwrap_or_else(|_| to_file.to_path_buf());
+
+    // Find common prefix.
+    let from_parts: Vec<_> = from.components().collect();
+    let to_parts: Vec<_> = to.components().collect();
+
+    let common = from_parts
+        .iter()
+        .zip(to_parts.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    let mut result = String::new();
+    // Go up from from_dir for each remaining component.
+    for _ in common..from_parts.len() {
+        if !result.is_empty() {
+            result.push('/');
+        }
+        result.push_str("..");
+    }
+    // Go down to to_file.
+    for part in &to_parts[common..] {
+        if !result.is_empty() {
+            result.push('/');
+        }
+        result.push_str(&part.as_os_str().to_string_lossy());
+    }
+
+    if result.is_empty() {
+        // Same directory — just the filename.
+        to_file
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    } else {
+        result
+    }
+}
 
 /// Write the build output to a plain file.
 pub(super) fn write_output(

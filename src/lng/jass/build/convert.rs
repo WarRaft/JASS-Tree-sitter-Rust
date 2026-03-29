@@ -8,6 +8,7 @@ use crate::lng::jass::ast::{
     build_ast, rewrite_imports, Expr, FunctionDecl, Id, Statement,
 };
 use crate::util::file_store::{is_uri_frozen, FILE_STORE};
+use crate::util::import_graph::resolve_import;
 use std::collections::{HashMap, HashSet};
 use url::Url;
 
@@ -242,11 +243,17 @@ pub(super) fn convert_function(
 ///
 /// Frozen-file functions and globals are **not** included here — call
 /// [`resolve_frozen_deps`] after augmentation to add them.
+///
+/// Additionally collects frozen import directives (`//import!` and
+/// `//import-ujapi!`) so the build output can re-emit them with paths
+/// relative to the output file.
 pub(super) fn collect_ir(_trigger_uri: &Url, file_order: &[Url]) -> BuildIR {
     let mut globals = Vec::<IRStmt>::new();
     let mut functions: HashMap<String, IRFunc> = HashMap::new();
     let mut bare_stmts = Vec::<IRStmt>::new();
     let mut native_names = HashSet::<String>::new();
+    let mut frozen_import_directives = Vec::<super::ir::FrozenImportEntry>::new();
+    let mut seen_frozen_urls = HashSet::<Url>::new();
 
     // Collect native names from FILE_STORE for all files in the import tree.
     for file_uri in file_order {
@@ -279,6 +286,32 @@ pub(super) fn collect_ir(_trigger_uri: &Url, file_order: &[Url]) -> BuildIR {
         for item in &ast.items {
             match item {
                 Statement::Type(_) | Statement::Native(_) => {}
+                Statement::Import(imp) if imp.frozen => {
+                    // Collect frozen import directive with resolved URL.
+                    if !imp.path.is_empty() {
+                        if let Some(resolved) = resolve_import(file_uri, &imp.path) {
+                            if seen_frozen_urls.insert(resolved.url.clone()) {
+                                frozen_import_directives.push(super::ir::FrozenImportEntry {
+                                    is_ujapi: false,
+                                    url: resolved.url,
+                                });
+                            }
+                        }
+                    }
+                }
+                Statement::UjapiImport(ud) => {
+                    // Collect ujapi import directive with resolved URL.
+                    if !ud.path.is_empty() {
+                        if let Some(resolved) = resolve_import(file_uri, &ud.path) {
+                            if seen_frozen_urls.insert(resolved.url.clone()) {
+                                frozen_import_directives.push(super::ir::FrozenImportEntry {
+                                    is_ujapi: true,
+                                    url: resolved.url,
+                                });
+                            }
+                        }
+                    }
+                }
                 Statement::Globals(g) => {
                     for v in &g.vars {
                         if let Some(s) = convert_stmt(&src, &Statement::VarStmt(v.clone())) {
@@ -316,7 +349,7 @@ pub(super) fn collect_ir(_trigger_uri: &Url, file_order: &[Url]) -> BuildIR {
         }
     }
 
-    BuildIR { globals, functions, bare_stmts, native_names }
+    BuildIR { globals, functions, bare_stmts, native_names, frozen_import_directives }
 }
 
 // ─── Frozen-file dependency resolution (AS builds) ───────────────────────────

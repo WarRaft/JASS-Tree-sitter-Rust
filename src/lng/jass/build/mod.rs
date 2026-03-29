@@ -45,12 +45,14 @@ use crate::util::file_store::FILE_STORE;
 use crate::util::import_graph::IMPORT_GRAPH;
 use serde::Serialize;
 use std::collections::HashSet;
+use std::path::Path;
 use url::Url;
 
 use self::convert::{collect_ir, resolve_frozen_deps};
 use self::inline::{apply_inlines, fold_string_hash_in_fragments};
 use self::io::{
-    collect_file_order, is_archive_path, resolve_output_path, write_output, write_output_archive,
+    collect_file_order, emit_frozen_import_header, is_archive_path, resolve_output_path,
+    write_output, write_output_archive,
 };
 use self::ir::*;
 use self::jass_to_as::{jass_function_to_as, jass_var_decl_to_as};
@@ -306,6 +308,11 @@ pub fn build_jass(uri: &Url) -> BuildResult {
     // 10. Assemble output.
     let mut out = String::new();
 
+    // Frozen import directives (//import! / //import-ujapi!) with paths
+    // relative to the output file.
+    let out_dir = out_path.parent().unwrap_or(Path::new("."));
+    out.push_str(&emit_frozen_import_header(&ir.frozen_import_directives, out_dir));
+
     // Globals.
     if !fragments.globals_out.is_empty() {
         out.push_str("globals\n");
@@ -463,6 +470,11 @@ pub fn build_as(uri: &Url) -> BuildResult {
 
     // 11. Assemble AS output.
     let mut out = String::new();
+
+    // Frozen import directives (//import! / //import-ujapi!) with paths
+    // relative to the output file.
+    let out_dir = out_path.parent().unwrap_or(Path::new("."));
+    out.push_str(&emit_frozen_import_header(&ir.frozen_import_directives, out_dir));
 
     // Globals → top-level variable declarations.
     for g in &fragments.globals_out {

@@ -10,6 +10,21 @@
 //! may gain AS-specific variants or a parallel set of types.
 
 use std::collections::{HashMap, HashSet};
+use url::Url;
+
+// ─── Frozen import entry ─────────────────────────────────────────────────────
+
+/// A frozen import directive found in source files during build collection.
+///
+/// Used to emit `//import!` / `//import-ujapi!` directives at the top of
+/// the built output with paths recalculated relative to the output file.
+#[derive(Debug, Clone)]
+pub(super) struct FrozenImportEntry {
+    /// `true` for `//import-ujapi!`, `false` for `//import!`.
+    pub is_ujapi: bool,
+    /// Resolved absolute URL of the frozen file.
+    pub url: Url,
+}
 
 // ─── Inline candidate ────────────────────────────────────────────────────────
 
@@ -171,6 +186,10 @@ pub(super) struct BuildIR {
     /// Names of all `native` declarations across the import tree.
     /// Used by the AS build to prefix calls with `Jass::`.
     pub native_names: HashSet<String>,
+    /// Frozen import directives (`//import!` / `//import-ujapi!`) collected
+    /// from source files.  Emitted at the top of the built output with paths
+    /// recalculated relative to the output file.
+    pub frozen_import_directives: Vec<FrozenImportEntry>,
 }
 
 // ─── Topological sort ────────────────────────────────────────────────────────
