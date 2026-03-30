@@ -179,6 +179,40 @@ pub fn build_global_var_as(src: &str) -> String {
     jass_to_as::jass_var_decl_to_as(&jass_text, &rename_map)
 }
 
+/// Test-only: parse a JASS global var declaration → AST → IR → render JASS text.
+///
+/// Returns the JASS rendering of the global variable declaration.
+#[cfg(test)]
+pub fn build_global_var_jass(src: &str) -> String {
+    use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
+
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(&tree_sitter_jass::language().into())
+        .expect("Failed to set language");
+    let tree = parser.parse(src, None).expect("Failed to parse");
+    let mut ast = build_ast(tree.root_node());
+    let src_bytes = src.as_bytes().to_vec();
+    rewrite_imports(&mut ast, &src_bytes);
+
+    let var = ast
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Statement::VarStmt(v) => Some(v),
+            _ => None,
+        })
+        .expect("No VarStmt found");
+
+    // AST → IR
+    let ir_stmt = convert::convert_stmt(src, &Statement::VarStmt(var.clone()))
+        .expect("Failed to convert VarStmt");
+
+    // IR → JASS text
+    let jass_lines = render_jass::render_jass_stmt(&ir_stmt, "");
+    jass_lines.join("\n")
+}
+
 /// Build mode — determines how frozen (`//import!`) files are handled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(self) enum BuildMode {
@@ -545,4 +579,3 @@ fn err(msg: &str) -> BuildResult {
         message: msg.to_string(),
     }
 }
-

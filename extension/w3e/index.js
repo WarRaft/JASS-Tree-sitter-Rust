@@ -1,5 +1,5 @@
 // noinspection NpmUsedModulesInstalled
-const {Uri, commands, workspace} = require('vscode')
+const {Uri, commands, workspace, window} = require('vscode')
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
@@ -8,6 +8,7 @@ const {MpqFileSystemProvider} = require('../mpqFileSystemProvider.js')
 const {SUPPORTED_BINARIES, findMapRoot, scanMapBinaries} = require('./mapRoot.js')
 const {errorHtml} = require('./utils.js')
 const {renderMapEditor} = require('./render.js')
+const {validateGamePath, allMpqPresent} = require('./panels.js')
 
 /**
  * @param {import('vscode').CustomDocument} document
@@ -97,6 +98,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
 
     // ── Game path setting ───────────────────────────────────────
     const gamePath = workspace.getConfiguration('jassTerrainEditor').get('gamePath', '')
+    const mpqStatus = gamePath ? validateGamePath(gamePath) : null
 
     // ── Archive files for the Files window ───────────────────────
     const archiveFiles = isArchive && archiveInfo ? (archiveInfo.files || []) : null
@@ -111,6 +113,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         archiveFiles,
         archiveHeader,
         gamePath,
+        mpqStatus,
         nonce,
         cspSource,
     })
@@ -124,6 +127,25 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
             await commands.executeCommand('mpq.browse', document.uri)
         } else if (msg.command === 'setGamePath') {
             await workspace.getConfiguration('jassTerrainEditor').update('gamePath', msg.value, true)
+        } else if (msg.command === 'browseGamePath') {
+            const uris = await window.showOpenDialog({
+                canSelectFiles: false,
+                canSelectFolders: true,
+                canSelectMany: false,
+                openLabel: 'Select Warcraft III Folder',
+            })
+            if (!uris || uris.length === 0) return
+            const selectedPath = uris[0].fsPath
+            const status = validateGamePath(selectedPath)
+            if (!allMpqPresent(status)) {
+                const missing = Object.entries(status).filter(([, ok]) => !ok).map(([f]) => f)
+                await window.showWarningMessage(
+                    `Missing MPQ files: ${missing.join(', ')}`,
+                    {modal: false}
+                )
+                return
+            }
+            await workspace.getConfiguration('jassTerrainEditor').update('gamePath', selectedPath, true)
         }
     })
 }

@@ -62,7 +62,7 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
     }
 
     const headerContent = renderHeaderContent(mapInfo.archiveHeader)
-    const gamePathContent = renderGamePathContent(mapInfo.gamePath)
+    const gamePathContent = renderGamePathContent(mapInfo.gamePath, mapInfo.mpqStatus)
     const fileCount = mapInfo.archiveFiles ? mapInfo.archiveFiles.length : 0
     const filesRows = mapInfo.isArchive ? renderFilesRows(mapInfo.archiveFiles) : ''
 
@@ -228,12 +228,17 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
             });
         });
 
-        // ── Game Path save ───────────────────────────────────────
-        const gpSave = document.getElementById('gamePathSave');
-        if (gpSave && vscode) {
-            gpSave.addEventListener('click', () => {
-                const input = document.getElementById('gamePathInput');
-                if (input) vscode.postMessage({command: 'setGamePath', value: input.value});
+        // ── Game Path browse / clear ─────────────────────────────
+        const gpBrowse = document.getElementById('gamePathBrowse');
+        if (gpBrowse && vscode) {
+            gpBrowse.addEventListener('click', () => {
+                vscode.postMessage({command: 'browseGamePath'});
+            });
+        }
+        const gpClear = document.getElementById('gamePathClear');
+        if (gpClear && vscode) {
+            gpClear.addEventListener('click', () => {
+                vscode.postMessage({command: 'setGamePath', value: ''});
             });
         }
 

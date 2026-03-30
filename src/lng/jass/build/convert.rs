@@ -205,6 +205,48 @@ fn localize_var_decls(body: &mut Vec<IRStmt>) {
     }
 }
 
+/// Collect all array variable names declared in the body (recursively).
+fn collect_array_names(body: &[IRStmt], names: &mut HashSet<String>) {
+    for stmt in body {
+        match stmt {
+            IRStmt::Local { is_array: true, name, .. } => { names.insert(name.clone()); }
+            IRStmt::If { body: ib, branches, .. } => {
+                collect_array_names(ib, names);
+                for b in branches { collect_array_names(&b.body, names); }
+            }
+            IRStmt::Loop(inner) => { collect_array_names(inner, names); }
+            _ => {}
+        }
+    }
+}
+
+/// Remove `set VAR = VALUE` statements where `VAR` is an array and no
+/// index is provided — scalar assignment to an array is invalid in JASS.
+fn strip_invalid_array_sets(body: &mut Vec<IRStmt>) {
+    let mut array_names = HashSet::new();
+    collect_array_names(body, &mut array_names);
+    if array_names.is_empty() { return; }
+    strip_invalid_array_sets_inner(body, &array_names);
+}
+
+fn strip_invalid_array_sets_inner(body: &mut Vec<IRStmt>, array_names: &HashSet<String>) {
+    body.retain_mut(|stmt| {
+        match stmt {
+            IRStmt::Set { var, index: None, .. } if array_names.contains(var.as_str()) => false,
+            IRStmt::If { body: ib, branches, .. } => {
+                strip_invalid_array_sets_inner(ib, array_names);
+                for b in branches { strip_invalid_array_sets_inner(&mut b.body, array_names); }
+                true
+            }
+            IRStmt::Loop(inner) => {
+                strip_invalid_array_sets_inner(inner, array_names);
+                true
+            }
+            _ => true,
+        }
+    });
+}
+
 pub(super) fn convert_function(
     src: &str,
     f: &FunctionDecl,
@@ -223,6 +265,10 @@ pub(super) fn convert_function(
 
     // Convert VarDecl → Local inside function body (JASS requires `local` prefix).
     localize_var_decls(&mut body);
+
+    // Remove invalid scalar assignments to array variables (`set arr = 5`
+    // without an index is meaningless in JASS).
+    strip_invalid_array_sets(&mut body);
 
     // Detect inline candidate: takes nothing + single `return expr`.
     let inline_expr = if f.params.is_empty() {

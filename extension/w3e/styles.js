@@ -130,31 +130,58 @@ function editorStyles() {
             color: var(--vscode-descriptionForeground, #888);
             margin-bottom: 8px;
         }
-        .gp-input {
-            display: block;
-            width: 100%;
-            padding: 5px 8px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 3px;
-            background: rgba(255, 255, 255, 0.04);
-            color: var(--vscode-editor-foreground, #ccc);
+        .gp-path {
             font-family: var(--vscode-editor-font-family, monospace);
             font-size: 12px;
-            outline: none;
+            color: var(--vscode-editor-foreground, #ccc);
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            padding: 5px 8px;
+            margin-bottom: 8px;
+            word-break: break-all;
+        }
+        .gp-no-path {
+            font-size: 12px;
+            color: var(--vscode-descriptionForeground, #666);
+            font-style: italic;
             margin-bottom: 8px;
         }
-        .gp-input:focus { border-color: var(--vscode-focusBorder, #007acc); }
-        .gp-save {
+        .gp-mpq-list {
+            margin-bottom: 8px;
+        }
+        .gp-mpq-row {
+            font-size: 11px;
+            padding: 2px 0;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .gp-mpq-row.gp-ok { color: var(--vscode-editor-foreground, #ccc); }
+        .gp-mpq-row.gp-missing { color: var(--vscode-errorForeground, #f48771); }
+        .gp-actions {
+            display: flex;
+            gap: 6px;
+        }
+        .gp-browse, .gp-clear {
             padding: 4px 14px;
             border: none;
             border-radius: 3px;
-            background: var(--vscode-button-background, #0e639c);
-            color: var(--vscode-button-foreground, #fff);
             font-family: inherit;
             font-size: 12px;
             cursor: pointer;
         }
-        .gp-save:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+        .gp-browse {
+            background: var(--vscode-button-background, #0e639c);
+            color: var(--vscode-button-foreground, #fff);
+        }
+        .gp-browse:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+        .gp-clear {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            color: var(--vscode-descriptionForeground, #888);
+        }
+        .gp-clear:hover { border-color: rgba(255, 255, 255, 0.3); color: var(--vscode-editor-foreground, #ccc); }
 
         /* ── Terrain info ───────────────────────────────────────── */
         table.info { border-collapse: collapse; margin-bottom: 8px; width: 100%; }

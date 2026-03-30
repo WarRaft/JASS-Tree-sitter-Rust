@@ -174,6 +174,18 @@ fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         actions.extend(compute_else_if_fixes(params));
     }
 
+    // ── Array initializer quick fixes ──────────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_array_no_init_fixes(params));
+    }
+
+    // ── Array set without index quick fixes ────────────────────────────────
+    let uri = &params.text_document.uri;
+    if !is_as_uri(uri) {
+        actions.extend(compute_array_set_no_index_fixes(params));
+    }
+
     actions
 }
 
@@ -1900,7 +1912,9 @@ fn compute_remove_else_action(params: &CodeActionParams) -> Option<CodeAction> {
                 .take_while(|b| *b == b' ' || *b == b'\t')
                 .count();
             let to_strip = excess.min(leading_ws);
-            new_text.push_str(&text_ref[to_strip..]);
+            if to_strip > 0 {
+                new_text.push_str(&text_ref[to_strip..]);
+            }
         }
     }
 
@@ -2298,13 +2312,12 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                     for line_num in reindent_start..=reindent_end {
                         if line_num >= line_count { break; }
                         let ls = rope.offset_of_line(line_num);
-                        let le = if line_num + 1 < line_count {
-                            rope.offset_of_line(line_num + 1)
-                        } else {
-                            rope.len()
-                        };
+                        let le = rope.offset_of_line(line_num + 1).min(rope.len());
                         let text = rope.slice_to_cow(ls..le);
-                        if text.trim().is_empty() { continue; }
+                        let trimmed = text.trim();
+                        if trimmed.is_empty() {
+                            continue;
+                        }
                         let leading_ws: usize = text.bytes()
                             .take_while(|b| *b == b' ' || *b == b'\t')
                             .count();
@@ -2411,6 +2424,94 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                     command: None,
                 });
             }
+        }
+    }
+
+    actions
+}
+
+/// Quick fix for `array-no-init`: remove the `= value` part from an array
+/// declaration (arrays cannot have scalar initializers in JASS).
+fn compute_array_no_init_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+    let uri = &params.text_document.uri;
+
+    let diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.has_code("array-no-init"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    let rope = ROPE_MAP.get(uri);
+
+    for diag in &diags {
+        let data = match &diag.data {
+            Some(d) => d,
+            None => continue,
+        };
+        let start = data.get("array_no_init_remove_start").and_then(|v| v.as_u64());
+        let end = data.get("array_no_init_remove_end").and_then(|v| v.as_u64());
+        if let (Some(start), Some(end), Some(rope)) = (start, end, &rope) {
+            let edit = TextEdit {
+                range: Range::from_byte_offsets(rope, start as usize, end as usize),
+                new_text: String::new(),
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::array_no_init_fix().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
+        }
+    }
+
+    actions
+}
+
+/// Quick fix for `array-set-no-index`: insert `[]` after the variable name
+/// so the user can fill in the index.
+fn compute_array_set_no_index_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+    let uri = &params.text_document.uri;
+
+    let diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
+        .filter(|d| d.has_code("array-set-no-index"))
+        .filter(|d| d.data.is_some())
+        .cloned()
+        .collect();
+
+    let rope = ROPE_MAP.get(uri);
+
+    for diag in &diags {
+        let data = match &diag.data {
+            Some(d) => d,
+            None => continue,
+        };
+        let insert_pos = data.get("array_set_insert_pos").and_then(|v| v.as_u64());
+        if let (Some(pos), Some(rope)) = (insert_pos, &rope) {
+            let insert_range = Range::from_byte_offsets(rope, pos as usize, pos as usize);
+            let edit = TextEdit {
+                range: insert_range,
+                new_text: "[]".to_string(),
+            };
+            let mut changes = HashMap::new();
+            changes.insert(uri.clone(), vec![edit]);
+            actions.push(CodeAction {
+                title: crate::util::i18n::array_set_no_index_fix().to_string(),
+                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                diagnostics: Some(vec![diag.clone()]),
+                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                command: None,
+            });
         }
     }
 

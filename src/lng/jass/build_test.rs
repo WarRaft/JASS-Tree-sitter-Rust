@@ -851,6 +851,349 @@ endfunction
             "expected `arr[0] = 5;` without cast on LHS, got:\n{result}"
         );
     }
+
+    // ─── Array name preservation in JASS build ─────────────────────────────────
+
+    #[test]
+    fn jass_array_no_initializer_and_bare_set_keeps_name() {
+        // `integer array a = 33` → array must NOT have an initializer.
+        // `a[22] = 3` (bare assignment without `set`) → must keep the array name.
+        // `a = 5` → scalar assignment to array without index is invalid,
+        //           must be silently dropped during build.
+        let src = "\
+function Array takes nothing returns nothing
+    integer array a = 33
+    a[22] = 3
+    a = 5
+endfunction
+";
+        let result = build_single_function_jass(src);
+        let lines: Vec<&str> = result.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+
+        // Array declaration must NOT carry an initializer.
+        assert!(
+            lines.contains(&"local integer array a"),
+            "expected `local integer array a` (no initializer for arrays), got:\n{result}"
+        );
+        assert!(
+            !result.contains("local integer array a ="),
+            "array local must NOT have `= value`, got:\n{result}"
+        );
+
+        // Bare array set must preserve the variable name `a`.
+        assert!(
+            result.contains("set a[22] = 3"),
+            "expected `set a[22] = 3` (array name preserved), got:\n{result}"
+        );
+
+        // Scalar assignment to array without index must be dropped.
+        assert!(
+            !result.contains("set a = 5"),
+            "`set a = 5` (scalar assign to array) must be dropped, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_name_preserved_in_set() {
+        // `set myArr[0] = 1` must keep the array name `myArr`.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array myArr
+    set myArr[0] = 1
+    set myArr[1] = 2
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("local integer array myArr"),
+            "expected `local integer array myArr` in output, got:\n{result}"
+        );
+        assert!(
+            result.contains("set myArr[0] = 1"),
+            "expected `set myArr[0] = 1` in output, got:\n{result}"
+        );
+        assert!(
+            result.contains("set myArr[1] = 2"),
+            "expected `set myArr[1] = 2` in output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_name_preserved_in_read() {
+        // `arr[idx]` in an expression must keep the array name.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array myArr
+    local integer x = myArr[0]
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("myArr[0]"),
+            "expected `myArr[0]` in output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_hoisted_array_name_preserved() {
+        // Array declared after an instruction — hoisted, name must survive.
+        let src = "\
+function A takes nothing returns nothing
+    call Foo()
+    integer array myArr
+    set myArr[0] = 42
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("local integer array myArr"),
+            "expected `local integer array myArr` after hoisting, got:\n{result}"
+        );
+        assert!(
+            result.contains("set myArr[0] = 42"),
+            "expected `set myArr[0] = 42` in output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_multiple_arrays_names_preserved() {
+        // Two arrays with different names — both names must survive.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array counts
+    call Init()
+    integer array names
+    set counts[0] = 1
+    set names[0] = 2
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("local integer array counts"),
+            "expected `local integer array counts`, got:\n{result}"
+        );
+        assert!(
+            result.contains("local integer array names"),
+            "expected `local integer array names`, got:\n{result}"
+        );
+        assert!(
+            result.contains("set counts[0] = 1"),
+            "expected `set counts[0] = 1`, got:\n{result}"
+        );
+        assert!(
+            result.contains("set names[0] = 2"),
+            "expected `set names[0] = 2`, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_name_in_complex_expr() {
+        // Array read used inside a complex expression.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array myArr
+    local integer x = myArr[0] + myArr[1]
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("myArr[0]"),
+            "expected `myArr[0]` in complex expr, got:\n{result}"
+        );
+        assert!(
+            result.contains("myArr[1]"),
+            "expected `myArr[1]` in complex expr, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_name_in_call_arg() {
+        // Array read passed as a function argument.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array myArr
+    call Foo(myArr[0])
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("myArr[0]"),
+            "expected `myArr[0]` in call arg, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_set_with_expr_index() {
+        // Array set with an expression as index: `set arr[i + 1] = val`
+        let src = "\
+function A takes nothing returns nothing
+    local integer array myArr
+    local integer i = 0
+    set myArr[i + 1] = 99
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("myArr[i + 1]"),
+            "expected `myArr[i + 1]` in output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_in_loop_name_preserved() {
+        // Array used inside a loop body.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array myArr
+    local integer i = 0
+    loop
+        set myArr[i] = i
+        set i = i + 1
+        exitwhen i > 10
+    endloop
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("local integer array myArr"),
+            "expected `local integer array myArr`, got:\n{result}"
+        );
+        assert!(
+            result.contains("set myArr[i] = i"),
+            "expected `set myArr[i] = i`, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_in_if_name_preserved() {
+        // Array used inside an if body.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array myArr
+    if true then
+        set myArr[0] = 1
+    else
+        set myArr[0] = 2
+    endif
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("set myArr[0] = 1"),
+            "expected `set myArr[0] = 1` in if-branch, got:\n{result}"
+        );
+        assert!(
+            result.contains("set myArr[0] = 2"),
+            "expected `set myArr[0] = 2` in else-branch, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_different_types_names_preserved() {
+        // Arrays of different types — all names must survive.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array intArr
+    local real array realArr
+    local boolean array boolArr
+    set intArr[0] = 1
+    set realArr[0] = 1.0
+    set boolArr[0] = true
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("local integer array intArr"),
+            "expected `local integer array intArr`, got:\n{result}"
+        );
+        assert!(
+            result.contains("local real array realArr"),
+            "expected `local real array realArr`, got:\n{result}"
+        );
+        assert!(
+            result.contains("local boolean array boolArr"),
+            "expected `local boolean array boolArr`, got:\n{result}"
+        );
+        assert!(
+            result.contains("set intArr[0] = 1"),
+            "expected `set intArr[0] = 1`, got:\n{result}"
+        );
+        assert!(
+            result.contains("set realArr[0] = 1.0"),
+            "expected `set realArr[0] = 1.0`, got:\n{result}"
+        );
+        assert!(
+            result.contains("set boolArr[0] = true"),
+            "expected `set boolArr[0] = true`, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_array_return_value_name_preserved() {
+        // Array read used in a return statement.
+        let src = "\
+function A takes nothing returns integer
+    local integer array myArr
+    set myArr[0] = 42
+    return myArr[0]
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("return myArr[0]"),
+            "expected `return myArr[0]`, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_global_array_name_preserved() {
+        // Global array declaration must preserve the name in JASS output.
+        let result = build_global_var_jass("integer array myGlobalArr\n");
+        assert!(
+            result.contains("integer array myGlobalArr"),
+            "expected `integer array myGlobalArr` in global JASS output, got:\n{result}"
+        );
+    }
+
+    #[test]
+    fn jass_global_array_different_types() {
+        // Global arrays of different types must preserve names.
+        let result_int = build_global_var_jass("integer array intArr\n");
+        assert!(
+            result_int.contains("integer array intArr"),
+            "expected `integer array intArr`, got:\n{result_int}"
+        );
+
+        let result_real = build_global_var_jass("real array realArr\n");
+        assert!(
+            result_real.contains("real array realArr"),
+            "expected `real array realArr`, got:\n{result_real}"
+        );
+
+        let result_unit = build_global_var_jass("unit array unitArr\n");
+        assert!(
+            result_unit.contains("unit array unitArr"),
+            "expected `unit array unitArr`, got:\n{result_unit}"
+        );
+    }
+
+    #[test]
+    fn jass_array_exitwhen_name_preserved() {
+        // Array read used in an exitwhen condition.
+        let src = "\
+function A takes nothing returns nothing
+    local integer array myArr
+    local integer i = 0
+    loop
+        exitwhen myArr[i] == 0
+        set i = i + 1
+    endloop
+endfunction
+";
+        let result = build_single_function_jass(src);
+        assert!(
+            result.contains("myArr[i]"),
+            "expected `myArr[i]` in exitwhen, got:\n{result}"
+        );
+    }
 }
-
-

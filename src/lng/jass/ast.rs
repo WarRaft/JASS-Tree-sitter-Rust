@@ -493,7 +493,12 @@ fn build_expr_statement<'tree>(node: &Node<'tree>) -> Option<Statement<'tree>> {
     None
 }
 
-/// Find an `id` node inside an expr (possibly nested one level).
+/// Find an `id` node inside an expr (recursively).
+///
+/// For simple expressions like `a`, the id is a direct child.
+/// For subscript expressions like `a[22]`, the id is inside a nested
+/// `expr` node: `expr { expr { id("a") } "[" expr { ... } "]" }`.
+/// We recurse into the first `expr` child to find the variable name.
 fn find_id_in_expr<'tree>(node: &Node<'tree>) -> Option<Id<'tree>> {
     if Kind::try_from(node.kind_id()) == Ok(Kind::Id) {
         return Some(build_id(node, IdRole::Variable));
@@ -503,6 +508,16 @@ fn find_id_in_expr<'tree>(node: &Node<'tree>) -> Option<Id<'tree>> {
         if let Some(child) = node.child(i as u32) {
             if Kind::try_from(child.kind_id()) == Ok(Kind::Id) {
                 return Some(build_id(&child, IdRole::Variable));
+            }
+        }
+    }
+    // Recurse into the first named child (handles `expr { expr { id } ... }`).
+    for i in 0..count {
+        if let Some(child) = node.child(i as u32) {
+            if child.is_named() {
+                if let Some(id) = find_id_in_expr(&child) {
+                    return Some(id);
+                }
             }
         }
     }

@@ -1684,6 +1684,21 @@ impl Cursor {
                         l.type_id.as_ref().map(|id| self.node_text(&id.node)),
                         l.is_array, false, l.value.is_some(), false,
                     );
+                    // ── Array initializer diagnostic ───────────────────
+                    if l.is_array && l.value.is_some() {
+                        let remove_start = name_id.node.end_byte();
+                        let remove_end = l.node.end_byte();
+                        self.diagnostics.push(Diagnostic {
+                            range: l.node.to_range(&self.rope),
+                            message: crate::util::i18n::array_no_init(&lname),
+                            severity: Some(DiagnosticSeverity::Error),
+                            data: Some(serde_json::json!({
+                                "array_no_init_remove_start": remove_start,
+                                "array_no_init_remove_end": remove_end,
+                            })),
+                            ..Diagnostic::new("jass", "array-no-init")
+                        });
+                    }
                 }
                 Some(DocumentSymbol {
                     name: self.id_name(&l.name),
@@ -1780,6 +1795,22 @@ impl Cursor {
                             );
                             self.emit_type_hint(&name_id.node, &label, cv.as_ref());
                         }
+                        // ── Array initializer diagnostic ───────────────────
+                        if v.is_array && d.value.is_some() {
+                            let vname = self.node_text(&name_id.node);
+                            let remove_start = name_id.node.end_byte();
+                            let remove_end = d.node.end_byte();
+                            self.diagnostics.push(Diagnostic {
+                                range: d.node.to_range(&self.rope),
+                                message: crate::util::i18n::array_no_init(&vname),
+                                severity: Some(DiagnosticSeverity::Error),
+                                data: Some(serde_json::json!({
+                                    "array_no_init_remove_start": remove_start,
+                                    "array_no_init_remove_end": remove_end,
+                                })),
+                                ..Diagnostic::new("jass", "array-no-init")
+                            });
+                        }
                     }
                 }
                 v.decls.first().map(|d| DocumentSymbol {
@@ -1814,6 +1845,19 @@ impl Cursor {
                                 &s.node,
                             );
                         }
+                    }
+                    // ── Array set without index diagnostic ────────────
+                    if s.index.is_none() && self.is_var_array(&name) {
+                        let insert_pos = var_id.node.end_byte();
+                        self.diagnostics.push(Diagnostic {
+                            range: s.node.to_range(&self.rope),
+                            message: crate::util::i18n::array_set_no_index(&name),
+                            severity: Some(DiagnosticSeverity::Error),
+                            data: Some(serde_json::json!({
+                                "array_set_insert_pos": insert_pos,
+                            })),
+                            ..Diagnostic::new("jass", "array-set-no-index")
+                        });
                     }
                     // hl: reference variable as Write
                     self.hl_reference_var(&name, &var_id.node, DocumentHighlightKind::Write);

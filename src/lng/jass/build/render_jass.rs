@@ -53,9 +53,11 @@ pub(super) fn render_jass_stmt(stmt: &IRStmt, indent: &str) -> Vec<String> {
     match stmt {
         IRStmt::Local { type_name, is_array, name, value } => {
             let arr = if *is_array { " array" } else { "" };
+            // Arrays cannot have scalar initializers in JASS — always
+            // render without `= value` when `is_array` is true.
             match value {
-                Some(v) => vec![format!("{}local {}{} {} = {}", indent, type_name, arr, name, render_jass_expr(v))],
-                None => vec![format!("{}local {}{} {}", indent, type_name, arr, name)],
+                Some(v) if !*is_array => vec![format!("{}local {}{} {} = {}", indent, type_name, arr, name, render_jass_expr(v))],
+                _ => vec![format!("{}local {}{} {}", indent, type_name, arr, name)],
             }
         }
         IRStmt::Set { var, index, value } => {
@@ -103,9 +105,10 @@ pub(super) fn render_jass_stmt(stmt: &IRStmt, indent: &str) -> Vec<String> {
             prefix.push_str(type_name);
             if *is_array { prefix.push_str(" array"); }
             let d: Vec<String> = decls.iter().map(|d| {
+                // Arrays cannot have scalar initializers — ignore value.
                 match &d.value {
-                    Some(v) => format!("{} = {}", d.name, render_jass_expr(v)),
-                    None => d.name.clone(),
+                    Some(v) if !*is_array => format!("{} = {}", d.name, render_jass_expr(v)),
+                    _ => d.name.clone(),
                 }
             }).collect();
             vec![format!("{}{} {}", indent, prefix, d.join(", "))]

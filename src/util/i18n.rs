@@ -346,6 +346,46 @@ pub fn array_in_argument(name: &str) -> String {
     }
 }
 
+pub fn array_no_init(name: &str) -> String {
+    match locale() {
+        Locale::En => format!("Array `{}` cannot have an initializer", name),
+        Locale::Ru => format!("Массив `{}` не может иметь инициализатор", name),
+        Locale::Uk => format!("Масив `{}` не може мати ініціалізатор", name),
+        Locale::Zh => format!("数组 `{}` 不能有初始值", name),
+        Locale::Tc => format!("陣列 `{}` 不能有初始值", name),
+    }
+}
+
+pub fn array_no_init_fix() -> &'static str {
+    pick(
+        "Remove initializer",
+        "Удалить инициализатор",
+        "Видалити ініціалізатор",
+        "删除初始值",
+        "刪除初始值",
+    )
+}
+
+pub fn array_set_no_index(name: &str) -> String {
+    match locale() {
+        Locale::En => format!("Cannot assign to array `{}` without an index", name),
+        Locale::Ru => format!("Нельзя присвоить массиву `{}` без индекса", name),
+        Locale::Uk => format!("Не можна присвоїти масиву `{}` без індексу", name),
+        Locale::Zh => format!("不能给数组 `{}` 赋值而不指定索引", name),
+        Locale::Tc => format!("不能給陣列 `{}` 賦值而不指定索引", name),
+    }
+}
+
+pub fn array_set_no_index_fix() -> &'static str {
+    pick(
+        "Add index []",
+        "Добавить индекс []",
+        "Додати індекс []",
+        "添加索引 []",
+        "新增索引 []",
+    )
+}
+
 pub fn dead_code() -> &'static str {
     pick(
         "Unreachable code",

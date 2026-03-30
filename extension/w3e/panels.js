@@ -83,12 +83,48 @@ function renderHeaderContent(header) {
 }
 
 // ── Game Path panel content ─────────────────────────────────────────
-function renderGamePathContent(gamePath) {
+
+const REQUIRED_MPQ_FILES = ['War3.mpq', 'War3x.mpq', 'War3xLocal.mpq', 'War3Patch.mpq']
+
+function renderGamePathContent(gamePath, mpqStatus) {
+    const hasPath = !!gamePath
+    const pathDisplay = hasPath
+        ? `<div class="gp-path">${esc(gamePath)}</div>`
+        : `<div class="gp-no-path">Not selected</div>`
+
+    let statusHtml = ''
+    if (hasPath && mpqStatus) {
+        const rows = REQUIRED_MPQ_FILES.map(f => {
+            const ok = mpqStatus[f]
+            const icon = ok ? '✅' : '❌'
+            const cls = ok ? 'gp-ok' : 'gp-missing'
+            return `<div class="gp-mpq-row ${cls}"><span>${icon}</span> <span>${esc(f)}</span></div>`
+        }).join('')
+        statusHtml = `<div class="gp-mpq-list">${rows}</div>`
+    }
+
     return `
         <div class="gp-hint">Path to Warcraft III installation folder.</div>
-        <input type="text" id="gamePathInput" class="gp-input" value="${esc(gamePath || '')}"
-               placeholder="/Applications/Warcraft III" />
-        <button class="gp-save" id="gamePathSave">Save</button>`
+        ${pathDisplay}
+        ${statusHtml}
+        <div class="gp-actions">
+            <button class="gp-browse" id="gamePathBrowse">📂 Browse…</button>
+            ${hasPath ? '<button class="gp-clear" id="gamePathClear">✕ Clear</button>' : ''}
+        </div>`
+}
+
+function validateGamePath(dirPath) {
+    const fs = require('fs')
+    const path = require('path')
+    const status = {}
+    for (const f of REQUIRED_MPQ_FILES) {
+        status[f] = fs.existsSync(path.join(dirPath, f))
+    }
+    return status
+}
+
+function allMpqPresent(mpqStatus) {
+    return REQUIRED_MPQ_FILES.every(f => mpqStatus[f])
 }
 
 // ── Files panel content (folder tree) ───────────────────────────────
@@ -154,4 +190,4 @@ function renderFilesRows(archiveFiles) {
     return renderTreeNode(tree)
 }
 
-module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows}
+module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, validateGamePath, allMpqPresent, REQUIRED_MPQ_FILES}
