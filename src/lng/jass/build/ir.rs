@@ -57,6 +57,20 @@ pub(super) struct Fragments {
     pub bare_stmts: Vec<String>,
 }
 
+// ─── Rename helper ───────────────────────────────────────────────────────────
+
+/// Look up an identifier in the rename map; return the mapped name or the
+/// original when no mapping exists.
+pub(super) fn ir_rename(name: &str, rename_map: &HashMap<String, String>) -> String {
+    rename_map.get(name).cloned().unwrap_or_else(|| name.to_string())
+}
+
+/// Return the effective name for a *declaration* site: `short_name` if set,
+/// otherwise the original `name`.
+pub(super) fn decl_name(name: &str, short_name: &Option<String>) -> String {
+    short_name.as_ref().cloned().unwrap_or_else(|| name.to_string())
+}
+
 // ─── Expressions ─────────────────────────────────────────────────────────────
 
 /// Owned expression node.
@@ -114,6 +128,7 @@ impl IRExpr {
 #[derive(Debug, Clone)]
 pub(super) struct IRVarInit {
     pub name: String,
+    pub short_name: Option<String>,
     pub value: Option<IRExpr>,
 }
 
@@ -129,7 +144,7 @@ pub(super) struct IRBranch {
 #[derive(Debug, Clone)]
 pub(super) enum IRStmt {
     /// `local TYPE [array] NAME [= VALUE]`
-    Local { type_name: String, is_array: bool, name: String, value: Option<IRExpr> },
+    Local { type_name: String, is_array: bool, name: String, short_name: Option<String>, value: Option<IRExpr> },
     /// `set VAR[INDEX] = VALUE`
     Set { var: String, index: Option<IRExpr>, value: IRExpr },
     /// `call NAME(ARGS…)`
@@ -158,20 +173,29 @@ impl IRStmt {
         IRStmt::Set { var: var.into(), index: Some(index), value }
     }
     pub fn local(type_name: impl Into<String>, name: impl Into<String>) -> Self {
-        IRStmt::Local { type_name: type_name.into(), is_array: false, name: name.into(), value: None }
+        IRStmt::Local { type_name: type_name.into(), is_array: false, name: name.into(), short_name: None, value: None }
     }
     #[allow(dead_code)]
     pub fn local_init(type_name: impl Into<String>, name: impl Into<String>, value: IRExpr) -> Self {
-        IRStmt::Local { type_name: type_name.into(), is_array: false, name: name.into(), value: Some(value) }
+        IRStmt::Local { type_name: type_name.into(), is_array: false, name: name.into(), short_name: None, value: Some(value) }
     }
 }
 
 // ─── Functions & top-level IR ────────────────────────────────────────────────
 
+/// A single function parameter.
+#[derive(Debug, Clone)]
+pub(super) struct IRParam {
+    pub type_name: String,
+    pub param_name: String,
+    pub short_name: Option<String>,
+}
+
 /// Owned function representation.
 pub(super) struct IRFunc {
     pub name: String,
-    pub params: Vec<(String, String)>,  // (type_name, param_name)
+    pub short_name: Option<String>,
+    pub params: Vec<IRParam>,
     pub return_type: String,            // "nothing" when void
     pub body: Vec<IRStmt>,
     pub callees: HashSet<String>,
@@ -237,4 +261,3 @@ pub(super) fn topo_sort_ir(functions: &HashMap<String, IRFunc>) -> Vec<String> {
 
     order
 }
-

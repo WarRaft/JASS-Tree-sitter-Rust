@@ -229,18 +229,51 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
         });
 
         // ── Game Path browse / clear ─────────────────────────────
-        const gpBrowse = document.getElementById('gamePathBrowse');
-        if (gpBrowse && vscode) {
-            gpBrowse.addEventListener('click', () => {
-                vscode.postMessage({command: 'browseGamePath'});
-            });
+        function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+        const REQUIRED_MPQ = ['War3.mpq','War3x.mpq','War3xLocal.mpq','War3Patch.mpq'];
+
+        function renderGpBody(status) {
+            const gp = status.gamePath || '';
+            const has = !!gp;
+            let h = '<div class="gp-hint">Path to Warcraft III installation folder.</div>';
+            h += has ? '<div class="gp-path">' + esc(gp) + '</div>' : '<div class="gp-no-path">Not selected</div>';
+            if (has && status.mpqStatus) {
+                h += '<div class="gp-mpq-list">';
+                for (const f of REQUIRED_MPQ) {
+                    const ok = status.mpqStatus[f];
+                    h += '<div class="gp-mpq-row ' + (ok ? 'gp-ok' : 'gp-missing') + '"><span>' + (ok ? '✅' : '❌') + '</span> <span>' + esc(f) + '</span></div>';
+                }
+                h += '</div>';
+            }
+            h += '<div class="gp-actions"><button class="gp-browse" id="gamePathBrowse">📂 Browse…</button>';
+            if (has) h += '<button class="gp-clear" id="gamePathClear">✕ Clear</button>';
+            h += '</div>';
+            return h;
         }
-        const gpClear = document.getElementById('gamePathClear');
-        if (gpClear && vscode) {
-            gpClear.addEventListener('click', () => {
-                vscode.postMessage({command: 'setGamePath', value: ''});
-            });
+
+        function bindGpButtons() {
+            const b = document.getElementById('gamePathBrowse');
+            if (b && vscode) b.addEventListener('click', () => vscode.postMessage({command: 'browseGamePath'}));
+            const c = document.getElementById('gamePathClear');
+            if (c && vscode) c.addEventListener('click', () => vscode.postMessage({command: 'setGamePath', value: ''}));
         }
+
+        bindGpButtons();
+
+        // ── Handle messages from extension host ──────────────────
+        window.addEventListener('message', e => {
+            const msg = e.data;
+            if (msg && msg.command === 'gamePathStatus' && msg.status) {
+                const gpWin = document.getElementById('gamePathWindow');
+                if (gpWin) {
+                    const body = gpWin.querySelector('.float-body');
+                    if (body) {
+                        body.innerHTML = renderGpBody(msg.status);
+                        bindGpButtons();
+                    }
+                }
+            }
+        });
 
         // ── Archive file interactions ────────────────────────────
         if (isArchive && vscode) {

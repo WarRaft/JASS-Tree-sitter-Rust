@@ -488,7 +488,7 @@ endfunction
 
     #[test]
     fn jass_to_as_global_array_becomes_table() {
-        let result = jass_var_decl_to_as_text("unit array myUnits");
+        let result = build_global_var_as("unit array myUnits\n");
         let expected = "table myUnits = {};";
         assert_eq!(
             result.trim(),
@@ -499,11 +499,12 @@ endfunction
 
     #[test]
     fn jass_to_as_function_signature() {
-        let jass = "\
+        let src = "\
 function Foo takes integer a, real b returns boolean
     return true
-endfunction";
-        let result = jass_function_to_as_text(jass);
+endfunction
+";
+        let result = build_single_function_as(src);
         assert!(
             result.starts_with("bool Foo(int a, float b) {"),
             "expected AS signature, got:\n{result}"
@@ -512,14 +513,15 @@ endfunction";
 
     #[test]
     fn jass_to_as_basic_statements() {
-        let jass = "\
+        let src = "\
 function A takes nothing returns nothing
     local integer x = 5
     set x = 10
     call Foo(x)
     return
-endfunction";
-        let result = jass_function_to_as_text(jass);
+endfunction
+";
+        let result = build_single_function_as(src);
         assert!(result.contains("int x = 5;"), "local → typed decl: {result}");
         assert!(result.contains("x = 10;"), "set → assignment: {result}");
         assert!(result.contains("Foo(x);"), "call → call: {result}");
@@ -528,28 +530,30 @@ endfunction";
 
     #[test]
     fn jass_to_as_loop_and_exitwhen() {
-        let jass = "\
+        let src = "\
 function A takes nothing returns nothing
     loop
         exitwhen true
     endloop
-endfunction";
-        let result = jass_function_to_as_text(jass);
+endfunction
+";
+        let result = build_single_function_as(src);
         assert!(result.contains("while (true) {"), "loop → while: {result}");
         assert!(result.contains("if (true) break;"), "exitwhen → if break: {result}");
     }
 
     #[test]
     fn jass_to_as_if_else() {
-        let jass = "\
+        let src = "\
 function A takes nothing returns nothing
     if x then
         call Foo()
     else
         call Bar()
     endif
-endfunction";
-        let result = jass_function_to_as_text(jass);
+endfunction
+";
+        let result = build_single_function_as(src);
         assert!(result.contains("if (x) {"), "if: {result}");
         assert!(result.contains("} else {"), "else: {result}");
     }
@@ -1194,6 +1198,68 @@ endfunction
         assert!(
             result.contains("myArr[i]"),
             "expected `myArr[i]` in exitwhen, got:\n{result}"
+        );
+    }
+
+    // ── Hoisted local with function-call initializer containing commas ────
+
+    #[test]
+    fn late_local_with_call_args_not_split_on_comma() {
+        // `real maxMana = GetUnitState(whichUnit, UNIT_STATE_MAX_MANA)` inside
+        // an `if` block must NOT be split on the comma inside the call args.
+        let src = "\
+function A takes nothing returns nothing
+    local real x = GetUnitX(whichUnit)
+    call ShowUnit(whichUnit, false)
+    if saveRelative then
+        real maxMana = GetUnitState(whichUnit, UNIT_STATE_MAX_MANA)
+        real maxLife = GetUnitState(whichUnit, UNIT_STATE_MAX_LIFE)
+        if maxMana != 0 then
+            real relativeMana = GetUnitState(whichUnit, UNIT_STATE_MANA) / maxMana
+        endif
+        unit newUnit = CreateUnit(owner, newId, x, y, facing)
+    endif
+endfunction
+";
+        let result = build_single_function_jass(src);
+
+        // Hoisted declarations must have correct names — NOT fragments of args.
+        assert!(
+            result.contains("local real maxMana = 0"),
+            "expected `local real maxMana = 0`, got:\n{result}"
+        );
+        assert!(
+            result.contains("local real maxLife = 0"),
+            "expected `local real maxLife = 0`, got:\n{result}"
+        );
+        assert!(
+            result.contains("local unit newUnit = null"),
+            "expected `local unit newUnit = null`, got:\n{result}"
+        );
+
+        // Must NOT contain garbage names from splitting on commas in
+        // hoisted local declarations.
+        assert!(
+            !result.contains("local real UNIT_STATE_MAX_MANA)"),
+            "must NOT contain `local real UNIT_STATE_MAX_MANA)` as a hoisted var, got:\n{result}"
+        );
+        assert!(
+            !result.contains("local real UNIT_STATE_MAX_LIFE)"),
+            "must NOT contain `local real UNIT_STATE_MAX_LIFE)` as a hoisted var, got:\n{result}"
+        );
+
+        // Set assignments must preserve full call expressions including commas.
+        assert!(
+            result.contains("set maxMana = GetUnitState(whichUnit, UNIT_STATE_MAX_MANA)"),
+            "expected `set maxMana = GetUnitState(whichUnit, UNIT_STATE_MAX_MANA)`, got:\n{result}"
+        );
+        assert!(
+            result.contains("set maxLife = GetUnitState(whichUnit, UNIT_STATE_MAX_LIFE)"),
+            "expected `set maxLife = GetUnitState(whichUnit, UNIT_STATE_MAX_LIFE)`, got:\n{result}"
+        );
+        assert!(
+            result.contains("set newUnit = CreateUnit(owner, newId, x, y, facing)"),
+            "expected `set newUnit = CreateUnit(owner, newId, x, y, facing)`, got:\n{result}"
         );
     }
 }

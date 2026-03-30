@@ -11,6 +11,7 @@
 //! instead of going through JASS text first.
 
 use super::ir::*;
+use super::render_jass::build_func_scope_map;
 use std::collections::{HashMap, HashSet};
 
 // ─── Type / rename utilities ─────────────────────────────────────────────────
@@ -29,6 +30,7 @@ pub(super) const AS_RESERVED: &[&str] = &[
 
 /// Build a rename map: for each name that is an AS reserved word,
 /// generate `name1`, `name2`, … until no collision.
+#[allow(dead_code)]
 pub(super) fn build_as_rename_map(names: &[&str]) -> HashMap<String, String> {
     let reserved: HashSet<&str> = AS_RESERVED.iter().copied().collect();
     let all: HashSet<&str> = names.iter().copied().collect();
@@ -51,11 +53,9 @@ pub(super) fn build_as_rename_map(names: &[&str]) -> HashMap<String, String> {
 }
 
 /// Rename an identifier if it collides with AS reserved words.
+#[allow(dead_code)]
 pub(super) fn as_rename(name: &str, rename_map: &HashMap<String, String>) -> String {
-    rename_map
-        .get(name)
-        .cloned()
-        .unwrap_or_else(|| name.to_string())
+    ir_rename(name, rename_map)
 }
 
 /// Map a JASS type name to an AS type name.
@@ -71,20 +71,6 @@ pub(super) fn jass_type_to_as_type(t: &str) -> &str {
     }
 }
 
-/// Default literal for an AngelScript type (used for hoisted declarations).
-///
-/// - `int` → `0`, `float` → `0`, `bool` → `false`, `string` → `""`,
-///   `funcdef` → `null`, everything else (handle-derived) → `nil`.
-pub(super) fn default_for_as_type(as_type: &str) -> &str {
-    match as_type {
-        "int" => "0",
-        "float" => "0",
-        "bool" => "false",
-        "string" => "\"\"",
-        "funcdef" => "null",
-        _ => "nil",
-    }
-}
 
 // ─── IR → AngelScript rendering ──────────────────────────────────────────────
 
@@ -93,116 +79,114 @@ pub(super) fn default_for_as_type(as_type: &str) -> &str {
 /// `table` is untyped, so reading from it requires an explicit cast:
 /// `int(myTable[i])`.  The cast is applied to every `Index` node found
 /// in the expression tree, while non-index sub-expressions are left as-is.
-#[allow(dead_code)]
-pub(super) fn render_as_expr_cast(expr: &IRExpr, cast_type: &str) -> String {
+pub(super) fn render_as_expr_cast(expr: &IRExpr, cast_type: &str, rename_map: &HashMap<String, String>) -> String {
     match expr {
         IRExpr::Index { array, index } => {
-            format!("{}({}[{}])", cast_type, render_as_expr(array), render_as_expr(index))
+            format!("{}({}[{}])", cast_type, render_as_expr(array, rename_map), render_as_expr(index, rename_map))
         }
         IRExpr::Binary { left, op, right } => {
             let left_str = if op == "and" && matches!(left.as_ref(), IRExpr::Binary { op: o, .. } if o == "or") {
-                format!("({})", render_as_expr_cast(left, cast_type))
+                format!("({})", render_as_expr_cast(left, cast_type, rename_map))
             } else {
-                render_as_expr_cast(left, cast_type)
+                render_as_expr_cast(left, cast_type, rename_map)
             };
             let right_str = if op == "and" && matches!(right.as_ref(), IRExpr::Binary { op: o, .. } if o == "or") {
-                format!("({})", render_as_expr_cast(right, cast_type))
+                format!("({})", render_as_expr_cast(right, cast_type, rename_map))
             } else {
-                render_as_expr_cast(right, cast_type)
+                render_as_expr_cast(right, cast_type, rename_map)
             };
             format!("{} {} {}", left_str, op, right_str)
         }
         IRExpr::Unary { op, operand } => {
-            format!("{} {}", op, render_as_expr_cast(operand, cast_type))
+            format!("{} {}", op, render_as_expr_cast(operand, cast_type, rename_map))
         }
         IRExpr::Parens(inner) => {
-            format!("({})", render_as_expr_cast(inner, cast_type))
+            format!("({})", render_as_expr_cast(inner, cast_type, rename_map))
         }
-        _ => render_as_expr(expr),
+        _ => render_as_expr(expr, rename_map),
     }
 }
 
-#[allow(dead_code)]
-pub(super) fn render_as_expr(expr: &IRExpr) -> String {
+pub(super) fn render_as_expr(expr: &IRExpr, rn: &HashMap<String, String>) -> String {
     match expr {
         IRExpr::Literal(s) => s.clone(),
-        IRExpr::Id(s) => s.clone(),
+        IRExpr::Id(s) => ir_rename(s, rn),
         IRExpr::Call { name, args } => {
-            let a: Vec<String> = args.iter().map(render_as_expr).collect();
-            format!("{}({})", name, a.join(", "))
+            let n = ir_rename(name, rn);
+            let a: Vec<String> = args.iter().map(|a| render_as_expr(a, rn)).collect();
+            format!("{}({})", n, a.join(", "))
         }
-        IRExpr::FuncRef(s) => format!("@{}", s),
+        IRExpr::FuncRef(s) => format!("@{}", ir_rename(s, rn)),
         IRExpr::Binary { left, op, right } => {
             // Precedence fix: in JASS `or` binds tighter than `and`,
             // in AS `&&` binds tighter than `||`.  Wrap `or` children of `and`.
             let left_str = if op == "and" && matches!(left.as_ref(), IRExpr::Binary { op: o, .. } if o == "or") {
-                format!("({})", render_as_expr(left))
+                format!("({})", render_as_expr(left, rn))
             } else {
-                render_as_expr(left)
+                render_as_expr(left, rn)
             };
             let right_str = if op == "and" && matches!(right.as_ref(), IRExpr::Binary { op: o, .. } if o == "or") {
-                format!("({})", render_as_expr(right))
+                format!("({})", render_as_expr(right, rn))
             } else {
-                render_as_expr(right)
+                render_as_expr(right, rn)
             };
             format!("{} {} {}", left_str, op, right_str)
         }
-        IRExpr::Unary { op, operand } => format!("{} {}", op, render_as_expr(operand)),
-        IRExpr::Parens(inner) => format!("({})", render_as_expr(inner)),
+        IRExpr::Unary { op, operand } => format!("{} {}", op, render_as_expr(operand, rn)),
+        IRExpr::Parens(inner) => format!("({})", render_as_expr(inner, rn)),
         IRExpr::Index { array, index } => {
-            format!("{}[{}]", render_as_expr(array), render_as_expr(index))
+            format!("{}[{}]", render_as_expr(array, rn), render_as_expr(index, rn))
         }
         IRExpr::Cast { type_name, inner } => {
-            format!("{}({})", jass_type_to_as_type(type_name), render_as_expr(inner))
+            format!("{}({})", jass_type_to_as_type(type_name), render_as_expr(inner, rn))
         }
     }
 }
 
-#[allow(dead_code)]
-pub(super) fn render_as_stmt(stmt: &IRStmt, indent: &str, rename_map: &HashMap<String, String>) -> Vec<String> {
+pub(super) fn render_as_stmt(stmt: &IRStmt, indent: &str, rn: &HashMap<String, String>) -> Vec<String> {
     match stmt {
-        IRStmt::Local { type_name, is_array, name, value } => {
+        IRStmt::Local { type_name, is_array, name, short_name, value } => {
             let as_type = jass_type_to_as_type(type_name);
-            let as_name = as_rename(name, rename_map);
+            let dn = decl_name(name, short_name);
             if *is_array {
-                vec![format!("{}table {} = {{}};", indent, as_name)]
+                vec![format!("{}table {} = {{}};", indent, dn)]
             } else {
                 match value {
-                    Some(v) => vec![format!("{}{} {} = {};", indent, as_type, as_name, render_as_expr_cast(v, as_type))],
-                    None => vec![format!("{}{} {};", indent, as_type, as_name)],
+                    Some(v) => vec![format!("{}{} {} = {};", indent, as_type, dn, render_as_expr_cast(v, as_type, rn))],
+                    None => vec![format!("{}{} {};", indent, as_type, dn)],
                 }
             }
         }
         IRStmt::Set { var, index, value } => {
-            let as_var = as_rename(var, rename_map);
-            let idx = index.as_ref().map(|i| format!("[{}]", render_as_expr(i))).unwrap_or_default();
-            vec![format!("{}{}{} = {};", indent, as_var, idx, render_as_expr(value))]
+            let v = ir_rename(var, rn);
+            let idx = index.as_ref().map(|i| format!("[{}]", render_as_expr(i, rn))).unwrap_or_default();
+            vec![format!("{}{}{} = {};", indent, v, idx, render_as_expr(value, rn))]
         }
         IRStmt::Call { name, args } => {
-            let as_name = as_rename(name, rename_map);
-            let a: Vec<String> = args.iter().map(render_as_expr).collect();
-            vec![format!("{}{}({});", indent, as_name, a.join(", "))]
+            let n = ir_rename(name, rn);
+            let a: Vec<String> = args.iter().map(|a| render_as_expr(a, rn)).collect();
+            vec![format!("{}{}({});", indent, n, a.join(", "))]
         }
         IRStmt::Return(value) => {
             match value {
-                Some(v) => vec![format!("{}return {};", indent, render_as_expr(v))],
+                Some(v) => vec![format!("{}return {};", indent, render_as_expr(v, rn))],
                 None => vec![format!("{}return;", indent)],
             }
         }
         IRStmt::Exitwhen(cond) => {
-            vec![format!("{}if ({}) break;", indent, render_as_expr(cond))]
+            vec![format!("{}if ({}) break;", indent, render_as_expr(cond, rn))]
         }
         IRStmt::If { condition, body, branches } => {
             let inner = format!("{}    ", indent);
-            let mut lines = vec![format!("{}if ({}) {{", indent, render_as_expr(condition))];
-            for s in body { lines.extend(render_as_stmt(s, &inner, rename_map)); }
+            let mut lines = vec![format!("{}if ({}) {{", indent, render_as_expr(condition, rn))];
+            for s in body { lines.extend(render_as_stmt(s, &inner, rn)); }
             for b in branches {
                 if let Some(ref cond) = b.condition {
-                    lines.push(format!("{}}} else if ({}) {{", indent, render_as_expr(cond)));
+                    lines.push(format!("{}}} else if ({}) {{", indent, render_as_expr(cond, rn)));
                 } else {
                     lines.push(format!("{}}} else {{", indent));
                 }
-                for s in &b.body { lines.extend(render_as_stmt(s, &inner, rename_map)); }
+                for s in &b.body { lines.extend(render_as_stmt(s, &inner, rn)); }
             }
             lines.push(format!("{}}}", indent));
             lines
@@ -210,20 +194,20 @@ pub(super) fn render_as_stmt(stmt: &IRStmt, indent: &str, rename_map: &HashMap<S
         IRStmt::Loop(body) => {
             let inner = format!("{}    ", indent);
             let mut lines = vec![format!("{}while (true) {{", indent)];
-            for s in body { lines.extend(render_as_stmt(s, &inner, rename_map)); }
+            for s in body { lines.extend(render_as_stmt(s, &inner, rn)); }
             lines.push(format!("{}}}", indent));
             lines
         }
         IRStmt::VarDecl { is_constant: _, is_array, type_name, decls } => {
             let as_type = jass_type_to_as_type(type_name);
             decls.iter().map(|d| {
-                let as_name = as_rename(&d.name, rename_map);
+                let dn = decl_name(&d.name, &d.short_name);
                 if *is_array {
-                    format!("{}table {} = {{}};", indent, as_name)
+                    format!("{}table {} = {{}};", indent, dn)
                 } else {
                     match &d.value {
-                        Some(v) => format!("{}{} {} = {};", indent, as_type, as_name, render_as_expr(v)),
-                        None => format!("{}{} {};", indent, as_type, as_name),
+                        Some(v) => format!("{}{} {} = {};", indent, as_type, dn, render_as_expr(v, rn)),
+                        None => format!("{}{} {};", indent, as_type, dn),
                     }
                 }
             }).collect()
@@ -231,20 +215,20 @@ pub(super) fn render_as_stmt(stmt: &IRStmt, indent: &str, rename_map: &HashMap<S
     }
 }
 
-#[allow(dead_code)]
-pub(super) fn render_as_function(func: &IRFunc, rename_map: &HashMap<String, String>) -> String {
+pub(super) fn render_as_function(func: &IRFunc, global_map: &HashMap<String, String>) -> String {
+    let scope_map = build_func_scope_map(func, global_map);
     let as_ret = jass_type_to_as_type(&func.return_type);
-    let as_name = as_rename(&func.name, rename_map);
+    let fname = decl_name(&func.name, &func.short_name);
     let as_params = if func.params.is_empty() {
         String::new()
     } else {
-        func.params.iter().map(|(t, n)| {
-            format!("{} {}", jass_type_to_as_type(t), as_rename(n, rename_map))
+        func.params.iter().map(|p| {
+            format!("{} {}", jass_type_to_as_type(&p.type_name), decl_name(&p.param_name, &p.short_name))
         }).collect::<Vec<_>>().join(", ")
     };
-    let mut out = format!("{} {}({}) {{\n", as_ret, as_name, as_params);
+    let mut out = format!("{} {}({}) {{\n", as_ret, fname, as_params);
     for stmt in &func.body {
-        for line in render_as_stmt(stmt, "    ", rename_map) {
+        for line in render_as_stmt(stmt, "    ", &scope_map) {
             out.push_str(&line);
             out.push('\n');
         }

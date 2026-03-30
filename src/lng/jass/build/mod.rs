@@ -32,19 +32,20 @@
 mod array_cast;
 mod convert;
 mod emit;
+mod fold_ir;
 mod inline;
 mod io;
 mod ir;
-mod jass_to_as;
 mod map_data;
 mod null_to_nil;
 mod render_as;
 mod render_jass;
+mod uglify_ir;
 
 use crate::util::file_store::FILE_STORE;
 use crate::util::import_graph::IMPORT_GRAPH;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use url::Url;
 
@@ -55,18 +56,14 @@ use self::io::{
     write_output, write_output_archive,
 };
 use self::ir::*;
-use self::jass_to_as::{jass_function_to_as, jass_var_decl_to_as};
 use self::map_data::{augment_config, augment_main, read_map_data};
-use self::render_as::build_as_rename_map;
-use self::render_jass::{hoist_jass_locals, render_jass_function, render_jass_stmt};
+use self::render_jass::{hoist_ir_locals, render_jass_function, render_jass_stmt};
 
 // Re-export test-only wrappers so `build_test.rs` can use `use crate::lng::jass::build::*`.
 #[cfg(test)]
 pub use self::inline::{
     detect_inline_candidate_text, inline_call_in_source_text, is_top_level_call_text,
 };
-#[cfg(test)]
-pub use self::jass_to_as::{jass_function_to_as_text, jass_var_decl_to_as_text};
 
 /// Test-only: parse JASS source → AST → IR → render JASS text → hoist locals.
 ///
@@ -94,15 +91,17 @@ pub fn build_single_function_jass(src: &str) -> String {
         })
         .expect("No function found");
 
-    // AST → IR → JASS text → hoist locals
-    let ir_func = convert::convert_function(src, func, HashSet::new());
-    let jass_text = render_jass::render_jass_function(&ir_func);
-    render_jass::hoist_jass_locals(&jass_text)
+    // AST → IR → hoist locals → JASS text
+    let mut ir_func = convert::convert_function(src, func, HashSet::new());
+    render_jass::hoist_ir_locals(&mut ir_func.body);
+    let empty_map = HashMap::new();
+    render_jass::render_jass_function(&ir_func, &empty_map)
 }
 
-/// Test-only: parse JASS source → AST → IR → render JASS text → convert to AS.
+/// Test-only: parse JASS source → AST → IR → render AS text.
 ///
-/// This mirrors the real `build_as` pipeline for a single function.
+/// This mirrors the real `build_as` pipeline for a single function,
+/// rendering directly from IR via `render_as_function`.
 #[cfg(test)]
 pub fn build_single_function_as(src: &str) -> String {
     use crate::lng::jass::ast::{build_ast, rewrite_imports, Statement};
@@ -129,18 +128,18 @@ pub fn build_single_function_as(src: &str) -> String {
     // AST → IR
     let mut ir_func = convert::convert_function(src, func, HashSet::new());
 
+    // Hoist late locals to the top (before semantic passes).
+    render_jass::hoist_ir_locals(&mut ir_func.body);
+
     // Rewrite null → nil for handle-typed contexts.
     null_to_nil::rewrite_func_null_to_nil(&mut ir_func);
 
     // Wrap array reads with type casts (table is untyped in AS).
     array_cast::insert_array_casts_func(&mut ir_func);
 
-    // IR → JASS text (with precedence parenthesization)
-    let jass_text = render_jass::render_jass_function(&ir_func);
-
-    // JASS text → AS text (jass_function_to_as does its own AS-level hoisting)
+    // IR → AS text (direct, no JASS intermediate)
     let rename_map = std::collections::HashMap::new();
-    jass_to_as::jass_function_to_as(&jass_text, &rename_map)
+    render_as::render_as_function(&ir_func, &rename_map)
 }
 
 /// Test-only: parse a JASS global var declaration → AST → IR → render JASS → convert to AS.
@@ -170,13 +169,10 @@ pub fn build_global_var_as(src: &str) -> String {
     let ir_stmt = convert::convert_stmt(src, &Statement::VarStmt(var.clone()))
         .expect("Failed to convert VarStmt");
 
-    // IR → JASS text
-    let jass_lines = render_jass::render_jass_stmt(&ir_stmt, "");
-    let jass_text = jass_lines.join("\n");
-
-    // JASS text → AS text
+    // IR → AS text (direct, no JASS intermediate)
     let rename_map = std::collections::HashMap::new();
-    jass_to_as::jass_var_decl_to_as(&jass_text, &rename_map)
+    let lines = render_as::render_as_stmt(&ir_stmt, "", &rename_map);
+    lines.join("\n")
 }
 
 /// Test-only: parse a JASS global var declaration → AST → IR → render JASS text.
@@ -209,7 +205,8 @@ pub fn build_global_var_jass(src: &str) -> String {
         .expect("Failed to convert VarStmt");
 
     // IR → JASS text
-    let jass_lines = render_jass::render_jass_stmt(&ir_stmt, "");
+    let empty_map = HashMap::new();
+    let jass_lines = render_jass::render_jass_stmt(&ir_stmt, "", &empty_map);
     jass_lines.join("\n")
 }
 
@@ -284,6 +281,7 @@ pub fn build_jass(uri: &Url) -> BuildResult {
     if !ir.functions.contains_key("main") {
         ir.functions.insert("main".into(), IRFunc {
             name: "main".into(),
+            short_name: None,
             params: vec![],
             return_type: "nothing".into(),
             body: vec![],
@@ -294,6 +292,7 @@ pub fn build_jass(uri: &Url) -> BuildResult {
     if archive_mode && !ir.functions.contains_key("config") {
         ir.functions.insert("config".into(), IRFunc {
             name: "config".into(),
+            short_name: None,
             params: vec![],
             return_type: "nothing".into(),
             body: vec![],
@@ -315,11 +314,28 @@ pub fn build_jass(uri: &Url) -> BuildResult {
         main_func.body.extend(bare);
     }
 
+    // 7b. Hoist late locals to the top of each function body (IR level).
+    for func in ir.functions.values_mut() {
+        hoist_ir_locals(&mut func.body);
+    }
+
+    // 7c. Fold StringHash(…) → integer and ExecuteFunc(…) → direct call (IR level).
+    fold_ir::fold_ir(&mut ir);
+
+    // 7d. Uglify identifiers (if build-uglify is set).
+    let uglify_mode = find_build_setting(uri, "build-uglify")
+        .map(|(_, v)| v == "1")
+        .unwrap_or(false);
+    uglify_ir::uglify_ir(&mut ir, uglify_mode, false);
+
+    // 7e. Build global rename map from IR declarations.
+    let global_map = uglify_ir::build_global_rename_map(&ir);
+
     // 8. Render each function to text for inlining / StringHash passes.
     let mut fragments = Fragments {
-        globals_out: ir.globals.iter().flat_map(|g| render_jass_stmt(g, "")).collect(),
+        globals_out: ir.globals.iter().flat_map(|g| render_jass_stmt(g, "", &global_map)).collect(),
         functions: ir.functions.iter().map(|(name, func)| {
-            let source = render_jass_function(func);
+            let source = render_jass_function(func, &global_map);
             (name.clone(), FuncFragment {
                 name: name.clone(),
                 source,
@@ -361,8 +377,7 @@ pub fn build_jass(uri: &Url) -> BuildResult {
     // Functions in sorted order.
     for fname in &sorted_funcs {
         if let Some(frag) = fragments.functions.get(fname) {
-            let src = hoist_jass_locals(&frag.source);
-            out.push_str(&src);
+            out.push_str(&frag.source);
             out.push_str("\n\n");
         }
     }
@@ -424,6 +439,7 @@ pub fn build_as(uri: &Url) -> BuildResult {
     if !ir.functions.contains_key("main") {
         ir.functions.insert("main".into(), IRFunc {
             name: "main".into(),
+            short_name: None,
             params: vec![],
             return_type: "nothing".into(),
             body: vec![],
@@ -434,6 +450,7 @@ pub fn build_as(uri: &Url) -> BuildResult {
     if archive_mode && !ir.functions.contains_key("config") {
         ir.functions.insert("config".into(), IRFunc {
             name: "config".into(),
+            short_name: None,
             params: vec![],
             return_type: "nothing".into(),
             body: vec![],
@@ -460,32 +477,41 @@ pub fn build_as(uri: &Url) -> BuildResult {
     //     included in the reachability analysis.
     resolve_frozen_deps(&mut ir, &file_order);
 
-    // 7c. Rewrite `null` → `nil` for handle-typed contexts.
+    // 7c. Hoist late locals (before semantic passes so hoisted defaults
+    //     are processed by null→nil and array-cast too).
+    for func in ir.functions.values_mut() {
+        hoist_ir_locals(&mut func.body);
+    }
+
+    // 7d. Rewrite `null` → `nil` for handle-typed contexts.
     null_to_nil::rewrite_null_to_nil(&mut ir);
 
-    // 7d. Wrap array reads with type casts (`table` is untyped in AS).
+    // 7e. Wrap array reads with type casts (`table` is untyped in AS).
     array_cast::insert_array_casts(&mut ir);
 
-    // 8. Build rename map for AS reserved-word conflicts.
-    let mut all_names: Vec<&str> = ir.functions.keys().map(|s| s.as_str()).collect();
-    all_names.sort();
-    let mut rename_map = build_as_rename_map(&all_names);
+    // 7f. Fold StringHash(…) → integer and ExecuteFunc(…) → direct call (IR level).
+    fold_ir::fold_ir(&mut ir);
 
-    // 8b. Add Jass:: namespace prefix for all native function names.
-    // This uses the existing word-boundary replacement in apply_rename_to_line
-    // so every occurrence of a native identifier becomes Jass::NativeName.
+    // 7g. Uglify identifiers / resolve AS keyword conflicts.
+    let uglify_mode = find_build_setting(uri, "build-uglify")
+        .map(|(_, v)| v == "1")
+        .unwrap_or(false);
+    uglify_ir::uglify_ir(&mut ir, uglify_mode, true);
+
+    // 7h. Build global rename map from IR declarations.
+    let mut global_map = uglify_ir::build_global_rename_map(&ir);
+
+    // 8. Add Jass:: namespace prefix for all native function names.
     for name in &ir.native_names {
-        rename_map.insert(name.clone(), format!("Jass::{}", name));
+        global_map.insert(name.clone(), format!("Jass::{}", name));
     }
 
     // 9. Render to text for inlining / StringHash passes.
-    // For inlining we render to JASS text (the canonical form),
-    // apply text-based passes, then re-render won't happen — inlining
-    // operates on the JASS text and then we convert to AS from that.
+    let empty_map = HashMap::new();
     let mut fragments = Fragments {
-        globals_out: ir.globals.iter().flat_map(|g| render_jass_stmt(g, "")).collect(),
+        globals_out: ir.globals.iter().flat_map(|g| render_jass_stmt(g, "", &empty_map)).collect(),
         functions: ir.functions.iter().map(|(name, func)| {
-            let source = render_jass_function(func);
+            let source = render_jass_function(func, &empty_map);
             (name.clone(), FuncFragment {
                 name: name.clone(),
                 source,
@@ -510,19 +536,21 @@ pub fn build_as(uri: &Url) -> BuildResult {
     let out_dir = out_path.parent().unwrap_or(Path::new("."));
     out.push_str(&emit_frozen_import_header(&ir.frozen_import_directives, out_dir));
 
-    // Globals → top-level variable declarations.
-    for g in &fragments.globals_out {
-        out.push_str(&jass_var_decl_to_as(g.trim(), &rename_map));
-        out.push('\n');
+    // Globals → top-level variable declarations (rendered from IR).
+    for g in &ir.globals {
+        for line in render_as::render_as_stmt(g, "", &global_map) {
+            out.push_str(&line);
+            out.push('\n');
+        }
     }
-    if !fragments.globals_out.is_empty() {
+    if !ir.globals.is_empty() {
         out.push('\n');
     }
 
-    // Functions in sorted order, converted to AS.
+    // Functions in sorted order, rendered to AS from IR.
     for fname in &sorted_funcs {
-        if let Some(frag) = fragments.functions.get(fname) {
-            out.push_str(&jass_function_to_as(&frag.source, &rename_map));
+        if let Some(func) = ir.functions.get(fname) {
+            out.push_str(&render_as::render_as_function(func, &global_map));
             out.push_str("\n\n");
         }
     }

@@ -249,16 +249,6 @@
         "configuration": "./syntaxes/slk.language-configuration.json"
       }
     ],
-    "configuration": {
-      "title": "Map Editor",
-      "properties": {
-        "jassTerrainEditor.gamePath": {
-          "type": "string",
-          "default": "",
-          "description": "%config.gamePath.description%"
-        }
-      }
-    },
     "configurationDefaults": {
       "[bni]": {
         "editor.selectionHighlight": false

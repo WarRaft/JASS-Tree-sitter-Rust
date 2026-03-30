@@ -190,4 +190,4 @@ function renderFilesRows(archiveFiles) {
     return renderTreeNode(tree)
 }
 
-module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, validateGamePath, allMpqPresent, REQUIRED_MPQ_FILES}
+module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, REQUIRED_MPQ_FILES}

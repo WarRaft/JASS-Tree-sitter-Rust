@@ -230,6 +230,13 @@ pub enum MethodCall {
     #[serde(rename = "custom/debugLogEnable")]
     DebugLogEnable(DebugLogEnableParams),
 
+    /// W3E game path
+    #[serde(rename = "w3e/gamePath/set")]
+    W3eGamePathSet(W3eGamePathSetParams),
+
+    #[serde(rename = "w3e/gamePath/status")]
+    W3eGamePathStatus(serde_json::Value),
+
     /// Debug init data request
     #[serde(rename = "custom/debugInit")]
     DebugInit(serde_json::Value),
@@ -308,5 +315,13 @@ pub struct SlkEditParams {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DebugLogEnableParams {
     pub enabled: bool,
+}
+
+/// Params for `w3e/gamePath/set` — update the stored game installation path.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3eGamePathSetParams {
+    /// Absolute filesystem path to the Warcraft III installation folder.
+    pub game_path: String,
 }
 

@@ -14,7 +14,6 @@
   "customEditor.doo.displayName": "DOO Placement Viewer",
   "customEditor.w3i.displayName": "W3I Map Info Viewer",
   "customEditor.w3e.displayName": "Map Editor",
-  "config.gamePath.description": "Path to the Warcraft III installation folder",
   "customEditor.slk.displayName": "SLK Table Editor",
   "command.slk.openTable": "Open as Table",
   "command.slk.openText": "Open as Text",

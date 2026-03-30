@@ -87,7 +87,7 @@ pub(super) fn convert_stmt(src: &str, stmt: &Statement) -> Option<IRStmt> {
             let type_name = l.type_id.as_ref().map(|id| id_text(src, id)).unwrap_or_else(|| "integer".into());
             let name = l.name.as_ref().map(|id| id_text(src, id)).unwrap_or_default();
             let value = l.value.as_ref().map(|e| convert_expr(src, e));
-            Some(IRStmt::Local { type_name, is_array: l.is_array, name, value })
+            Some(IRStmt::Local { type_name, is_array: l.is_array, name, short_name: None, value })
         }
         Statement::Set(s) => {
             let var = s.variable.as_ref().map(|id| id_text(src, id)).unwrap_or_default();
@@ -130,6 +130,7 @@ pub(super) fn convert_stmt(src: &str, stmt: &Statement) -> Option<IRStmt> {
             let type_name = v.type_id.as_ref().map(|id| id_text(src, id)).unwrap_or_else(|| "integer".into());
             let decls = v.decls.iter().map(|d| IRVarInit {
                 name: d.name.as_ref().map(|id| id_text(src, id)).unwrap_or_default(),
+                short_name: None,
                 value: d.value.as_ref().map(|e| convert_expr(src, e)),
             }).collect();
             Some(IRStmt::VarDecl { is_constant: v.is_constant, is_array: v.is_array, type_name, decls })
@@ -162,6 +163,7 @@ fn localize_var_decls(body: &mut Vec<IRStmt>) {
                         type_name: type_name.clone(),
                         is_array,
                         name: d.name.clone(),
+                        short_name: None,
                         value: d.value.clone(),
                     })
                     .collect();
@@ -253,10 +255,10 @@ pub(super) fn convert_function(
     callees: HashSet<String>,
 ) -> IRFunc {
     let name = f.name.as_ref().map(|id| id_text(src, id)).unwrap_or_default();
-    let params: Vec<(String, String)> = f.params.iter().map(|p| {
+    let params: Vec<IRParam> = f.params.iter().map(|p| {
         let t = p.type_id.as_ref().map(|id| id_text(src, id)).unwrap_or_else(|| "integer".into());
         let n = p.name.as_ref().map(|id| id_text(src, id)).unwrap_or_else(|| "_".into());
-        (t, n)
+        IRParam { type_name: t, param_name: n, short_name: None }
     }).collect();
     let return_type = f.return_type.as_ref()
         .map(|id| id_text(src, id))
@@ -277,7 +279,7 @@ pub(super) fn convert_function(
         None
     };
 
-    IRFunc { name, params, return_type, body, callees, inline_expr }
+    IRFunc { name, short_name: None, params, return_type, body, callees, inline_expr }
 }
 
 // ─── IR collection from source files ─────────────────────────────────────────
@@ -641,8 +643,8 @@ fn collect_call_names_in_expr(expr: &IRExpr, out: &mut Vec<String>) {
 /// Collect non-local identifiers referenced (read or written) in a function.
 fn collect_referenced_globals(func: &IRFunc) -> HashSet<String> {
     let mut locals = HashSet::new();
-    for (_, name) in &func.params {
-        locals.insert(name.clone());
+    for p in &func.params {
+        locals.insert(p.param_name.clone());
     }
     collect_local_names(&func.body, &mut locals);
 

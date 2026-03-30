@@ -14,7 +14,6 @@
   "customEditor.doo.displayName": "Перегляд DOO-розміщень",
   "customEditor.w3i.displayName": "Перегляд W3I-інформації карти",
   "customEditor.w3e.displayName": "Редактор карти",
-  "config.gamePath.description": "Шлях до папки встановлення Warcraft III",
   "customEditor.slk.displayName": "Табличний редактор SLK",
   "command.slk.openTable": "Відкрити як таблицю",
   "command.slk.openText": "Відкрити як текст",

@@ -89,6 +89,12 @@ pub static SET_DEFS: &[SetDef] = &[
         default: "./",
         sort_order: 4,
     },
+    SetDef {
+        key: "build-uglify",
+        kind: SetValueKind::Bool,
+        default: "0",
+        sort_order: 5,
+    },
 ];
 
 /// Look up a `SetDef` by key name.

@@ -48,7 +48,7 @@ impl GlobalCtx {
 
         // IR functions.
         for (name, func) in &ir.functions {
-            let types: Vec<String> = func.params.iter().map(|(t, _)| t.clone()).collect();
+            let types: Vec<String> = func.params.iter().map(|p| p.type_name.clone()).collect();
             func_params.insert(name.clone(), types);
             func_returns.insert(name.clone(), func.return_type.clone());
         }
@@ -363,8 +363,8 @@ fn rewrite_function(func: &mut IRFunc, global: &GlobalCtx) {
     let mut local_vars = HashMap::new();
 
     // Function parameters.
-    for (type_name, param_name) in &func.params {
-        local_vars.insert(param_name.clone(), type_name.clone());
+    for p in &func.params {
+        local_vars.insert(p.param_name.clone(), p.type_name.clone());
     }
     // All locals (even late-declared ones — JASS allows forward references
     // after hoisting).
@@ -412,7 +412,7 @@ pub(super) fn rewrite_null_to_nil(ir: &mut BuildIR) {
 pub(super) fn rewrite_func_null_to_nil(func: &mut IRFunc) {
     let mut global_ctx = GlobalCtx::empty();
     // Register the function's own signature.
-    let param_types: Vec<String> = func.params.iter().map(|(t, _)| t.clone()).collect();
+    let param_types: Vec<String> = func.params.iter().map(|p| p.type_name.clone()).collect();
     global_ctx.func_params.insert(func.name.clone(), param_types);
     global_ctx.func_returns.insert(func.name.clone(), func.return_type.clone());
     rewrite_function(func, &global_ctx);

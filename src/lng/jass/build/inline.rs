@@ -25,7 +25,8 @@ pub(super) fn detect_inline_candidate(
         return None;
     }
     if let IRStmt::Return(Some(expr)) = &body[0] {
-        let expr_text = render_jass_expr(expr);
+        let empty = HashMap::new();
+        let expr_text = render_jass_expr(expr, &empty);
         let is_compound = matches!(expr, IRExpr::Binary { .. } | IRExpr::Unary { .. });
         Some(InlineCandidate { expr_text, is_compound })
     } else {

@@ -1,5 +1,5 @@
 // noinspection NpmUsedModulesInstalled
-const {Uri, commands, workspace, window} = require('vscode')
+const {Uri, commands, window} = require('vscode')
 const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
@@ -8,7 +8,6 @@ const {MpqFileSystemProvider} = require('../mpqFileSystemProvider.js')
 const {SUPPORTED_BINARIES, findMapRoot, scanMapBinaries} = require('./mapRoot.js')
 const {errorHtml} = require('./utils.js')
 const {renderMapEditor} = require('./render.js')
-const {validateGamePath, allMpqPresent} = require('./panels.js')
 
 /**
  * @param {import('vscode').CustomDocument} document
@@ -96,9 +95,12 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     } catch (_) {
     }
 
-    // ── Game path setting ───────────────────────────────────────
-    const gamePath = workspace.getConfiguration('jassTerrainEditor').get('gamePath', '')
-    const mpqStatus = gamePath ? validateGamePath(gamePath) : null
+    // ── Game path status from server ────────────────────────────
+    let gamePathStatus = {gamePath: '', hasPath: false, mpqStatus: null, allPresent: false}
+    try {
+        gamePathStatus = await client.sendRequest('w3e/gamePath/status', {})
+    } catch (_) {
+    }
 
     // ── Archive files for the Files window ───────────────────────
     const archiveFiles = isArchive && archiveInfo ? (archiveInfo.files || []) : null
@@ -112,8 +114,8 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         isMap,
         archiveFiles,
         archiveHeader,
-        gamePath,
-        mpqStatus,
+        gamePath: gamePathStatus.gamePath,
+        mpqStatus: gamePathStatus.mpqStatus,
         nonce,
         cspSource,
     })
@@ -126,7 +128,11 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         } else if (msg.command === 'browse' && isArchive) {
             await commands.executeCommand('mpq.browse', document.uri)
         } else if (msg.command === 'setGamePath') {
-            await workspace.getConfiguration('jassTerrainEditor').update('gamePath', msg.value, true)
+            try {
+                const status = await client.sendRequest('w3e/gamePath/set', {gamePath: msg.value})
+                webviewPanel.webview.postMessage({command: 'gamePathStatus', status})
+            } catch (_) {
+            }
         } else if (msg.command === 'browseGamePath') {
             const uris = await window.showOpenDialog({
                 canSelectFiles: false,
@@ -136,16 +142,18 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
             })
             if (!uris || uris.length === 0) return
             const selectedPath = uris[0].fsPath
-            const status = validateGamePath(selectedPath)
-            if (!allMpqPresent(status)) {
-                const missing = Object.entries(status).filter(([, ok]) => !ok).map(([f]) => f)
-                await window.showWarningMessage(
-                    `Missing MPQ files: ${missing.join(', ')}`,
-                    {modal: false}
-                )
-                return
+            try {
+                const status = await client.sendRequest('w3e/gamePath/set', {gamePath: selectedPath})
+                if (!status.allPresent) {
+                    const missing = Object.entries(status.mpqStatus || {}).filter(([, ok]) => !ok).map(([f]) => f)
+                    await window.showWarningMessage(
+                        `Missing MPQ files: ${missing.join(', ')}`,
+                        {modal: false}
+                    )
+                }
+                webviewPanel.webview.postMessage({command: 'gamePathStatus', status})
+            } catch (_) {
             }
-            await workspace.getConfiguration('jassTerrainEditor').update('gamePath', selectedPath, true)
         }
     })
 }

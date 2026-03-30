@@ -112,6 +112,8 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::DooRender(_) => "doo/render",
         MethodCall::W3iRender(_) => "w3i/render",
         MethodCall::W3eRender(_) => "w3e/render",
+        MethodCall::W3eGamePathSet(_) => "w3e/gamePath/set",
+        MethodCall::W3eGamePathStatus(_) => "w3e/gamePath/status",
         MethodCall::DebugLogEnable(_) => "custom/debugLogEnable",
         MethodCall::DebugInit(_) => "custom/debugInit",
     }
@@ -567,6 +569,33 @@ async fn main() {
 
                             MethodCall::W3eRender(param) => {
                                 w3e_send(&writer, call.id, &param.uri, param.archive_path.as_deref()).await;
+                            }
+
+                            MethodCall::W3eGamePathSet(param) => {
+                                crate::lng::w3e::game_path::set_game_path(&param.game_path);
+                                let status = crate::lng::w3e::game_path::build_status();
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(serde_json::to_value(status).unwrap_or_default()),
+                                        error: None,
+                                    },
+                                ).await;
+                            }
+
+                            MethodCall::W3eGamePathStatus(_) => {
+                                let status = crate::lng::w3e::game_path::build_status();
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(serde_json::to_value(status).unwrap_or_default()),
+                                        error: None,
+                                    },
+                                ).await;
                             }
 
                             MethodCall::SlkRender(param) => {
