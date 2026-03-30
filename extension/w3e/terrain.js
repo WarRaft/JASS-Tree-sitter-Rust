@@ -37,13 +37,30 @@
 
         if (hasTerrain) {
             const D = DATA.renderData
+            // ── W3E data model ──────────────────────────────────
+            // The map is stored as a grid of W×H tilepoints (vertices).
+            // Between them there are (W-1)×(H-1) square cells (tiles).
+            //
+            //   point(0,H-1) ──── … ──── point(W-1,H-1)    ← top row
+            //        │                        │
+            //        …       (W-1)×(H-1)      …              cells
+            //        │         cells           │
+            //   point(0, 0) ──── … ──── point(W-1, 0)       ← bottom row
+            //
+            // Each tilepoint stores: groundHeight, layerHeight,
+            // groundTexture, groundVariation, waterFlag, boundaryFlag, etc.
+            //
+            // Data index: idx = sy * W + sx   (sx: 0..W-1, sy: 0..H-1)
+            // sy=0 is the bottom row, sy=H-1 is the top row.
             const W = D.w, H = D.h
-            const TILE = 128
-            const H_ZERO = 8192
-            const H_SCALE = 4
+            const TILE = 128      // world units per tile edge (128 = WC3 standard)
+            const H_ZERO = 8192   // groundHeight baseline (sea level in raw units)
+            const H_SCALE = 4     // groundHeight divisor → world Z units
 
+            // Golden-angle HSL palette: generates visually distinct colours
+            // for each tile texture index so they are easy to tell apart.
             function indexToColor(index) {
-                const golden = 137.508
+                const golden = 137.508 // golden angle in degrees
                 const hue = (index * golden) % 360
                 const sat = 0.55 + 0.15 * ((index % 3) / 2)
                 const lum = 0.45 + 0.10 * ((index % 5) / 4)
@@ -82,6 +99,11 @@
             const palette = []
             for (let i = 0; i < D.totalTiles; i++) palette.push(indexToColor(i))
 
+            // ── World dimensions ─────────────────────────────────
+            // World size = number of cells × cell size, NOT number of points.
+            // Points:  W × H         (e.g. 65 × 65)
+            // Cells:   (W-1) × (H-1) (e.g. 64 × 64)
+            // World:   cells × TILE   (e.g. 64 × 128 = 8192)
             const worldW = (W - 1) * TILE
             const worldH = (H - 1) * TILE
             maxDim = Math.max(worldW, worldH)
@@ -94,8 +116,23 @@
             let showWater = false, showBoundary = false, showBlight = false, showRamp = false
             let showDeformation = true
 
+            // ── Geometry ─────────────────────────────────────────
+            // PlaneGeometry(worldW, worldH, W-1, H-1) creates exactly
+            // W×H vertices and (W-1)×(H-1) quads — a 1:1 match with
+            // tilepoints and cells.
+            //
+            // Vertex layout (stride = W):
+            //   vi = gj * W + gi     (gi: 0..W-1, gj: 0..H-1)
+            //
+            // THREE.js gj=0 → y = +worldH/2 (top of screen)
+            // W3E      sy=0 → bottom of map
+            // Mapping: idx = (H - 1 - gj) * W + gi
             const geo = new THREE.PlaneGeometry(worldW, worldH, W - 1, H - 1)
 
+            // ── Height formula ──────────────────────────────────
+            // Base height:   (layerHeight - 2) * TILE
+            // Deformation:   (groundHeight - 8192) / 4
+            // Final Z:       base + deformation (if enabled)
             function applyHeights() {
                 const pos = geo.attributes.position
                 for (let gj = 0; gj < H; gj++) {
@@ -115,6 +152,11 @@
 
             applyHeights()
 
+            // ── Colour fallback texture ──────────────────────────
+            // (W-1)×(H-1) pixels — one pixel per cell, NOT per point.
+            // Each cell takes its colour from the bottom-left corner
+            // point's groundTexture: idx = cy * W + cx.
+            // DataTexture pixel (0,0) → UV (0,0) → bottom-left of geometry.
             const cellsX = W - 1
             const cellsY = H - 1
             const texData = new Uint8Array(cellsX * cellsY * 4)
@@ -180,6 +222,13 @@
             let useTextures = true
 
             // ── Load tile texture images and build composited canvas ──
+            // Each ground tile texture is a 4×4 (or 8×4 for rectangular)
+            // grid of sub-tiles. For each cell, we determine which textures
+            // are present at the 4 corner points, sort them ascending,
+            // and draw them bottom-to-top:
+            //   1) The lowest texture always draws a full fill (base layer).
+            //   2) Each subsequent texture draws a transition sub-tile
+            //      covering only the corners that have exactly that texture.
             if (TILE_TEXTURES.length > 0) {
                 const tileImages = new Array(TILE_TEXTURES.length).fill(null)
                 let toLoad = 0
@@ -208,9 +257,16 @@
                     c2.height = cellsY * CPX
                     const ctx = c2.getContext('2d')
 
-                    // Fill tile pools: sub-tile indices used for full coverage (mask=15)
-                    // Square textures:      [1, 16]            — 2 variants
-                    // Rectangular textures: [1, 16..32]        — 18 variants
+                    // Fill tile pools: sub-tile indices used for full coverage (mask=15).
+                    // When all 4 corners have the same texture (or it's the base
+                    // layer), we pick a variation from this pool using
+                    // groundVariation[iBL] to avoid tiling repetition.
+                    //
+                    // Square textures (4×4 = 16 sub-tiles):
+                    //   only sub-tiles 1 and 16 are full-fill → 2 variants
+                    //
+                    // Rectangular textures (8×4 = 32 sub-tiles):
+                    //   sub-tiles 17..32 (right half) + 1 and 16 → 18 variants
                     const FILL_SQUARE = [1, 16]
                     const FILL_RECT = []
                     for (let f = 17; f <= 32; f++) FILL_RECT.push(f)
@@ -250,11 +306,23 @@
                     }
 
                     // W×H points → (W-1)×(H-1) cells.
-                    // Cell (cx, cy) corners:
-                    //   BL = point(cx,   cy  )
-                    //   BR = point(cx+1, cy  )
-                    //   TL = point(cx,   cy+1)
-                    //   TR = point(cx+1, cy+1)
+                    //
+                    // Cell (cx, cy) uses four corner tilepoints:
+                    //   TL ── TR       TL = point(cx,   cy+1)
+                    //    │    │        TR = point(cx+1, cy+1)
+                    //   BL ── BR       BL = point(cx,   cy  )
+                    //                  BR = point(cx+1, cy  )
+                    //
+                    // Example: corners have textures
+                    //   A=6  B=3       (TL=6, TR=3)
+                    //   D=2  C=0       (BL=2, BR=0)
+                    //
+                    // Sorted unique: [0, 2, 3, 6]
+                    // Rendering order (bottom → top):
+                    //   1) tex 0 → full fill (base, because multiple textures)
+                    //   2) tex 2 → D only   (BL===2)  → subtile 3
+                    //   3) tex 3 → B only   (TR===3)  → subtile 5
+                    //   4) tex 6 → A only   (TL===6)  → subtile 9
 
                     for (let cy = 0; cy < cellsY; cy++) {
                         for (let cx = 0; cx < cellsX; cx++) {
@@ -312,13 +380,36 @@
                                     const pool = isRect ? FILL_RECT : FILL_SQUARE
                                     subtile = pool[variation % pool.length]
                                 } else {
-                                    // Transition sub-tile: mask → subtile in 4×4 texture
-                                    // Bits: 0(1)=BR/C  1(2)=BL/D  2(4)=TR/B  3(8)=TL/A
-                                    // Texture layout (corners A=TL B=TR C=BR D=BL):
-                                    //  1: ABCD   2: C      3: D      4: CD
-                                    //  5: B      6: BC     7: BD     8: BCD
-                                    //  9: A     10: AC    11: AD    12: ACD
-                                    // 13: AB    14: ABC   15: ABD   16: ABCD
+                                    // ── Transition sub-tile selection ──
+                                    //
+                                    // Cell corners (as in geometry):
+                                    //   A B      A = TL (top-left)
+                                    //   D C      B = TR (top-right)
+                                    //            C = BR (bottom-right)
+                                    //            D = BL (bottom-left)
+                                    //
+                                    // Mask bits:
+                                    //   bit 0 (1) = BR = C
+                                    //   bit 1 (2) = BL = D
+                                    //   bit 2 (4) = TR = B
+                                    //   bit 3 (8) = TL = A
+                                    //
+                                    // Sub-tile layout in the texture (4×4 grid):
+                                    //   1: ABCD    2: C       3: D       4: CD
+                                    //   5: B       6: BC      7: BD      8: BCD
+                                    //   9: A      10: AC     11: AD     12: ACD
+                                    //  13: AB     14: ABC    15: ABD    16: ABCD
+                                    //
+                                    // Lookup: mask → subtile index
+                                    //   mask  1 (C)    → 2      mask  9 (AC)   → 10
+                                    //   mask  2 (D)    → 3      mask 10 (AD)   → 11
+                                    //   mask  3 (CD)   → 4      mask 11 (ACD)  → 12
+                                    //   mask  4 (B)    → 5      mask 12 (AB)   → 13
+                                    //   mask  5 (BC)   → 6      mask 13 (ABC)  → 14
+                                    //   mask  6 (BD)   → 7      mask 14 (ABD)  → 15
+                                    //   mask  7 (BCD)  → 8      mask 15 (ABCD) → 1
+                                    //   mask  8 (A)    → 9
+                                    //
                                     subtile = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 1][mask]
                                 }
 
@@ -353,6 +444,12 @@
                 }
             }
 
+            // ── Wireframe grid ───────────────────────────────────
+            // Two-level wireframe:
+            //   fine   — every cell edge (white, low opacity)
+            //   coarse — every BLOCK-th edge (yellow, higher opacity)
+            // This matches the WC3 editor grid where every 4th line
+            // is highlighted (BLOCK = 4 → 512 world units apart).
             const BLOCK = 4
             const gpos = geo.attributes.position
 
@@ -503,6 +600,10 @@
             const raycaster = new THREE.Raycaster()
             const mouseNdc = new THREE.Vector2()
             const infoEl = document.getElementById('cursor-info')
+            // halfGridW/H convert geometry coords (centered at 0,0) to
+            // game coords (bottom-left origin):
+            //   gameX = D.offsetX + vx + halfGridW
+            //   gameY = D.offsetY + vy + halfGridH
             const halfGridW = (W - 1) * TILE / 2
             const halfGridH = (H - 1) * TILE / 2
 
@@ -525,12 +626,18 @@
                 if (hits.length > 0) {
                     const pt = hits[0].point
 
-                    // Snap to nearest data point (grid vertex)
+                    // Snap to nearest data point (grid vertex).
+                    // Math.round ensures we pick the closest vertex,
+                    // not the one below-left (Math.floor).
+                    //   sx = round((pt.x + worldW/2) / TILE)  → 0..W-1
+                    //   sy = round((pt.y + worldH/2) / TILE)  → 0..H-1
+                    //   sy=0 is bottom, sy=H-1 is top.
                     const sx = Math.max(0, Math.min(W - 1, Math.round((pt.x + worldW / 2) / TILE)))
                     const sy = Math.max(0, Math.min(H - 1, Math.round((pt.y + worldH / 2) / TILE)))
                     const idx = sy * W + sx
 
-                    // Geometry vertex for this data point
+                    // Geometry vertex index: gj = H-1-sy (flip Y),
+                    // vi = gj * W + gi, stride = W.
                     const vi = (H - 1 - sy) * W + sx
                     const gpos = geo.attributes.position
                     const vx = gpos.getX(vi)
