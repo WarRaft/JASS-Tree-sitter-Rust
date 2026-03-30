@@ -32,6 +32,7 @@
 mod array_cast;
 mod convert;
 mod emit;
+mod fix_leaks;
 mod fold_ir;
 mod inline;
 mod io;
@@ -319,16 +320,19 @@ pub fn build_jass(uri: &Url) -> BuildResult {
         hoist_ir_locals(&mut func.body);
     }
 
-    // 7c. Fold StringHash(…) → integer and ExecuteFunc(…) → direct call (IR level).
+    // 7c. Fix handle leaks: insert `set <var> = null` before exit points.
+    fix_leaks::fix_leaks(&mut ir);
+
+    // 7d. Fold StringHash(…) → integer and ExecuteFunc(…) → direct call (IR level).
     fold_ir::fold_ir(&mut ir);
 
-    // 7d. Uglify identifiers (if build-uglify is set).
+    // 7e. Uglify identifiers (if build-uglify is set).
     let uglify_mode = find_build_setting(uri, "build-uglify")
         .map(|(_, v)| v == "1")
         .unwrap_or(false);
     uglify_ir::uglify_ir(&mut ir, uglify_mode, false);
 
-    // 7e. Build global rename map from IR declarations.
+    // 7f. Build global rename map from IR declarations.
     let global_map = uglify_ir::build_global_rename_map(&ir);
 
     // 8. Render each function to text for inlining / StringHash passes.
@@ -483,22 +487,25 @@ pub fn build_as(uri: &Url) -> BuildResult {
         hoist_ir_locals(&mut func.body);
     }
 
-    // 7d. Rewrite `null` → `nil` for handle-typed contexts.
+    // 7d. Fix handle leaks: insert `set <var> = null` before exit points.
+    fix_leaks::fix_leaks(&mut ir);
+
+    // 7e. Rewrite `null` → `nil` for handle-typed contexts.
     null_to_nil::rewrite_null_to_nil(&mut ir);
 
-    // 7e. Wrap array reads with type casts (`table` is untyped in AS).
+    // 7f. Wrap array reads with type casts (`table` is untyped in AS).
     array_cast::insert_array_casts(&mut ir);
 
-    // 7f. Fold StringHash(…) → integer and ExecuteFunc(…) → direct call (IR level).
+    // 7g. Fold StringHash(…) → integer and ExecuteFunc(…) → direct call (IR level).
     fold_ir::fold_ir(&mut ir);
 
-    // 7g. Uglify identifiers / resolve AS keyword conflicts.
+    // 7h. Uglify identifiers / resolve AS keyword conflicts.
     let uglify_mode = find_build_setting(uri, "build-uglify")
         .map(|(_, v)| v == "1")
         .unwrap_or(false);
     uglify_ir::uglify_ir(&mut ir, uglify_mode, true);
 
-    // 7h. Build global rename map from IR declarations.
+    // 7i. Build global rename map from IR declarations.
     let mut global_map = uglify_ir::build_global_rename_map(&ir);
 
     // 8. Add Jass:: namespace prefix for all native function names.
