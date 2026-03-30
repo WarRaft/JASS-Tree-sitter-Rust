@@ -15,14 +15,16 @@
 //!
 //! Thread-safety is provided by `RwLock<ScopeInner>`.
 //!
-//! Cache file: `$CACHE_DIR/jass-tree-sitter-scope.bin`
+//! Persistence: per-file entries stored in the `scope` table of the shared
+//! `redb` database.  Only the changed file is written on each update (not the
+//! entire index).
 
+use crate::util::cache_db;
 use log::{error, info};
 use once_cell::sync::Lazy;
+use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::PathBuf;
 use std::sync::RwLock;
 use url::Url;
 
@@ -77,9 +79,18 @@ pub struct GlobalEntry {
     pub doc_comment: Option<String>,
 }
 
+// ─── Per-file data stored in redb ────────────────────────────────────────────
+
+/// What is persisted per file in the `scope` table.
+#[derive(Serialize, Deserialize)]
+struct ScopeFileData {
+    hash: [u8; 32],
+    entries: Vec<GlobalEntry>,
+}
+
 // ─── Inner storage ───────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Default)]
 struct ScopeInner {
     /// name → list of entries.
     by_name: HashMap<String, Vec<GlobalEntry>>,
@@ -87,14 +98,6 @@ struct ScopeInner {
     by_uri: HashMap<Url, HashSet<String>>,
     /// uri → SHA-256 of file content at the time the entries were built.
     hashes: HashMap<Url, [u8; 32]>,
-}
-
-// ─── Cache ───────────────────────────────────────────────────────────────────
-
-const CACHE_FILE: &str = "jass-tree-sitter-scope.bin";
-
-fn cache_path() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join(CACHE_FILE))
 }
 
 // ─── ScopeResolver ──────────────────────────────────────────────────────────
@@ -116,58 +119,115 @@ impl ScopeResolver {
         }
     }
 
-    /// Load from disk cache, or create empty.
+    /// Load from the redb database, or create empty.
     fn load() -> Self {
-        let inner = if let Some(path) = cache_path() {
-            if path.exists() {
-                match fs::read(&path) {
-                    Ok(data) => match bitcode::deserialize::<ScopeInner>(&data) {
-                        Ok(si) => {
-                            info!(
-                                "scope_resolver: loaded {} names, {} files from {}",
-                                si.by_name.len(),
-                                si.by_uri.len(),
-                                path.display()
-                            );
-                            si
+        let mut si = ScopeInner::default();
+
+        if let Some(db) = cache_db::db() {
+            if let Ok(read_txn) = db.begin_read() {
+                if let Ok(table) = read_txn.open_table(cache_db::SCOPE_TABLE) {
+                    if let Ok(iter) = table.iter() {
+                        let mut loaded = 0usize;
+                        for entry_result in iter {
+                            let (key_guard, val_guard) = match entry_result {
+                                Ok(kv) => kv,
+                                Err(_) => continue,
+                            };
+                            let uri_str: &str = key_guard.value();
+                            let bytes: &[u8] = val_guard.value();
+
+                            let uri = match Url::parse(uri_str) {
+                                Ok(u) => u,
+                                Err(_) => continue,
+                            };
+
+                            let file_data: ScopeFileData =
+                                match bitcode::deserialize(bytes) {
+                                    Ok(d) => d,
+                                    Err(_) => continue,
+                                };
+
+                            let mut names = HashSet::new();
+                            for entry in file_data.entries {
+                                names.insert(entry.name.clone());
+                                si.by_name
+                                    .entry(entry.name.clone())
+                                    .or_default()
+                                    .push(entry);
+                            }
+                            si.by_uri.insert(uri.clone(), names);
+                            si.hashes.insert(uri, file_data.hash);
+                            loaded += 1;
                         }
-                        Err(e) => {
-                            error!("scope_resolver: deserialize: {}", e);
-                            let _ = fs::remove_file(&path);
-                            ScopeInner::default()
-                        }
-                    },
-                    Err(e) => {
-                        error!("scope_resolver: read: {}", e);
-                        ScopeInner::default()
+                        info!(
+                            "scope_resolver: loaded {} names, {} files from redb",
+                            si.by_name.len(),
+                            loaded
+                        );
                     }
                 }
-            } else {
-                ScopeInner::default()
             }
-        } else {
-            ScopeInner::default()
-        };
+        }
 
         Self {
-            inner: RwLock::new(inner),
+            inner: RwLock::new(si),
         }
     }
 
-    /// Persist to disk.
-    fn save(inner: &ScopeInner) {
-        let Some(path) = cache_path() else { return };
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        match bitcode::serialize(inner) {
-            Ok(data) => {
-                if let Err(e) = fs::write(&path, &data) {
-                    error!("scope_resolver: write: {}", e);
-                }
+    /// Persist one file's entries to redb.
+    fn save_file(uri: &Url, hash: [u8; 32], entries: &[GlobalEntry]) {
+        let Some(db) = cache_db::db() else { return };
+
+        let file_data = ScopeFileData {
+            hash,
+            entries: entries.to_vec(),
+        };
+        let data = match bitcode::serialize(&file_data) {
+            Ok(d) => d,
+            Err(e) => {
+                error!("scope_resolver: serialize {}: {}", uri, e);
+                return;
             }
-            Err(e) => error!("scope_resolver: serialize: {}", e),
+        };
+
+        let write_txn = match db.begin_write() {
+            Ok(t) => t,
+            Err(e) => {
+                error!("scope_resolver: begin_write: {}", e);
+                return;
+            }
+        };
+        {
+            let mut table = match write_txn.open_table(cache_db::SCOPE_TABLE) {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("scope_resolver: open table: {}", e);
+                    return;
+                }
+            };
+            if let Err(e) = table.insert(uri.as_str(), data.as_slice()) {
+                error!("scope_resolver: insert {}: {}", uri, e);
+                return;
+            }
         }
+        if let Err(e) = write_txn.commit() {
+            error!("scope_resolver: commit: {}", e);
+        }
+    }
+
+    /// Remove one file's entries from redb.
+    fn delete_file_from_db(uri: &Url) {
+        let Some(db) = cache_db::db() else { return };
+        let write_txn = match db.begin_write() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        {
+            if let Ok(mut table) = write_txn.open_table(cache_db::SCOPE_TABLE) {
+                let _ = table.remove(uri.as_str());
+            }
+        }
+        let _ = write_txn.commit();
     }
 
     // ─── Mutation ────────────────────────────────────────────────────────
@@ -181,7 +241,7 @@ impl ScopeResolver {
     /// the entries are assumed unchanged and the function returns immediately
     /// — no write lock, no serialization, no disk I/O.
     ///
-    /// Automatically persists to disk.
+    /// Automatically persists the changed file to redb.
     pub fn update_file(
         &self,
         uri: &Url,
@@ -213,18 +273,19 @@ impl ScopeResolver {
 
         // 2. Insert new entries.
         let mut names = HashSet::new();
-        for entry in entries {
+        for entry in &entries {
             names.insert(entry.name.clone());
             inner
                 .by_name
                 .entry(entry.name.clone())
                 .or_default()
-                .push(entry);
+                .push(entry.clone());
         }
         inner.by_uri.insert(uri.clone(), names);
         inner.hashes.insert(uri.clone(), content_hash);
 
-        Self::save(&inner);
+        // 3. Persist only this file to redb (not the entire index).
+        Self::save_file(uri, content_hash, &entries);
     }
 
     /// Remove all entries for `uri`.
@@ -241,7 +302,42 @@ impl ScopeResolver {
             }
         }
         inner.hashes.remove(uri);
-        Self::save(&inner);
+        Self::delete_file_from_db(uri);
+    }
+
+    /// Remove entries for a set of URIs (batch).
+    pub fn remove_files(&self, uris: &HashSet<Url>) {
+        if uris.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.write().unwrap();
+        for uri in uris {
+            if let Some(old_names) = inner.by_uri.remove(uri) {
+                for name in &old_names {
+                    if let Some(vec) = inner.by_name.get_mut(name) {
+                        vec.retain(|e| &e.uri != uri);
+                        if vec.is_empty() {
+                            inner.by_name.remove(name);
+                        }
+                    }
+                }
+            }
+            inner.hashes.remove(uri);
+        }
+
+        // Batch-remove from redb.
+        if let Some(db) = cache_db::db() {
+            if let Ok(write_txn) = db.begin_write() {
+                if let Ok(mut table) = write_txn.open_table(cache_db::SCOPE_TABLE) {
+                    for uri in uris {
+                        let _ = table.remove(uri.as_str());
+                    }
+                }
+                let _ = write_txn.commit();
+            }
+        }
+
+        info!("scope_resolver: remove_files removed {} files", uris.len());
     }
 
     // ─── Queries (read lock) ────────────────────────────────────────────
@@ -362,7 +458,15 @@ impl ScopeResolver {
         inner.by_name.clear();
         inner.by_uri.clear();
         inner.hashes.clear();
-        Self::save(&inner);
+
+        // Purge the entire table from redb.
+        if let Some(db) = cache_db::db() {
+            if let Ok(write_txn) = db.begin_write() {
+                let _ = write_txn.delete_table(cache_db::SCOPE_TABLE);
+                let _ = write_txn.commit();
+            }
+        }
+
         info!("scope_resolver: clear_all removed {} files", count);
     }
 
@@ -380,6 +484,18 @@ impl ScopeResolver {
             return;
         }
 
+        // Batch-remove from redb.
+        if let Some(db) = cache_db::db() {
+            if let Ok(write_txn) = db.begin_write() {
+                if let Ok(mut table) = write_txn.open_table(cache_db::SCOPE_TABLE) {
+                    for uri in &to_remove {
+                        let _ = table.remove(uri.as_str());
+                    }
+                }
+                let _ = write_txn.commit();
+            }
+        }
+
         for uri in &to_remove {
             if let Some(old_names) = inner.by_uri.remove(uri) {
                 for name in &old_names {
@@ -395,7 +511,6 @@ impl ScopeResolver {
         }
 
         info!("scope_resolver: gc removed {} stale files", to_remove.len());
-        Self::save(&inner);
     }
 }
 

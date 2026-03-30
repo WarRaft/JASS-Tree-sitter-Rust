@@ -1,7 +1,7 @@
-//! Unified on-disk cache — **one file = one cache entry**.
+//! Unified on-disk cache backed by [`redb`].
 //!
-//! Replaces the old `symbol_cache` + `ref_cache` split.  Each source file's
-//! parse output is stored as a single bitcode blob keyed by SHA-256(URI).
+//! Each source file's parse output is stored as a single bitcode blob
+//! keyed by the file's URI string.
 //!
 //! ## Stored data
 //!
@@ -12,36 +12,18 @@
 //! * `func_decl_keys` — DeclKeys of function/native declarations (needed by
 //!   `find_decl_key_by_name`).
 //!
-//! Cache directory: `$CACHE_DIR/jass-tree-sitter-cache/`
+//! Database table: `file_cache` in the shared `redb` database.
 
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lsp::ref_map::{DeclKey, RefMap};
+use crate::util::cache_db;
 use log::{error, info};
+use redb::ReadableTable;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
 use std::time::SystemTime;
 use url::Url;
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-const CACHE_DIR_NAME: &str = "jass-tree-sitter-cache";
-
-fn cache_dir() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join(CACHE_DIR_NAME))
-}
-
-fn uri_to_filename(uri: &Url) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(uri.as_str().as_bytes());
-    let hash = hasher.finalize();
-    format!("{:x}.bin", hash)
-}
-
-fn cache_file(uri: &Url) -> Option<PathBuf> {
-    cache_dir().map(|d| d.join(uri_to_filename(uri)))
-}
 
 // ─── File metadata ───────────────────────────────────────────────────────────
 
@@ -93,8 +75,6 @@ pub fn content_hash(rope: &lapce_xi_rope::Rope) -> [u8; 32] {
 /// [`ParseSnapshot`] without re-reading the source file.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CacheEntry {
-    /// Original URI string — needed for `load_all` to map filenames back.
-    uri: String,
     /// Metadata at the time the cache was written.
     meta: FileMeta,
     /// SHA-256 of file content at the time the cache was written.
@@ -120,28 +100,25 @@ pub struct CacheData {
 
 /// Try to load the cached entry for `uri`.
 ///
-/// Returns the full `CacheData` if the cache file exists.
+/// Returns the full `CacheData` if the entry exists in the database.
 /// The caller must compare `meta` with the current file metadata to decide
 /// whether the entry is stale.
 pub fn load(uri: &Url) -> Option<CacheData> {
-    let path = cache_file(uri)?;
-    if !path.exists() {
-        return None;
-    }
+    let db = cache_db::db()?;
+    let read_txn = db.begin_read().ok()?;
+    let table = read_txn.open_table(cache_db::FILE_CACHE_TABLE).ok()?;
+    let guard = table.get(uri.as_str()).ok()??;
+    let bytes: &[u8] = guard.value();
 
-    let data = match fs::read(&path) {
-        Ok(d) => d,
-        Err(e) => {
-            error!("file_cache: read {:?}: {}", path, e);
-            return None;
-        }
-    };
-
-    let entry: CacheEntry = match bitcode::deserialize(&data) {
+    let entry: CacheEntry = match bitcode::deserialize(bytes) {
         Ok(e) => e,
         Err(e) => {
-            error!("file_cache: deserialize {:?}: {}", path, e);
-            let _ = fs::remove_file(&path);
+            error!("file_cache: deserialize {}: {}", uri, e);
+            // Remove corrupted entry.
+            drop(guard);
+            drop(table);
+            drop(read_txn);
+            remove_entry(uri);
             return None;
         }
     };
@@ -155,7 +132,7 @@ pub fn load(uri: &Url) -> Option<CacheData> {
     })
 }
 
-/// Store a file's parse output to disk.
+/// Store a file's parse output to the database.
 pub fn store(
     uri: &Url,
     meta: FileMeta,
@@ -164,15 +141,9 @@ pub fn store(
     ref_map: &RefMap,
     func_decl_keys: &HashSet<DeclKey>,
 ) {
-    let Some(path) = cache_file(uri) else { return };
+    let Some(db) = cache_db::db() else { return };
 
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-
-    // NOTE: CacheEntryRef can't derive bitcode::Encode (lifetimes), so build owned.
     let entry = CacheEntry {
-        uri: uri.as_str().to_string(),
         meta,
         content_hash,
         symbols: symbols.clone(),
@@ -180,123 +151,209 @@ pub fn store(
         func_decl_keys: func_decl_keys.clone(),
     };
 
-    match bitcode::serialize(&entry) {
-        Ok(data) => {
-            if let Err(e) = fs::write(&path, data) {
-                error!("file_cache: write {:?}: {}", path, e);
-            }
+    let data = match bitcode::serialize(&entry) {
+        Ok(d) => d,
+        Err(e) => {
+            error!("file_cache: serialize {}: {}", uri, e);
+            return;
         }
-        Err(e) => error!("file_cache: serialize {:?}: {}", path, e),
+    };
+
+    let write_txn = match db.begin_write() {
+        Ok(t) => t,
+        Err(e) => {
+            error!("file_cache: begin_write: {}", e);
+            return;
+        }
+    };
+    {
+        let mut table = match write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+            Ok(t) => t,
+            Err(e) => {
+                error!("file_cache: open table: {}", e);
+                return;
+            }
+        };
+        if let Err(e) = table.insert(uri.as_str(), data.as_slice()) {
+            error!("file_cache: insert {}: {}", uri, e);
+            return;
+        }
+    }
+    if let Err(e) = write_txn.commit() {
+        error!("file_cache: commit: {}", e);
     }
 }
 
-/// Load **all** cached entries from the cache directory.
+/// Load **all** cached entries from the database.
 ///
-/// Returns `(uri, CacheData)` for every valid `.bin` file.
-/// Corrupted entries are deleted silently.
+/// Returns `(uri, CacheData)` for every valid entry.
+/// Corrupted entries are removed.
 pub fn load_all() -> Vec<(Url, CacheData)> {
-    let Some(dir) = cache_dir() else {
+    let Some(db) = cache_db::db() else {
         return vec![];
     };
-    if !dir.exists() {
-        return vec![];
-    }
-
-    let entries = match fs::read_dir(&dir) {
-        Ok(e) => e,
+    let read_txn = match db.begin_read() {
+        Ok(t) => t,
+        Err(_) => return vec![],
+    };
+    let table = match read_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+        Ok(t) => t,
         Err(_) => return vec![],
     };
 
     let mut result = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("bin") {
-            continue;
-        }
-        let data = match fs::read(&path) {
-            Ok(d) => d,
+    let mut corrupted = Vec::new();
+
+    let iter = match table.iter() {
+        Ok(it) => it,
+        Err(_) => return vec![],
+    };
+
+    for entry_result in iter {
+        let (key_guard, val_guard) = match entry_result {
+            Ok(kv) => kv,
             Err(_) => continue,
         };
-        match bitcode::deserialize::<CacheEntry>(&data) {
-            Ok(ce) => {
-                if let Ok(uri) = Url::parse(&ce.uri) {
-                    result.push((
-                        uri,
-                        CacheData {
-                            meta: ce.meta,
-                            content_hash: ce.content_hash,
-                            symbols: ce.symbols,
-                            ref_map: ce.ref_map,
-                            func_decl_keys: ce.func_decl_keys,
-                        },
-                    ));
-                }
+        let uri_str: &str = key_guard.value();
+        let bytes: &[u8] = val_guard.value();
+
+        let uri = match Url::parse(uri_str) {
+            Ok(u) => u,
+            Err(_) => {
+                corrupted.push(uri_str.to_string());
+                continue;
+            }
+        };
+
+        match bitcode::deserialize::<CacheEntry>(bytes) {
+            Ok(entry) => {
+                result.push((
+                    uri,
+                    CacheData {
+                        meta: entry.meta,
+                        content_hash: entry.content_hash,
+                        symbols: entry.symbols,
+                        ref_map: entry.ref_map,
+                        func_decl_keys: entry.func_decl_keys,
+                    },
+                ));
             }
             Err(_) => {
-                let _ = fs::remove_file(&path);
+                corrupted.push(uri_str.to_string());
             }
         }
     }
+
+    // Clean up corrupted entries in a separate write transaction.
+    if !corrupted.is_empty() {
+        remove_entries_by_str(&corrupted);
+    }
+
     result
 }
 
-/// Delete **all** cache files — used by the forced rescan command.
+/// Delete **all** cache entries.
+#[allow(dead_code)]
 pub fn purge_all() {
-    let Some(dir) = cache_dir() else { return };
-    if !dir.exists() {
-        return;
-    }
-    let entries = match fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    let mut removed = 0usize;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("bin") {
-            let _ = fs::remove_file(&path);
-            removed += 1;
+    let Some(db) = cache_db::db() else { return };
+    let write_txn = match db.begin_write() {
+        Ok(t) => t,
+        Err(e) => {
+            error!("file_cache: begin_write (purge): {}", e);
+            return;
         }
+    };
+    let _ = write_txn.delete_table(cache_db::FILE_CACHE_TABLE);
+    if let Err(e) = write_txn.commit() {
+        error!("file_cache: commit purge: {}", e);
     }
-    info!("file_cache: purge_all removed {} entries", removed);
+    info!("file_cache: purge_all completed");
 }
 
-/// Remove cache files for all URIs **not** in `keep`.
+/// Delete cache entries for the given set of URIs.
+pub fn purge_set(uris: &HashSet<Url>) {
+    if uris.is_empty() {
+        return;
+    }
+    let Some(db) = cache_db::db() else { return };
+    let write_txn = match db.begin_write() {
+        Ok(t) => t,
+        Err(e) => {
+            error!("file_cache: begin_write (purge_set): {}", e);
+            return;
+        }
+    };
+    {
+        let mut table = match write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        for uri in uris {
+            let _ = table.remove(uri.as_str());
+        }
+    }
+    if let Err(e) = write_txn.commit() {
+        error!("file_cache: purge_set commit: {}", e);
+    } else {
+        info!("file_cache: purge_set removed {} entries", uris.len());
+    }
+}
+
+/// Remove cache entries for all URIs **not** in `keep`.
 ///
 /// Call on startup after loading the import graph to garbage-collect
 /// entries for files no longer in the project.
 pub fn gc(keep: &HashSet<String>) {
-    let Some(dir) = cache_dir() else { return };
-    if !dir.exists() {
+    let Some(db) = cache_db::db() else { return };
+
+    // Read all keys first.
+    let keys_to_remove: Vec<String> = {
+        let read_txn = match db.begin_read() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let table = match read_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        let iter = match table.iter() {
+            Ok(it) => it,
+            Err(_) => return,
+        };
+
+        let mut to_remove = Vec::new();
+        for entry_result in iter {
+            if let Ok((key_guard, _)) = entry_result {
+                let uri_str = key_guard.value();
+                if !keep.contains(uri_str) {
+                    to_remove.push(uri_str.to_string());
+                }
+            }
+        }
+        to_remove
+    };
+
+    if keys_to_remove.is_empty() {
         return;
     }
 
-    let keep_filenames: HashSet<String> = keep
-        .iter()
-        .map(|uri_str| {
-            let mut hasher = Sha256::new();
-            hasher.update(uri_str.as_bytes());
-            let hash = hasher.finalize();
-            format!("{:x}.bin", hash)
-        })
-        .collect();
-
-    let entries = match fs::read_dir(&dir) {
-        Ok(e) => e,
+    let write_txn = match db.begin_write() {
+        Ok(t) => t,
         Err(_) => return,
     };
-
-    let mut removed = 0usize;
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.ends_with(".bin") && !keep_filenames.contains(&name) {
-            let _ = fs::remove_file(entry.path());
-            removed += 1;
+    {
+        let mut table = match write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        for key in &keys_to_remove {
+            let _ = table.remove(key.as_str());
         }
     }
-
-    if removed > 0 {
-        info!("file_cache: gc removed {} stale entries", removed);
+    if let Err(e) = write_txn.commit() {
+        error!("file_cache: gc commit: {}", e);
+    } else {
+        info!("file_cache: gc removed {} stale entries", keys_to_remove.len());
     }
 }
 
@@ -313,3 +370,34 @@ pub fn load_if_fresh(uri: &Url) -> Option<CacheData> {
     Some(cached)
 }
 
+// ─── Internals ───────────────────────────────────────────────────────────────
+
+fn remove_entry(uri: &Url) {
+    let Some(db) = cache_db::db() else { return };
+    let write_txn = match db.begin_write() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    {
+        if let Ok(mut table) = write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+            let _ = table.remove(uri.as_str());
+        }
+    }
+    let _ = write_txn.commit();
+}
+
+fn remove_entries_by_str(keys: &[String]) {
+    let Some(db) = cache_db::db() else { return };
+    let write_txn = match db.begin_write() {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    {
+        if let Ok(mut table) = write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+            for key in keys {
+                let _ = table.remove(key.as_str());
+            }
+        }
+    }
+    let _ = write_txn.commit();
+}

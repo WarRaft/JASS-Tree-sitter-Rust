@@ -1,4 +1,5 @@
 pub(crate) mod bin_reader;
+pub(crate) mod cache_db;
 pub(crate) mod call_graph;
 pub(crate) mod change;
 pub(crate) mod debug_log;

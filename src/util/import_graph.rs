@@ -4,26 +4,12 @@ use petgraph::algo::is_cyclic_directed;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::Direction;
-use serde::{Deserialize, Serialize};
+use redb::ReadableTable;
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::PathBuf;
 use std::sync::RwLock;
 use url::Url;
 
-// ─── Cache ───────────────────────────────────────────────────────────────────
-
-const CACHE_FILE: &str = "jass-tree-sitter-import-graph.json";
-
-fn cache_path() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join(CACHE_FILE))
-}
-
-/// On-disk representation — just the forward edges.
-#[derive(Serialize, Deserialize, Default)]
-pub(crate) struct Snapshot {
-    pub(crate) edges: HashMap<Url, Vec<Url>>,
-}
+use crate::util::cache_db;
 
 // ─── ImportGraph ─────────────────────────────────────────────────────────────
 
@@ -34,8 +20,7 @@ pub static IMPORT_GRAPH: Lazy<ImportGraph> = Lazy::new(ImportGraph::load);
 ///
 /// Each node is a `Url`. An edge `A → B` means "A imports B".
 ///
-/// The graph is persisted to `$CACHE_DIR/jass-tree-sitter-import-graph.json`
-/// so it survives server restarts.
+/// Persisted in the `import_graph` table of the shared `redb` database.
 pub struct ImportGraph {
     inner: RwLock<GraphInner>,
     /// Cached entry-point mapping: file URI → set of entry URIs that can
@@ -101,32 +86,44 @@ impl ImportGraph {
         }
     }
 
-    /// Load from disk cache, or create empty.
+    /// Load from the redb database, or create empty.
     fn load() -> Self {
         let mut inner = GraphInner::new();
 
-        if let Some(path) = cache_path() {
-            if path.exists() {
-                match fs::read_to_string(&path) {
-                    Ok(data) => match serde_json::from_str::<Snapshot>(&data) {
-                        Ok(snap) => {
-                            for (from, tos) in &snap.edges {
-                                let from_idx = inner.ensure_node(from);
-                                for to in tos {
-                                    let to_idx = inner.ensure_node(to);
-                                    inner.graph.update_edge(from_idx, to_idx, ());
-                                }
+        if let Some(db) = cache_db::db() {
+            if let Ok(read_txn) = db.begin_read() {
+                if let Ok(table) = read_txn.open_table(cache_db::IMPORT_TABLE) {
+                    if let Ok(iter) = table.iter() {
+                        for entry_result in iter {
+                            let (key_guard, val_guard) = match entry_result {
+                                Ok(kv) => kv,
+                                Err(_) => continue,
+                            };
+                            let from_str: &str = key_guard.value();
+                            let bytes: &[u8] = val_guard.value();
+
+                            let from = match Url::parse(from_str) {
+                                Ok(u) => u,
+                                Err(_) => continue,
+                            };
+                            let tos: Vec<Url> = match bitcode::deserialize(bytes) {
+                                Ok(v) => v,
+                                Err(_) => continue,
+                            };
+
+                            let from_idx = inner.ensure_node(&from);
+                            for to in &tos {
+                                let to_idx = inner.ensure_node(to);
+                                inner.graph.update_edge(from_idx, to_idx, ());
                             }
-                            info!(
-                                "import_graph: loaded {} files, {} edges from {}",
-                                inner.graph.node_count(),
-                                inner.graph.edge_count(),
-                                path.display()
-                            );
                         }
-                        Err(e) => error!("import_graph: parse cache: {}", e),
-                    },
-                    Err(e) => error!("import_graph: read cache: {}", e),
+
+                        info!(
+                            "import_graph: loaded {} files, {} edges from redb",
+                            inner.graph.node_count(),
+                            inner.graph.edge_count(),
+                        );
+                    }
                 }
             }
         }
@@ -137,34 +134,49 @@ impl ImportGraph {
         }
     }
 
-    /// Persist current state to disk.
+    /// Persist current state to the redb database.
     fn save(inner: &GraphInner) {
-        let Some(path) = cache_path() else { return };
+        let Some(db) = cache_db::db() else { return };
 
-        let mut edges: HashMap<Url, Vec<Url>> = HashMap::new();
-        for idx in inner.graph.node_indices() {
-            let from = &inner.graph[idx];
-            let tos: Vec<Url> = inner
-                .graph
-                .neighbors_directed(idx, Direction::Outgoing)
-                .map(|n| inner.graph[n].clone())
-                .collect();
-            if !tos.is_empty() {
-                edges.insert(from.clone(), tos);
+        let write_txn = match db.begin_write() {
+            Ok(t) => t,
+            Err(e) => {
+                error!("import_graph: begin_write: {}", e);
+                return;
             }
-        }
+        };
 
-        let snap = Snapshot { edges };
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        match serde_json::to_string(&snap) {
-            Ok(data) => {
-                if let Err(e) = fs::write(&path, data) {
-                    error!("import_graph: write cache: {}", e);
+        // Delete the whole table and recreate it with current state.
+        // This is simpler and safer than trying to diff per-node changes.
+        let _ = write_txn.delete_table(cache_db::IMPORT_TABLE);
+
+        {
+            let mut table = match write_txn.open_table(cache_db::IMPORT_TABLE) {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("import_graph: open table: {}", e);
+                    return;
+                }
+            };
+
+            for idx in inner.graph.node_indices() {
+                let from = &inner.graph[idx];
+                let tos: Vec<Url> = inner
+                    .graph
+                    .neighbors_directed(idx, Direction::Outgoing)
+                    .map(|n| inner.graph[n].clone())
+                    .collect();
+
+                if !tos.is_empty() {
+                    if let Ok(data) = bitcode::serialize(&tos) {
+                        let _ = table.insert(from.as_str(), data.as_slice());
+                    }
                 }
             }
-            Err(e) => error!("import_graph: serialize: {}", e),
+        }
+
+        if let Err(e) = write_txn.commit() {
+            error!("import_graph: commit: {}", e);
         }
     }
 

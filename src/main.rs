@@ -588,12 +588,32 @@ async fn main() {
                             }
 
                             MethodCall::Initialized(_) => {
+                                use crate::util::cache_db;
                                 use crate::util::file_cache;
                                 use crate::util::import_graph::IMPORT_GRAPH;
                                 use crate::util::scope_resolver::SCOPE_RESOLVER;
                                 use std::collections::HashSet;
 
-                                // ── 0. Force-load the scope resolver from disk ───────
+                                // ── 0. Initialize the shared redb database and
+                                //       check the cache version stamp. ──────────
+                                //       If the extension was updated (version
+                                //       mismatch), file_cache and scope tables
+                                //       are purged automatically.  The import
+                                //       graph is preserved so we still know
+                                //       which files belong to which tree.
+                                //       Rescanning happens lazily: each tree is
+                                //       re-parsed from disk the first time the
+                                //       user opens a file from it (via
+                                //       ensure_file_symbols → parse from disk).
+                                if cache_db::was_purged() {
+                                    info!(
+                                        "Version changed to {} — data caches purged, \
+                                         trees will be rescanned on first open",
+                                        cache_db::EXT_VERSION
+                                    );
+                                }
+
+                                // ── 0a. Force-load the scope resolver from redb ───────
                                 let _ = SCOPE_RESOLVER.file_count();
 
                                 // ── 0b. UjAPI release cache is now loaded lazily ─
@@ -1188,22 +1208,17 @@ async fn main() {
                                 .await;
                             }
 
-                            MethodCall::RescanExecute(_params) => {
+                            MethodCall::RescanExecute(params) => {
                                 use crate::util::file_cache;
                                 use crate::util::import_graph::IMPORT_GRAPH;
                                 use crate::util::scope_resolver::SCOPE_RESOLVER;
 
-                                info!("rescan: starting forced full rescan");
+                                let uri = &params.uri;
 
-                                // ── 1. GC orphan nodes, then collect all known URIs ──
-                                let gc_removed = IMPORT_GRAPH.gc_orphans();
-                                for orphan_uri in &gc_removed {
-                                    SCOPE_RESOLVER.remove_file(orphan_uri);
-                                }
-                                let all_uris = IMPORT_GRAPH.all_uris();
-                                let total = all_uris.len();
+                                // ── 1. Resolve the tree for this URI ──────────
+                                let tree_uris = IMPORT_GRAPH.tree_for_uri(uri);
 
-                                if total == 0 {
+                                if tree_uris.is_empty() {
                                     send(
                                         &writer,
                                         &ResponseMessage {
@@ -1211,7 +1226,7 @@ async fn main() {
                                             id: call.id,
                                             result: Some(json!({
                                                 "ok": false,
-                                                "message": "No files in import graph"
+                                                "message": "No files in tree"
                                             })),
                                             error: None,
                                         },
@@ -1219,13 +1234,24 @@ async fn main() {
                                     return;
                                 }
 
-                                // ── 2. Purge ALL caches ──────────────────────────────
-                                file_cache::purge_all();
-                                SCOPE_RESOLVER.clear_all();
-                                FILE_STORE.clear();
+                                let total = tree_uris.len();
+                                let tree_list: Vec<url::Url> = tree_uris.iter().cloned().collect();
 
-                                // ── 3. Re-parse every file with progress ────────────
-                                let token = "jass-rescan-full";
+                                info!(
+                                    "rescan: tree rescan for {} — {} file(s)",
+                                    uri.path().rsplit('/').next().unwrap_or(""),
+                                    total
+                                );
+
+                                // ── 2. Purge caches for this tree only ────────
+                                file_cache::purge_set(&tree_uris);
+                                SCOPE_RESOLVER.remove_files(&tree_uris);
+                                for u in &tree_list {
+                                    FILE_STORE.remove(u);
+                                }
+
+                                // ── 3. Re-parse tree files with progress ──────
+                                let token = "jass-rescan-tree";
 
                                 send(
                                     &writer,
@@ -1246,7 +1272,7 @@ async fn main() {
                                             "token": token,
                                             "value": {
                                                 "kind": "begin",
-                                                "title": "JASS: Full rescan",
+                                                "title": "JASS: Rescan tree",
                                                 "cancellable": false,
                                                 "percentage": 0
                                             }
@@ -1257,8 +1283,8 @@ async fn main() {
                                 let mut ok_count = 0usize;
                                 let mut errors: Vec<String> = Vec::new();
 
-                                for (i, uri) in all_uris.iter().enumerate() {
-                                    let fname = uri.path().rsplit('/').next().unwrap_or("");
+                                for (i, u) in tree_list.iter().enumerate() {
+                                    let fname = u.path().rsplit('/').next().unwrap_or("");
                                     let pct = ((i + 1) * 100 / total) as u32;
                                     info!("rescan {}/{} {}", i + 1, total, fname);
 
@@ -1278,14 +1304,13 @@ async fn main() {
                                         }),
                                     ).await;
 
-                                    match uri.to_file_path() {
+                                    match u.to_file_path() {
                                         Ok(path) if path.is_dir() => {
-                                            // Skip directories that accidentally ended up in the import graph.
                                             continue;
                                         }
                                         Ok(path) => match std::fs::read_to_string(&path) {
                                             Ok(content) => {
-                                                if let Err(e) = crate::util::open::open_by_uri(uri, &content).await {
+                                                if let Err(e) = crate::util::open::open_by_uri(u, &content).await {
                                                     let msg = format!("{}: {}", fname, e);
                                                     error!("rescan {}", msg);
                                                     errors.push(msg);
@@ -1322,7 +1347,7 @@ async fn main() {
                                     }),
                                 ).await;
 
-                                // ── 4. Refresh all editors ───────────────────────────
+                                // ── 4. Refresh all editors ───────────────────
                                 crate::util::file_store::send_refresh_all().await;
 
                                 let err_count = errors.len();

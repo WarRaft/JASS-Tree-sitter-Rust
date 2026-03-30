@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::util::import_graph::{ImportGraph, Snapshot, resolve_import};
-    use std::collections::{HashMap, HashSet};
+    use crate::util::import_graph::{ImportGraph, resolve_import};
+    use std::collections::HashSet;
     use url::Url;
 
     fn u(s: &str) -> Url {
@@ -153,17 +153,13 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_roundtrip() {
-        let snap = Snapshot {
-            edges: HashMap::from([(
-                u("file:///a.j"),
-                vec![u("file:///b.j"), u("file:///c.j")],
-            )]),
-        };
-        let json = serde_json::to_string(&snap).unwrap();
-        let restored: Snapshot = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.edges.len(), 1);
-        assert_eq!(restored.edges[&u("file:///a.j")].len(), 2);
+    fn edges_bitcode_roundtrip() {
+        let edges: Vec<Url> = vec![u("file:///b.j"), u("file:///c.j")];
+        let encoded = bitcode::serialize(&edges).unwrap();
+        let decoded: Vec<Url> = bitcode::deserialize(&encoded).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0], u("file:///b.j"));
+        assert_eq!(decoded[1], u("file:///c.j"));
     }
 
     #[test]
