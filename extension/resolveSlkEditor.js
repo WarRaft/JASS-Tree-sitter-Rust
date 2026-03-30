@@ -337,6 +337,12 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
         .header-bar .default-editor-label input[type="checkbox"] {
             accent-color: var(--vscode-focusBorder);
             cursor: pointer;
+            outline: none;
+        }
+        .header-bar .default-editor-label input[type="checkbox"]:focus-visible {
+            outline: 1.5px solid var(--vscode-focusBorder);
+            outline-offset: 1px;
+            border-radius: 2px;
         }
         .header-bar .search-box {
             margin-left: auto;

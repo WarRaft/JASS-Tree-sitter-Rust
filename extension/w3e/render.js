@@ -9,7 +9,7 @@ const {editorStyles} = require('./styles.js')
  * @param {string}      fname       — display file name
  * @param {string}      threeSrc    — webview URI to three.min.js
  * @param {string[]}    texUris     — webview URIs for texture-pack images
- * @param {Object}      mapInfo     — { mapName, binaries, currentFile, isArchive, isMap, archiveFiles }
+ * @param {Object}      mapInfo     — { mapName, binaries, currentFile, isArchive, isMap, archiveFiles, componentsSrc }
  */
 function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
     const hasTerrain = !!terrainData
@@ -20,7 +20,17 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
     let tilesetName = ''
     let legendItems = ''
     let cliffLegendItems = ''
+    let terrainSlkSource = ''
     let w = 0, h = 0
+
+    // Build a tileID → SLK row lookup
+    const slkMap = {}
+    if (terrainData && terrainData._terrainSlk && terrainData._terrainSlk.tiles) {
+        terrainSlkSource = terrainData._terrainSlk.source || ''
+        for (const t of terrainData._terrainSlk.tiles) {
+            slkMap[t.tileId] = t
+        }
+    }
 
     if (hasTerrain) {
         w = terrainData.map_width
@@ -32,19 +42,18 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
         if (terrainData.ground_tiles) {
             legendItems = terrainData.ground_tiles.map((code, i) => {
                 const [r, g, b] = indexToRgb(i)
-                return `<span class="legend-item">
-                    <span class="legend-swatch" style="background:rgb(${r},${g},${b})"></span>
-                    <span class="code">${i}: ${esc(code)}</span>
-                </span>`
-            }).join('')
+                const info = slkMap[code]
+                const name = info ? info.comment : ''
+                const tilePath = info && info.dir && info.file
+                    ? info.dir + '\\' + info.file + (info.ext || '') : ''
+                return `<tile-item index="${i}" code="${esc(code)}" tile-name="${esc(name)}" tile-path="${esc(tilePath)}" swatch-color="${r},${g},${b}"></tile-item>`
+            }).join('\n')
         }
 
         if (terrainData.cliff_tiles) {
             cliffLegendItems = terrainData.cliff_tiles.map((code, i) => {
-                return `<span class="legend-item">
-                    <span class="code">${i}: ${esc(code)}</span>
-                </span>`
-            }).join('')
+                return `<tile-item index="${i}" code="${esc(code)}"></tile-item>`
+            }).join('\n')
         }
 
         renderData = {
@@ -58,6 +67,9 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
             boundaryFlag: terrainData.points.map(p => p.boundary ? 1 : 0),
             blightFlag: terrainData.points.map(p => p.blight ? 1 : 0),
             rampFlag: terrainData.points.map(p => p.ramp ? 1 : 0),
+            cliffVariation: terrainData.points.map(p => p.cliff_variation),
+            cliffTexture: terrainData.points.map(p => p.cliff_texture),
+            layerHeight: terrainData.points.map(p => p.layer_height),
         }
     }
 
@@ -68,6 +80,7 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
 
     const nonce = mapInfo.nonce || ''
     const cspSource = mapInfo.cspSource || ''
+    const componentsSrc = mapInfo.componentsSrc || ''
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -83,266 +96,86 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
 
     <!-- ── Menu bar ───────────────────────────────────────────── -->
     <div class="menubar" id="menubar">
-        <button class="menu-item" data-action="toggleWindow" data-target="gamePathWindow" title="Warcraft III installation path">⚙ Game Path</button>
+        <button class="menu-item" data-action="toggleWindow" data-target="gamePathWindow" title="Warcraft III installation path">\u2699 Game Path</button>
         <button class="menu-item${mapInfo.isArchive ? '' : ' disabled'}" ${mapInfo.isArchive ? 'data-action="toggleWindow" data-target="headerWindow"' : ''}
-                title="${mapInfo.isArchive ? 'Archive header info' : 'Available only for archives (.w3x, .w3m, .w3n, .mpq)'}">📦 Header</button>
+                title="${mapInfo.isArchive ? 'Archive header info' : 'Available only for archives (.w3x, .w3m, .w3n, .mpq)'}">\ud83d\udce6 Header</button>
         <button class="menu-item${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="terrainWindow"' : ''}
-                title="${hasTerrain ? 'Terrain metadata' : 'No terrain data available'}">🗺 Terrain</button>
-        ${mapInfo.isArchive ? '<button class="menu-item" data-action="toggleWindow" data-target="filesWindow" title="Archive file list">📂 Files</button>' : ''}
+                title="${hasTerrain ? 'Terrain metadata' : 'No terrain data available'}">\ud83d\uddfa Terrain</button>
+        <button class="menu-item${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="tilesetWindow"' : ''}
+                title="${hasTerrain ? 'Tileset info' : 'No terrain data available'}">\ud83e\uddf1 Tileset</button>
+        ${mapInfo.isArchive ? '<button class="menu-item" data-action="toggleWindow" data-target="filesWindow" title="Archive file list">\ud83d\udcc2 Files</button>' : ''}
     </div>
 
-    <!-- ── Floating window: Game Path ─────────────────────────── -->
-    <div class="float-window hidden" id="gamePathWindow" style="left:140px;top:16px;">
-        <div class="float-title" data-drag="gamePathWindow">
-            <span>⚙ Game Path</span>
-            <button class="float-close" data-action="toggleWindow" data-target="gamePathWindow">×</button>
-        </div>
-        <div class="float-body">${gamePathContent}</div>
-    </div>
+    <!-- ── Floating windows (Custom Elements) ─────────────────── -->
 
-    <!-- ── Floating window: Header ────────────────────────────── -->
+    <float-window id="gamePathWindow" title-text="\u2699 Game Path" hidden style="left:140px;top:16px;">
+        <div id="gpBody">${gamePathContent}</div>
+    </float-window>
+
     ${mapInfo.isArchive ? `
-    <div class="float-window hidden" id="headerWindow" style="left:140px;top:16px;">
-        <div class="float-title" data-drag="headerWindow">
-            <span>📦 Header — ${esc(fname)}</span>
-            <button class="float-close" data-action="toggleWindow" data-target="headerWindow">×</button>
-        </div>
-        <div class="float-body">${headerContent}</div>
-    </div>
+    <float-window id="headerWindow" title-text="\ud83d\udce6 Header \u2014 ${esc(fname)}" hidden style="left:140px;top:16px;">
+        ${headerContent}
+    </float-window>
     ` : ''}
 
-    <!-- ── Floating window: Terrain Info ──────────────────────── -->
     ${hasTerrain ? `
-    <div class="float-window hidden" id="terrainWindow" style="left:140px;top:16px;">
-        <div class="float-title" data-drag="terrainWindow">
-            <span>🗺 Terrain</span>
-            <button class="float-close" data-action="toggleWindow" data-target="terrainWindow">×</button>
+    <float-window id="terrainWindow" title-text="\ud83d\uddfa Terrain" hidden style="left:140px;top:16px;">
+        <table class="info">
+            <tr><td class="key">Magic</td><td><code>${esc(terrainData.magic)}</code></td></tr>
+            <tr><td class="key">Version</td><td>${terrainData.version}</td></tr>
+            <tr><td class="key">Tileset</td><td>${esc(terrainData.tileset)} \u2014 ${esc(tilesetName)}</td></tr>
+            <tr><td class="key">Custom</td><td>${terrainData.custom_tileset ? 'Yes' : 'No'}</td></tr>
+            <tr><td class="key">Size</td><td>${w} \u00d7 ${h} (${w * h} pts)</td></tr>
+            <tr><td class="key">Offset</td><td>X: ${terrainData.offset_x.toFixed(2)}, Y: ${terrainData.offset_y.toFixed(2)}</td></tr>
+        </table>
+        <div class="tw-section-title">Layers</div>
+        <div class="terrain-checks">
+            <label class="menu-cb"><input type="checkbox" id="cbWater" /> Water</label>
+            <label class="menu-cb"><input type="checkbox" id="cbBoundary" /> Boundary</label>
+            <label class="menu-cb"><input type="checkbox" id="cbBlight" /> Blight</label>
+            <label class="menu-cb"><input type="checkbox" id="cbRamp" /> Ramp</label>
+            <label class="menu-cb"><input type="checkbox" id="cbWireframe" /> Wireframe</label>
+            <label class="menu-cb"><input type="checkbox" id="cbTextures" /> Textures</label>
+            <label class="menu-cb"><input type="checkbox" id="cbLayerHeight" /> Layer Height</label>
         </div>
-        <div class="float-body">
-            <table class="info">
-                <tr><td class="key">Magic</td><td><code>${esc(terrainData.magic)}</code></td></tr>
-                <tr><td class="key">Version</td><td>${terrainData.version}</td></tr>
-                <tr><td class="key">Tileset</td><td>${esc(terrainData.tileset)} — ${esc(tilesetName)}</td></tr>
-                <tr><td class="key">Custom</td><td>${terrainData.custom_tileset ? 'Yes' : 'No'}</td></tr>
-                <tr><td class="key">Size</td><td>${w} × ${h} (${w * h} pts)</td></tr>
-                <tr><td class="key">Offset</td><td>X: ${terrainData.offset_x.toFixed(2)}, Y: ${terrainData.offset_y.toFixed(2)}</td></tr>
-            </table>
-            <div class="tw-section-title">Ground Tiles (${totalTiles})</div>
-            <div class="legend">${legendItems}</div>
-            ${totalCliffTiles > 0 ? `
-            <div class="tw-section-title">Cliff Tiles (${totalCliffTiles})</div>
-            <div class="legend">${cliffLegendItems}</div>
-            ` : ''}
-            <div class="tw-section-title">Layers</div>
-            <div class="terrain-checks">
-                <label class="menu-cb"><input type="checkbox" id="cbWater" /> Water</label>
-                <label class="menu-cb"><input type="checkbox" id="cbBoundary" /> Boundary</label>
-                <label class="menu-cb"><input type="checkbox" id="cbBlight" /> Blight</label>
-                <label class="menu-cb"><input type="checkbox" id="cbRamp" /> Ramp</label>
-                <label class="menu-cb"><input type="checkbox" id="cbWireframe" /> Wireframe</label>
-                <label class="menu-cb"><input type="checkbox" id="cbTextures" /> Textures</label>
-            </div>
-        </div>
-    </div>
+    </float-window>
     ` : ''}
 
+    ${hasTerrain ? `
+    <float-window id="tilesetWindow" title-text="\ud83e\uddf1 Tileset" hidden style="left:140px;top:16px;">
+        <div id="tsSlkSource" class="${terrainSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${terrainSlkSource ? 'Terrain.slk: <span class="code">' + esc(terrainSlkSource) + '</span>' : 'Terrain.slk not found \u2014 set Game Path'}</div>
+        <div class="tw-section-title">Ground Tiles (<span id="tsGroundCount">${totalTiles}</span>)</div>
+        <div class="legend" id="tsGroundTiles">${legendItems}</div>
+        <div id="tsCliffSection">${totalCliffTiles > 0 ? '<div class="tw-section-title">Cliff Tiles (' + totalCliffTiles + ')</div><div class="legend">' + cliffLegendItems + '</div>' : ''}</div>
+    </float-window>
+    ` : ''}
 
     ${mapInfo.isArchive ? `
-    <!-- ── Floating window: Files ─────────────────────────────── -->
-    <div class="float-window hidden" id="filesWindow" style="right:16px;top:16px;left:auto;">
-        <div class="float-title" data-drag="filesWindow">
-            <span>📂 Files (${fileCount})</span>
-            <div class="float-title-actions">
-                <button class="float-action" id="browseBtn" title="Mount as workspace folder">📁</button>
-                <button class="float-close" data-action="toggleWindow" data-target="filesWindow">×</button>
-            </div>
-        </div>
-        <div class="float-body files-body">
-            <input type="text" id="fileFilter" placeholder="Filter files…" class="file-filter" />
-            <div class="files-list" id="filesList">${filesRows}</div>
-        </div>
-    </div>
+    <float-window id="filesWindow" title-text="\ud83d\udcc2 Files (${fileCount})" no-padding hidden style="right:16px;top:16px;left:auto;">
+        <button slot="actions" class="float-action" id="browseBtn" title="Mount as workspace folder">\ud83d\udcc1</button>
+        <input type="text" id="fileFilter" placeholder="Filter files\u2026" class="file-filter" />
+        <div class="files-list" id="filesList">${filesRows}</div>
+    </float-window>
     ` : ''}
 
+    <script nonce="${nonce}" src="${componentsSrc}"></script>
     <script nonce="${nonce}" src="${threeSrc}"></script>
     <script nonce="${nonce}">
     (function() {
         'use strict';
 
-        const hasTerrain = ${hasTerrain};
-        const isArchive = ${!!mapInfo.isArchive};
-
         const vscode = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null;
 
-        // ── Floating window management ──────────────────────────
-        function toggleWindow(id) {
-            const el = document.getElementById(id);
-            if (el) el.classList.toggle('hidden');
-            syncMenuActive();
-        }
-
-        function syncMenuActive() {
-            document.querySelectorAll('[data-action="toggleWindow"]').forEach(btn => {
-                const target = btn.getAttribute('data-target');
-                if (!target) return;
-                const win = document.getElementById(target);
-                btn.classList.toggle('active', win && !win.classList.contains('hidden'));
-            });
-        }
-
-        document.querySelectorAll('[data-action="toggleWindow"]').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const target = btn.getAttribute('data-target');
-                if (target) toggleWindow(target);
-            });
+        W3E.init({
+            vscode: vscode,
+            groundTileCodes: ${hasTerrain && terrainData.ground_tiles ? JSON.stringify(terrainData.ground_tiles) : '[]'},
+            cliffTileCodes: ${hasTerrain && terrainData.cliff_tiles ? JSON.stringify(terrainData.cliff_tiles) : '[]'},
+            isArchive: ${!!mapInfo.isArchive}
         });
-
-        document.querySelectorAll('[data-drag]').forEach(titleBar => {
-            const winId = titleBar.getAttribute('data-drag');
-            const win = document.getElementById(winId);
-            let dragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
-
-            titleBar.addEventListener('pointerdown', e => {
-                if (e.target.closest('.float-close') || e.target.closest('.float-action')) return;
-                dragging = true;
-                startX = e.clientX;
-                startY = e.clientY;
-                origX = win.offsetLeft;
-                origY = win.offsetTop;
-                titleBar.setPointerCapture(e.pointerId);
-                e.preventDefault();
-                document.querySelectorAll('.float-window').forEach(w => w.style.zIndex = '10');
-                win.style.zIndex = '11';
-            });
-
-            titleBar.addEventListener('pointermove', e => {
-                if (!dragging) return;
-                win.style.left = (origX + e.clientX - startX) + 'px';
-                win.style.top = (origY + e.clientY - startY) + 'px';
-                win.style.right = 'auto';
-            });
-
-            titleBar.addEventListener('pointerup', e => {
-                dragging = false;
-                titleBar.releasePointerCapture(e.pointerId);
-            });
-        });
-
-        // ── Game Path browse / clear ─────────────────────────────
-        function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-        const REQUIRED_MPQ = ['War3.mpq','War3x.mpq','War3xLocal.mpq','War3Patch.mpq'];
-
-        function renderGpBody(status) {
-            const gp = status.gamePath || '';
-            const has = !!gp;
-            let h = '<div class="gp-hint">Path to Warcraft III installation folder.</div>';
-            h += has ? '<div class="gp-path">' + esc(gp) + '</div>' : '<div class="gp-no-path">Not selected</div>';
-            if (has && status.mpqStatus) {
-                h += '<div class="gp-mpq-list">';
-                for (const f of REQUIRED_MPQ) {
-                    const ok = status.mpqStatus[f];
-                    h += '<div class="gp-mpq-row ' + (ok ? 'gp-ok' : 'gp-missing') + '"><span>' + (ok ? '✅' : '❌') + '</span> <span>' + esc(f) + '</span></div>';
-                }
-                h += '</div>';
-            }
-            h += '<div class="gp-actions"><button class="gp-browse" id="gamePathBrowse">📂 Browse…</button>';
-            if (has) h += '<button class="gp-clear" id="gamePathClear">✕ Clear</button>';
-            h += '</div>';
-            return h;
-        }
-
-        function bindGpButtons() {
-            const b = document.getElementById('gamePathBrowse');
-            if (b && vscode) b.addEventListener('click', () => vscode.postMessage({command: 'browseGamePath'}));
-            const c = document.getElementById('gamePathClear');
-            if (c && vscode) c.addEventListener('click', () => vscode.postMessage({command: 'setGamePath', value: ''}));
-        }
-
-        bindGpButtons();
-
-        // ── Handle messages from extension host ──────────────────
-        window.addEventListener('message', e => {
-            const msg = e.data;
-            if (msg && msg.command === 'gamePathStatus' && msg.status) {
-                const gpWin = document.getElementById('gamePathWindow');
-                if (gpWin) {
-                    const body = gpWin.querySelector('.float-body');
-                    if (body) {
-                        body.innerHTML = renderGpBody(msg.status);
-                        bindGpButtons();
-                    }
-                }
-            }
-        });
-
-        // ── Archive file interactions ────────────────────────────
-        if (isArchive && vscode) {
-            document.querySelectorAll('.file-row').forEach(row => {
-                row.addEventListener('click', () => {
-                    const name = row.dataset.name;
-                    if (!name) return;
-                    // war3map.w3e → just show terrain window in this editor
-                    if (name.replace(/\\\\/g, '/').toLowerCase() === 'war3map.w3e') {
-                        const tw = document.getElementById('terrainWindow');
-                        if (tw) { tw.classList.remove('hidden'); syncMenuActive(); return; }
-                    }
-                    vscode.postMessage({command: 'openFile', name});
-                });
-            });
-
-            const browseBtn = document.getElementById('browseBtn');
-            if (browseBtn) {
-                browseBtn.addEventListener('click', () => {
-                    vscode.postMessage({command: 'browse'});
-                });
-            }
-
-            // ── Folder toggle ────────────────────────────────────
-            document.querySelectorAll('.folder-row').forEach(row => {
-                row.addEventListener('click', () => {
-                    row.classList.toggle('collapsed');
-                    const children = row.nextElementSibling;
-                    if (children && children.classList.contains('folder-children')) {
-                        children.classList.toggle('collapsed');
-                    }
-                });
-            });
-
-            const filterInput = document.getElementById('fileFilter');
-            if (filterInput) {
-                filterInput.addEventListener('input', e => {
-                    const q = e.target.value.toLowerCase();
-                    const filesList = document.getElementById('filesList');
-                    if (!q) {
-                        // Reset: show everything, collapse nothing
-                        filesList.querySelectorAll('.file-row').forEach(r => r.style.display = '');
-                        filesList.querySelectorAll('.folder-row').forEach(r => { r.style.display = ''; r.classList.remove('collapsed'); });
-                        filesList.querySelectorAll('.folder-children').forEach(r => { r.style.display = ''; r.classList.remove('collapsed'); });
-                        return;
-                    }
-                    // Filter: show matching files and their parent folders
-                    filesList.querySelectorAll('.file-row').forEach(r => {
-                        r.style.display = (r.dataset.name || '').toLowerCase().includes(q) ? '' : 'none';
-                    });
-                    // Show folders that have visible children, hide empty ones
-                    const folders = filesList.querySelectorAll('.folder-children');
-                    for (let i = folders.length - 1; i >= 0; i--) {
-                        const fc = folders[i];
-                        const hasVisible = fc.querySelector('.file-row:not([style*="display: none"]), .folder-row:not([style*="display: none"])');
-                        fc.style.display = hasVisible ? '' : 'none';
-                        fc.classList.remove('collapsed');
-                        const fr = fc.previousElementSibling;
-                        if (fr && fr.classList.contains('folder-row')) {
-                            fr.style.display = hasVisible ? '' : 'none';
-                            fr.classList.remove('collapsed');
-                        }
-                    }
-                });
-            }
-        }
 
         // ── Three.js setup ──────────────────────────────────────
         try {
+        const hasTerrain = ${hasTerrain};
         const canvas = document.getElementById('terrain');
         const renderer = new THREE.WebGLRenderer({canvas, antialias: true});
         renderer.setPixelRatio(window.devicePixelRatio);
@@ -405,19 +238,27 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
                     for (let dy = -1; dy <= 0; dy++) {
                         const sx = ci + dx, sy = cj + dy;
                         if (sx >= 0 && sx < W && sy >= 0 && sy < H) {
-                            sum += D.groundHeight[sy * W + sx];
+                            if (showLayerHeight) {
+                                sum += D.layerHeight[sy * W + sx] * TILE;
+                            } else {
+                                sum += D.groundHeight[sy * W + sx];
+                            }
                             cnt++;
                         }
                     }
+                }
+                if (showLayerHeight) {
+                    return cnt > 0 ? sum / cnt : 0;
                 }
                 return cnt > 0 ? (sum / cnt - H_ZERO) / H_SCALE : 0;
             }
 
             let showWater = false, showBoundary = false, showBlight = false, showRamp = false;
+            let showLayerHeight = false;
 
             const geo = new THREE.PlaneGeometry(worldW, worldH, W, H);
 
-            (function applyHeights() {
+            function applyHeights() {
                 const pos = geo.attributes.position;
                 for (let gj = 0; gj <= H; gj++) {
                     for (let gi = 0; gi <= W; gi++) {
@@ -427,7 +268,8 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
                 }
                 pos.needsUpdate = true;
                 geo.computeVertexNormals();
-            })();
+            }
+            applyHeights();
 
             const texData = new Uint8Array(W * H * 4);
             const dataTex = new THREE.DataTexture(texData, W, H);
@@ -456,6 +298,15 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
                 dataTex.needsUpdate = true;
             }
             applyColors();
+
+            // ── Tile colour picker → update terrain ─────────────
+            document.addEventListener('color-change', e => {
+                const {index, color} = e.detail;
+                if (index >= 0 && index < palette.length) {
+                    palette[index] = color;
+                    applyColors();
+                }
+            });
 
             const mat = new THREE.MeshLambertMaterial({map: dataTex, side: THREE.DoubleSide});
             mesh = new THREE.Mesh(geo, mat);
@@ -496,44 +347,102 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
             }
 
             const BLOCK = 4;
-            const fineArr = [], coarseArr = [];
             const gpos = geo.attributes.position;
-            for (let j = 0; j <= H; j++) {
-                const arr = j % BLOCK === 0 ? coarseArr : fineArr;
-                for (let i = 0; i < W; i++) {
-                    const a = j*(W+1)+i, b = a+1;
-                    arr.push(gpos.getX(a),gpos.getY(a),gpos.getZ(a), gpos.getX(b),gpos.getY(b),gpos.getZ(b));
+
+            function buildWireArrays() {
+                const fine = [], coarse = [];
+                for (let j = 0; j <= H; j++) {
+                    const arr = j % BLOCK === 0 ? coarse : fine;
+                    for (let i = 0; i < W; i++) {
+                        const a = j*(W+1)+i, b = a+1;
+                        arr.push(gpos.getX(a),gpos.getY(a),gpos.getZ(a), gpos.getX(b),gpos.getY(b),gpos.getZ(b));
+                    }
                 }
-            }
-            for (let i = 0; i <= W; i++) {
-                const arr = i % BLOCK === 0 ? coarseArr : fineArr;
-                for (let j = 0; j < H; j++) {
-                    const a = j*(W+1)+i, b = (j+1)*(W+1)+i;
-                    arr.push(gpos.getX(a),gpos.getY(a),gpos.getZ(a), gpos.getX(b),gpos.getY(b),gpos.getZ(b));
+                for (let i = 0; i <= W; i++) {
+                    const arr = i % BLOCK === 0 ? coarse : fine;
+                    for (let j = 0; j < H; j++) {
+                        const a = j*(W+1)+i, b = (j+1)*(W+1)+i;
+                        arr.push(gpos.getX(a),gpos.getY(a),gpos.getZ(a), gpos.getX(b),gpos.getY(b),gpos.getZ(b));
+                    }
                 }
+                return {fine, coarse};
             }
+
+            let wireData = buildWireArrays();
             const fineGeo = new THREE.BufferGeometry();
-            fineGeo.setAttribute('position', new THREE.Float32BufferAttribute(fineArr, 3));
+            fineGeo.setAttribute('position', new THREE.Float32BufferAttribute(wireData.fine, 3));
             const fineMesh = new THREE.LineSegments(fineGeo, new THREE.LineBasicMaterial({color:0xffffff, transparent:true, opacity:0.12}));
             fineMesh.visible = false;
             scene.add(fineMesh);
 
             const coarseGeo = new THREE.BufferGeometry();
-            coarseGeo.setAttribute('position', new THREE.Float32BufferAttribute(coarseArr, 3));
+            coarseGeo.setAttribute('position', new THREE.Float32BufferAttribute(wireData.coarse, 3));
             const coarseMesh = new THREE.LineSegments(coarseGeo, new THREE.LineBasicMaterial({color:0xffff00, transparent:true, opacity:0.5}));
             coarseMesh.visible = false;
             scene.add(coarseMesh);
 
+            function rebuildWireframe() {
+                wireData = buildWireArrays();
+                fineGeo.setAttribute('position', new THREE.Float32BufferAttribute(wireData.fine, 3));
+                coarseGeo.setAttribute('position', new THREE.Float32BufferAttribute(wireData.coarse, 3));
+            }
+
+            // ── Checkbox state persistence ──────────────────────
+            const savedState = (vscode && vscode.getState()) || {};
+            const cbState = savedState.terrainChecks || {};
+
+            function saveCbState() {
+                if (!vscode) return;
+                const st = vscode.getState() || {};
+                const checks = {};
+                ['cbWater','cbBoundary','cbBlight','cbRamp','cbWireframe','cbTextures','cbLayerHeight'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) checks[id] = el.checked;
+                });
+                st.terrainChecks = checks;
+                vscode.setState(st);
+            }
+
+            ['cbWater','cbBoundary','cbBlight','cbRamp','cbWireframe','cbTextures','cbLayerHeight'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el && cbState[id] != null) el.checked = cbState[id];
+            });
+
+            const cbWaterEl = document.getElementById('cbWater');
+            const cbBoundaryEl = document.getElementById('cbBoundary');
+            const cbBlightEl = document.getElementById('cbBlight');
+            const cbRampEl = document.getElementById('cbRamp');
+            const cbWireframeEl = document.getElementById('cbWireframe');
+            const cbTexturesEl = document.getElementById('cbTextures');
+            const cbLayerHeightEl = document.getElementById('cbLayerHeight');
+
+            if (cbWaterEl && cbWaterEl.checked) showWater = true;
+            if (cbBoundaryEl && cbBoundaryEl.checked) showBoundary = true;
+            if (cbBlightEl && cbBlightEl.checked) showBlight = true;
+            if (cbRampEl && cbRampEl.checked) showRamp = true;
+            if (cbWireframeEl && cbWireframeEl.checked) { fineMesh.visible = true; coarseMesh.visible = true; }
+            if (cbTexturesEl && cbTexturesEl.checked) { useTextures = true; }
+            if (cbLayerHeightEl && cbLayerHeightEl.checked) { showLayerHeight = true; applyHeights(); rebuildWireframe(); }
+            applyColors();
+            if (useTextures && canvasTex) { mat.map = canvasTex; mat.needsUpdate = true; }
+
             const cb = (id, fn) => { const el = document.getElementById(id); if (el) el.addEventListener('change', fn); };
-            cb('cbWater', e => { showWater = e.target.checked; applyColors(); });
-            cb('cbBoundary', e => { showBoundary = e.target.checked; applyColors(); });
-            cb('cbBlight', e => { showBlight = e.target.checked; applyColors(); });
-            cb('cbRamp', e => { showRamp = e.target.checked; applyColors(); });
-            cb('cbWireframe', e => { fineMesh.visible = e.target.checked; coarseMesh.visible = e.target.checked; });
+            cb('cbWater', e => { showWater = e.target.checked; applyColors(); saveCbState(); });
+            cb('cbBoundary', e => { showBoundary = e.target.checked; applyColors(); saveCbState(); });
+            cb('cbBlight', e => { showBlight = e.target.checked; applyColors(); saveCbState(); });
+            cb('cbRamp', e => { showRamp = e.target.checked; applyColors(); saveCbState(); });
+            cb('cbWireframe', e => { fineMesh.visible = e.target.checked; coarseMesh.visible = e.target.checked; saveCbState(); });
             cb('cbTextures', e => {
                 useTextures = e.target.checked;
                 mat.map = (useTextures && canvasTex) ? canvasTex : dataTex;
                 mat.needsUpdate = true;
+                saveCbState();
+            });
+            cb('cbLayerHeight', e => {
+                showLayerHeight = e.target.checked;
+                applyHeights();
+                rebuildWireframe();
+                saveCbState();
             });
 
             const raycaster = new THREE.Raycaster();
@@ -562,6 +471,8 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
                     if (D.rampFlag[idx]) fl.push('ramp');
                     infoEl.textContent = 'X: ' + gameX.toFixed(2) + '  Y: ' + gameY.toFixed(2) +
                         '  Z: ' + pt.z.toFixed(2) + '  Tex: ' + D.groundTexture[idx] +
+                        '  Cliff: ' + D.cliffVariation[idx] + '/' + D.cliffTexture[idx] +
+                        '  Layer: ' + D.layerHeight[idx] +
                         (fl.length ? ' [' + fl.join(', ') + ']' : '');
                     return;
                 }
@@ -599,7 +510,7 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
             let rotating = false, panning = false, px = 0, py = 0;
 
             domEl.addEventListener('pointerdown', e => {
-                if (e.target.closest('.float-window') || e.target.closest('.menubar')) return;
+                if (e.target.closest('float-window') || e.target.closest('.menubar')) return;
                 if (e.button === 0) rotating = true;
                 else if (e.button === 1 || e.button === 2) panning = true;
                 px = e.clientX; py = e.clientY;
@@ -621,7 +532,7 @@ function renderMapEditor(terrainData, fname, threeSrc, texUris, mapInfo) {
                 try { domEl.releasePointerCapture(e.pointerId); } catch(_) {}
             });
             domEl.addEventListener('wheel', e => {
-                if (e.target.closest('.float-window')) return;
+                if (e.target.closest('float-window')) return;
                 e.preventDefault();
                 zoomFactor *= e.deltaY > 0 ? 1.1 : 0.9;
             }, {passive: false});

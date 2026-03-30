@@ -110,6 +110,10 @@ async function resolveBlpEditor(document, webviewPanel, _token, client) {
             transition: background-color 0.2s ease-in-out;
         }
 
+        .toggle-container input[type="checkbox"]:focus-visible {
+            box-shadow: 0 0 0 1.5px var(--vscode-focusBorder, #007acc);
+        }
+
         .toggle-container input[type="checkbox"]::before {
             content: "";
             position: absolute;

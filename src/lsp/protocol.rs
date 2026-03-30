@@ -237,6 +237,10 @@ pub enum MethodCall {
     #[serde(rename = "w3e/gamePath/status")]
     W3eGamePathStatus(serde_json::Value),
 
+    /// W3E terrain SLK lookup
+    #[serde(rename = "w3e/terrainSlk")]
+    W3eTerrainSlk(W3eTerrainSlkParams),
+
     /// Debug init data request
     #[serde(rename = "custom/debugInit")]
     DebugInit(serde_json::Value),
@@ -323,5 +327,14 @@ pub struct DebugLogEnableParams {
 pub struct W3eGamePathSetParams {
     /// Absolute filesystem path to the Warcraft III installation folder.
     pub game_path: String,
+}
+
+/// Params for `w3e/terrainSlk` — request terrain SLK tile metadata.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3eTerrainSlkParams {
+    /// Optional archive path (for looking up SLK inside the map archive).
+    #[serde(default)]
+    pub archive_path: Option<String>,
 }
 

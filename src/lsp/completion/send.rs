@@ -636,6 +636,41 @@ fn collect_locals(
                         });
                     }
                 }
+            } else if child.kind_id() == Kind::VarStmt as u16 {
+                // Variable declaration without `local` keyword (e.g. `integer a, b = 5`)
+                let type_node = child.child_by_field_id(Field::Type as u16);
+                let ltype = type_node.as_ref().map(|tn| node_text_from_rope(rope, tn)).unwrap_or_default();
+                let is_array = has_array_keyword(&child);
+                let cc = child.child_count();
+                for j in 0..cc {
+                    if let Some(decl) = child.child(j as u32) {
+                        if decl.kind_id() == Kind::VarDecl as u16 {
+                            if let Some(nn) = decl.child_by_field_id(Field::Name as u16) {
+                                let lname = node_text_from_rope(rope, &nn);
+                                if !lname.is_empty() && seen.insert(lname.clone()) {
+                                    let (insert_text, insert_text_format) = if is_array {
+                                        (Some(format!("{}[$1]$0", lname)), Some(InsertTextFormat::Snippet))
+                                    } else {
+                                        (None, None)
+                                    };
+                                    let detail = if is_array {
+                                        format!("local {} array", ltype)
+                                    } else {
+                                        format!("local {}", ltype)
+                                    };
+                                    items.push(CompletionItem {
+                                        label: lname.clone(),
+                                        kind: Some(CompletionItemKind::Variable),
+                                        detail: Some(detail),
+                                        insert_text,
+                                        insert_text_format,
+                                        sort_text: Some(format!("0{}", lname)),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

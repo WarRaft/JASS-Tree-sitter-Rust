@@ -1,4 +1,5 @@
 use crate::lng::w3e::parse::W3eData;
+use crate::lng::w3e::slk::load_terrain_slk;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
@@ -75,6 +76,19 @@ async fn _send(
         let (data, meta) = W3eData::read(&buf)?;
         let mut val = to_value(data)?;
         val["_meta"] = to_value(meta)?;
+
+        // Attach terrain SLK tile metadata (blocking FS/MPQ reads).
+        let ap2 = archive_path.map(|s| s.to_string());
+        let slk = tokio::task::spawn_blocking(move || {
+            load_terrain_slk(ap2.as_deref())
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(slk_data) = slk {
+            val["_terrainSlk"] = to_value(slk_data)?;
+        }
+
         Ok(val)
     } else {
         // Standalone file — read from disk.
@@ -83,6 +97,18 @@ async fn _send(
         let (data, meta) = W3eData::read(&buf)?;
         let mut val = to_value(data)?;
         val["_meta"] = to_value(meta)?;
+
+        // Attach terrain SLK tile metadata.
+        let slk = tokio::task::spawn_blocking(move || {
+            load_terrain_slk(None)
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(slk_data) = slk {
+            val["_terrainSlk"] = to_value(slk_data)?;
+        }
+
         Ok(val)
     }
 }

@@ -32,9 +32,7 @@ pub struct W3ePoint {
     pub ground_variation: u8,
     /// Cliff variation (upper 3 bits).
     pub cliff_variation: u8,
-    /// Layer height (lower 4 bits).  Gameplay-only, does not affect the mesh.
-    #[serde(skip_serializing)]
-    #[allow(dead_code)]
+    /// Layer height (lower 4 bits).
     pub layer_height: u8,
     /// Cliff texture (upper 4 bits).
     pub cliff_texture: u8,

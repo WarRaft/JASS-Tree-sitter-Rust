@@ -79,6 +79,11 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         Uri.joinPath(extensionUri, 'extension', 'vendor', 'three.min.js')
     )
 
+    // ── Components URI ───────────────────────────────────────────
+    const componentsUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(extensionUri, 'extension', 'w3e', 'webview-components.js')
+    )
+
     // ── Nonce for CSP ────────────────────────────────────────────
     const nonce = crypto.randomBytes(16).toString('base64')
     const cspSource = webviewPanel.webview.cspSource
@@ -118,6 +123,39 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         mpqStatus: gamePathStatus.mpqStatus,
         nonce,
         cspSource,
+        componentsSrc: componentsUri.toString(),
+    })
+
+    // ── Game-path event dispatcher ──────────────────────────────
+    // All logic that depends on the game directory subscribes here.
+    // When the path changes we collect the data once and broadcast
+    // a single `gamePathChanged` message to the webview.
+
+    const gamePathListeners = []
+
+    function onGamePathChanged(fn) { gamePathListeners.push(fn) }
+
+    async function emitGamePathChanged(status) {
+        /** @type {Record<string,any>} */
+        const payload = {status}
+
+        // Let every listener enrich the payload with its data.
+        for (const fn of gamePathListeners) {
+            try { await fn(payload) } catch (_) {}
+        }
+
+        webviewPanel.webview.postMessage({command: 'gamePathChanged', ...payload})
+    }
+
+    // ── Listener: terrain SLK ───────────────────────────────────
+    onGamePathChanged(async (payload) => {
+        try {
+            payload.terrainSlk = await client.sendRequest('w3e/terrainSlk', {
+                archivePath: isArchive ? filePath : undefined,
+            })
+        } catch (_) {
+            payload.terrainSlk = null
+        }
     })
 
     // ── Message handling ────────────────────────────────────────
@@ -130,7 +168,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         } else if (msg.command === 'setGamePath') {
             try {
                 const status = await client.sendRequest('w3e/gamePath/set', {gamePath: msg.value})
-                webviewPanel.webview.postMessage({command: 'gamePathStatus', status})
+                await emitGamePathChanged(status)
             } catch (_) {
             }
         } else if (msg.command === 'browseGamePath') {
@@ -151,7 +189,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                         {modal: false}
                     )
                 }
-                webviewPanel.webview.postMessage({command: 'gamePathStatus', status})
+                await emitGamePathChanged(status)
             } catch (_) {
             }
         }

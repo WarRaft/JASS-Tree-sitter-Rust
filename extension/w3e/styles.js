@@ -68,6 +68,12 @@ function editorStyles() {
             white-space: nowrap;
         }
         .menu-cb:hover { background: rgba(255, 255, 255, 0.06); }
+        .menu-cb input[type="checkbox"] { outline: none; }
+        .menu-cb input[type="checkbox"]:focus-visible {
+            outline: 1.5px solid var(--vscode-focusBorder, #007acc);
+            outline-offset: 1px;
+            border-radius: 2px;
+        }
 
         /* ── Cursor info bar ────────────────────────────────────── */
         .cursor-info {
@@ -85,43 +91,14 @@ function editorStyles() {
             pointer-events: none;
         }
 
-        /* ── Floating windows ───────────────────────────────────── */
-        .float-window {
-            position: absolute;
-            z-index: 10;
-            min-width: 260px;
-            max-width: 500px;
-            background: rgba(37, 37, 38, 0.92);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 6px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            overflow: hidden;
-        }
-        .float-window.hidden { display: none; }
-        .float-title {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 6px 10px;
-            background: rgba(255, 255, 255, 0.04);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-            cursor: grab; user-select: none;
-            font-size: 12px; font-weight: 600;
-        }
-        .float-title:active { cursor: grabbing; }
-        .float-title-actions { display: flex; align-items: center; gap: 2px; }
-        .float-close, .float-action {
+        /* ── Floating window action buttons (slotted into Shadow DOM) ── */
+        .float-action {
             background: none; border: none;
             color: var(--vscode-editor-foreground, #ccc);
             cursor: pointer; font-size: 14px; line-height: 1;
             padding: 0 4px; border-radius: 3px; opacity: 0.6;
         }
-        .float-close:hover, .float-action:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
-        .float-body {
-            padding: 10px;
-            max-height: 60vh;
-            overflow-y: auto;
-        }
+        .float-action:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
 
 
         /* ── Game Path ──────────────────────────────────────────── */
@@ -192,20 +169,28 @@ function editorStyles() {
             color: var(--vscode-descriptionForeground, #888);
             margin: 8px 0 4px; text-transform: uppercase; letter-spacing: 0.5px;
         }
-        .legend { display: flex; flex-wrap: wrap; gap: 4px 8px; }
-        .legend-item { display: inline-flex; align-items: center; gap: 3px; }
-        .legend-swatch {
-            display: inline-block; width: 12px; height: 12px;
-            border-radius: 2px; border: 1px solid rgba(255, 255, 255, 0.15);
-        }
+        .legend { display: flex; flex-direction: column; gap: 4px; }
         .code {
             font-family: var(--vscode-editor-font-family, monospace);
             font-size: 11px; color: var(--vscode-textLink-foreground, #3794ff);
         }
         .terrain-checks { display: flex; flex-wrap: wrap; gap: 2px 4px; }
 
+        /* ── Tileset window ─────────────────────────────────────── */
+        .ts-source {
+            font-size: 11px;
+            color: var(--vscode-descriptionForeground, #888);
+            margin-bottom: 8px;
+            padding: 4px 6px;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 3px;
+        }
+        .ts-no-slk {
+            color: var(--vscode-errorForeground, #f48771);
+            font-style: italic;
+        }
+
         /* ── Files window ───────────────────────────────────────── */
-        .files-body { padding: 0; }
         .file-filter {
             display: block;
             width: 100%;
@@ -328,12 +313,12 @@ function editorStyles() {
         .folder-children .folder-children .folder-children .folder-row { padding-left: 64px; }
 
         /* ── Scrollbar styling ──────────────────────────────────── */
-        .float-body::-webkit-scrollbar, .files-list::-webkit-scrollbar { width: 6px; }
-        .float-body::-webkit-scrollbar-track, .files-list::-webkit-scrollbar-track { background: transparent; }
-        .float-body::-webkit-scrollbar-thumb, .files-list::-webkit-scrollbar-thumb {
+        .files-list::-webkit-scrollbar { width: 6px; }
+        .files-list::-webkit-scrollbar-track { background: transparent; }
+        .files-list::-webkit-scrollbar-thumb {
             background: rgba(255, 255, 255, 0.15); border-radius: 3px;
         }
-        .float-body::-webkit-scrollbar-thumb:hover, .files-list::-webkit-scrollbar-thumb:hover {
+        .files-list::-webkit-scrollbar-thumb:hover {
             background: rgba(255, 255, 255, 0.25);
         }
     `

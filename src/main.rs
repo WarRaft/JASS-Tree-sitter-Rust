@@ -114,6 +114,7 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::W3eRender(_) => "w3e/render",
         MethodCall::W3eGamePathSet(_) => "w3e/gamePath/set",
         MethodCall::W3eGamePathStatus(_) => "w3e/gamePath/status",
+        MethodCall::W3eTerrainSlk(_) => "w3e/terrainSlk",
         MethodCall::DebugLogEnable(_) => "custom/debugLogEnable",
         MethodCall::DebugInit(_) => "custom/debugInit",
     }
@@ -593,6 +594,29 @@ async fn main() {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
                                         result: Some(serde_json::to_value(status).unwrap_or_default()),
+                                        error: None,
+                                    },
+                                ).await;
+                            }
+
+                            MethodCall::W3eTerrainSlk(param) => {
+                                let ap = param.archive_path.clone();
+                                let slk = tokio::task::spawn_blocking(move || {
+                                    crate::lng::w3e::slk::load_terrain_slk(ap.as_deref())
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+                                let result_val = match slk {
+                                    Some(data) => serde_json::to_value(data).unwrap_or_default(),
+                                    None => serde_json::json!(null),
+                                };
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(result_val),
                                         error: None,
                                     },
                                 ).await;

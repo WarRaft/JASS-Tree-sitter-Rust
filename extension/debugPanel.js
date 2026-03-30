@@ -145,6 +145,12 @@ function getHtml() {
         cursor: pointer;
         user-select: none;
     }
+    .toolbar input[type="checkbox"] { outline: none; }
+    .toolbar input[type="checkbox"]:focus-visible {
+        outline: 1.5px solid var(--vscode-focusBorder, #007acc);
+        outline-offset: 1px;
+        border-radius: 2px;
+    }
     .toolbar .spacer { flex: 1; }
     .toolbar .count {
         opacity: 0.6;
