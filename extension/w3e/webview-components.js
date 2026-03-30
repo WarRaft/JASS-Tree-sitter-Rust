@@ -143,7 +143,7 @@ customElements.define('float-window', FloatWindow);
 
 class TileItem extends HTMLElement {
     static get observedAttributes() {
-        return ['index', 'code', 'tile-name', 'tile-path', 'swatch-color'];
+        return ['index', 'code', 'tile-name', 'tile-path', 'swatch-color', 'tile-preview'];
     }
 
     constructor() {
@@ -245,6 +245,16 @@ class TileItem extends HTMLElement {
         const idx = this.getAttribute('index') || '';
         const code = this.getAttribute('code') || '';
         const color = this.getAttribute('swatch-color') || '';
+        const preview = this.getAttribute('tile-preview') || '';
+
+        const previewEl = s.getElementById('preview');
+        if (preview) {
+            previewEl.style.backgroundImage = 'url(' + preview + ')';
+            previewEl.style.backgroundSize = 'cover';
+        } else {
+            previewEl.style.backgroundImage = '';
+            previewEl.style.backgroundSize = '';
+        }
 
         const badge = s.getElementById('badge');
         if (color) {

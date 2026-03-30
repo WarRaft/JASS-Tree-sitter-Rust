@@ -1,5 +1,6 @@
 use crate::lng::w3e::parse::W3eData;
 use crate::lng::w3e::slk::load_terrain_slk;
+use crate::lng::w3e::textures::load_tile_textures;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
@@ -74,19 +75,25 @@ async fn _send(
         .map_err(|e| format!("spawn_blocking: {e}"))??;
 
         let (data, meta) = W3eData::read(&buf)?;
+        let ground_tiles = data.ground_tiles.clone();
         let mut val = to_value(data)?;
         val["_meta"] = to_value(meta)?;
 
         // Attach terrain SLK tile metadata (blocking FS/MPQ reads).
         let ap2 = archive_path.map(|s| s.to_string());
-        let slk = tokio::task::spawn_blocking(move || {
-            load_terrain_slk(ap2.as_deref())
+        let slk_and_tex = tokio::task::spawn_blocking(move || {
+            let slk = load_terrain_slk(ap2.as_deref());
+            let tex = load_tile_textures(&ground_tiles, slk.as_ref(), ap2.as_deref());
+            (slk, tex)
         })
         .await
-        .ok()
-        .flatten();
-        if let Some(slk_data) = slk {
-            val["_terrainSlk"] = to_value(slk_data)?;
+        .ok();
+
+        if let Some((slk, tex)) = slk_and_tex {
+            if let Some(slk_data) = slk {
+                val["_terrainSlk"] = to_value(slk_data)?;
+            }
+            val["_tileTextures"] = to_value(tex)?;
         }
 
         Ok(val)
@@ -95,18 +102,24 @@ async fn _send(
         let path = uri.to_file_path().map_err(|()| "Invalid file URI")?;
         let buf = tokio::fs::read(&path).await?;
         let (data, meta) = W3eData::read(&buf)?;
+        let ground_tiles = data.ground_tiles.clone();
         let mut val = to_value(data)?;
         val["_meta"] = to_value(meta)?;
 
-        // Attach terrain SLK tile metadata.
-        let slk = tokio::task::spawn_blocking(move || {
-            load_terrain_slk(None)
+        // Attach terrain SLK tile metadata and textures.
+        let slk_and_tex = tokio::task::spawn_blocking(move || {
+            let slk = load_terrain_slk(None);
+            let tex = load_tile_textures(&ground_tiles, slk.as_ref(), None);
+            (slk, tex)
         })
         .await
-        .ok()
-        .flatten();
-        if let Some(slk_data) = slk {
-            val["_terrainSlk"] = to_value(slk_data)?;
+        .ok();
+
+        if let Some((slk, tex)) = slk_and_tex {
+            if let Some(slk_data) = slk {
+                val["_terrainSlk"] = to_value(slk_data)?;
+            }
+            val["_tileTextures"] = to_value(tex)?;
         }
 
         Ok(val)

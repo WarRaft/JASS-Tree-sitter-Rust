@@ -1,7 +1,6 @@
 // noinspection NpmUsedModulesInstalled
 const {Uri, commands, window} = require('vscode')
 const crypto = require('crypto')
-const fs = require('fs')
 const path = require('path')
 const {MpqFileSystemProvider} = require('../mpqFileSystemProvider.js')
 
@@ -84,21 +83,15 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         Uri.joinPath(extensionUri, 'extension', 'w3e', 'webview-components.js')
     )
 
+    // ── Terrain script URI ──────────────────────────────────────
+    const terrainUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(extensionUri, 'extension', 'w3e', 'terrain.js')
+    )
+
     // ── Nonce for CSP ────────────────────────────────────────────
     const nonce = crypto.randomBytes(16).toString('base64')
     const cspSource = webviewPanel.webview.cspSource
 
-    // ── Textures ────────────────────────────────────────────────
-    const texDir = path.join(extensionUri.fsPath, 'extension', 'assets', 'TexturePack')
-    let texUris = []
-    try {
-        texUris = fs.readdirSync(texDir)
-            .filter(f => f.toLowerCase().endsWith('.jpg'))
-            .map(f => webviewPanel.webview.asWebviewUri(
-                Uri.joinPath(extensionUri, 'extension', 'assets', 'TexturePack', f)
-            ).toString())
-    } catch (_) {
-    }
 
     // ── Game path status from server ────────────────────────────
     let gamePathStatus = {gamePath: '', hasPath: false, mpqStatus: null, allPresent: false}
@@ -111,7 +104,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     const archiveFiles = isArchive && archiveInfo ? (archiveInfo.files || []) : null
     const archiveHeader = isArchive && archiveInfo ? (archiveInfo.header || null) : null
 
-    webviewPanel.webview.html = renderMapEditor(terrainData, fname, threeUri.toString(), texUris, {
+    webviewPanel.webview.html = renderMapEditor(terrainData, fname, threeUri.toString(), {
         mapName,
         binaries,
         currentFile: fname,
@@ -124,6 +117,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         nonce,
         cspSource,
         componentsSrc: componentsUri.toString(),
+        terrainSrc: terrainUri.toString(),
     })
 
     // ── Game-path event dispatcher ──────────────────────────────
