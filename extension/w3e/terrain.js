@@ -153,53 +153,131 @@
             applyHeights()
 
             // ── Colour fallback texture ──────────────────────────
-            // (W-1)×(H-1) pixels — one pixel per cell, NOT per point.
-            // Each cell takes its colour from the bottom-left corner
-            // point's groundTexture: idx = cy * W + cx.
-            // DataTexture pixel (0,0) → UV (0,0) → bottom-left of geometry.
+            // (W-1)×(H-1) cells rendered with the same transition
+            // algorithm as tile textures, but filled with palette colours.
             const cellsX = W - 1
             const cellsY = H - 1
-            const texData = new Uint8Array(cellsX * cellsY * 4)
-            const dataTex = new THREE.DataTexture(texData, cellsX, cellsY)
-            dataTex.format = THREE.RGBAFormat
-            dataTex.magFilter = THREE.NearestFilter
-            dataTex.minFilter = THREE.NearestFilter
+
+            // ── Transition shape polygons ────────────────────────
+            // Each of the 16 sub-tiles is defined as a polygon in
+            // normalised [0..1] cell coordinates:
+            //
+            //   A(0,0)──B(1,0)     Edge cut points at 25%:
+            //    │       │          Top:    AB(.25,0)   BA(.75,0)
+            //   D(0,1)──C(1,1)     Right:  BC(1,.25)   CB(1,.75)
+            //                       Bottom: CD(.75,1)   DC(.25,1)
+            //                       Left:   DA(0,.75)   AD(0,.25)
+            //
+            //  1: ABCD    2: C       3: D       4: CD
+            //  5: B       6: BC      7: BD      8: BCD
+            //  9: A      10: AC     11: AD     12: ACD
+            // 13: AB     14: ABC    15: ABD    16: ABCD
+            const TRANSITION_SHAPES = [
+                null,                                                    // 0: unused
+                [[0,0],[1,0],[1,1],[0,1]],                               // 1: ABCD
+                [[1,.75],[1,1],[.75,1]],                                 // 2: C
+                [[.25,1],[0,1],[0,.75]],                                 // 3: D
+                [[0,.75],[0,1],[1,1],[1,.75]],                           // 4: CD
+                [[.75,0],[1,0],[1,.25]],                                 // 5: B
+                [[.75,0],[1,0],[1,1],[.75,1]],                           // 6: BC
+                [[.75,0],[1,0],[1,.25],[0,.75],[0,1],[.25,1]],           // 7: BD
+                [[.25,0],[1,0],[1,1],[0,1],[0,.25]],                     // 8: BCD
+                [[0,0],[.25,0],[0,.25]],                                 // 9: A
+                [[0,0],[.25,0],[1,.75],[1,1],[.75,1],[0,.25]],           // 10: AC
+                [[0,0],[.25,0],[.25,1],[0,1]],                           // 11: AD
+                [[0,0],[.75,0],[1,.25],[1,1],[0,1]],                     // 12: ACD
+                [[0,0],[1,0],[1,.25],[0,.25]],                           // 13: AB
+                [[0,0],[1,0],[1,1],[.25,1],[0,.75]],                     // 14: ABC
+                [[0,0],[1,0],[1,.75],[.75,1],[0,1]],                     // 15: ABD
+                [[0,0],[1,0],[1,1],[0,1]],                               // 16: ABCD
+            ]
+
+            const COLOR_CPX = 32
+            const colorCanvas = document.createElement('canvas')
+            colorCanvas.width = cellsX * COLOR_CPX
+            colorCanvas.height = cellsY * COLOR_CPX
+            const colorTex = new THREE.CanvasTexture(colorCanvas)
+            colorTex.magFilter = THREE.LinearFilter
+            colorTex.minFilter = THREE.LinearFilter
 
             function applyColors() {
+                const ctx = colorCanvas.getContext('2d')
+                ctx.clearRect(0, 0, colorCanvas.width, colorCanvas.height)
+
                 for (let cy = 0; cy < cellsY; cy++) {
                     for (let cx = 0; cx < cellsX; cx++) {
-                        const idx = cy * W + cx
-                        const ti = D.groundTexture[idx]
-                        const col = palette[ti] || [0.5, 0.5, 0.5]
-                        let r = col[0], g = col[1], b = col[2]
-                        if (showWater && D.waterFlag[idx]) {
-                            r *= 0.35
-                            g *= 0.35
-                            b = Math.min(1, b * 0.35 + 0.6)
+                        const iBL = cy * W + cx
+                        const iBR = cy * W + cx + 1
+                        const iTL = (cy + 1) * W + cx
+                        const iTR = (cy + 1) * W + cx + 1
+
+                        const bl = D.groundTexture[iBL]
+                        const br = D.groundTexture[iBR]
+                        const tl = D.groundTexture[iTL]
+                        const tr = D.groundTexture[iTR]
+
+                        const unique = [...new Set([bl, br, tl, tr])].sort((a, b) => a - b)
+
+                        const dstX = cx * COLOR_CPX
+                        const dstY = (cellsY - 1 - cy) * COLOR_CPX
+
+                        for (let li = 0; li < unique.length; li++) {
+                            const L = unique[li]
+                            const col = palette[L] || [0.5, 0.5, 0.5]
+
+                            let mask = 0
+                            if (li === 0 && unique.length > 1) {
+                                mask = 15
+                            } else {
+                                if (bl === L) mask |= 2
+                                if (br === L) mask |= 1
+                                if (tl === L) mask |= 8
+                                if (tr === L) mask |= 4
+                            }
+
+                            if (mask === 0) continue
+
+                            const subtile = mask === 15
+                                ? 1
+                                : [0,2,3,4,5,6,7,8,9,10,11,12,13,14,15,1][mask]
+                            const shape = TRANSITION_SHAPES[subtile]
+                            if (!shape) continue
+
+                            ctx.fillStyle = 'rgb(' + Math.round(col[0] * 255) + ',' +
+                                Math.round(col[1] * 255) + ',' + Math.round(col[2] * 255) + ')'
+                            ctx.beginPath()
+                            ctx.moveTo(dstX + shape[0][0] * COLOR_CPX,
+                                       dstY + shape[0][1] * COLOR_CPX)
+                            for (let p = 1; p < shape.length; p++) {
+                                ctx.lineTo(dstX + shape[p][0] * COLOR_CPX,
+                                           dstY + shape[p][1] * COLOR_CPX)
+                            }
+                            ctx.closePath()
+                            ctx.fill()
                         }
-                        if (showBlight && D.blightFlag[idx]) {
-                            r = Math.min(1, r + 0.25)
-                            g *= 0.5
-                            b *= 0.5
+
+                        // Per-cell flag overlays (bottom-left point flags)
+                        const fi = cy * W + cx
+                        if (showWater && D.waterFlag[fi]) {
+                            ctx.fillStyle = 'rgba(0,60,200,0.4)'
+                            ctx.fillRect(dstX, dstY, COLOR_CPX, COLOR_CPX)
                         }
-                        if (showRamp && D.rampFlag[idx]) {
-                            r = Math.min(1, r + 0.15)
-                            g = Math.min(1, g + 0.15)
-                            b *= 0.6
+                        if (showBlight && D.blightFlag[fi]) {
+                            ctx.fillStyle = 'rgba(180,0,0,0.3)'
+                            ctx.fillRect(dstX, dstY, COLOR_CPX, COLOR_CPX)
                         }
-                        if (showBoundary && D.boundaryFlag[idx]) {
-                            r *= 0.3
-                            g *= 0.3
-                            b *= 0.3
+                        if (showRamp && D.rampFlag[fi]) {
+                            ctx.fillStyle = 'rgba(200,200,0,0.3)'
+                            ctx.fillRect(dstX, dstY, COLOR_CPX, COLOR_CPX)
                         }
-                        const pi = (cy * cellsX + cx) * 4
-                        texData[pi] = Math.round(r * 255)
-                        texData[pi + 1] = Math.round(g * 255)
-                        texData[pi + 2] = Math.round(b * 255)
-                        texData[pi + 3] = 255
+                        if (showBoundary && D.boundaryFlag[fi]) {
+                            ctx.fillStyle = 'rgba(0,0,0,0.6)'
+                            ctx.fillRect(dstX, dstY, COLOR_CPX, COLOR_CPX)
+                        }
                     }
                 }
-                dataTex.needsUpdate = true
+
+                colorTex.needsUpdate = true
             }
 
             applyColors()
@@ -213,7 +291,7 @@
                 }
             })
 
-            const mat = new THREE.MeshLambertMaterial({map: dataTex, side: THREE.DoubleSide})
+            const mat = new THREE.MeshLambertMaterial({map: colorTex, side: THREE.DoubleSide})
             mesh = new THREE.Mesh(geo, mat)
             scene.add(mesh)
 
@@ -586,7 +664,7 @@
             })
             cb('cbTextures', e => {
                 useTextures = e.target.checked
-                mat.map = (useTextures && canvasTex) ? canvasTex : dataTex
+                mat.map = (useTextures && canvasTex) ? canvasTex : colorTex
                 mat.needsUpdate = true
                 saveCbState()
             })

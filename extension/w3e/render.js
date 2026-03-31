@@ -2,6 +2,14 @@ const {esc, indexToRgb, TILESET_NAMES} = require('./utils.js')
 const {renderHeaderContent, renderGamePathContent, renderFilesRows} = require('./panels.js')
 const {editorStyles} = require('./styles.js')
 
+function renderMeta(meta) {
+    if (!meta) return ''
+    if (meta.remaining === 0) {
+        return `<div class="meta-banner ok">✓ All ${meta.total} bytes read</div>`
+    }
+    return `<div class="meta-banner warn">⚠ ${meta.remaining} of ${meta.total} bytes not read (parser stopped at 0x${meta.read.toString(16).toUpperCase()})</div>`
+}
+
 /**
  * Build the full HTML page for the map editor webview.
  *
@@ -102,7 +110,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 title="${mapInfo.isArchive ? 'Archive header info' : 'Available only for archives (.w3x, .w3m, .w3n, .mpq)'}">\ud83d\udce6 Header</button>
         <button class="menu-item${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="terrainWindow"' : ''}
                 title="${hasTerrain ? 'Terrain metadata' : 'No terrain data available'}">\ud83d\uddfa Terrain</button>
-        <button class="menu-item${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="tilesetWindow"' : ''}
+        <button class="menu-item menu-child${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="tilesetWindow"' : ''}
                 title="${hasTerrain ? 'Tileset info' : 'No terrain data available'}">\ud83e\uddf1 Tileset</button>
         ${mapInfo.isArchive ? '<button class="menu-item" data-action="toggleWindow" data-target="filesWindow" title="Archive file list">\ud83d\udcc2 Files</button>' : ''}
     </div>
@@ -121,6 +129,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     ${hasTerrain ? `
     <float-window id="terrainWindow" title-text="\ud83d\uddfa Terrain" hidden style="left:140px;top:16px;">
+        ${renderMeta(terrainData._meta)}
         <table class="info">
             <tr><td class="key">Magic</td><td><code>${esc(terrainData.magic)}</code></td></tr>
             <tr><td class="key">Version</td><td>${terrainData.version}</td></tr>

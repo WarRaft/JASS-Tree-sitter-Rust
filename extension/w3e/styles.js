@@ -42,7 +42,7 @@ function editorStyles() {
             border-radius: 4px;
             color: var(--vscode-editor-foreground, #ccc);
             cursor: pointer;
-            padding: 5px 10px;
+            padding: 5px 14px;
             font-family: inherit;
             font-size: 12px;
             line-height: 1;
@@ -58,6 +58,28 @@ function editorStyles() {
         .menu-item.disabled {
             opacity: 0.35;
             cursor: default;
+        }
+        .menu-child {
+            position: relative;
+            padding-left: 22px;
+        }
+        .menu-child::before {
+            content: '';
+            position: absolute;
+            left: 14px;
+            top: 0;
+            bottom: 50%;
+            width: 1px;
+            background: rgba(255, 255, 255, 0.18);
+        }
+        .menu-child::after {
+            content: '';
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            width: 6px;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.18);
         }
         .menu-sep { height: 1px; background: rgba(255, 255, 255, 0.12); margin: 4px 0; }
         .menu-cb {
@@ -320,6 +342,28 @@ function editorStyles() {
         }
         .files-list::-webkit-scrollbar-thumb:hover {
             background: rgba(255, 255, 255, 0.25);
+        }
+
+        /* ── Meta banner (bytes read) ─────────────────────────── */
+        .meta-banner {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.3rem 0.75rem;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-bottom: 0.75rem;
+            font-variant-numeric: tabular-nums;
+        }
+        .meta-banner.ok {
+            background: rgba(78, 201, 176, 0.12);
+            color: #4ec9b0;
+            border: 1px solid rgba(78, 201, 176, 0.3);
+        }
+        .meta-banner.warn {
+            background: rgba(224, 108, 64, 0.12);
+            color: #e06c40;
+            border: 1px solid rgba(224, 108, 64, 0.3);
         }
     `
 }
