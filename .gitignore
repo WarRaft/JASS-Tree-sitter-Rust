@@ -53,3 +53,4 @@ zig-out/
 # Build artifacts
 bin/
 
+/MdlVis/

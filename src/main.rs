@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use crate::lng::blp::send::send as blp_send;
 use crate::lng::doo::send::send as doo_send;
 use crate::lng::slk::send::send as slk_send;
+use crate::lng::w3abdhqtu::send::send as w3obj_send;
 use crate::lng::w3e::send::send as w3e_send;
 use crate::lng::w3i::send::send as w3i_send;
 use crate::lng::mpq::send::{send_info as mpq_info_send, send_list as mpq_list_send, send_read as mpq_read_send};
@@ -112,9 +113,12 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::DooRender(_) => "doo/render",
         MethodCall::W3iRender(_) => "w3i/render",
         MethodCall::W3eRender(_) => "w3e/render",
+        MethodCall::W3ObjRender(_) => "w3obj/render",
         MethodCall::W3eGamePathSet(_) => "w3e/gamePath/set",
         MethodCall::W3eGamePathStatus(_) => "w3e/gamePath/status",
         MethodCall::W3eTerrainSlk(_) => "w3e/terrainSlk",
+        MethodCall::W3eDoodadsSlk(_) => "w3e/doodadsSlk",
+        MethodCall::W3eUnitsSlk(_) => "w3e/unitsSlk",
         MethodCall::DebugLogEnable(_) => "custom/debugLogEnable",
         MethodCall::DebugInit(_) => "custom/debugInit",
     }
@@ -561,7 +565,7 @@ async fn main() {
                             }
 
                             MethodCall::DooRender(param) => {
-                                doo_send(&writer, call.id, &param.uri).await;
+                                doo_send(&writer, call.id, &param.uri, param.is_unit, param.archive_path.as_deref()).await;
                             }
 
                             MethodCall::W3iRender(param) => {
@@ -570,6 +574,10 @@ async fn main() {
 
                             MethodCall::W3eRender(param) => {
                                 w3e_send(&writer, call.id, &param.uri, param.archive_path.as_deref()).await;
+                            }
+
+                            MethodCall::W3ObjRender(param) => {
+                                w3obj_send(&writer, call.id, &param.uri, param.level_data, param.archive_path.as_deref()).await;
                             }
 
                             MethodCall::W3eGamePathSet(param) => {
@@ -603,6 +611,52 @@ async fn main() {
                                 let ap = param.archive_path.clone();
                                 let slk = tokio::task::spawn_blocking(move || {
                                     crate::lng::w3e::slk::load_terrain_slk(ap.as_deref())
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+                                let result_val = match slk {
+                                    Some(data) => serde_json::to_value(data).unwrap_or_default(),
+                                    None => serde_json::json!(null),
+                                };
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(result_val),
+                                        error: None,
+                                    },
+                                ).await;
+                            }
+
+                            MethodCall::W3eDoodadsSlk(param) => {
+                                let ap = param.archive_path.clone();
+                                let slk = tokio::task::spawn_blocking(move || {
+                                    crate::lng::w3e::slk::load_doodads_slk(ap.as_deref())
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+                                let result_val = match slk {
+                                    Some(data) => serde_json::to_value(data).unwrap_or_default(),
+                                    None => serde_json::json!(null),
+                                };
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(result_val),
+                                        error: None,
+                                    },
+                                ).await;
+                            }
+
+                            MethodCall::W3eUnitsSlk(param) => {
+                                let ap = param.archive_path.clone();
+                                let slk = tokio::task::spawn_blocking(move || {
+                                    crate::lng::w3e::slk::load_units_slk(ap.as_deref())
                                 })
                                 .await
                                 .ok()

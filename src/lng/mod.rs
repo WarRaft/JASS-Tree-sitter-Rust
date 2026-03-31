@@ -9,4 +9,5 @@ pub(crate) mod doo;
 pub(crate) mod mpq;
 pub(crate) mod slk;
 pub(crate) mod string_colors;
+pub(crate) mod w3abdhqtu;
 pub(crate) mod wts;

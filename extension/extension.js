@@ -8,7 +8,6 @@ const {
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
 const {resolveBlpEditor} = require('./resolveBlpEditor.js')
-const {resolveDooEditor} = require('./resolveDooEditor.js')
 const {resolveW3eEditor} = require('./w3e/index.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
@@ -434,7 +433,7 @@ module.exports = {
 
         context.subscriptions.push(
             binaryEditor('blp.preview', resolveBlpEditor),
-            binaryEditor('doo.preview', resolveDooEditor),
+            binaryEditor('doo.preview', resolveW3eEditor),
             binaryEditor('w3i.preview', resolveW3eEditor),
             binaryEditor('w3e.preview', resolveW3eEditor),
 

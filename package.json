@@ -247,6 +247,104 @@
           "dark": "./icons/slk.svg"
         },
         "configuration": "./syntaxes/slk.language-configuration.json"
+      },
+      {
+        "id": "w3a",
+        "aliases": [
+          "W3A Ability Data",
+          "W3A"
+        ],
+        "extensions": [
+          ".w3a"
+        ],
+        "icon": {
+          "light": "./icons/w3a.svg",
+          "dark": "./icons/w3a.svg"
+        }
+      },
+      {
+        "id": "w3b",
+        "aliases": [
+          "W3B Destructable Data",
+          "W3B"
+        ],
+        "extensions": [
+          ".w3b"
+        ],
+        "icon": {
+          "light": "./icons/w3b.svg",
+          "dark": "./icons/w3b.svg"
+        }
+      },
+      {
+        "id": "w3d",
+        "aliases": [
+          "W3D Doodad Data",
+          "W3D"
+        ],
+        "extensions": [
+          ".w3d"
+        ],
+        "icon": {
+          "light": "./icons/w3d.svg",
+          "dark": "./icons/w3d.svg"
+        }
+      },
+      {
+        "id": "w3h",
+        "aliases": [
+          "W3H Buff Data",
+          "W3H"
+        ],
+        "extensions": [
+          ".w3h"
+        ],
+        "icon": {
+          "light": "./icons/w3h.svg",
+          "dark": "./icons/w3h.svg"
+        }
+      },
+      {
+        "id": "w3q",
+        "aliases": [
+          "W3Q Upgrade Data",
+          "W3Q"
+        ],
+        "extensions": [
+          ".w3q"
+        ],
+        "icon": {
+          "light": "./icons/w3q.svg",
+          "dark": "./icons/w3q.svg"
+        }
+      },
+      {
+        "id": "w3t",
+        "aliases": [
+          "W3T Item Data",
+          "W3T"
+        ],
+        "extensions": [
+          ".w3t"
+        ],
+        "icon": {
+          "light": "./icons/w3t.svg",
+          "dark": "./icons/w3t.svg"
+        }
+      },
+      {
+        "id": "w3u",
+        "aliases": [
+          "W3U Unit Data",
+          "W3U"
+        ],
+        "extensions": [
+          ".w3u"
+        ],
+        "icon": {
+          "light": "./icons/w3u.svg",
+          "dark": "./icons/w3u.svg"
+        }
       }
     ],
     "configurationDefaults": {

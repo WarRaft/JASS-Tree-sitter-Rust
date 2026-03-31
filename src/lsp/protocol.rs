@@ -69,7 +69,7 @@ pub enum MethodCall {
 
     /// DOO
     #[serde(rename = "doo/render")]
-    DooRender(TextDocumentIdentifier),
+    DooRender(DooRenderParams),
 
     /// W3I
     #[serde(rename = "w3i/render")]
@@ -78,6 +78,10 @@ pub enum MethodCall {
     /// W3E
     #[serde(rename = "w3e/render")]
     W3eRender(W3eRenderParams),
+
+    /// W3 Object Data (.w3a/.w3b/.w3d/.w3h/.w3q/.w3t/.w3u)
+    #[serde(rename = "w3obj/render")]
+    W3ObjRender(W3ObjRenderParams),
 
     /// LSP
     #[serde(rename = "initialize")]
@@ -241,6 +245,14 @@ pub enum MethodCall {
     #[serde(rename = "w3e/terrainSlk")]
     W3eTerrainSlk(W3eTerrainSlkParams),
 
+    /// W3E doodads SLK lookup
+    #[serde(rename = "w3e/doodadsSlk")]
+    W3eDoodadsSlk(W3eDoodadsSlkParams),
+
+    /// W3E units SLK lookup
+    #[serde(rename = "w3e/unitsSlk")]
+    W3eUnitsSlk(W3eUnitsSlkParams),
+
     /// Debug init data request
     #[serde(rename = "custom/debugInit")]
     DebugInit(serde_json::Value),
@@ -279,6 +291,19 @@ pub struct MpqReadParams {
     pub archive_path: String,
     /// Internal path inside the archive (e.g. "war3map.j").
     pub file_path: String,
+}
+
+/// Params for `doo/render`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DooRenderParams {
+    pub uri: Url,
+    /// Whether this is a unit file (`war3mapUnits.doo`) vs doodad file (`war3map.doo`).
+    #[serde(default)]
+    pub is_unit: bool,
+    /// When opened from an MPQ archive, the absolute path to the archive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<String>,
 }
 
 /// Params for `w3i/render`.
@@ -335,6 +360,39 @@ pub struct W3eGamePathSetParams {
 pub struct W3eTerrainSlkParams {
     /// Optional archive path (for looking up SLK inside the map archive).
     #[serde(default)]
+    pub archive_path: Option<String>,
+}
+
+/// Params for `w3e/doodadsSlk` — request doodads SLK metadata.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3eDoodadsSlkParams {
+    /// Optional archive path (for looking up SLK inside the map archive).
+    #[serde(default)]
+    pub archive_path: Option<String>,
+}
+
+/// Params for `w3e/unitsSlk` — request units SLK metadata.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3eUnitsSlkParams {
+    /// Optional archive path (for looking up SLK inside the map archive).
+    #[serde(default)]
+    pub archive_path: Option<String>,
+}
+
+/// Params for `w3obj/render` — render object-data files
+/// (`.w3a`, `.w3b`, `.w3d`, `.w3h`, `.w3q`, `.w3t`, `.w3u`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3ObjRenderParams {
+    pub uri: Url,
+    /// Whether this format uses level-based modifications
+    /// (`true` for `.w3a`, `.w3d`, `.w3q`).
+    #[serde(default)]
+    pub level_data: bool,
+    /// When opened from an MPQ archive, the absolute path to the archive.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub archive_path: Option<String>,
 }
 

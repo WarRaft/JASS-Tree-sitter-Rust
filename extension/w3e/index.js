@@ -23,6 +23,8 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     const isMap = ext === 'w3x' || ext === 'w3m'
     const isW3i = ext === 'w3i'
     const isW3e = ext === 'w3e'
+    const isDoo = ext === 'doo'
+    const isDooUnit = isDoo && fname.toLowerCase().includes('units')
 
     // Detect whether the archive path points to a real file or an extracted folder.
     let isArchiveFile = false
@@ -35,6 +37,8 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
 
     let terrainData = null
     let w3iData = null
+    let unitDooData = null
+    let doodadDooData = null
     let archiveInfo = null
     let mapName = null
     let binaries = []
@@ -66,6 +70,28 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
             })
             if (!result.error) w3iData = result
             else if (result.format != null) w3iData = result // partial data with _error
+        } catch (_) {
+        }
+
+        // ── 4. Load unit DOO from archive ─────────────────────────
+        try {
+            const result = await client.sendRequest('doo/render', {
+                uri: document.uri.toString(),
+                isUnit: true,
+                archivePath: filePath,
+            })
+            if (!result.error) unitDooData = result
+        } catch (_) {
+        }
+
+        // ── 5. Load doodad DOO from archive ───────────────────────
+        try {
+            const result = await client.sendRequest('doo/render', {
+                uri: document.uri.toString(),
+                isUnit: false,
+                archivePath: filePath,
+            })
+            if (!result.error) doodadDooData = result
         } catch (_) {
         }
 
@@ -109,6 +135,56 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                 }
             }
         }
+
+        // Try to load DOO from the same map directory
+        await _loadDooFromMapRoot(mapRoot, client)
+    } else if (isDoo) {
+        // ── .doo file ────────────────────────────────────────────
+        const params = {uri: document.uri.toString(), isUnit: isDooUnit}
+        if (document._mpqArchivePath) params.archivePath = document._mpqArchivePath
+
+        const result = await client.sendRequest('doo/render', params)
+        if (result.error) {
+            webviewPanel.webview.html = errorHtml(result.error.message)
+            return
+        }
+        if (isDooUnit) unitDooData = result
+        else doodadDooData = result
+
+        const mapRoot = findMapRoot(filePath)
+        mapName = mapRoot ? path.basename(mapRoot) : null
+        binaries = mapRoot ? scanMapBinaries(mapRoot) : []
+
+        // Try to load terrain from the same map directory
+        if (mapRoot) {
+            const fs = require('fs')
+            const w3ePath = path.join(mapRoot, 'war3map.w3e')
+            if (fs.existsSync(w3ePath)) {
+                try {
+                    const tResult = await client.sendRequest('w3e/render', {
+                        uri: Uri.file(w3ePath).toString(),
+                    })
+                    if (!tResult.error) terrainData = tResult
+                } catch (_) {
+                }
+            }
+
+            // Try to load w3i from the same map directory
+            const w3iPath = path.join(mapRoot, 'war3map.w3i')
+            if (fs.existsSync(w3iPath)) {
+                try {
+                    const iResult = await client.sendRequest('w3i/render', {
+                        uri: Uri.file(w3iPath).toString(),
+                    })
+                    if (!iResult.error) w3iData = iResult
+                    else if (iResult.format != null) w3iData = iResult
+                } catch (_) {
+                }
+            }
+
+            // Load the other DOO file
+            await _loadDooFromMapRoot(mapRoot, client)
+        }
     } else {
         // ── .w3e file ───────────────────────────────────────────
         const params = {uri: document.uri.toString()}
@@ -136,6 +212,43 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                     })
                     if (!iResult.error) w3iData = iResult
                     else if (iResult.format != null) w3iData = iResult
+                } catch (_) {
+                }
+            }
+        }
+
+        // Try to load DOO from the same map directory
+        await _loadDooFromMapRoot(mapRoot, client)
+    }
+
+    // Helper: load DOO files from a map root directory
+    async function _loadDooFromMapRoot(mapRoot, client) {
+        if (!mapRoot) return
+        const fs = require('fs')
+
+        if (!unitDooData) {
+            const unitPath = path.join(mapRoot, 'war3mapUnits.doo')
+            if (fs.existsSync(unitPath)) {
+                try {
+                    const r = await client.sendRequest('doo/render', {
+                        uri: Uri.file(unitPath).toString(),
+                        isUnit: true,
+                    })
+                    if (!r.error) unitDooData = r
+                } catch (_) {
+                }
+            }
+        }
+
+        if (!doodadDooData) {
+            const doodadPath = path.join(mapRoot, 'war3map.doo')
+            if (fs.existsSync(doodadPath)) {
+                try {
+                    const r = await client.sendRequest('doo/render', {
+                        uri: Uri.file(doodadPath).toString(),
+                        isUnit: false,
+                    })
+                    if (!r.error) doodadDooData = r
                 } catch (_) {
                 }
             }
@@ -182,9 +295,13 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         isMap,
         isW3i,
         isW3e,
+        isDoo,
+        isDooUnit,
         archiveFiles,
         archiveHeader,
         w3iData,
+        unitDooData,
+        doodadDooData,
         gamePath: gamePathStatus.gamePath,
         mpqStatus: gamePathStatus.mpqStatus,
         nonce,
@@ -222,6 +339,28 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
             })
         } catch (_) {
             payload.terrainSlk = null
+        }
+    })
+
+    // ── Listener: doodads SLK ───────────────────────────────────
+    onGamePathChanged(async (payload) => {
+        try {
+            payload.doodadsSlk = await client.sendRequest('w3e/doodadsSlk', {
+                archivePath: isArchive ? filePath : undefined,
+            })
+        } catch (_) {
+            payload.doodadsSlk = null
+        }
+    })
+
+    // ── Listener: units SLK ─────────────────────────────────────
+    onGamePathChanged(async (payload) => {
+        try {
+            payload.unitsSlk = await client.sendRequest('w3e/unitsSlk', {
+                archivePath: isArchive ? filePath : undefined,
+            })
+        } catch (_) {
+            payload.unitsSlk = null
         }
     })
 

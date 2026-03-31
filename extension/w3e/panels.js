@@ -438,4 +438,104 @@ function renderW3iContent(d) {
     ${itemsHtml}`
 }
 
-module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, REQUIRED_MPQ_FILES}
+// ── DOO Meta banner ─────────────────────────────────────────────────
+function renderDooMeta(meta) {
+    if (!meta) return ''
+    if (meta.remaining === 0) {
+        return `<div class="meta-banner ok">✓ All ${meta.total} bytes read</div>`
+    }
+    return `<div class="meta-banner warn">⚠ ${meta.remaining} of ${meta.total} bytes not read</div>`
+}
+
+// ── DOO content for float-window ────────────────────────────────────
+function renderDooContent(data, isUnit) {
+    if (!data) return '<div class="fi-empty">No data</div>'
+
+    const metaHtml = renderDooMeta(data._meta)
+
+    const errorHtml = data._error
+        ? `<div class="meta-banner error">✕ Parse error: ${esc(data._error)}</div>`
+        : ''
+
+    // ── Header info
+    const headerRows = [
+        ['Magic', `<code>${esc(data.magic)}</code>`],
+        ['Format', data.format],
+        ['Sub-format', data.subformat],
+        ['Items', data.items ? data.items.length : 0],
+    ]
+    if (data.cliffs) headerRows.push(['Cliffs', data.cliffs.length])
+
+    const headerHtml = headerRows.map(([k, v]) =>
+        `<tr><td class="key">${k}</td><td>${v}</td></tr>`
+    ).join('')
+
+    // ── Items table
+    let itemsHtml = ''
+    if (data.items && data.items.length > 0) {
+        const cols = isUnit
+            ? ['#', 'Rawcode', 'Skin', 'Var', 'Position', 'Angle°', 'Scale', 'Flag', 'Player']
+            : ['#', 'Rawcode', 'Skin', 'Var', 'Position', 'Angle°', 'Scale', 'Flag', 'HP', 'Num']
+
+        const thead = cols.map(c => `<th>${c}</th>`).join('')
+
+        const tbody = data.items.map((it, i) => {
+            const pos = `${fmtF(it.position.x)}, ${fmtF(it.position.y)}, ${fmtF(it.position.z)}`
+            const angle = fmtF(it.angle != null ? it.angle * 180 / Math.PI : null)
+            const scale = `${fmtF(it.scale.x)}, ${fmtF(it.scale.y)}, ${fmtF(it.scale.z)}`
+            const skin = it.skin != null ? esc(String(it.skin)) : '—'
+            const flag = it.flag != null ? esc(JSON.stringify(it.flag)) : '—'
+
+            let extra = ''
+            if (isUnit && it.unit) {
+                extra = `<td>${it.unit.player}</td>`
+            } else if (!isUnit && it.doodad) {
+                extra = `<td>${it.doodad.health}</td><td>${it.doodad.num}</td>`
+            } else {
+                extra = isUnit ? '<td>—</td>' : '<td>—</td><td>—</td>'
+            }
+
+            return `<tr>
+                <td class="num">${i + 1}</td>
+                <td class="code">${esc(it.rawcode)}</td>
+                <td class="code">${skin}</td>
+                <td class="num">${it.variation}</td>
+                <td class="mono">${pos}</td>
+                <td class="num">${angle}</td>
+                <td class="mono">${scale}</td>
+                <td>${flag}</td>
+                ${extra}
+            </tr>`
+        }).join('')
+
+        itemsHtml = `
+        <div class="tw-section-title">${isUnit ? '🗡 Units' : '🌳 Doodads'} (${data.items.length})</div>
+        <div class="table-wrap"><table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>`
+    }
+
+    // ── Cliffs table
+    let cliffsHtml = ''
+    if (data.cliffs && data.cliffs.length > 0) {
+        const chead = ['#', 'Rawcode', 'Variation', 'X', 'Y'].map(c => `<th>${c}</th>`).join('')
+        const cbody = data.cliffs.map((c, i) => `<tr>
+            <td class="num">${i + 1}</td>
+            <td class="code">${esc(c.rawcode)}</td>
+            <td class="num">${c.variation}</td>
+            <td class="num">${c.x}</td>
+            <td class="num">${c.y}</td>
+        </tr>`).join('')
+
+        cliffsHtml = `
+        <div class="tw-section-title">🏔 Cliffs (${data.cliffs.length})</div>
+        <div class="table-wrap"><table><thead><tr>${chead}</tr></thead><tbody>${cbody}</tbody></table></div>`
+    }
+
+    return `
+    ${metaHtml}
+    ${errorHtml}
+    <table class="info">${headerHtml}</table>
+    ${itemsHtml}
+    ${cliffsHtml}`
+}
+
+module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent, REQUIRED_MPQ_FILES}

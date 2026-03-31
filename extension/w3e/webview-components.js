@@ -13,22 +13,26 @@ class FloatWindow extends HTMLElement {
 
     constructor() {
         super();
+        // Height of the bottom cursor-info bar (min-height:24 + padding:4*2 + border:1)
+        this._BOTTOM_BAR = 33;
+
         const shadow = this.attachShadow({mode: 'open'});
         shadow.innerHTML = `
 <style>
 :host {
     position: absolute;
     z-index: 10;
-    min-width: 260px;
-    max-width: 500px;
+    min-width: 200px;
+    min-height: 120px;
+    max-height: calc(100vh - 65px);
     background: rgba(37, 37, 38, 0.92);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 6px;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    overflow: hidden;
-    display: block;
+    display: flex;
+    flex-direction: column;
     font-family: var(--vscode-font-family, 'Segoe UI', sans-serif);
     font-size: 13px;
     color: var(--vscode-editor-foreground, #ccc);
@@ -41,6 +45,7 @@ class FloatWindow extends HTMLElement {
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     cursor: grab; user-select: none;
     font-size: 12px; font-weight: 600;
+    flex-shrink: 0;
 }
 .title:active { cursor: grabbing; }
 .title-label { flex: 1; }
@@ -54,14 +59,34 @@ class FloatWindow extends HTMLElement {
 .close:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
 .body {
     padding: 10px;
-    max-height: 60vh;
     overflow-y: auto;
+    flex: 1;
+    min-height: 0;
 }
 :host([no-padding]) .body { padding: 0; }
 .body::-webkit-scrollbar { width: 6px; }
 .body::-webkit-scrollbar-track { background: transparent; }
 .body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
 .body::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+.resize-grip {
+    position: absolute;
+    right: 0; bottom: 0;
+    width: 16px; height: 16px;
+    cursor: nwse-resize;
+    z-index: 1;
+}
+.resize-grip::after {
+    content: '';
+    position: absolute;
+    right: 3px; bottom: 3px;
+    width: 8px; height: 8px;
+    border-right: 2px solid rgba(255,255,255,0.25);
+    border-bottom: 2px solid rgba(255,255,255,0.25);
+    border-radius: 0 0 2px 0;
+}
+.resize-grip:hover::after {
+    border-color: rgba(255,255,255,0.5);
+}
 </style>
 <div class="title" id="titleBar">
     <span class="title-label" id="titleText"></span>
@@ -70,10 +95,12 @@ class FloatWindow extends HTMLElement {
         <button class="close" id="closeBtn">\u00d7</button>
     </div>
 </div>
-<div class="body"><slot></slot></div>`;
+<div class="body"><slot></slot></div>
+<div class="resize-grip" id="resizeGrip"></div>`;
 
         this._titleEl = shadow.getElementById('titleText');
         this._titleBar = shadow.getElementById('titleBar');
+        this._resizeGrip = shadow.getElementById('resizeGrip');
 
         // Close
         shadow.getElementById('closeBtn').addEventListener('click', () => this.hide());
@@ -91,13 +118,49 @@ class FloatWindow extends HTMLElement {
         });
         this._titleBar.addEventListener('pointermove', e => {
             if (!dragging) return;
-            this.style.left = (ox + e.clientX - sx) + 'px';
-            this.style.top = (oy + e.clientY - sy) + 'px';
+            let newLeft = ox + e.clientX - sx;
+            let newTop = oy + e.clientY - sy;
+            const vb = window.innerHeight - this._BOTTOM_BAR;
+            const vw = window.innerWidth;
+            newTop = Math.max(0, Math.min(newTop, vb - 40));
+            newLeft = Math.max(40 - this.offsetWidth, Math.min(newLeft, vw - 40));
+            this.style.left = newLeft + 'px';
+            this.style.top = newTop + 'px';
             this.style.right = 'auto';
         });
         this._titleBar.addEventListener('pointerup', e => {
             dragging = false;
             this._titleBar.releasePointerCapture(e.pointerId);
+            this._clampToViewport();
+        });
+
+        // Resize
+        let resizing = false, rsx = 0, rsy = 0, rw = 0, rh = 0;
+        this._resizeGrip.addEventListener('pointerdown', e => {
+            resizing = true;
+            rsx = e.clientX; rsy = e.clientY;
+            rw = this.offsetWidth; rh = this.offsetHeight;
+            this._resizeGrip.setPointerCapture(e.pointerId);
+            e.preventDefault();
+            e.stopPropagation();
+            this._bringToFront();
+        });
+        this._resizeGrip.addEventListener('pointermove', e => {
+            if (!resizing) return;
+            const vb = window.innerHeight - this._BOTTOM_BAR;
+            const vw = window.innerWidth;
+            const elLeft = this.offsetLeft;
+            const elTop = this.offsetTop;
+            const maxW = Math.max(200, vw - elLeft);
+            const maxH = Math.max(120, vb - elTop);
+            const newW = Math.min(maxW, Math.max(200, rw + e.clientX - rsx));
+            const newH = Math.min(maxH, Math.max(120, rh + e.clientY - rsy));
+            this.style.width = newW + 'px';
+            this.style.height = newH + 'px';
+        });
+        this._resizeGrip.addEventListener('pointerup', e => {
+            resizing = false;
+            this._resizeGrip.releasePointerCapture(e.pointerId);
         });
     }
 
@@ -112,6 +175,7 @@ class FloatWindow extends HTMLElement {
     show() {
         this.removeAttribute('hidden');
         this._bringToFront();
+        this._clampToViewport();
         this._notifyToggle();
     }
 
@@ -123,6 +187,35 @@ class FloatWindow extends HTMLElement {
     _bringToFront() {
         document.querySelectorAll('float-window').forEach(w => { w.style.zIndex = '10'; });
         this.style.zIndex = '11';
+    }
+
+    _clampToViewport() {
+        const vb = window.innerHeight - this._BOTTOM_BAR;
+        const vw = window.innerWidth;
+        const rect = this.getBoundingClientRect();
+
+        // Clamp bottom edge (above bottom bar)
+        if (rect.bottom > vb) {
+            const maxH = vb - rect.top;
+            if (maxH >= 120) {
+                this.style.height = maxH + 'px';
+            } else {
+                this.style.top = Math.max(0, vb - 120) + 'px';
+                this.style.height = Math.min(120, vb) + 'px';
+            }
+        }
+
+        // Clamp right edge
+        if (rect.right > vw) {
+            const maxW = vw - rect.left;
+            if (maxW >= 200) {
+                this.style.width = maxW + 'px';
+            } else {
+                this.style.left = Math.max(0, vw - 200) + 'px';
+                this.style.width = Math.min(200, vw) + 'px';
+                this.style.right = 'auto';
+            }
+        }
     }
 
     _notifyToggle() {
@@ -279,6 +372,114 @@ class TileItem extends HTMLElement {
 
 customElements.define('tile-item', TileItem);
 
+// ── Doodad item ──────────────────────────────────────────────────────
+
+class DoodadItem extends HTMLElement {
+    constructor() {
+        super();
+        const s = this.attachShadow({mode: 'open'});
+        s.innerHTML = `
+        <style>
+            :host {
+                display: flex;
+                align-items: baseline;
+                gap: 6px;
+                padding: 3px 6px;
+                font-size: 12px;
+                border-bottom: 1px solid var(--vscode-editorWidget-border, #333);
+                cursor: default;
+            }
+            :host(:hover) {
+                background: var(--vscode-list-hoverBackground, rgba(255,255,255,.06));
+            }
+            .id { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-textLink-foreground, #3794ff); min-width: 40px; }
+            .comment { flex: 1; color: var(--vscode-foreground, #ccc); }
+            .cls { color: var(--vscode-descriptionForeground, #888); font-size: 11px; }
+            .scale { color: var(--vscode-descriptionForeground, #888); font-size: 11px; }
+            .tilesets { color: var(--vscode-descriptionForeground, #888); font-size: 11px; font-family: var(--vscode-editor-font-family, monospace); }
+        </style>
+        <span class="id" id="doodId"></span>
+        <span class="comment" id="comment"></span>
+        <span class="cls" id="cls"></span>
+        <span class="tilesets" id="tilesets"></span>
+        <span class="scale" id="scale"></span>`;
+    }
+
+    connectedCallback() { this._render(); }
+    static get observedAttributes() { return ['dood-id', 'comment', 'dood-class', 'tilesets', 'def-scale']; }
+    attributeChangedCallback() { if (this.shadowRoot) this._render(); }
+
+    _render() {
+        const s = this.shadowRoot;
+        const id = this.getAttribute('dood-id') || '';
+        const comment = this.getAttribute('comment') || '';
+        const cls = this.getAttribute('dood-class') || '';
+        const tilesets = this.getAttribute('tilesets') || '';
+        const defScale = this.getAttribute('def-scale') || '';
+        const file = this.getAttribute('file') || '';
+
+        s.getElementById('doodId').textContent = id;
+        s.getElementById('comment').textContent = comment;
+        s.getElementById('comment').title = file;
+        s.getElementById('cls').textContent = cls !== '_' ? cls : '';
+        s.getElementById('tilesets').textContent = tilesets;
+        s.getElementById('scale').textContent = defScale ? '\u00d7' + defScale : '';
+    }
+}
+
+customElements.define('doodad-item', DoodadItem);
+
+// ── Unit item ────────────────────────────────────────────────────────
+
+class UnitItem extends HTMLElement {
+    constructor() {
+        super();
+        const s = this.attachShadow({mode: 'open'});
+        s.innerHTML = `
+        <style>
+            :host {
+                display: flex;
+                align-items: baseline;
+                gap: 6px;
+                padding: 3px 6px;
+                font-size: 12px;
+                border-bottom: 1px solid var(--vscode-editorWidget-border, #333);
+                cursor: default;
+            }
+            :host(:hover) {
+                background: var(--vscode-list-hoverBackground, rgba(255,255,255,.06));
+            }
+            .id { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-textLink-foreground, #3794ff); min-width: 40px; }
+            .comment { flex: 1; color: var(--vscode-foreground, #ccc); }
+            .race { color: var(--vscode-descriptionForeground, #888); font-size: 11px; min-width: 50px; }
+            .move { color: var(--vscode-descriptionForeground, #888); font-size: 11px; min-width: 36px; }
+            .pts { color: var(--vscode-descriptionForeground, #888); font-size: 11px; font-family: var(--vscode-editor-font-family, monospace); min-width: 30px; text-align: right; }
+        </style>
+        <span class="id" id="unitId"></span>
+        <span class="comment" id="comment"></span>
+        <span class="race" id="race"></span>
+        <span class="move" id="move"></span>
+        <span class="pts" id="pts"></span>`;
+    }
+
+    connectedCallback() { this._render(); }
+    static get observedAttributes() { return ['unit-id', 'comment', 'race', 'move-tp', 'points']; }
+    attributeChangedCallback() { if (this.shadowRoot) this._render(); }
+
+    _render() {
+        const s = this.shadowRoot;
+        s.getElementById('unitId').textContent = this.getAttribute('unit-id') || '';
+        s.getElementById('comment').textContent = this.getAttribute('comment') || '';
+        const race = this.getAttribute('race') || '';
+        s.getElementById('race').textContent = race;
+        s.getElementById('move').textContent = this.getAttribute('move-tp') || '';
+        const pts = this.getAttribute('points') || '';
+        s.getElementById('pts').textContent = pts && pts !== '0' ? pts + 'pt' : '';
+    }
+}
+
+customElements.define('unit-item', UnitItem);
+
 
 // ── W3E application logic ────────────────────────────────────────────
 window.W3E = (function () {
@@ -410,6 +611,89 @@ window.W3E = (function () {
         }
     }
 
+    // ── Doodads SLK rebuilder ────────────────────────────────
+    function rebuildDoodads(slkData) {
+        let source = '';
+        let doodads = [];
+        if (slkData && slkData.doodads) {
+            source = slkData.source || '';
+            doodads = slkData.doodads;
+        }
+
+        const srcEl = document.getElementById('dsSlkSource');
+        if (srcEl) {
+            if (source) {
+                srcEl.className = 'ts-source';
+                srcEl.innerHTML = 'Doodads.slk: <span class="code">' + esc(source) + '</span>';
+            } else {
+                srcEl.className = 'ts-source ts-no-slk';
+                srcEl.textContent = 'Doodads.slk not found \u2014 set Game Path';
+            }
+        }
+
+        const cntEl = document.getElementById('dsDoodadCount');
+        if (cntEl) cntEl.textContent = String(doodads.length);
+
+        const listEl = document.getElementById('dsDoodadList');
+        if (listEl) {
+            listEl.innerHTML = '';
+            for (const d of doodads) {
+                const el = document.createElement('doodad-item');
+                el.setAttribute('dood-id', d.doodId || '');
+                el.setAttribute('dood-name', d.name || '');
+                el.setAttribute('comment', d.comment || '');
+                el.setAttribute('dood-class', d.doodClass || '');
+                el.setAttribute('category', d.category || '');
+                el.setAttribute('file', d.file || '');
+                el.setAttribute('tilesets', d.tilesets || '');
+                el.setAttribute('num-var', String(d.numVar || 0));
+                el.setAttribute('def-scale', String(d.defScale || 1));
+                el.setAttribute('min-scale', String(d.minScale || 0));
+                el.setAttribute('max-scale', String(d.maxScale || 0));
+                listEl.appendChild(el);
+            }
+        }
+    }
+
+    // ── Units SLK rebuilder ──────────────────────────────────
+    function rebuildUnits(slkData) {
+        let source = '';
+        let units = [];
+        if (slkData && slkData.units) {
+            source = slkData.source || '';
+            units = slkData.units;
+        }
+
+        const srcEl = document.getElementById('usSlkSource');
+        if (srcEl) {
+            if (source) {
+                srcEl.className = 'ts-source';
+                srcEl.innerHTML = 'UnitData.slk: <span class="code">' + esc(source) + '</span>';
+            } else {
+                srcEl.className = 'ts-source ts-no-slk';
+                srcEl.textContent = 'UnitData.slk not found \u2014 set Game Path';
+            }
+        }
+
+        const cntEl = document.getElementById('usUnitCount');
+        if (cntEl) cntEl.textContent = String(units.length);
+
+        const listEl = document.getElementById('usUnitList');
+        if (listEl) {
+            listEl.innerHTML = '';
+            for (const u of units) {
+                const el = document.createElement('unit-item');
+                el.setAttribute('unit-id', u.unitId || '');
+                el.setAttribute('comment', u.comment || '');
+                el.setAttribute('race', u.race || '');
+                el.setAttribute('move-tp', u.moveTp || '');
+                el.setAttribute('threat', String(u.threat || 0));
+                el.setAttribute('points', String(u.points || 0));
+                listEl.appendChild(el);
+            }
+        }
+    }
+
     // ── init() — main entry point ────────────────────────────
     function init(config) {
         const vscode = config.vscode;
@@ -449,6 +733,12 @@ window.W3E = (function () {
 
         // ── Tileset ──────────────────────────────────────────
         onGamePathChanged(data => rebuildTileset(data.terrainSlk, groundTileCodes, cliffTileCodes));
+
+        // ── Doodads ──────────────────────────────────────────
+        onGamePathChanged(data => rebuildDoodads(data.doodadsSlk));
+
+        // ── Units ────────────────────────────────────────────
+        onGamePathChanged(data => rebuildUnits(data.unitsSlk));
 
         // ── Message router ───────────────────────────────────
         window.addEventListener('message', e => {

@@ -1,5 +1,5 @@
 const {esc, indexToRgb, TILESET_NAMES} = require('./utils.js')
-const {renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent} = require('./panels.js')
+const {renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent} = require('./panels.js')
 const {editorStyles} = require('./styles.js')
 
 function renderMeta(meta) {
@@ -85,8 +85,39 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const gamePathContent = renderGamePathContent(mapInfo.gamePath, mapInfo.mpqStatus)
     const w3iContent = renderW3iContent(mapInfo.w3iData)
     const hasW3i = !!mapInfo.w3iData
+    const unitDooContent = renderDooContent(mapInfo.unitDooData, true)
+    const hasUnitDoo = !!mapInfo.unitDooData
+    const doodadDooContent = renderDooContent(mapInfo.doodadDooData, false)
+    const hasDoodadDoo = !!mapInfo.doodadDooData
+    const isDoo = !!mapInfo.isDoo
     const fileCount = mapInfo.archiveFiles ? mapInfo.archiveFiles.length : 0
     const filesRows = mapInfo.isArchive ? renderFilesRows(mapInfo.archiveFiles) : ''
+
+    // Build doodads SLK data
+    let doodadsSlkSource = ''
+    let doodadsSlkItems = ''
+    if (terrainData && terrainData._doodadsSlk) {
+        doodadsSlkSource = terrainData._doodadsSlk.source || ''
+        if (terrainData._doodadsSlk.doodads && terrainData._doodadsSlk.doodads.length > 0) {
+            doodadsSlkItems = terrainData._doodadsSlk.doodads.map(d => {
+                return `<doodad-item dood-id="${esc(d.doodId)}" dood-name="${esc(d.name)}" comment="${esc(d.comment)}" dood-class="${esc(d.doodClass)}" category="${esc(d.category)}" file="${esc(d.file)}" tilesets="${esc(d.tilesets)}" num-var="${d.numVar}" def-scale="${d.defScale}" min-scale="${d.minScale}" max-scale="${d.maxScale}"></doodad-item>`
+            }).join('\n')
+        }
+    }
+    const hasDoodadsSlk = !!(terrainData && terrainData._doodadsSlk)
+
+    // Build units SLK data
+    let unitsSlkSource = ''
+    let unitsSlkItems = ''
+    if (terrainData && terrainData._unitsSlk) {
+        unitsSlkSource = terrainData._unitsSlk.source || ''
+        if (terrainData._unitsSlk.units && terrainData._unitsSlk.units.length > 0) {
+            unitsSlkItems = terrainData._unitsSlk.units.map(u => {
+                return `<unit-item unit-id="${esc(u.unitId)}" comment="${esc(u.comment)}" race="${esc(u.race)}" move-tp="${esc(u.moveTp)}" threat="${u.threat}" points="${u.points}"></unit-item>`
+            }).join('\n')
+        }
+    }
+    const hasUnitsSlk = !!(terrainData && terrainData._unitsSlk)
 
     const nonce = mapInfo.nonce || ''
     const cspSource = mapInfo.cspSource || ''
@@ -112,6 +143,14 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 title="${mapInfo.isArchive ? 'Archive header info' : 'Available only for archives (.w3x, .w3m, .w3n, .mpq)'}">\ud83d\udce6 Header</button>
         <button class="menu-item${hasW3i ? '' : ' disabled'}" ${hasW3i ? 'data-action="toggleWindow" data-target="w3iWindow"' : ''}
                 title="${hasW3i ? 'Map info (war3map.w3i)' : 'No map info available'}">\ud83d\udcdc Map Info</button>
+        <button class="menu-item" data-action="toggleWindow" data-target="unitsSlkWindow"
+                title="Units catalog (UnitData.slk)">\ud83d\udde1 Units</button>
+        <button class="menu-item menu-child" data-action="toggleWindow" data-target="unitDooWindow"
+                title="Placed units (war3mapUnits.doo)">\ud83d\udccd Placed</button>
+        <button class="menu-item" data-action="toggleWindow" data-target="doodadsSlkWindow"
+                title="Doodads catalog (Doodads.slk)">\ud83c\udf33 Doodads</button>
+        <button class="menu-item menu-child" data-action="toggleWindow" data-target="doodadDooWindow"
+                title="Placed doodads (war3map.doo)">\ud83d\udccd Placed</button>
         <button class="menu-item${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="terrainWindow"' : ''}
                 title="${hasTerrain ? 'Terrain metadata' : 'No terrain data available'}">\ud83d\uddfa Terrain</button>
         <button class="menu-item menu-child${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="tilesetWindow"' : ''}
@@ -138,6 +177,26 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         ${w3iContent}
     </float-window>
     ` : ''}
+
+    <float-window id="unitDooWindow" title-text="\ud83d\udccd Placed Units" ${isDoo && mapInfo.isDooUnit ? '' : 'hidden'} style="left:140px;top:16px;">
+        ${hasUnitDoo ? unitDooContent : '<div class="fi-empty">\u26a0 war3mapUnits.doo not found</div>'}
+    </float-window>
+
+    <float-window id="unitsSlkWindow" title-text="\ud83d\udde1 Units" hidden style="left:140px;top:16px;width:600px;height:70vh;">
+        <div id="usSlkSource" class="${unitsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${unitsSlkSource ? 'UnitData.slk: <span class="code">' + esc(unitsSlkSource) + '</span>' : 'UnitData.slk not found \u2014 set Game Path'}</div>
+        <div class="tw-section-title">Units (<span id="usUnitCount">${hasUnitsSlk && terrainData._unitsSlk.units ? terrainData._unitsSlk.units.length : 0}</span>)</div>
+        <div class="legend" id="usUnitList">${unitsSlkItems}</div>
+    </float-window>
+
+    <float-window id="doodadDooWindow" title-text="\ud83d\udccd Placed Doodads" ${isDoo && !mapInfo.isDooUnit ? '' : 'hidden'} style="left:140px;top:16px;">
+        ${hasDoodadDoo ? doodadDooContent : '<div class="fi-empty">\u26a0 war3map.doo not found</div>'}
+    </float-window>
+
+    <float-window id="doodadsSlkWindow" title-text="\ud83c\udf33 Doodads" hidden style="left:140px;top:16px;width:600px;height:70vh;">
+        <div id="dsSlkSource" class="${doodadsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${doodadsSlkSource ? 'Doodads.slk: <span class="code">' + esc(doodadsSlkSource) + '</span>' : 'Doodads.slk not found \u2014 set Game Path'}</div>
+        <div class="tw-section-title">Doodads (<span id="dsDoodadCount">${hasDoodadsSlk && terrainData._doodadsSlk.doodads ? terrainData._doodadsSlk.doodads.length : 0}</span>)</div>
+        <div class="legend" id="dsDoodadList">${doodadsSlkItems}</div>
+    </float-window>
 
     ${hasTerrain ? `
     <float-window id="terrainWindow" title-text="\ud83d\uddfa Terrain" ${mapInfo.isW3e ? '' : 'hidden'} style="left:140px;top:16px;">
