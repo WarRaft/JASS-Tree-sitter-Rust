@@ -5,6 +5,7 @@
 /// auto-purge stale caches so the user doesn't have to rescan manually.
 fn main() {
     println!("cargo:rerun-if-changed=package.json");
+    println!("cargo:rerun-if-changed=listfile.txt");
 
     let version = std::fs::read_to_string("package.json")
         .ok()

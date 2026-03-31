@@ -173,10 +173,10 @@ class MpqFileSystemProvider {
         const entries = await this._fetchList(archivePath)
 
         // Normalise separators for comparison
-        const norm = internal.replace(/\\/g, '/')
+        const norm = internal.replace(/\\/g, '/').toLowerCase()
 
         // Exact file match?
-        const file = entries.find(e => e.name.replace(/\\/g, '/') === norm)
+        const file = entries.find(e => e.name.replace(/\\/g, '/').toLowerCase() === norm)
         if (file) {
             return {
                 type: vscode.FileType.File,
@@ -188,7 +188,7 @@ class MpqFileSystemProvider {
 
         // Virtual directory? Check if any entry starts with this prefix.
         const prefix = norm.endsWith('/') ? norm : norm + '/'
-        const isDir = entries.some(e => e.name.replace(/\\/g, '/').startsWith(prefix))
+        const isDir = entries.some(e => e.name.replace(/\\/g, '/').toLowerCase().startsWith(prefix))
         if (isDir) {
             return {
                 type: vscode.FileType.Directory,
@@ -209,6 +209,7 @@ class MpqFileSystemProvider {
         const archivePath = MpqFileSystemProvider.decodeAuthority(uri.authority)
         const internal = uri.path.replace(/^\//, '')
         const prefix = internal ? internal.replace(/\\/g, '/') + '/' : ''
+        const prefixLower = prefix.toLowerCase()
 
         const entries = await this._fetchList(archivePath)
 
@@ -218,7 +219,7 @@ class MpqFileSystemProvider {
         for (const entry of entries) {
             const name = entry.name.replace(/\\/g, '/')
 
-            if (prefix && !name.startsWith(prefix)) continue
+            if (prefixLower && !name.toLowerCase().startsWith(prefixLower)) continue
 
             const relative = prefix ? name.slice(prefix.length) : name
             if (!relative) continue

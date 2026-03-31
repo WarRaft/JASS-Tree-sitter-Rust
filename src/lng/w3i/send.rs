@@ -34,6 +34,24 @@ pub async fn send(
     let _ = lsp_send(writer, &response).await;
 }
 
+/// Serialize partial W3iData + meta + optional error into a JSON value.
+fn build_w3i_json(
+    data: W3iData,
+    meta: crate::util::bin_reader::BinReaderMeta,
+    parse_error: Option<String>,
+    wts_map: &std::collections::HashMap<String, String>,
+) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+    let mut val = to_value(data)?;
+    val["_meta"] = to_value(meta)?;
+    if let Some(err) = parse_error {
+        val["_error"] = json!(err);
+    }
+    if !wts_map.is_empty() {
+        crate::lng::wts::trigstr_resolve::resolve_trigstr_json(&mut val, wts_map);
+    }
+    Ok(val)
+}
+
 async fn _send(
     uri: &Url,
     archive_path: Option<&str>,
@@ -47,6 +65,21 @@ async fn _send(
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "war3map.w3i".into());
+
+        // When the URI points to the archive itself (.w3x / .w3m / .w3n / .mpq),
+        // the internal file we want is always "war3map.w3i".
+        let file_name = {
+            let lower = file_name.to_ascii_lowercase();
+            if lower.ends_with(".w3x")
+                || lower.ends_with(".w3m")
+                || lower.ends_with(".w3n")
+                || lower.ends_with(".mpq")
+            {
+                "war3map.w3i".to_string()
+            } else {
+                file_name
+            }
+        };
 
         let (w3i_buf, wts_map) = tokio::task::spawn_blocking(move || {
             let archive = storm_rs::MpqArchive::open(&ap)
@@ -66,22 +99,13 @@ async fn _send(
         .await
         .map_err(|e| format!("spawn_blocking: {e}"))??;
 
-        let (data, meta) = W3iData::read(&w3i_buf)?;
-        let mut val = to_value(data)?;
-        val["_meta"] = to_value(meta)?;
-
-        if !wts_map.is_empty() {
-            crate::lng::wts::trigstr_resolve::resolve_trigstr_json(&mut val, &wts_map);
-        }
-
-        Ok(val)
+        let (data, meta, parse_error) = W3iData::read_partial(&w3i_buf);
+        build_w3i_json(data, meta, parse_error, &wts_map)
     } else {
         // Standalone file — read from disk.
         let path = uri.to_file_path().map_err(|()| "Invalid file URI")?;
         let buf = tokio::fs::read(&path).await?;
-        let (data, meta) = W3iData::read(&buf)?;
-        let mut val = to_value(data)?;
-        val["_meta"] = to_value(meta)?;
+        let (data, meta, parse_error) = W3iData::read_partial(&buf);
 
         // Look for war3map.wts next to the .w3i file.
         let wts_path = path.parent().map(|d| d.join("war3map.wts"));
@@ -96,11 +120,7 @@ async fn _send(
             None => Default::default(),
         };
 
-        if !wts_map.is_empty() {
-            crate::lng::wts::trigstr_resolve::resolve_trigstr_json(&mut val, &wts_map);
-        }
-
-        Ok(val)
+        build_w3i_json(data, meta, parse_error, &wts_map)
     }
 }
 

@@ -460,13 +460,69 @@ window.W3E = (function () {
 
         // ── Archive file interactions ────────────────────────
         if (isArchive && vscode) {
+            // ── Custom context menu ──────────────────────────
+            const ctxMenu = document.createElement('div');
+            ctxMenu.className = 'ctx-menu';
+            ctxMenu.hidden = true;
+            document.body.appendChild(ctxMenu);
+
+            let _ctxName = '';
+
+            function hideCtx() { ctxMenu.hidden = true; }
+
+            function showCtx(x, y, name) {
+                _ctxName = name;
+                ctxMenu.innerHTML =
+                    '<div class="ctx-item" data-act="extractHere">\ud83d\udce4 Extract Here</div>' +
+                    '<div class="ctx-item" data-act="extractTo">\ud83d\udcc2 Extract To\u2026</div>' +
+                    '<div class="ctx-sep"></div>' +
+                    '<div class="ctx-item" data-act="copyPath">\ud83d\udccb Copy Path</div>';
+
+                // position, keep on-screen
+                ctxMenu.hidden = false;
+                const rect = ctxMenu.getBoundingClientRect();
+                const mx = Math.min(x, window.innerWidth - rect.width - 4);
+                const my = Math.min(y, window.innerHeight - rect.height - 4);
+                ctxMenu.style.left = Math.max(0, mx) + 'px';
+                ctxMenu.style.top = Math.max(0, my) + 'px';
+
+                ctxMenu.querySelectorAll('.ctx-item').forEach(function (item) {
+                    item.addEventListener('click', function () {
+                        const act = item.dataset.act;
+                        if (act === 'copyPath') {
+                            if (navigator.clipboard) navigator.clipboard.writeText(_ctxName);
+                        } else {
+                            vscode.postMessage({command: act, name: _ctxName});
+                        }
+                        hideCtx();
+                    });
+                });
+            }
+
+            document.addEventListener('click', function (e) {
+                if (!ctxMenu.contains(e.target)) hideCtx();
+            });
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') hideCtx();
+            });
+            document.addEventListener('scroll', hideCtx, true);
+
             document.querySelectorAll('.file-row').forEach(row => {
+                row.addEventListener('contextmenu', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    showCtx(e.clientX, e.clientY, row.dataset.name);
+                });
                 row.addEventListener('click', () => {
                     const name = row.dataset.name;
                     if (!name) return;
                     if (name.replace(/\\/g, '/').toLowerCase() === 'war3map.w3e') {
                         const tw = document.getElementById('terrainWindow');
                         if (tw) { tw.show(); return; }
+                    }
+                    if (name.replace(/\\/g, '/').toLowerCase() === 'war3map.w3i') {
+                        const w = document.getElementById('w3iWindow');
+                        if (w) { w.show(); return; }
                     }
                     vscode.postMessage({command: 'openFile', name});
                 });
@@ -477,7 +533,18 @@ window.W3E = (function () {
                 browseBtn.addEventListener('click', () => vscode.postMessage({command: 'browse'}));
             }
 
+            const browseMpqBtn = document.getElementById('browseMpqBtn');
+            if (browseMpqBtn) {
+                browseMpqBtn.addEventListener('click', () => vscode.postMessage({command: 'browse'}));
+            }
+
             document.querySelectorAll('.folder-row').forEach(row => {
+                row.addEventListener('contextmenu', function (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const p = row.dataset.path;
+                    if (p) showCtx(e.clientX, e.clientY, p);
+                });
                 row.addEventListener('click', () => {
                     row.classList.toggle('collapsed');
                     const children = row.nextElementSibling;

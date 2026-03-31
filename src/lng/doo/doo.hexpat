@@ -8,180 +8,183 @@ import std.mem;
 import std.string;
 import std.core;
 
-char magick[4] @ 0x00 [[comment("W3do")]];
-u32 format    @ 0x04; // ROC=7, TFT=8
-u32 subformat @ 0x08; // ROC=9/7, TFT=11
+char magic[4] @ 0x00 [[comment("File signature: W3do")]];
+u32 format    @ 0x04 [[comment("Format version: RoC = 7, TFT = 8")]];
+u32 subformat @ 0x08 [[comment("Sub-format version: RoC = 9 or 7, TFT = 11")]];
 
 bool isUnit in;
-u32 patch = 26; // Номер патча, указано в war3map.w3i
+u32 patch = 26 [[comment("Patch version from war3map.w3i")]];
 
-// ─── Вспомогательные типы ────────────────────────────────────────────────────
+// ─── Helper types ────────────────────────────────────────────────────────────
 
 struct Vector {
     float x, y, z;
 };
 
-/*
-  При флагах 0 и 1 — разрушаемый объект больше не является разрушаемым
-  (т.е. его нельзя сломать и т.д)!
-  Если разрушаемый объект имеет выпадающие предметы, то он должен иметь флаг 0,
-  а в скрипте карты на его месте должен появляться клон с выпадающими предметами.
-*/
+/**
+ * Doodad visibility / collision flag.
+ *
+ * With flags 0 and 1 the destructible is no longer destructible
+ * (i.e. it cannot be broken etc.).
+ * If a destructible has droppable items, it must have flag 0,
+ * and a clone with the droppable items should be spawned in the map script.
+ */
 enum Flag : u8 {
-    invisible = 0, // Невидимый и проходимый (можно строить и ходить)
-    visible   = 1, // Видимый и проходимый (полу-прозрачный при юните за ним)
-    normal    = 2, // Обычный разрушаемый объект / декорация
+    invisible = 0 [[comment("Invisible and passable (can build and walk through)")]],
+    visible   = 1 [[comment("Visible and passable (semi-transparent when a unit is behind it)")]],
+    normal    = 2 [[comment("Normal destructible / doodad")]],
 };
 
-// ─── Выпадающие предметы ─────────────────────────────────────────────────────
+// ─── Droppable items ─────────────────────────────────────────────────────────
 
 struct DropItem {
-    char rawcode[4]; // Равкод предмета (0 = нету), может быть случайный предмет
-    u32  chance;     // Шанс выпадения в процентах
+    char rawcode[4] [[comment("Item rawcode (0 = none); can be a random item")]];
+    u32  chance     [[comment("Drop chance (percentage)")]];
 };
 
 struct Drop {
-    u32      count; // Кол-во предметов в наборе
-    DropItem item[count];
+    u32      count [[comment("Number of items in this drop set")]];
+    DropItem items[count];
 };
 
-// ─── Инвентарь / способности / случайные юниты ──────────────────────────────
+// ─── Inventory / abilities / random units ────────────────────────────────────
 
 struct InventoryItem {
-    u32  slot;       // Номер слота инвентаря (нумерация с нуля)
-    char rawcode[4]; // Равкод предмета, может быть случайный предмет
+    u32  slot       [[comment("Inventory slot number (0-based)")]];
+    char rawcode[4] [[comment("Item rawcode; can be a random item")]];
 };
 
 struct ModifiedAbility {
-    char rawcode[4]; // Равкод способности
-    u32  autocast;   // Автоприменение: 1 = вкл, 0 = выкл
-    u32  level;      // Уровень способности
+    char rawcode[4] [[comment("Ability rawcode")]];
+    u32  autocast   [[comment("Autocast: 1 = on, 0 = off")]];
+    u32  level      [[comment("Ability level")]];
 };
 
 struct RandomUnit {
-    char rawcode[4]; // Равкод объекта (uDNR / bDNR / iDNR — случайный)
-    u32  chance;     // Шанс в процентах
+    char rawcode[4] [[comment("Object rawcode (uDNR / bDNR / iDNR = random)")]];
+    u32  chance     [[comment("Chance (percentage)")]];
 };
 
-// ─── Кодировка случайных равкодов ────────────────────────────────────────────
-/*
-  Случайный юнит:
-    [0] 'Y'            — признак случайного объекта
-    [1] 'Y'            — любой тип
-    [2] 'U'            — случайный юнит
-    [3] '/' любой ур., '0' 1 ур., '1' 2 ур., … ':' 10 ур.
-    Пример: 'YYU:' = случайный юнит 10 уровня
+/**
+ * Random rawcode encoding
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * Random unit:
+ *   [0] 'Y'  — random object marker
+ *   [1] 'Y'  — any type
+ *   [2] 'U'  — random unit
+ *   [3] '/' any level, '0' level 1, '1' level 2, … ':' level 10
+ *   Example: 'YYU:' = random unit level 10
+ *
+ * Random building:
+ *   [0] 'Y'  [1] 'Y'  [2] 'B'  [3] '/'
+ *   Always 'YYB/' (buildings have no levels)
+ *
+ * Random item:
+ *   [0] 'Y'  — random object marker
+ *   [1] type: 'Y' any, 'i' permanent, 'j' charged, 'k' power-up,
+ *             'l' artifact, 'm' purchasable, 'n' campaign, 'o' miscellaneous
+ *   [2] 'I'  — random item
+ *   [3] '/' any level, '0' level 1, '1' level 2, … ':' level 10
+ *   Example: 'YkI:' = random power-up item level 10
+ */
 
-  Случайное здание:
-    [0] 'Y'  [1] 'Y'  [2] 'B'  [3] '/'
-    Всегда 'YYB/' (здания не имеют уровней)
-
-  Случайный предмет:
-    [0] 'Y'            — признак случайного объекта
-    [1] тип: 'Y' любой, 'i' постоянные, 'j' заряды, 'k' усиливающие,
-             'l' артефакты, 'm' продажа, 'n' кампания, 'o' разные
-    [2] 'I'            — случайный предмет
-    [3] '/' любой ур., '0' 1 ур., '1' 2 ур., … ':' 10 ур.
-    Пример: 'YkI:' = случайный усиливающий предмет 10 уровня
-*/
-
-// ─── Размещённый объект (юнит или декорация) ─────────────────────────────────
+// ─── Placed object (unit or doodad) ─────────────────────────────────────────
 
 struct Item {
-    char   rawcode[4]; // Равкод юнита / декорации
-    u32    variation;   // Вариация (для юнита можно игнорировать)
+    char   rawcode[4] [[comment("Unit / doodad rawcode")]];
+    u32    variation   [[comment("Variation (can be ignored for units)")]];
     Vector position;
-    float  angle [[comment("radian")]];
-    Vector scale;       // Для юнита можно игнорировать
+    float  angle       [[comment("Rotation angle (radians)")]];
+    Vector scale       [[comment("Scale (can be ignored for units)")]];
     if (patch >= 32)
-        u32 skin;
-    Flag   flag;        // Для юнита можно игнорировать
+        u32 skin       [[comment("Skin override")]];
+    Flag   flag        [[comment("Visibility flag (can be ignored for units)")]];
 
     if (isUnit) {
-        // ── Общие поля юнита ─────────────────────────────────────────────
-        u32   player;    // Номер игрока-владельца
+        // ── Unit common fields ───────────────────────────────────────────
+        u32   player       [[comment("Owner player number")]];
         u8    unknown1;
         u8    unknown2;
-        u32   health;    // Здоровье, -1 = по умолчанию
-        u32   mana;      // Мана, -1 = по умолчанию
+        u32   health       [[comment("Hit points (-1 = default)")]];
+        u32   mana         [[comment("Mana points (-1 = default)")]];
 
         if (subformat >= 11) {
-            u32 dropTable; // Номер таблицы случайных предметов, -1 = не используется
+            u32 drop_table [[comment("Random item table index (-1 = not used)")]];
         }
 
-        u32  dropCount;  // Количество наборов выпадаемых предметов
-        Drop drop[dropCount];
+        u32  drop_count    [[comment("Number of item drop sets")]];
+        Drop drops[drop_count];
 
-        s32   goldMine;  // Количество золота в шахте, по умолчанию 12500
-        float target;    // Получение цели: -1.00 = норма, -2.00 = лагерь
-        u32   heroLevel; // Уровень героя (1 для не-героев и предметов)
+        s32   gold_mine    [[comment("Gold in mine (default: 12500)")]];
+        float target       [[comment("Acquisition range (-1.0 = normal, -2.0 = camp)")]];
+        u32   hero_level   [[comment("Hero level (1 for non-heroes and items)")]];
 
         if (subformat >= 11) {
-            u32 Str;     // Сила героя, 0 = по умолчанию
-            u32 Agi;     // Ловкость героя, 0 = по умолчанию
-            u32 Int;     // Разум героя, 0 = по умолчанию
+            u32 strength     [[comment("Hero Strength (0 = default)")]];
+            u32 agility      [[comment("Hero Agility (0 = default)")]];
+            u32 intelligence [[comment("Hero Intelligence (0 = default)")]];
         }
 
-        // ── Инвентарь ────────────────────────────────────────────────────
-        u32             inventoryCount;
-        InventoryItem   inventory[inventoryCount];
+        // ── Inventory ────────────────────────────────────────────────────
+        u32             inventory_count [[comment("Number of inventory items")]];
+        InventoryItem   inventory[inventory_count];
 
-        // ── Изменённые способности ───────────────────────────────────────
-        u32             abilityCount;
-        ModifiedAbility abilities[abilityCount];
+        // ── Modified abilities ───────────────────────────────────────────
+        u32             ability_count [[comment("Number of modified abilities")]];
+        ModifiedAbility abilities[ability_count];
 
-        // ── Случайная боевая единица ─────────────────────────────────────
-        s32 randomType;  // 0 / 1 / 2 (у всех кроме uDNR/bDNR/iDNR тут 0)
+        // ── Random combat unit ───────────────────────────────────────────
+        s32 random_type [[comment("Random type: 0 / 1 / 2 (0 for all except uDNR/bDNR/iDNR)")]];
 
-        if (randomType == 0) {
-            u8 randomLevel[3]; // Уровень, -1 = любой (24-битное число)
-            u8 itemClass;      // 0=любой, 1=постоянные, 2=заряды, 3=усиливающие,
-                               // 4=артефакты, 5=продажа, 6=кампания, 7=разные
-        } else if (randomType == 1) {
-            u32 randomGroup;    // Номер случайной группы (из war3map.w3i)
-            u32 randomPosition; // Номер позиции (колонны)
-        } else if (randomType == 2) {
-            u32        randomUnitCount;
-            RandomUnit randomUnits[randomUnitCount];
+        if (random_type == 0) {
+            u8 random_level[3] [[comment("Level (-1 = any); 24-bit value")]];
+            u8 item_class      [[comment("0 = any, 1 = permanent, 2 = charged, 3 = power-up, 4 = artifact, 5 = purchasable, 6 = campaign, 7 = miscellaneous")]];
+        } else if (random_type == 1) {
+            u32 random_group    [[comment("Random group number (from war3map.w3i)")]];
+            u32 random_position [[comment("Column position number")]];
+        } else if (random_type == 2) {
+            u32        random_unit_count [[comment("Number of random unit entries")]];
+            RandomUnit random_units[random_unit_count];
         }
 
-        s32 customColor; // -1 = нету, 0 = красный, 1 = синий, … 11 = коричневый
-        s32 waygate;     // Номер области в war3map.w3r, -1 = нету
-        u32 objectId;    // Номер объекта
+        s32 custom_color [[comment("Custom player color (-1 = none, 0 = red, 1 = blue, … 11 = brown)")]];
+        s32 waygate      [[comment("Waygate target region in war3map.w3r (-1 = none)")]];
+        u32 object_id    [[comment("Unique object ID")]];
 
     } else {
-        // ── Декорация / разрушаемый объект ────────────────────────────────
-        u8 health; // patch ≥ 32 ? (0‒255, 255 = 100%) : (0%‒100%)
+        // ── Doodad / destructible ────────────────────────────────────────
+        u8 health [[comment("Health (patch ≥ 32: 0–255 where 255 = 100%; otherwise 0%–100%)")]];
 
         if (format == 8) {
-            s32  dropIndex; // Номер таблицы случайных предметов, -1 = нету
-            u32  dropCount;
-            Drop drop[dropCount];
+            s32  drop_index [[comment("Random item table index (-1 = none)")]];
+            u32  drop_count [[comment("Number of item drop sets")]];
+            Drop drops[drop_count];
         }
 
-        u32 num; // Номер декорации
+        u32 num [[comment("Doodad creation number")]];
     }
 };
 
-// ─── Декорации склонов ───────────────────────────────────────────────────────
+// ─── Cliff decorations ──────────────────────────────────────────────────────
 
 struct Cliff {
-    char rawcode[4];
-    u32  variation; // Вариация
-    u32  x;         // .w3e координата
-    u32  y;         // .w3e координата
+    char rawcode[4] [[comment("Cliff doodad rawcode")]];
+    u32  variation   [[comment("Variation")]];
+    u32  x           [[comment("Tile X coordinate (w3e grid)")]];
+    u32  y           [[comment("Tile Y coordinate (w3e grid)")]];
 };
 
-// ─── Корневая структура ──────────────────────────────────────────────────────
+// ─── Root structure ─────────────────────────────────────────────────────────
 
 struct Data {
-    u32  itemCount;
-    Item item[itemCount];
+    u32  item_count [[comment("Number of placed objects")]];
+    Item items[item_count];
 
     if (!isUnit) {
-        u32   cliffVersion; // Версия формата декораций склонов
-        u32   cliffCount;
-        Cliff cliff[cliffCount];
+        u32   cliff_format [[comment("Cliff decorations format version")]];
+        u32   cliff_count  [[comment("Number of cliff decorations")]];
+        Cliff cliffs[cliff_count];
     }
 };
 

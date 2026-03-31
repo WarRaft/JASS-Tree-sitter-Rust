@@ -9,7 +9,6 @@ const {
 const {LanguageClient, Trace} = require('vscode-languageclient')
 const {resolveBlpEditor} = require('./resolveBlpEditor.js')
 const {resolveDooEditor} = require('./resolveDooEditor.js')
-const {resolveW3iEditor} = require('./resolveW3iEditor.js')
 const {resolveW3eEditor} = require('./w3e/index.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
@@ -20,6 +19,98 @@ const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
 const {resolveSlkEditor} = require('./resolveSlkEditor.js')
 
 const path = require('path')
+const fs = require('fs')
+
+/**
+ * Extract a file or directory from an MPQ archive to the local filesystem,
+ * preserving internal directory structure.
+ *
+ * @param {import('vscode').Uri} resourceUri  the mpq:// URI of the item
+ * @param {string} archivePath               absolute fs path to the archive
+ * @param {string} internalPath              path inside the archive (e.g. "A/B/C.jpg")
+ * @param {string} baseDir                   local directory to extract into
+ * @param {MpqFileSystemProvider} mpqProvider the filesystem provider instance
+ */
+async function _doExtract(resourceUri, archivePath, internalPath, baseDir, mpqProvider) {
+    // Determine whether this is a file or a directory.
+    let stat
+    try {
+        stat = await mpqProvider.stat(resourceUri)
+    } catch {
+        window.showErrorMessage(`Cannot stat: ${internalPath}`)
+        return
+    }
+
+    /** @type {{internal: string, uri: import('vscode').Uri}[]} */
+    const filesToExtract = []
+
+    // Check: FileType.File = 1, FileType.Directory = 2
+    if (stat.type === 1) {
+        filesToExtract.push({internal: internalPath, uri: resourceUri})
+    } else {
+        await _collectFiles(mpqProvider, archivePath, internalPath, filesToExtract)
+    }
+
+    if (filesToExtract.length === 0) {
+        window.showWarningMessage('No files to extract.')
+        return
+    }
+
+    await window.withProgress(
+        {
+            location: ProgressLocation.Notification,
+            title: `Extracting ${filesToExtract.length} file(s)…`,
+            cancellable: true,
+        },
+        async (progress, token) => {
+            let extracted = 0
+            for (const item of filesToExtract) {
+                if (token.isCancellationRequested) break
+
+                const destPath = path.join(baseDir, item.internal.replace(/\//g, path.sep))
+                const destDir = path.dirname(destPath)
+
+                // Create parent directories
+                fs.mkdirSync(destDir, {recursive: true})
+
+                try {
+                    const content = await mpqProvider.readFile(item.uri)
+                    fs.writeFileSync(destPath, Buffer.from(content))
+                } catch (e) {
+                    window.showWarningMessage(`Failed to extract ${item.internal}: ${e.message || e}`)
+                }
+
+                extracted++
+                progress.report({
+                    increment: 100 / filesToExtract.length,
+                    message: `${extracted}/${filesToExtract.length}`,
+                })
+            }
+            window.showInformationMessage(`Extracted ${extracted} file(s) to ${baseDir}`)
+        }
+    )
+}
+
+/**
+ * Recursively collect all files under a given MPQ directory.
+ */
+async function _collectFiles(mpqProvider, archivePath, dirPath, result) {
+    const uri = MpqFileSystemProvider.makeUri(archivePath, dirPath)
+    const children = await mpqProvider.readDirectory(uri)
+
+    for (const [name, fileType] of children) {
+        const childInternal = dirPath ? dirPath + '/' + name : name
+        const childUri = MpqFileSystemProvider.makeUri(archivePath, childInternal)
+
+        if (fileType === 1) {
+            // FileType.File
+            result.push({internal: childInternal, uri: childUri})
+        } else if (fileType === 2) {
+            // FileType.Directory
+            await _collectFiles(mpqProvider, archivePath, childInternal, result)
+        }
+    }
+}
 
 /**
  * @typedef {import('vscode').Uri} Uri
@@ -236,7 +327,57 @@ module.exports = {
                 await clientReady
                 const uri = MpqFileSystemProvider.makeUri(archivePath, internalPath)
                 await commands.executeCommand('vscode.open', uri)
-            })
+            }),
+
+            commands.registerCommand('mpq.extractHere', async (resourceUri) => {
+                if (!resourceUri || resourceUri.scheme !== 'mpq') return
+
+                const archivePath = MpqFileSystemProvider.decodeAuthority(resourceUri.authority)
+                const internalPath = resourceUri.path.replace(/^\//, '')
+                if (!internalPath) {
+                    window.showWarningMessage('Cannot extract the archive root.')
+                    return
+                }
+
+                // Determine the extraction base directory:
+                // If .w3x/.w3m/.w3n/.mpq is a file → extract next to it
+                // If it's a directory → extract into that directory
+                let baseDir
+                try {
+                    const stat = fs.statSync(archivePath)
+                    if (stat.isDirectory()) {
+                        baseDir = archivePath
+                    } else {
+                        baseDir = path.dirname(archivePath)
+                    }
+                } catch {
+                    baseDir = path.dirname(archivePath)
+                }
+
+                await _doExtract(resourceUri, archivePath, internalPath, baseDir, mpqProvider)
+            }),
+
+            commands.registerCommand('mpq.extractTo', async (resourceUri) => {
+                if (!resourceUri || resourceUri.scheme !== 'mpq') return
+
+                const archivePath = MpqFileSystemProvider.decodeAuthority(resourceUri.authority)
+                const internalPath = resourceUri.path.replace(/^\//, '')
+                if (!internalPath) {
+                    window.showWarningMessage('Cannot extract the archive root.')
+                    return
+                }
+
+                const selected = await window.showOpenDialog({
+                    canSelectFolders: true,
+                    canSelectFiles: false,
+                    canSelectMany: false,
+                    openLabel: 'Extract To',
+                })
+                if (!selected || selected.length === 0) return
+
+                const baseDir = selected[0].fsPath
+                await _doExtract(resourceUri, archivePath, internalPath, baseDir, mpqProvider)
+            }),
         )
 
         /** Helper: register a binary-file custom editor that talks to LSP */
@@ -294,7 +435,7 @@ module.exports = {
         context.subscriptions.push(
             binaryEditor('blp.preview', resolveBlpEditor),
             binaryEditor('doo.preview', resolveDooEditor),
-            binaryEditor('w3i.preview', resolveW3iEditor),
+            binaryEditor('w3i.preview', resolveW3eEditor),
             binaryEditor('w3e.preview', resolveW3eEditor),
 
             // SLK table editor (text-based — uses CustomTextEditorProvider for undo/redo)

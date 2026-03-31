@@ -1,4 +1,4 @@
-const {esc, fmtSize} = require('./utils.js')
+const {esc, fmtSize, fmtF} = require('./utils.js')
 
 // ── Map Info panel content ──────────────────────────────────────────
 function renderMapInfoContent(mapInfo) {
@@ -39,7 +39,7 @@ function decodeMapFlags(flags) {
     if (flags & 0x0001) names.push('Hide Minimap in Preview')
     if (flags & 0x0002) names.push('Modify Ally Priorities')
     if (flags & 0x0004) names.push('Melee Map')
-    if (flags & 0x0008) names.push('Large (non-default size)')
+    if (flags & 0x0008) names.push('Custom Terrain Type')
     if (flags & 0x0010) names.push('Masked Areas Partially Visible')
     if (flags & 0x0020) names.push('Fixed Player Settings')
     if (flags & 0x0040) names.push('Use Custom Forces')
@@ -49,7 +49,10 @@ function decodeMapFlags(flags) {
     if (flags & 0x0400) names.push('Has Properties Menu Opened Before')
     if (flags & 0x0800) names.push('Show Water Waves on Cliff Shores')
     if (flags & 0x1000) names.push('Show Water Waves on Rolling Shores')
+    if (flags & 0x2000) names.push('Terrain Fog Enabled')
+    if (flags & 0x4000) names.push('Expansion Required')
     if (flags & 0x8000) names.push('Use Item Classification System')
+    if (flags & 0x10000) names.push('Water Tint Color Override')
     return names
 }
 
@@ -155,20 +158,21 @@ function countFiles(node) {
 }
 
 /** Render a tree node recursively */
-function renderTreeNode(node) {
+function renderTreeNode(node, prefix = '') {
     let html = ''
     // Sort folders alphabetically
     const dirs = Object.keys(node.children).sort((a, b) => a.localeCompare(b, undefined, {sensitivity: 'base'}))
     for (const dir of dirs) {
         const child = node.children[dir]
         const cnt = countFiles(child)
-        html += `<div class="folder-row" data-folder>
+        const fullPath = prefix ? prefix + '/' + dir : dir
+        html += `<div class="folder-row" data-folder data-path="${esc(fullPath)}">
             <span class="folder-chevron">▼</span>
             <span class="folder-icon">📁</span>
             <span class="folder-name">${esc(dir)}</span>
             <span class="folder-count">${cnt}</span>
         </div>
-        <div class="folder-children">${renderTreeNode(child)}</div>`
+        <div class="folder-children">${renderTreeNode(child, fullPath)}</div>`
     }
     // Sort files alphabetically
     const sorted = [...node.files].sort((a, b) => a.basename.localeCompare(b.basename, undefined, {sensitivity: 'base'}))
@@ -190,4 +194,248 @@ function renderFilesRows(archiveFiles) {
     return renderTreeNode(tree)
 }
 
-module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, REQUIRED_MPQ_FILES}
+// ── W3i Meta banner ─────────────────────────────────────────────────
+function renderW3iMeta(meta, tailCount) {
+    if (!meta) return ''
+    const unread = (meta.remaining || 0) + (tailCount || 0)
+    if (unread === 0) {
+        return `<div class="meta-banner ok">✓ All ${meta.total} bytes read</div>`
+    }
+    const read = meta.total - unread
+    return `<div class="meta-banner warn">⚠ ${read} of ${meta.total} bytes read, ${unread} unrecognised</div>`
+}
+
+// ── W3i content for float-window ────────────────────────────────────
+function renderW3iContent(d) {
+    if (!d) return '<div class="fi-empty">No map info data</div>'
+
+    // ── Parse error banner
+    const errorHtml = d._error
+        ? `<div class="meta-banner error">✕ Parse error: ${esc(d._error)}</div>`
+        : ''
+
+    // ── General info
+    const general = [
+        ['Format', d.format],
+        ['Save count', d.save_count],
+        ['Editor version', d.editor_version],
+        ['Map name', esc(d.map_name)],
+        ['Author', esc(d.author)],
+        ['Map size', `${d.playable_width} × ${d.playable_height}`],
+        ['Scripting', d.script_language === 1 ? 'Lua' : d.script_language === 0 ? 'JASS' : '—'],
+    ]
+    if (d.editor_version_full) {
+        general.splice(3, 0, ['Editor version full', d.editor_version_full.join('.')])
+    }
+    const generalHtml = general.map(([k, v]) =>
+        `<tr><td class="key">${k}</td><td>${v}</td></tr>`
+    ).join('')
+
+    const tailCount = d.tail_bytes ? d.tail_bytes.length : 0
+    const metaHtml = renderW3iMeta(d._meta, tailCount)
+
+    // ── Description
+    const descHtml = d.description
+        ? `<details><summary>Description</summary><pre class="w3i-desc">${esc(d.description)}</pre></details>`
+        : ''
+    const pDescHtml = d.recommended_players
+        ? `<details><summary>Players description</summary><pre class="w3i-desc">${esc(d.recommended_players)}</pre></details>`
+        : ''
+
+    // ── Map flags (same decoder as header)
+    let flagsHtml = ''
+    if (d.map_flags != null) {
+        const raw = typeof d.map_flags === 'object' ? d.map_flags.raw : d.map_flags
+        const flagNames = decodeMapFlags(raw)
+        if (flagNames.length > 0) {
+            flagsHtml = `<div class="tw-section-title">🚩 Map Flags</div><div class="flag-tags">${flagNames.map(f => `<span class="flag-tag">${esc(f)}</span>`).join('')}</div>`
+        }
+    }
+
+    // ── Camera bounds
+    const cam = d.camera_bounds
+    let camHtml = ''
+    if (cam) {
+        camHtml = `<div class="tw-section-title">📐 Camera Bounds</div>
+        <table class="info">
+            <tr><td class="key">LB</td><td>${fmtF(cam.lb.x)}, ${fmtF(cam.lb.y)}</td></tr>
+            <tr><td class="key">RT</td><td>${fmtF(cam.rt.x)}, ${fmtF(cam.rt.y)}</td></tr>
+            <tr><td class="key">LT</td><td>${fmtF(cam.lt.x)}, ${fmtF(cam.lt.y)}</td></tr>
+            <tr><td class="key">RB</td><td>${fmtF(cam.rb.x)}, ${fmtF(cam.rb.y)}</td></tr>
+        </table>`
+    }
+
+    // ── Fog / weather
+    let fogHtml = ''
+    if (d.fog_type != null) {
+        const fogRows = [
+            ['Fog type', d.fog_type],
+            ['Start', fmtF(d.fog_z_start)],
+            ['End', fmtF(d.fog_z_end)],
+            ['Density', fmtF(d.fog_density)],
+            ['Fog color', d.fog_color != null ? `0x${d.fog_color.toString(16).padStart(8, '0')}` : '—'],
+            ['Weather', d.global_weather || '—'],
+            ['Sound', d.ambient_sound || '—'],
+            ['Water color', d.water_tint_color != null ? `0x${d.water_tint_color.toString(16).padStart(8, '0')}` : '—'],
+        ]
+        fogHtml = `<div class="tw-section-title">🌫 Fog & Weather</div><table class="info">${fogRows.map(([k, v]) =>
+            `<tr><td class="key">${k}</td><td>${v}</td></tr>`).join('')}</table>`
+    }
+
+    // ── Loading screen
+    const loadRows = [
+        ['Number', d.loading_screen_preset],
+        ['Path', esc(d.loading_screen_model || '—')],
+        ['Title', esc(d.loading_screen_title || '—')],
+        ['Subtitle', esc(d.loading_screen_subtitle || '—')],
+        ['Text', esc(d.loading_screen_text || '—')],
+    ]
+    const loadHtml = `<div class="tw-section-title">🖼 Loading Screen</div><table class="info">${loadRows.map(([k, v]) =>
+        `<tr><td class="key">${k}</td><td>${v}</td></tr>`).join('')}</table>`
+
+    // ── Prologue
+    let prologueHtml = ''
+    if (d.prologue_title || d.prologue_text) {
+        const pRows = [
+            ['Path', esc(d.prologue_screen_model || '—')],
+            ['Title', esc(d.prologue_title || '—')],
+            ['Subtitle', esc(d.prologue_subtitle || '—')],
+            ['Text', esc(d.prologue_text || '—')],
+        ]
+        prologueHtml = `<div class="tw-section-title">📜 Prologue</div><table class="info">${pRows.map(([k, v]) =>
+            `<tr><td class="key">${k}</td><td>${v}</td></tr>`).join('')}</table>`
+    }
+
+    // ── Players
+    let playersHtml = ''
+    if (d.players && d.players.length > 0) {
+        const pHead = ['#', 'Name', 'Type', 'Race', 'Position', 'Fix'].map(c => `<th>${c}</th>`).join('')
+        const pBody = d.players.map((p, i) => {
+            const ptype = p.player_type ? (typeof p.player_type === 'string' ? p.player_type : JSON.stringify(p.player_type)) : '—'
+            const race = p.race ? (typeof p.race === 'string' ? p.race : JSON.stringify(p.race)) : '—'
+            return `<tr>
+                <td class="num">${p.num != null ? p.num : i}</td>
+                <td>${esc(p.name)}</td>
+                <td>${esc(ptype)}</td>
+                <td>${esc(race)}</td>
+                <td class="mono">${fmtF(p.start_position.x)}, ${fmtF(p.start_position.y)}</td>
+                <td class="num">${p.fixed_start_position}</td>
+            </tr>`
+        }).join('')
+        playersHtml = `
+        <div class="tw-section-title">👤 Players (${d.players.length})</div>
+        <div class="table-wrap"><table><thead><tr>${pHead}</tr></thead><tbody>${pBody}</tbody></table></div>`
+    }
+
+    // ── Forces
+    let clansHtml = ''
+    if (d.forces && d.forces.length > 0) {
+        const cHead = ['#', 'Name', 'Players', 'Flags'].map(c => `<th>${c}</th>`).join('')
+        const cBody = d.forces.map((c, i) => {
+            const flags = c.flags && typeof c.flags === 'object'
+                ? Object.entries(c.flags).filter(([, v]) => v).map(([k]) => k).join(', ') || '—'
+                : '—'
+            return `<tr>
+                <td class="num">${i + 1}</td>
+                <td>${esc(c.name)}</td>
+                <td class="num">${c.player_mask}</td>
+                <td>${esc(flags)}</td>
+            </tr>`
+        }).join('')
+        clansHtml = `
+        <div class="tw-section-title">⚔ Forces (${d.forces.length})</div>
+        <div class="table-wrap"><table><thead><tr>${cHead}</tr></thead><tbody>${cBody}</tbody></table></div>`
+    }
+
+    // ── Upgrades
+    let upgradesHtml = ''
+    if (d.custom_upgrades_missing) {
+        upgradesHtml = '<div class="tw-section-title">⬆ Upgrades</div><div class="meta-banner warn">Section not present in file</div>'
+    } else if (d.custom_upgrades && d.custom_upgrades.length > 0) {
+        const uHead = ['#', 'ID', 'Level', 'Status'].map(c => `<th>${c}</th>`).join('')
+        const uBody = d.custom_upgrades.map((u, i) => {
+            const status = u.status ? (typeof u.status === 'string' ? u.status : JSON.stringify(u.status)) : '—'
+            return `<tr>
+                <td class="num">${i + 1}</td>
+                <td class="code">${esc(u.id)}</td>
+                <td class="num">${u.level}</td>
+                <td>${esc(status)}</td>
+            </tr>`
+        }).join('')
+        upgradesHtml = `
+        <div class="tw-section-title">⬆ Upgrades (${d.custom_upgrades.length})</div>
+        <div class="table-wrap"><table><thead><tr>${uHead}</tr></thead><tbody>${uBody}</tbody></table></div>`
+    }
+
+    // ── Techs
+    let techsHtml = ''
+    if (d.disabled_techs_missing) {
+        techsHtml = '<div class="tw-section-title">🔬 Disabled Techs</div><div class="meta-banner warn">Section not present in file</div>'
+    } else if (d.disabled_techs && d.disabled_techs.length > 0) {
+        const tHead = ['#', 'ID'].map(c => `<th>${c}</th>`).join('')
+        const tBody = d.disabled_techs.map((t, i) => `<tr>
+            <td class="num">${i + 1}</td>
+            <td class="code">${esc(t.id)}</td>
+        </tr>`).join('')
+        techsHtml = `
+        <div class="tw-section-title">🔬 Disabled Techs (${d.disabled_techs.length})</div>
+        <div class="table-wrap"><table><thead><tr>${tHead}</tr></thead><tbody>${tBody}</tbody></table></div>`
+    }
+
+    // ── Random groups
+    let groupsHtml = ''
+    if (d.random_groups_missing) {
+        groupsHtml = '<div class="tw-section-title">🎲 Random Groups</div><div class="meta-banner warn">Section not present in file</div>'
+    } else if (d.random_groups && d.random_groups.length > 0) {
+        const gItems = d.random_groups.map((g) => {
+            const chancesHead = ['Chance %', ...g.column_types.map((_, ci) => `Col ${ci + 1}`)].map(c => `<th>${c}</th>`).join('')
+            const chancesBody = g.chances.map(ch => {
+                const ids = ch.ids.map(id => `<td class="code">${esc(id)}</td>`).join('')
+                return `<tr><td class="num">${ch.chance}%</td>${ids}</tr>`
+            }).join('')
+            return `<details><summary>${esc(g.name)} <span class="w3i-count">(#${g.num}, ${g.chances.length} rows)</span></summary>
+            <div class="table-wrap"><table><thead><tr>${chancesHead}</tr></thead><tbody>${chancesBody}</tbody></table></div></details>`
+        }).join('')
+        groupsHtml = `<div class="tw-section-title">🎲 Random Groups (${d.random_groups.length})</div>${gItems}`
+    }
+
+    // ── Random item tables
+    let itemsHtml = ''
+    if (d.random_item_tables_missing) {
+        itemsHtml = '<div class="tw-section-title">🎁 Random Item Tables</div><div class="meta-banner warn">Section not present in file</div>'
+    } else if (d.random_item_tables && d.random_item_tables.length > 0) {
+        const iItems = d.random_item_tables.map(item => {
+            const gParts = item.groups.map((g, gi) => {
+                const rows = g.chances.map(ch => `<tr>
+                    <td class="num">${ch.chance}%</td>
+                    <td class="code">${esc(ch.id)}</td>
+                </tr>`).join('')
+                return rows ? `<div class="w3i-sub-group"><em>Set ${gi + 1}</em>
+                    <table><thead><tr><th>Chance</th><th>ID</th></tr></thead><tbody>${rows}</tbody></table>
+                </div>` : ''
+            }).join('')
+            return `<details><summary>${esc(item.name)} <span class="w3i-count">(#${item.num})</span></summary>${gParts}</details>`
+        }).join('')
+        itemsHtml = `<div class="tw-section-title">🎁 Random Item Tables (${d.random_item_tables.length})</div>${iItems}`
+    }
+
+    return `
+    ${metaHtml}
+    ${errorHtml}
+    <table class="info">${generalHtml}</table>
+    ${descHtml}
+    ${pDescHtml}
+    ${flagsHtml}
+    ${camHtml}
+    ${fogHtml}
+    ${loadHtml}
+    ${prologueHtml}
+    ${playersHtml}
+    ${clansHtml}
+    ${upgradesHtml}
+    ${techsHtml}
+    ${groupsHtml}
+    ${itemsHtml}`
+}
+
+module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, REQUIRED_MPQ_FILES}

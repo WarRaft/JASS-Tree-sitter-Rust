@@ -7,7 +7,15 @@ import std.mem;
 import std.string;
 import std.core;
 
-u32 format @ 0x00; // ROC=18, TFT=25, 1.31=28, 1.32=31, 2.0.3 = 33
+enum Format: u32 {
+    RoC   = 18 [[comment("Reign of Chaos")]],
+    TFT   = 25 [[comment("The Frozen Throne")]],
+    V1_31 = 28 [[comment("Patch 1.31")]],
+    V1_32 = 31 [[comment("Patch 1.32")]],
+    V2_03 = 33 [[comment("Patch 2.0.3")]],
+};
+
+Format format @ 0x00;
 
 struct Color {
     u8 b [[color("0000FF")]];
@@ -17,74 +25,74 @@ struct Color {
 } [[static, color(std::format("{:02X}{:02X}{:02X}", r, g, b))]];;
 
 bitfield MapFlags {
-    hide_minimap             : 1 [[comment("Скрыть мини-карту на экранах предпросмотра")]];
-    ally_priorities_edit     : 1 [[comment("Изменить приоритеты союзников")]];
-    melee_map                : 1 [[comment("Карта подходит для режима \"Сражения\"")]];
-    custom_terrain_type      : 1 [[comment("Использовать нестандартный тип ландшафта")]];
-    partial_visibility       : 1 [[comment("Скрытые области частично видимы")]];
-    fixed_player_settings    : 1 [[comment("Фикс. параметры игрока")]];
-    custom_forces            : 1 [[comment("Нестандартные кланы")]];
-    custom_techs             : 1 [[comment("Нестандартные технологии")]];
-    custom_abilities         : 1 [[comment("Нестандартные способности")]];
-    custom_upgrades          : 1 [[comment("Нестандартные улучшения")]];
-    unknown_flag_0x400       : 1 [[comment("Неизвестно")]];
-    waves_steep_shore        : 1 [[comment("Показывать волны на крутых берегах")]];
-    waves_shallow_shore      : 1 [[comment("Показывать волны на пологих берегах")]];
-    terrain_fog              : 1 [[comment("Используется туман на местности")]];
-    expansion_required       : 1 [[comment("Требуется дополнение")]];
-    item_classification      : 1 [[comment("Классификация предметов")]];
-    water_color_override     : 1 [[comment("Фоновый цвет воды")]];
+    hide_minimap             : 1 [[comment("Hide minimap on preview screens")]];
+    ally_priorities_edit     : 1 [[comment("Modify ally priorities")]];
+    melee_map                : 1 [[comment("Map is suitable for Melee mode")]];
+    custom_terrain_type      : 1 [[comment("Use custom terrain type")]];
+    partial_visibility       : 1 [[comment("Masked areas are partially visible")]];
+    fixed_player_settings    : 1 [[comment("Fixed player settings")]];
+    custom_forces            : 1 [[comment("Custom forces")]];
+    custom_techs             : 1 [[comment("Custom tech tree")]];
+    custom_abilities         : 1 [[comment("Custom abilities")]];
+    custom_upgrades          : 1 [[comment("Custom upgrades")]];
+    unknown_flag_0x400       : 1 [[comment("Unknown")]];
+    waves_steep_shore        : 1 [[comment("Show waves on steep shores")]];
+    waves_shallow_shore      : 1 [[comment("Show waves on shallow shores")]];
+    terrain_fog              : 1 [[comment("Terrain fog enabled")]];
+    expansion_required       : 1 [[comment("Expansion required")]];
+    item_classification      : 1 [[comment("Item classification")]];
+    water_color_override     : 1 [[comment("Water tint color override")]];
     padding                  : 15;
 };
 
 enum PlayerType: u32 {
-    Human    = 1, // Человек
-    Comp     = 2, // Компьютер
-    Neutral  = 3, // Нейтрал
-    Reserve  = 4  // Резерв
+    Human    = 1 [[comment("Human player")]],
+    Comp     = 2 [[comment("Computer player")]],
+    Neutral  = 3 [[comment("Neutral player")]],
+    Reserve  = 4 [[comment("Rescuable slot")]],
 };
 
 enum Race: u32 {
-    Random   = 0, // Случайная раса
-    Human    = 1, // Альянс
-    Orc      = 2, // Орда
-    Undead   = 3, // Нежить
-    NightElf = 4  // Ночные эльфы
+    Random   = 0 [[comment("Random race")]],
+    Human    = 1 [[comment("Alliance")]],
+    Orc      = 2 [[comment("Horde")]],
+    Undead   = 3 [[comment("Undead")]],
+    NightElf = 4 [[comment("Night Elves")]],
 };
 
 bitfield PlayerBool {
-    Player1   : 1 [[comment("Игрок 1")]];
-    Player2   : 1 [[comment("Игрок 2")]];
-    Player3   : 1 [[comment("Игрок 3")]];
-    Player4   : 1 [[comment("Игрок 4")]];
-    Player5   : 1 [[comment("Игрок 5")]];
-    Player6   : 1 [[comment("Игрок 6")]];
-    Player7   : 1 [[comment("Игрок 7")]];
-    Player8   : 1 [[comment("Игрок 8")]];
-    Player9   : 1 [[comment("Игрок 9")]];
-    Player10  : 1 [[comment("Игрок 10")]];
-    Player11  : 1 [[comment("Игрок 11")]];
-    Player12  : 1 [[comment("Игрок 12")]];
-    Player13  : 1 [[comment("Игрок 13")]];
-    Player14  : 1 [[comment("Игрок 14")]];
-    Player15  : 1 [[comment("Игрок 15")]];
-    Player16  : 1 [[comment("Игрок 16")]];
-    Player17  : 1 [[comment("Игрок 17")]];
-    Player18  : 1 [[comment("Игрок 18")]];
-    Player19  : 1 [[comment("Игрок 19")]];
-    Player20  : 1 [[comment("Игрок 20")]];
-    Player21  : 1 [[comment("Игрок 21")]];
-    Player22  : 1 [[comment("Игрок 22")]];
-    Player23  : 1 [[comment("Игрок 23")]];
-    Player24  : 1 [[comment("Игрок 24")]];
-    Player25  : 1 [[comment("Игрок 25")]];
-    Player26  : 1 [[comment("Игрок 26")]];
-    Player27  : 1 [[comment("Игрок 27")]];
-    Player28  : 1 [[comment("Игрок 28")]];
-    Player29  : 1 [[comment("Игрок 29")]];
-    Player30  : 1 [[comment("Игрок 30")]];
-    Player31  : 1 [[comment("Игрок 31")]];
-    Player32  : 1 [[comment("Игрок 32")]];
+    Player1   : 1 [[comment("Player 1")]];
+    Player2   : 1 [[comment("Player 2")]];
+    Player3   : 1 [[comment("Player 3")]];
+    Player4   : 1 [[comment("Player 4")]];
+    Player5   : 1 [[comment("Player 5")]];
+    Player6   : 1 [[comment("Player 6")]];
+    Player7   : 1 [[comment("Player 7")]];
+    Player8   : 1 [[comment("Player 8")]];
+    Player9   : 1 [[comment("Player 9")]];
+    Player10  : 1 [[comment("Player 10")]];
+    Player11  : 1 [[comment("Player 11")]];
+    Player12  : 1 [[comment("Player 12")]];
+    Player13  : 1 [[comment("Player 13")]];
+    Player14  : 1 [[comment("Player 14")]];
+    Player15  : 1 [[comment("Player 15")]];
+    Player16  : 1 [[comment("Player 16")]];
+    Player17  : 1 [[comment("Player 17")]];
+    Player18  : 1 [[comment("Player 18")]];
+    Player19  : 1 [[comment("Player 19")]];
+    Player20  : 1 [[comment("Player 20")]];
+    Player21  : 1 [[comment("Player 21")]];
+    Player22  : 1 [[comment("Player 22")]];
+    Player23  : 1 [[comment("Player 23")]];
+    Player24  : 1 [[comment("Player 24")]];
+    Player25  : 1 [[comment("Player 25")]];
+    Player26  : 1 [[comment("Player 26")]];
+    Player27  : 1 [[comment("Player 27")]];
+    Player28  : 1 [[comment("Player 28")]];
+    Player29  : 1 [[comment("Player 29")]];
+    Player30  : 1 [[comment("Player 30")]];
+    Player31  : 1 [[comment("Player 31")]];
+    Player32  : 1 [[comment("Player 32")]];
 };
 
 struct Point {
@@ -101,14 +109,14 @@ struct Rect {
 
 
 struct Player {
-    u32 num; // Номер игрока
+    u32 num [[comment("Player number")]];
     PlayerType type;
     Race race;
-    u32 fix; // Фиксированная исходная позиция  Самый младший бит (0=нет, 1=да)
-    char name[]; // Имя игрока
-    Point pos; // Координата стартовой позиции
-    PlayerBool p_down; // Низкие приоритеты союзников    От младшего бита к старшему (0=приоритета на игрока нету, 1=приоритет на игрока есть)
-    PlayerBool p_up; // Высокие приоритеты союзников  От младшего бита к старшему (0=приоритета на игрока нету, 1=приоритет на игрока есть)
+    u32 fixed_start_position [[comment("Fixed starting position (lowest bit: 0=no, 1=yes)")]];
+    char name[] [[comment("Player name")]];
+    Point start_position [[comment("Starting position coordinates")]];
+    PlayerBool ally_priority_low [[comment("Low ally priorities (bit per player: 0=none, 1=set)")]];
+    PlayerBool ally_priority_high [[comment("High ally priorities (bit per player: 0=none, 1=set)")]];
     if (format >= 31){
         u32;
         u32;
@@ -116,114 +124,114 @@ struct Player {
 };
 
 bitfield ClanFlags {
-    allied                : 1 [[comment("Союзник")]];
-    shared_victory        : 1 [[comment("Общая победа")]];
-    unknown_flag_0x0004   : 1 [[comment("Неизвестно")]];
-    shared_vision         : 1 [[comment("Общее поле зрения")]];
-    shared_units          : 1 [[comment("Общие войска")]];
-    shared_all_units      : 1 [[comment("Общие войска:все")]];
+    allied                : 1 [[comment("Allied")]];
+    shared_victory        : 1 [[comment("Shared victory")]];
+    unknown_flag_0x0004   : 1 [[comment("Unknown")]];
+    shared_vision         : 1 [[comment("Shared vision")]];
+    shared_units          : 1 [[comment("Shared units")]];
+    shared_all_units      : 1 [[comment("Shared units: all")]];
     padding               : 26;
 };
 
 struct Clan {
     ClanFlags flags;
-    u32 players; // От младшего бита к старшему (0=игрока нету в клане, 1=игрок есть в клане), но надо учитывать наличие самого игрока в игре, т.к в первом клане по умолчанию присутствуют все игроки (от 0 до 31), которых нету в других кланах
-    char name[]; // Название клана
+    u32 player_mask [[comment("Player bitmask (bit per player: 0=not in force, 1=in force). Players not assigned to any force default to force 0")]];
+    char name[] [[comment("Force name")]];
 };
 
 
 enum UpgradeStatus: u32 {
-    Disabled   = 0, // Недоступно
-    Available  = 1, // Доступно
-    Researched = 2  // Исследовано
+    Disabled   = 0 [[comment("Disabled")]],
+    Available  = 1 [[comment("Available")]],
+    Researched = 2 [[comment("Researched")]],
 };
 
 struct Upgrade {
-    PlayerBool players; // Игроки    От младшего бита к старшему (0=на игрока не действует улучшение, 1=на игрока действует улучшение)
-    char id[4]; // Равкод улучшения
-    u32 level; //int Уровень улучшения
-    UpgradeStatus status; // Доступность улучшения
+    PlayerBool affected_players [[comment("Affected players (bit per player: 0=unaffected, 1=affected)")]];
+    char rawcode[4] [[comment("Upgrade rawcode")]];
+    u32 level [[comment("Upgrade level")]];
+    UpgradeStatus status [[comment("Upgrade availability")]];
 };
 
 struct Tech {
-    PlayerBool players; //int Игроки    От младшего бита к старшему (0=игроку ДОСТУПНА технология, 1=игроку НЕ ДОСТУПНА технология)
-    char id[4]; // Равкод технологии   Это может быть: предмет, юнит, способность
+    PlayerBool disabled_players [[comment("Players (bit per player: 0=tech available, 1=tech disabled)")]];
+    char rawcode[4] [[comment("Tech rawcode (can be: item, unit, or ability)")]];
 };
 
 
 struct Chance {
-    u32 chance; //int Шанс (в процентах)
-    char ids[Group.j*4]; //   Равкоды
+    u32 chance [[comment("Chance (percentage)")]];
+    char rawcodes[Group.column_count*4] [[comment("Rawcodes")]];
 };
 
 struct Group {
-    u32 num; //int Номер группы
-    char name []; //string  Название группы
+    u32 num [[comment("Group number")]];
+    char name[] [[comment("Group name")]];
 
-    u32 j; //int Кол-во позиций (колонн)   Переменная j
-    u32 j_type[j]; // Тип позиций   0=Войска, 1=Здания, 2=Предметы
+    u32 column_count [[comment("Number of columns")]];
+    u32 column_types[column_count] [[comment("Column types: 0=Units, 1=Buildings, 2=Items")]];
 
-    u32 k; // int Кол-во наборов (рядов) Переменная k
-    Chance chances[k];
+    u32 row_count [[comment("Number of rows")]];
+    Chance chances[row_count];
 };
 
 
 struct ItemChance {
-    u32 chance; //int Шанс (в процентах)
-    char ids[4]; // Равкод предмета
+    u32 chance [[comment("Chance (percentage)")]];
+    char rawcode[4] [[comment("Item rawcode")]];
 };
 
 struct ItemGroup {
-    u32 k; //int Кол-во предметов в наборе  Переменная k
-    ItemChance chances[k];
+    u32 item_count [[comment("Number of items in this set")]];
+    ItemChance chances[item_count];
 };
 
 struct Item {
-    u32 num; // int Номер таблицы
-    char name[]; // string  Название таблицы
-    u32 j; // int Кол-во наборов предметов   Переменная j
-    ItemGroup groups[j];
+    u32 num [[comment("Table number")]];
+    char name[] [[comment("Table name")]];
+    u32 group_count [[comment("Number of item sets")]];
+    ItemGroup groups[group_count];
 };
 
 
 struct Data {
-    u32 save_count;
-    u32 editor_version;
+    u32 save_count [[comment("Number of saves")]];
+    u32 editor_version [[comment("World editor version")]];
     if (format > 28){
-        u32 editor_version_full[4];
+        u32 editor_version_full[4] [[comment("Full editor version (major.minor.build.revision)")]];
     }
-    char map_name[];
-    char author[];
-    char description[];
-    char players_description[];
-    Rect cam_bounds;
-    s32 map_size[4]; // Размеры неигровой области карты Переменные A, B, C, D см. ниже
-    u32 map_width; //Ширина игровой области карты   E, ширина карты = A+E+B
-    u32 map_height; // Высота игровой области карты   F, высота карты = C+F+D
+    char map_name[] [[comment("Map name")]];
+    char author[] [[comment("Map author")]];
+    char description[] [[comment("Map description")]];
+    char recommended_players[] [[comment("Recommended players description")]];
+    Rect camera_bounds [[comment("Camera bounds rectangle")]];
+    s32 non_playable_margins[4] [[comment("Non-playable area margins (A, B, C, D)")]];
+    u32 playable_width [[comment("Playable area width (E); total width = A + E + B")]];
+    u32 playable_height [[comment("Playable area height (F); total height = C + F + D")]];
     MapFlags map_flags;
-    char land; // Основной тип ландшафта карты
-    s32 loadscreen_num; // Номер загрузочного экрана от стандартных кампаний -1 = нету или используется импортированный загрузочный экран
-    if (format >= 25) char loadscreen_path[]; // Путь импортированного загрузочного экрана
-    char loadscreen_text[]; // Текст загрузочного экрана
-    char loadscreen_title[]; // Заголовок загрузочного экрана
-    char loadscreen_subtitle[]; // Подзаголовок загрузочного экрана
-    u32 game_data_set; // Используемый набор игровых данных Номер предустановки, 0=Стандартный
-    if (format >= 25) char prologue_path[]; // Путь импортированного экрана пролога
-    char prologue_text[]; // Текст экрана пролога
-    char prologue_title[]; // Заголовок экрана пролога
-    char prologue_subtitle[]; // Подзаголовок экрана пролога
+    char tileset [[comment("Primary tileset")]];
+    s32 loading_screen_preset [[comment("Campaign loading screen preset (-1 = none or custom imported)")]];
+    if (format >= 25) char loading_screen_model[] [[comment("Custom loading screen model path")]];
+    char loading_screen_text[] [[comment("Loading screen text")]];
+    char loading_screen_title[] [[comment("Loading screen title")]];
+    char loading_screen_subtitle[] [[comment("Loading screen subtitle")]];
+    u32 game_data_set [[comment("Game data set (0 = default)")]];
+    if (format >= 25) char prologue_screen_model[] [[comment("Prologue screen model path")]];
+    char prologue_text[] [[comment("Prologue screen text")]];
+    char prologue_title[] [[comment("Prologue screen title")]];
+    char prologue_subtitle[] [[comment("Prologue screen subtitle")]];
     if (format >= 25) {
-        u32 fog; // 0=Не используется, больше нуля = номер в списке стилей тумана
-        float fog_start; // Начальная Z-высота тумана
-        float fog_end; // Конечная Z-высота тумана
-        float fog_density; // Плотность тумана
-        u32 fog_color; // Цвет тумана RGBA
-        char weather[4]; // Равкод глобальной погоды на карте
-        char sound[]; // Нест. звуковое окружение
-        char light; // Нестандартное освещение Пример: 'A' - Ашенваль, 'L' - Летний Лордерон
-        u32 water_color; // Фоновый цвет воды RGBA
+        u32 fog_type [[comment("Fog style (0 = none, >0 = fog style index)")]];
+        float fog_z_start [[comment("Fog start Z-height")]];
+        float fog_z_end [[comment("Fog end Z-height")]];
+        float fog_density [[comment("Fog density")]];
+        u32 fog_color [[comment("Fog color (RGBA)")]];
+        char global_weather[4] [[comment("Global weather rawcode")]];
+        char ambient_sound[] [[comment("Custom ambient sound environment")]];
+        char tileset_light [[comment("Custom tileset lighting (e.g. 'A' = Ashenvale, 'L' = Lordaeron Summer)")]];
+        u32 water_tint_color [[comment("Water tint color (RGBA)")]];
     }
-    if (format >= 28) u32 is_lua; // 0=JASS, 1=Lua
+    if (format >= 28) u32 script_language [[comment("Script language (0 = JASS, 1 = Lua)")]];
     if (format >= 31){
         u32;
         u32;
@@ -235,24 +243,24 @@ struct Data {
         u32;
     }
 
-    u32 player_count; // Кол-во игроков
+    u32 player_count [[comment("Number of players")]];
     Player players[player_count];
 
-    u32 clan_count; // Кол-во кланов
-    Clan clans[clan_count];
+    u32 force_count [[comment("Number of forces")]];
+    Clan forces[force_count];
 
-    u32 upgrade_count; // Кол-во нестандартных улучшений
-    Upgrade upgrades[upgrade_count];
+    u32 custom_upgrade_count [[comment("Number of custom upgrades")]];
+    Upgrade custom_upgrades[custom_upgrade_count];
 
-    u32 tech_count; // Кол-во нестандартных технологий
-    Tech techs[tech_count];
+    u32 disabled_tech_count [[comment("Number of disabled techs")]];
+    Tech disabled_techs[disabled_tech_count];
 
-    u32 group_count; // Кол-во случайных групп
-    Group groups[group_count];
+    u32 random_group_count [[comment("Number of random unit/building/item groups")]];
+    Group random_groups[random_group_count];
 
     if (format >= 25){
-        u32 item_count; // Кол-во таблиц предметов
-        Item items[item_count];
+        u32 random_item_table_count [[comment("Number of random item tables")]];
+        Item random_item_tables[random_item_table_count];
     }
 };
 

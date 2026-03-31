@@ -344,6 +344,84 @@ function editorStyles() {
             background: rgba(255, 255, 255, 0.25);
         }
 
+        /* ── W3i Map Info ──────────────────────────────────────── */
+        .w3i-desc {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 4px;
+            padding: 6px 8px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin: 4px 0;
+            font-size: 12px;
+            font-family: var(--vscode-editor-font-family, monospace);
+            color: var(--vscode-editor-foreground, #ccc);
+        }
+        .w3i-count {
+            color: var(--vscode-descriptionForeground, #888);
+            font-weight: normal;
+        }
+        .w3i-sub-group {
+            margin: 4px 0;
+        }
+        .w3i-sub-group em {
+            display: block;
+            margin-bottom: 2px;
+            color: var(--vscode-descriptionForeground, #888);
+            font-size: 11px;
+        }
+        #w3iWindow .table-wrap {
+            overflow-x: auto;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 4px;
+            margin-bottom: 4px;
+        }
+        #w3iWindow table {
+            width: 100%;
+            border-collapse: collapse;
+            white-space: nowrap;
+        }
+        #w3iWindow thead {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        #w3iWindow th {
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--vscode-descriptionForeground, #888);
+            text-align: left;
+            padding: 3px 6px;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.08);
+            font-weight: 600;
+            font-size: 11px;
+        }
+        #w3iWindow td {
+            padding: 2px 6px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            font-size: 12px;
+        }
+        #w3iWindow tr:hover td {
+            background: rgba(255, 255, 255, 0.04);
+        }
+        #w3iWindow .num { text-align: right; font-variant-numeric: tabular-nums; }
+        #w3iWindow .mono { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+        #w3iWindow details {
+            margin: 4px 0;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 4px;
+            padding: 2px 6px;
+        }
+        #w3iWindow details[open] {
+            padding-bottom: 6px;
+        }
+        #w3iWindow summary {
+            cursor: pointer;
+            padding: 3px 0;
+            font-weight: 600;
+            font-size: 12px;
+        }
+        #w3iWindow .tags, #w3iWindow .flag-tags { margin-bottom: 8px; }
+
         /* ── Meta banner (bytes read) ─────────────────────────── */
         .meta-banner {
             display: inline-flex;
@@ -364,6 +442,46 @@ function editorStyles() {
             background: rgba(224, 108, 64, 0.12);
             color: #e06c40;
             border: 1px solid rgba(224, 108, 64, 0.3);
+        }
+        .meta-banner.error {
+            background: rgba(244, 71, 71, 0.12);
+            color: #f44747;
+            border: 1px solid rgba(244, 71, 71, 0.3);
+        }
+
+        /* ── Custom context menu ──────────────────────────────── */
+        .ctx-menu {
+            position: fixed;
+            z-index: 100;
+            min-width: 180px;
+            background: rgba(37, 37, 38, 0.96);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 6px;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            padding: 4px 0;
+            font-size: 12px;
+            overflow: hidden;
+        }
+        .ctx-menu[hidden] { display: none !important; }
+        .ctx-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 14px;
+            cursor: pointer;
+            color: var(--vscode-editor-foreground, #ccc);
+            white-space: nowrap;
+        }
+        .ctx-item:hover {
+            background: var(--vscode-list-activeSelectionBackground, rgba(0, 122, 204, 0.3));
+            color: #fff;
+        }
+        .ctx-sep {
+            height: 1px;
+            background: rgba(255, 255, 255, 0.08);
+            margin: 4px 0;
         }
     `
 }

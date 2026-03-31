@@ -392,6 +392,16 @@
         "icon": "$(go-to-file)"
       },
       {
+        "command": "mpq.extractHere",
+        "title": "%command.mpq.extractHere%",
+        "icon": "$(file-symlink-directory)"
+      },
+      {
+        "command": "mpq.extractTo",
+        "title": "%command.mpq.extractTo%",
+        "icon": "$(folder)"
+      },
+      {
         "command": "jass.restartServer",
         "title": "%command.jass.restartServer%",
         "icon": "$(debug-restart)"
@@ -418,6 +428,16 @@
           "command": "mpq.browse",
           "when": "resourceExtname =~ /\\.(w3[xmn]|mpq)$/i",
           "group": "navigation"
+        },
+        {
+          "command": "mpq.extractHere",
+          "when": "resourceScheme == mpq",
+          "group": "7_modification"
+        },
+        {
+          "command": "mpq.extractTo",
+          "when": "resourceScheme == mpq",
+          "group": "7_modification"
         }
       ],
       "editor/title": [

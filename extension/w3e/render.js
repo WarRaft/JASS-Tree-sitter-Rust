@@ -1,5 +1,5 @@
 const {esc, indexToRgb, TILESET_NAMES} = require('./utils.js')
-const {renderHeaderContent, renderGamePathContent, renderFilesRows} = require('./panels.js')
+const {renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent} = require('./panels.js')
 const {editorStyles} = require('./styles.js')
 
 function renderMeta(meta) {
@@ -83,6 +83,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     const headerContent = renderHeaderContent(mapInfo.archiveHeader)
     const gamePathContent = renderGamePathContent(mapInfo.gamePath, mapInfo.mpqStatus)
+    const w3iContent = renderW3iContent(mapInfo.w3iData)
+    const hasW3i = !!mapInfo.w3iData
     const fileCount = mapInfo.archiveFiles ? mapInfo.archiveFiles.length : 0
     const filesRows = mapInfo.isArchive ? renderFilesRows(mapInfo.archiveFiles) : ''
 
@@ -108,11 +110,15 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         <button class="menu-item" data-action="toggleWindow" data-target="gamePathWindow" title="Warcraft III installation path">\u2699 Game Path</button>
         <button class="menu-item${mapInfo.isArchive ? '' : ' disabled'}" ${mapInfo.isArchive ? 'data-action="toggleWindow" data-target="headerWindow"' : ''}
                 title="${mapInfo.isArchive ? 'Archive header info' : 'Available only for archives (.w3x, .w3m, .w3n, .mpq)'}">\ud83d\udce6 Header</button>
+        <button class="menu-item${hasW3i ? '' : ' disabled'}" ${hasW3i ? 'data-action="toggleWindow" data-target="w3iWindow"' : ''}
+                title="${hasW3i ? 'Map info (war3map.w3i)' : 'No map info available'}">\ud83d\udcdc Map Info</button>
         <button class="menu-item${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="terrainWindow"' : ''}
                 title="${hasTerrain ? 'Terrain metadata' : 'No terrain data available'}">\ud83d\uddfa Terrain</button>
         <button class="menu-item menu-child${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="tilesetWindow"' : ''}
                 title="${hasTerrain ? 'Tileset info' : 'No terrain data available'}">\ud83e\uddf1 Tileset</button>
         ${mapInfo.isArchive ? '<button class="menu-item" data-action="toggleWindow" data-target="filesWindow" title="Archive file list">\ud83d\udcc2 Files</button>' : ''}
+        ${mapInfo.isArchive ? `<button class="menu-item menu-child${mapInfo.isArchiveFile ? '' : ' disabled'}" ${mapInfo.isArchiveFile ? 'id="browseMpqBtn"' : ''}
+                title="${mapInfo.isArchiveFile ? 'Browse archive as folder' : 'Already a folder on disk'}">\ud83d\udcc1 Browse</button>` : ''}
     </div>
 
     <!-- ── Floating windows (Custom Elements) ─────────────────── -->
@@ -127,8 +133,14 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     </float-window>
     ` : ''}
 
+    ${hasW3i ? `
+    <float-window id="w3iWindow" title-text="\ud83d\udcdc Map Info" ${mapInfo.isW3i ? '' : 'hidden'} style="left:140px;top:16px;">
+        ${w3iContent}
+    </float-window>
+    ` : ''}
+
     ${hasTerrain ? `
-    <float-window id="terrainWindow" title-text="\ud83d\uddfa Terrain" hidden style="left:140px;top:16px;">
+    <float-window id="terrainWindow" title-text="\ud83d\uddfa Terrain" ${mapInfo.isW3e ? '' : 'hidden'} style="left:140px;top:16px;">
         ${renderMeta(terrainData._meta)}
         <table class="info">
             <tr><td class="key">Magic</td><td><code>${esc(terrainData.magic)}</code></td></tr>

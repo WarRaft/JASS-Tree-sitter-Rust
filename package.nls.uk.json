@@ -9,6 +9,8 @@
   "command.ujapi.download": "Завантажити UjAPI common.j",
   "command.mpq.browse": "Огляд архіву MPQ",
   "command.mpq.openFile": "Відкрити файл з архіву MPQ",
+  "command.mpq.extractHere": "Видобути сюди",
+  "command.mpq.extractTo": "Видобути в…",
   "command.jass.restartServer": "Перезапустити JASS LSP сервер",
   "customEditor.blp.displayName": "Перегляд BLP-зображень",
   "customEditor.doo.displayName": "Перегляд DOO-розміщень",

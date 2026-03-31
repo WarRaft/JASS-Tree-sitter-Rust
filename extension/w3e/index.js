@@ -1,5 +1,5 @@
 // noinspection NpmUsedModulesInstalled
-const {Uri, commands, window} = require('vscode')
+const {Uri, commands, window, ViewColumn} = require('vscode')
 const crypto = require('crypto')
 const path = require('path')
 const {MpqFileSystemProvider} = require('../mpqFileSystemProvider.js')
@@ -21,8 +21,20 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     const ext = (fname.split('.').pop() || '').toLowerCase()
     const isArchive = ext === 'w3x' || ext === 'w3m' || ext === 'w3n' || ext === 'mpq'
     const isMap = ext === 'w3x' || ext === 'w3m'
+    const isW3i = ext === 'w3i'
+    const isW3e = ext === 'w3e'
+
+    // Detect whether the archive path points to a real file or an extracted folder.
+    let isArchiveFile = false
+    if (isArchive) {
+        try {
+            const fs = require('fs')
+            isArchiveFile = fs.statSync(filePath).isFile()
+        } catch (_) {}
+    }
 
     let terrainData = null
+    let w3iData = null
     let archiveInfo = null
     let mapName = null
     let binaries = []
@@ -46,6 +58,17 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         } catch (_) {
         }
 
+        // ── 3. Load w3i from archive ────────────────────────────
+        try {
+            const result = await client.sendRequest('w3i/render', {
+                uri: document.uri.toString(),
+                archivePath: filePath,
+            })
+            if (!result.error) w3iData = result
+            else if (result.format != null) w3iData = result // partial data with _error
+        } catch (_) {
+        }
+
         mapName = fname
         if (archiveInfo && archiveInfo.files) {
             const archiveFiles = new Set(
@@ -55,6 +78,36 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                 ...entry,
                 exists: archiveFiles.has(entry.file) || archiveFiles.has(entry.file.replace(/\//g, '\\'))
             }))
+        }
+    } else if (isW3i) {
+        // ── .w3i file ───────────────────────────────────────────
+        const params = {uri: document.uri.toString()}
+        if (document._mpqArchivePath) params.archivePath = document._mpqArchivePath
+
+        const result = await client.sendRequest('w3i/render', params)
+        if (result.error && result.format == null) {
+            webviewPanel.webview.html = errorHtml(result.error.message)
+            return
+        }
+        w3iData = result
+
+        const mapRoot = findMapRoot(filePath)
+        mapName = mapRoot ? path.basename(mapRoot) : null
+        binaries = mapRoot ? scanMapBinaries(mapRoot) : []
+
+        // Try to load terrain from the same map directory
+        if (mapRoot) {
+            const fs = require('fs')
+            const w3ePath = path.join(mapRoot, 'war3map.w3e')
+            if (fs.existsSync(w3ePath)) {
+                try {
+                    const tResult = await client.sendRequest('w3e/render', {
+                        uri: Uri.file(w3ePath).toString(),
+                    })
+                    if (!tResult.error) terrainData = tResult
+                } catch (_) {
+                }
+            }
         }
     } else {
         // ── .w3e file ───────────────────────────────────────────
@@ -71,6 +124,22 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         const mapRoot = findMapRoot(filePath)
         mapName = mapRoot ? path.basename(mapRoot) : null
         binaries = mapRoot ? scanMapBinaries(mapRoot) : []
+
+        // Try to load w3i from the same map directory
+        if (mapRoot) {
+            const fs = require('fs')
+            const w3iPath = path.join(mapRoot, 'war3map.w3i')
+            if (fs.existsSync(w3iPath)) {
+                try {
+                    const iResult = await client.sendRequest('w3i/render', {
+                        uri: Uri.file(w3iPath).toString(),
+                    })
+                    if (!iResult.error) w3iData = iResult
+                    else if (iResult.format != null) w3iData = iResult
+                } catch (_) {
+                }
+            }
+        }
     }
 
     // ── Three.js URI ────────────────────────────────────────────
@@ -109,9 +178,13 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         binaries,
         currentFile: fname,
         isArchive,
+        isArchiveFile,
         isMap,
+        isW3i,
+        isW3e,
         archiveFiles,
         archiveHeader,
+        w3iData,
         gamePath: gamePathStatus.gamePath,
         mpqStatus: gamePathStatus.mpqStatus,
         nonce,
@@ -156,9 +229,15 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     webviewPanel.webview.onDidReceiveMessage(async (msg) => {
         if (msg.command === 'openFile' && isArchive) {
             const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
-            await commands.executeCommand('vscode.open', uri)
+            await commands.executeCommand('vscode.open', uri, {preview: false, viewColumn: ViewColumn.Beside})
         } else if (msg.command === 'browse' && isArchive) {
             await commands.executeCommand('mpq.browse', document.uri)
+        } else if (msg.command === 'extractHere' && isArchive && msg.name) {
+            const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
+            await commands.executeCommand('mpq.extractHere', uri)
+        } else if (msg.command === 'extractTo' && isArchive && msg.name) {
+            const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
+            await commands.executeCommand('mpq.extractTo', uri)
         } else if (msg.command === 'setGamePath') {
             try {
                 const status = await client.sendRequest('w3e/gamePath/set', {gamePath: msg.value})

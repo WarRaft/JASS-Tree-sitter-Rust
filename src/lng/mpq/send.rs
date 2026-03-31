@@ -9,6 +9,29 @@ use std::sync::Arc;
 use tokio::io::Stdout;
 use tokio::sync::Mutex;
 
+/// The external listfile shipped with the extension — contains properly-cased
+/// paths for well-known Warcraft III game files.
+static LISTFILE_TXT: &str = include_str!("../../../listfile.txt");
+
+/// Build a lookup map: lowercase normalised path → original (properly-cased) path.
+fn build_listfile_map() -> std::collections::HashMap<String, String> {
+    LISTFILE_TXT
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let trimmed = l.trim();
+            let key = trimmed.replace('\\', "/").to_ascii_lowercase();
+            (key, trimmed.to_string())
+        })
+        .collect()
+}
+
+use std::sync::LazyLock;
+
+/// Global lookup: lowercase path → properly-cased path from the external listfile.
+static LISTFILE_CASE_MAP: LazyLock<std::collections::HashMap<String, String>> =
+    LazyLock::new(build_listfile_map);
+
 /// Handle `mpq/info` — return archive metadata for the custom editor page.
 pub async fn send_info(
     writer: &Arc<Mutex<Stdout>>,
@@ -156,18 +179,41 @@ const KNOWN_MPQ_FILES: &[&str] = &[
     "war3mapImported/war3mapImported.txt",
 ];
 
+/// Return the properly-cased version of `name` if found in the external listfile,
+/// otherwise return the original name unchanged.
+fn fix_case(name: &str) -> String {
+    let key = name.replace('\\', "/").to_ascii_lowercase();
+    LISTFILE_CASE_MAP
+        .get(&key)
+        .cloned()
+        .unwrap_or_else(|| name.to_string())
+}
+
 fn list_files(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
     let archive =
         storm_rs::MpqArchive::open(archive_path).map_err(|e| format!("Cannot open archive: {}", e))?;
 
     // Start with whatever (listfile) provides.
-    let mut names: std::collections::HashSet<String> =
-        archive.list_files().into_iter().collect();
+    let raw_names: Vec<String> = archive.list_files().into_iter().collect();
+
+    // Deduplicate by lowercase — MPQ paths are case-insensitive,
+    // so two listfiles may provide the same path with different casing.
+    // Prefer the properly-cased variant from the external listfile.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for name in raw_names {
+        let lower = name.replace('\\', "/").to_ascii_lowercase();
+        if seen.insert(lower) {
+            names.insert(fix_case(&name));
+        }
+    }
 
     // Probe well-known filenames that may be missing from (listfile).
     for &name in KNOWN_MPQ_FILES {
-        if !names.contains(name) && archive.has_file(name) {
-            names.insert(name.to_string());
+        let lower = name.replace('\\', "/").to_ascii_lowercase();
+        if !seen.contains(&lower) && archive.has_file(name) {
+            seen.insert(lower);
+            names.insert(fix_case(name));
         }
     }
 
@@ -208,11 +254,23 @@ fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
         .map_err(|e| format!("Cannot open archive: {}", e))?;
 
     // ── 3. File list ────────────────────────────────────────
-    let mut names: std::collections::HashSet<String> =
-        archive.list_files().into_iter().collect();
+    let raw_names: Vec<String> = archive.list_files().into_iter().collect();
+
+    // Deduplicate by lowercase — MPQ paths are case-insensitive.
+    // Prefer properly-cased names from the external listfile.
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for name in raw_names {
+        let lower = name.replace('\\', "/").to_ascii_lowercase();
+        if seen.insert(lower) {
+            names.insert(fix_case(&name));
+        }
+    }
     for &name in KNOWN_MPQ_FILES {
-        if !names.contains(name) && archive.has_file(name) {
-            names.insert(name.to_string());
+        let lower = name.replace('\\', "/").to_ascii_lowercase();
+        if !seen.contains(&lower) && archive.has_file(name) {
+            seen.insert(lower);
+            names.insert(fix_case(name));
         }
     }
 
@@ -380,12 +438,12 @@ fn parse_w3x_header(path: &str) -> serde_json::Value {
     // ── W3X / W3M map header ─────────────────────────────────
     if sig == b"HM3W" {
         // Read null-terminated map name starting at offset 8
-        let mut map_name = String::new();
         let mut pos = 8;
+        let name_start = pos;
         while pos < buf.len() && buf[pos] != 0 {
-            map_name.push(buf[pos] as char);
             pos += 1;
         }
+        let map_name = String::from_utf8_lossy(&buf[name_start..pos]).into_owned();
         pos += 1; // skip null terminator
 
         let map_flags = if pos + 4 <= buf.len() {
@@ -426,19 +484,19 @@ fn parse_w3x_header(path: &str) -> serde_json::Value {
         let mut pos = 12;
 
         // Campaign name (null-terminated)
-        let mut campaign_name = String::new();
+        let name_start = pos;
         while pos < buf.len() && buf[pos] != 0 {
-            campaign_name.push(buf[pos] as char);
             pos += 1;
         }
+        let campaign_name = String::from_utf8_lossy(&buf[name_start..pos]).into_owned();
         pos += 1; // skip null terminator
 
         // Campaign difficulty (null-terminated)
-        let mut campaign_difficulty = String::new();
+        let diff_start = pos;
         while pos < buf.len() && buf[pos] != 0 {
-            campaign_difficulty.push(buf[pos] as char);
             pos += 1;
         }
+        let campaign_difficulty = String::from_utf8_lossy(&buf[diff_start..pos]).into_owned();
 
         return json!({
             "signature": "HM3C",

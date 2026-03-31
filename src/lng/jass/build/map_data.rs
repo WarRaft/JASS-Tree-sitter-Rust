@@ -44,6 +44,7 @@ pub(super) fn read_map_data(archive_path: &Path) -> Result<MapData, String> {
         .map(|v| v[0])
         .unwrap_or(w3i.format);
 
+
     // Read units doo — optional.
     let units_doo = archive.read_file("war3mapUnits.doo")
         .ok()
@@ -129,7 +130,7 @@ pub(super) fn augment_config(ir: &mut BuildIR, md: &MapData) {
     // Players / teams / placement.
     body.push(IRStmt::call("SetPlayers", vec![IRExpr::int(w.players.len())]));
     if w.map_flags.custom_forces() {
-        body.push(IRStmt::call("SetTeams", vec![IRExpr::int(w.clans.len())]));
+        body.push(IRStmt::call("SetTeams", vec![IRExpr::int(w.forces.len())]));
         body.push(IRStmt::call("SetGamePlacement", vec![IRExpr::id("MAP_PLACEMENT_USE_MAP_SETTINGS")]));
     } else {
         body.push(IRStmt::call("SetTeams", vec![IRExpr::int(w.players.len())]));
@@ -139,7 +140,7 @@ pub(super) fn augment_config(ir: &mut BuildIR, md: &MapData) {
     // Start locations.
     for (i, p) in w.players.iter().enumerate() {
         body.push(IRStmt::call("DefineStartLocation", vec![
-            IRExpr::int(i), IRExpr::float1(p.pos.x), IRExpr::float1(p.pos.y),
+            IRExpr::int(i), IRExpr::float1(p.start_position.x), IRExpr::float1(p.start_position.y),
         ]));
     }
 
@@ -148,7 +149,7 @@ pub(super) fn augment_config(ir: &mut BuildIR, md: &MapData) {
         let idx = p.num;
         let player = IRExpr::call("Player", vec![IRExpr::int(idx)]);
         body.push(IRStmt::call("SetPlayerStartLocation", vec![player.clone(), IRExpr::int(i)]));
-        if p.fix != 0 {
+        if p.fixed_start_position != 0 {
             body.push(IRStmt::call("ForcePlayerStartLocation", vec![player.clone(), IRExpr::int(i)]));
         }
         body.push(IRStmt::call("SetPlayerColor", vec![
@@ -172,8 +173,8 @@ pub(super) fn augment_config(ir: &mut BuildIR, md: &MapData) {
 
     // ── Teams ────────────────────────────────────────────────
     let defined_players: HashSet<u32> = w.players.iter().map(|p| p.num).collect();
-    for (i, clan) in w.clans.iter().enumerate() {
-        let mask = clan.players;
+    for (i, clan) in w.forces.iter().enumerate() {
+        let mask = clan.player_mask;
         for bit in 0..32u32 {
             if mask & (1 << bit) != 0 && defined_players.contains(&bit) {
                 body.push(IRStmt::call("SetPlayerTeam", vec![
@@ -215,8 +216,8 @@ pub(super) fn augment_config(ir: &mut BuildIR, md: &MapData) {
 
     // ── Ally priorities ──────────────────────────────────────
     for (loc, p) in w.players.iter().enumerate() {
-        let low = p.priority_low.raw;
-        let high = p.priority_high.raw;
+        let low = p.ally_priority_low.raw;
+        let high = p.ally_priority_high.raw;
         if low == 0 && high == 0 { continue; }
         let mut entries: Vec<(usize, &str)> = Vec::new();
         for (other_loc, other_p) in w.players.iter().enumerate() {
@@ -255,12 +256,12 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
     // Formula: left  = 64*(A - E - B),  right = 64*(A + E - B)
     //          bottom= 64*(C - F - D),  top   = 64*(C + F - D)
     // where A,B,C,D = map_size margins, E = map_width, F = map_height.
-    let a = w.map_size[0] as f32;
-    let b = w.map_size[1] as f32;
-    let c = w.map_size[2] as f32;
-    let d = w.map_size[3] as f32;
-    let e = w.map_width as f32;
-    let f = w.map_height as f32;
+    let a = w.non_playable_margins[0] as f32;
+    let b = w.non_playable_margins[1] as f32;
+    let c = w.non_playable_margins[2] as f32;
+    let d = w.non_playable_margins[3] as f32;
+    let e = w.playable_width as f32;
+    let f = w.playable_height as f32;
 
     let cam_left   = 64.0 * (a - e - b);
     let cam_bottom = 64.0 * (c - f - d);
@@ -279,14 +280,14 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
     ]));
 
     // Day/night cycle models & ambient sounds.
-    let (dnc_terrain, dnc_unit, day_snd, night_snd) = tileset_env(w.land);
+    let (dnc_terrain, dnc_unit, day_snd, night_snd) = tileset_env(w.tileset);
     stmts.push(IRStmt::call("SetDayNightModels", vec![
         IRExpr::string(dnc_terrain), IRExpr::string(dnc_unit),
     ]));
 
     // Fog.
     if let (Some(fog_type), Some(fog_start), Some(fog_end), Some(fog_density), Some(fog_color))
-        = (w.fog, w.fog_start, w.fog_end, w.fog_density, w.fog_color)
+        = (w.fog_type, w.fog_z_start, w.fog_z_end, w.fog_density, w.fog_color)
     {
         if fog_type != 0 || fog_start != 0.0 || fog_end != 0.0 || fog_density != 0.0 {
             let r = ((fog_color >> 16) & 0xFF) as f32 / 255.0;
@@ -300,7 +301,7 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
     }
 
     // Water tint.
-    if let Some(wc) = w.water_color {
+    if let Some(wc) = w.water_tint_color {
         if w.map_flags.water_color_override() {
             stmts.push(IRStmt::call("SetWaterBaseColor", vec![
                 IRExpr::int((wc >> 16) & 0xFF), IRExpr::int((wc >> 8) & 0xFF),
