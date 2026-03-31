@@ -325,7 +325,35 @@ async fn main() {
 
                 MethodCall::SetTrace(_) => {}
 
-                MethodCall::DidClose(_) => {}
+                MethodCall::DidClose(params) => {
+                    let uri = params.text_document.uri;
+
+                    // Cancel in-flight request handlers — they target a now-closed file.
+                    cancel_uri_requests(&uri);
+
+                    let evicted = crate::util::file_store::evict_closed_file(&uri);
+
+                    // Send empty diagnostics for every evicted URI so the editor
+                    // clears stale markers.
+                    if !evicted.is_empty() {
+                        let writer = Arc::clone(&writer);
+                        tokio::spawn(async move {
+                            for evicted_uri in &evicted {
+                                crate::lsp::send::send(
+                                    &writer,
+                                    &json!({
+                                        "jsonrpc": "2.0",
+                                        "method": "textDocument/publishDiagnostics",
+                                        "params": {
+                                            "uri": evicted_uri.to_string(),
+                                            "diagnostics": []
+                                        }
+                                    }),
+                                ).await;
+                            }
+                        });
+                    }
+                }
 
                 MethodCall::DebugLogEnable(params) => {
                     DEBUG_LOG_ENABLED.store(params.enabled, Ordering::Relaxed);

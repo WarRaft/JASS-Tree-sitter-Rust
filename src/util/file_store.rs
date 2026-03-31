@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use dashmap::{DashMap, DashSet};
+use log::info;
 use once_cell::sync::Lazy;
 use tokio::io::Stdout;
 use tokio::sync::{watch, Mutex};
@@ -286,6 +287,65 @@ async fn push_inlay_hints(writer: &Arc<Mutex<Stdout>>) {
         )
         .await;
     }
+}
+
+// ─── DidClose cleanup ────────────────────────────────────────────────────────
+
+/// Evict per-editor state for a closed file and, if the whole import tree
+/// has no more open files, evict the tree's `FILE_STORE` / scope entries
+/// so that memory is reclaimed.
+///
+/// Returns the set of URIs whose diagnostics were cleared (caller should
+/// send empty `publishDiagnostics` for each).
+pub fn evict_closed_file(uri: &Url) -> Vec<Url> {
+    use crate::util::import_graph::IMPORT_GRAPH;
+    use crate::util::roper::uri_map::ROPE_MAP;
+    use crate::util::scope_resolver::SCOPE_RESOLVER;
+    use crate::util::tree_map::{PARSER_MAP, TREE_MAP};
+    use crate::util::uri_map::LNG_URI_MAP;
+
+    // 1. Remove per-editor state for the closed file.
+    ROPE_MAP.remove(uri);
+    TREE_MAP.remove(uri);
+    PARSER_MAP.remove(uri);
+    LNG_URI_MAP.remove(uri);
+    CANCEL_TOKENS.remove(uri);
+    REQUEST_TOKENS.remove(uri);
+    PARSE_DESIRED.remove(uri);
+    PARSE_DONE_TX.remove(uri);
+
+    // 2. Determine the import-tree the closed file belongs to.
+    let tree_uris = IMPORT_GRAPH.tree_for_uri(uri);
+
+    // 3. Check if any file in that tree is still open in the editor.
+    let any_open = tree_uris.iter().any(|u| ROPE_MAP.contains_key(u));
+
+    if any_open {
+        // At least one file is still open — keep FILE_STORE intact.
+        return vec![];
+    }
+
+    // 4. No open files remain in this tree — evict everything.
+    let mut evicted: Vec<Url> = Vec::with_capacity(tree_uris.len());
+    for tree_uri in &tree_uris {
+        if FILE_STORE.remove(tree_uri).is_some() {
+            evicted.push(tree_uri.clone());
+        }
+        CANCEL_TOKENS.remove(tree_uri);
+        REQUEST_TOKENS.remove(tree_uri);
+        PARSE_DESIRED.remove(tree_uri);
+        PARSE_DONE_TX.remove(tree_uri);
+    }
+
+    SCOPE_RESOLVER.remove_files(&tree_uris);
+
+    info!(
+        "evict_closed_file: tree for {} — evicted {} file(s)",
+        uri.path().rsplit('/').next().unwrap_or(""),
+        evicted.len(),
+    );
+
+    evicted
 }
 
 /// Check if `target_uri` is considered **frozen** (imported via `//import!`
