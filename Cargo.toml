@@ -6,9 +6,10 @@ repository = "https://github.com/WarRaft/JASS-Tree-sitter-rust"
 edition = "2024"
 
 [dependencies]
+axum = "0.8.8"
 base64 = "0.22.1"
 blp = "0.1.37"
-tree-sitter = "0.26.7"
+tree-sitter = "0.26.8"
 tree-sitter-bni = { path = "./../tree-sitter-bni" }
 tree-sitter-jass = { path = "./../tree-sitter-jass" }
 tree-sitter-as = { path = "./../tree-sitter-as" }
@@ -34,10 +35,10 @@ dashmap = "7.0.0-rc2"
 dirs = "6.0.0"
 petgraph = "0.8.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "blocking", "json"] }
-redb = "2.4.0"
-sha2 = "0.10.9"
+redb = "3.1.1"
+sha2 = "0.11.0"
 tokio-util = "0.7.18"
 
 [build-dependencies]
-serde_json = "1.0"
+serde_json = "1.0.149"
 

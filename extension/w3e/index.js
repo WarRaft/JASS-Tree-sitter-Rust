@@ -15,7 +15,7 @@ const {renderMapEditor} = require('./render.js')
  * @param {import('vscode-languageclient').LanguageClient} client
  * @param {import('vscode').Uri} extensionUri
  */
-async function resolveW3eEditor(document, webviewPanel, _token, client, extensionUri) {
+async function resolveW3eEditor(document, webviewPanel, _token, client, extensionUri, getBinaryServer) {
     const filePath = document.uri.fsPath
     const fname = document.uri.path.split('/').pop() || 'w3e'
     const ext = (fname.split('.').pop() || '').toLowerCase()
@@ -278,13 +278,23 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     // ── Game path status from server ────────────────────────────
     let gamePathStatus = {gamePath: '', hasPath: false, mpqStatus: null, allPresent: false}
     try {
-        gamePathStatus = await client.sendRequest('w3e/gamePath/status', {})
+        const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+        if (bs) {
+            const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/gamePath/status?token=${encodeURIComponent(bs.token)}`)
+            if (resp.ok) gamePathStatus = await resp.json()
+        }
+        if (!gamePathStatus.hasPath) {
+            gamePathStatus = await client.sendRequest('w3e/gamePath/status', {})
+        }
     } catch (_) {
     }
 
     // ── Archive files for the Files window ───────────────────────
     const archiveFiles = isArchive && archiveInfo ? (archiveInfo.files || []) : null
     const archiveHeader = isArchive && archiveInfo ? (archiveInfo.header || null) : null
+
+    // ── Binary HTTP server info ────────────────────────────────
+    const binaryServer = typeof getBinaryServer === 'function' ? getBinaryServer() : null
 
     webviewPanel.webview.html = renderMapEditor(terrainData, fname, threeUri.toString(), {
         mapName,
@@ -308,6 +318,9 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         cspSource,
         componentsSrc: componentsUri.toString(),
         terrainSrc: terrainUri.toString(),
+        binaryServer,
+        terrainUri: document.uri.toString(),
+        archivePath: isArchive ? filePath : undefined,
     })
 
     // ── Game-path event dispatcher ──────────────────────────────
@@ -331,12 +344,44 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         webviewPanel.webview.postMessage({command: 'gamePathChanged', ...payload})
     }
 
+    // ── Helper: fetch JSON from the binary HTTP server ─────────
+    async function fetchSlk(endpoint) {
+        const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+        if (!bs) return null
+        const params = new URLSearchParams({token: bs.token})
+        if (isArchive) params.set('archive', filePath)
+        const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/${endpoint}?${params}`)
+        if (!resp.ok) return null
+        return await resp.json()
+    }
+
+    // ── Helper: set game path via HTTP (POST) ────────────────────
+    async function setGamePathViaHttp(gamePath) {
+        const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+        if (!bs) return null
+        try {
+            const resp = await fetch(
+                `http://127.0.0.1:${bs.port}/w3e/gamePath/set?token=${encodeURIComponent(bs.token)}`,
+                {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({gamePath}),
+                }
+            )
+            if (resp.ok) return await resp.json()
+        } catch (_) {}
+        return null
+    }
+
     // ── Listener: terrain SLK ───────────────────────────────────
     onGamePathChanged(async (payload) => {
         try {
-            payload.terrainSlk = await client.sendRequest('w3e/terrainSlk', {
-                archivePath: isArchive ? filePath : undefined,
-            })
+            payload.terrainSlk = await fetchSlk('terrainSlk')
+            if (payload.terrainSlk == null) {
+                payload.terrainSlk = await client.sendRequest('w3e/terrainSlk', {
+                    archivePath: isArchive ? filePath : undefined,
+                })
+            }
         } catch (_) {
             payload.terrainSlk = null
         }
@@ -345,9 +390,12 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     // ── Listener: doodads SLK ───────────────────────────────────
     onGamePathChanged(async (payload) => {
         try {
-            payload.doodadsSlk = await client.sendRequest('w3e/doodadsSlk', {
-                archivePath: isArchive ? filePath : undefined,
-            })
+            payload.doodadsSlk = await fetchSlk('doodadsSlk')
+            if (payload.doodadsSlk == null) {
+                payload.doodadsSlk = await client.sendRequest('w3e/doodadsSlk', {
+                    archivePath: isArchive ? filePath : undefined,
+                })
+            }
         } catch (_) {
             payload.doodadsSlk = null
         }
@@ -356,9 +404,12 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     // ── Listener: units SLK ─────────────────────────────────────
     onGamePathChanged(async (payload) => {
         try {
-            payload.unitsSlk = await client.sendRequest('w3e/unitsSlk', {
-                archivePath: isArchive ? filePath : undefined,
-            })
+            payload.unitsSlk = await fetchSlk('unitsSlk')
+            if (payload.unitsSlk == null) {
+                payload.unitsSlk = await client.sendRequest('w3e/unitsSlk', {
+                    archivePath: isArchive ? filePath : undefined,
+                })
+            }
         } catch (_) {
             payload.unitsSlk = null
         }
@@ -368,7 +419,134 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     webviewPanel.webview.onDidReceiveMessage(async (msg) => {
         if (msg.command === 'openFile' && isArchive) {
             const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
-            await commands.executeCommand('vscode.open', uri, {preview: false, viewColumn: ViewColumn.Beside})
+            const ext = (msg.name.split('.').pop() || '').toLowerCase()
+            const viewTypeMap = {
+                mdx: 'mdx.preview',
+                blp: 'blp.preview',
+                doo: 'doo.preview',
+                w3i: 'w3i.preview',
+                slk: 'slk.preview',
+            }
+            const viewType = viewTypeMap[ext]
+            if (viewType) {
+                await commands.executeCommand('vscode.openWith', uri, viewType, {viewColumn: ViewColumn.Beside})
+            } else {
+                await commands.executeCommand('vscode.open', uri, {preview: false, viewColumn: ViewColumn.Beside})
+            }
+        } else if (msg.command === 'openModel' && msg.path) {
+            // Resolve a game-internal model path via cascading file lookup,
+            // render MDX data, and send the result back to the webview for
+            // the embedded model viewer float-window.
+            try {
+                const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+                const hasExt = /\.\w+$/.test(msg.path)
+
+                // Build a list of paths to try
+                const pathsToTry = hasExt
+                    ? [msg.path]
+                    : [msg.path + '.mdx', msg.path + '.mdl']
+
+                let buf = null
+                let resolvedPath = msg.path
+
+                for (const tryPath of pathsToTry) {
+                    // Try HTTP server first
+                    if (bs && !buf) {
+                        const params = new URLSearchParams({
+                            token: bs.token,
+                            path: tryPath,
+                        })
+                        if (isArchive) params.set('archive', filePath)
+                        try {
+                            const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
+                            if (resp.ok) {
+                                buf = Buffer.from(await resp.arrayBuffer())
+                                const rp = resp.headers.get('x-resolved-path')
+                                resolvedPath = rp || tryPath
+                            }
+                        } catch (_) {}
+                    }
+
+                    // Fallback to LSP
+                    if (!buf) {
+                        try {
+                            const result = await client.sendRequest('w3e/lookupFile', {
+                                path: tryPath,
+                                archivePath: isArchive ? filePath : undefined,
+                            })
+                            if (result && result.content) {
+                                buf = Buffer.from(result.content, 'base64')
+                                resolvedPath = result.resolvedPath || tryPath
+                            }
+                        } catch (_) {}
+                    }
+
+                    if (buf) break
+                }
+
+                if (!buf) {
+                    window.showWarningMessage(`Model not found: ${msg.path}`)
+                    return
+                }
+
+                const resolvedExt = (resolvedPath.split('.').pop() || '').toLowerCase()
+
+                // .mdl format — not supported yet, show notice in viewer
+                if (resolvedExt === 'mdl') {
+                    const fname = resolvedPath.replace(/\\/g, '/').split('/').pop() || 'model.mdl'
+                    webviewPanel.webview.postMessage({
+                        command: 'modelUnsupported',
+                        name: fname,
+                        reason: '.mdl format is temporarily not supported',
+                    })
+                    return
+                }
+
+                const fs = require('fs')
+                const os = require('os')
+                const fname = resolvedPath.replace(/\\/g, '/').split('/').pop() || 'model.mdx'
+                const tmpDir = path.join(os.tmpdir(), `vscode-mdx-${Date.now()}`)
+                fs.mkdirSync(tmpDir, {recursive: true})
+                const tmpPath = path.join(tmpDir, fname)
+                fs.writeFileSync(tmpPath, buf)
+
+                const tmpUri = Uri.file(tmpPath)
+                const ext = (fname.split('.').pop() || '').toLowerCase()
+
+                if (ext === 'mdx') {
+                    // Render MDX via LSP and send result to webview
+                    try {
+                        const renderResult = await client.sendRequest('mdx/render', {
+                            uri: tmpUri.toString()
+                        })
+
+                        if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
+                            webviewPanel.webview.postMessage({
+                                command: 'modelData',
+                                name: fname,
+                                geosets: renderResult.geosets,
+                                total_vertices: renderResult.total_vertices,
+                                total_faces: renderResult.total_faces,
+                            })
+                        } else {
+                            window.showWarningMessage(`Failed to render model: ${fname}`)
+                        }
+                    } catch (renderErr) {
+                        window.showWarningMessage(`Failed to render model: ${renderErr.message || renderErr}`)
+                    }
+                } else {
+                    // Non-MDX files: open normally in a separate tab
+                    await commands.executeCommand('vscode.open', tmpUri, {preview: false, viewColumn: ViewColumn.Beside})
+                }
+
+                // Clean up temp file after a delay
+                setTimeout(() => {
+                    try { fs.unlinkSync(tmpPath) } catch (_) {}
+                    try { fs.rmdirSync(tmpDir) } catch (_) {}
+                }, 5000)
+            } catch (e) {
+                window.showErrorMessage(`Failed to open model: ${e.message || e}`)
+            }
         } else if (msg.command === 'browse' && isArchive) {
             await commands.executeCommand('mpq.browse', document.uri)
         } else if (msg.command === 'extractHere' && isArchive && msg.name) {
@@ -379,9 +557,26 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
             await commands.executeCommand('mpq.extractTo', uri)
         } else if (msg.command === 'setGamePath') {
             try {
-                const status = await client.sendRequest('w3e/gamePath/set', {gamePath: msg.value})
+                const status = await setGamePathViaHttp(msg.value) ||
+                    await client.sendRequest('w3e/gamePath/set', {gamePath: msg.value})
                 await emitGamePathChanged(status)
             } catch (_) {
+                webviewPanel.webview.postMessage({command: 'loadingDone'})
+            }
+        } else if (msg.command === 'reloadGamePath') {
+            try {
+                let status = null
+                const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+                if (bs) {
+                    const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/gamePath/status?token=${encodeURIComponent(bs.token)}`)
+                    if (resp.ok) status = await resp.json()
+                }
+                if (!status) {
+                    status = await client.sendRequest('w3e/gamePath/status', {})
+                }
+                await emitGamePathChanged(status)
+            } catch (_) {
+                webviewPanel.webview.postMessage({command: 'loadingDone'})
             }
         } else if (msg.command === 'browseGamePath') {
             const uris = await window.showOpenDialog({
@@ -390,10 +585,14 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                 canSelectMany: false,
                 openLabel: 'Select Warcraft III Folder',
             })
-            if (!uris || uris.length === 0) return
+            if (!uris || uris.length === 0) {
+                webviewPanel.webview.postMessage({command: 'loadingDone'})
+                return
+            }
             const selectedPath = uris[0].fsPath
             try {
-                const status = await client.sendRequest('w3e/gamePath/set', {gamePath: selectedPath})
+                const status = await setGamePathViaHttp(selectedPath) ||
+                    await client.sendRequest('w3e/gamePath/set', {gamePath: selectedPath})
                 if (!status.allPresent) {
                     const missing = Object.entries(status.mpqStatus || {}).filter(([, ok]) => !ok).map(([f]) => f)
                     await window.showWarningMessage(
@@ -403,6 +602,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                 }
                 await emitGamePathChanged(status)
             } catch (_) {
+                webviewPanel.webview.postMessage({command: 'loadingDone'})
             }
         }
     })

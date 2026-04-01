@@ -23,6 +23,13 @@ const MPQ_SEARCH_ORDER: &[&str] = &[
 /// Try to find `relative_path` (e.g. `"TerrainArt\Terrain.slk"`) using the
 /// cascading lookup.  Returns `(file_bytes, source_label)` on success.
 pub fn lookup_file(relative_path: &str, archive_path: Option<&str>) -> Option<(Vec<u8>, String)> {
+    lookup_file_resolved(relative_path, archive_path)
+        .map(|(buf, source, _resolved)| (buf, source))
+}
+
+/// Like `lookup_file`, but also returns the actual path that matched
+/// (may differ from `relative_path` when `.mdx` → `.mdl` fallback triggers).
+pub fn lookup_file_resolved(relative_path: &str, archive_path: Option<&str>) -> Option<(Vec<u8>, String, String)> {
     // Normalise to backslash for MPQ lookups and forward-slash for FS.
     let mpq_path = relative_path.replace('/', "\\");
     let fs_path = relative_path.replace('\\', "/");
@@ -32,7 +39,7 @@ pub fn lookup_file(relative_path: &str, archive_path: Option<&str>) -> Option<(V
         if let Ok(archive) = storm_rs::MpqArchive::open(ap) {
             if let Ok(buf) = archive.read_file(&mpq_path) {
                 debug!("lookup_file: found {relative_path} in map archive");
-                return Some((buf, "map archive".into()));
+                return Some((buf, "map archive".into(), relative_path.into()));
             }
         }
     }
@@ -49,7 +56,7 @@ pub fn lookup_file(relative_path: &str, archive_path: Option<&str>) -> Option<(V
     if disk_path.is_file() {
         if let Ok(buf) = std::fs::read(&disk_path) {
             debug!("lookup_file: found {relative_path} on disk");
-            return Some((buf, "game folder".into()));
+            return Some((buf, "game folder".into(), relative_path.into()));
         }
     }
 
@@ -62,9 +69,19 @@ pub fn lookup_file(relative_path: &str, archive_path: Option<&str>) -> Option<(V
         if let Ok(archive) = storm_rs::MpqArchive::open(mpq_file.to_string_lossy().as_ref()) {
             if let Ok(buf) = archive.read_file(&mpq_path) {
                 debug!("lookup_file: found {relative_path} in {mpq_name}");
-                return Some((buf, mpq_name.into()));
+                return Some((buf, mpq_name.into(), relative_path.into()));
             }
         }
+    }
+
+    // ── .mdx → .mdl fallback ────────────────────────────────────
+    // Model paths in SLK files often omit the extension; callers append
+    // `.mdx` first.  If the `.mdx` wasn't found anywhere in the cascade,
+    // retry with `.mdl` (the older text-based model format).
+    if relative_path.to_ascii_lowercase().ends_with(".mdx") {
+        let mdl_path = format!("{}.mdl", &relative_path[..relative_path.len() - 4]);
+        debug!("lookup_file: .mdx not found, retrying as {mdl_path}");
+        return lookup_file_resolved(&mdl_path, archive_path);
     }
 
     None
@@ -108,6 +125,12 @@ pub fn lookup_file_exists(relative_path: &str, archive_path: Option<&str>) -> bo
                 return true;
             }
         }
+    }
+
+    // ── .mdx → .mdl fallback ────────────────────────────────────
+    if relative_path.to_ascii_lowercase().ends_with(".mdx") {
+        let mdl_path = format!("{}.mdl", &relative_path[..relative_path.len() - 4]);
+        return lookup_file_exists(&mdl_path, archive_path);
     }
 
     false

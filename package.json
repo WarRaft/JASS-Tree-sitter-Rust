@@ -345,6 +345,20 @@
           "light": "./icons/w3u.svg",
           "dark": "./icons/w3u.svg"
         }
+      },
+      {
+        "id": "mdx",
+        "aliases": [
+          "MDX Model",
+          "MDX"
+        ],
+        "extensions": [
+          ".mdx"
+        ],
+        "icon": {
+          "light": "./icons/mdx.svg",
+          "dark": "./icons/mdx.svg"
+        }
       }
     ],
     "configurationDefaults": {
@@ -438,6 +452,16 @@
           }
         ],
         "priority": "option"
+      },
+      {
+        "viewType": "mdx.preview",
+        "displayName": "%customEditor.mdx.displayName%",
+        "selector": [
+          {
+            "filenamePattern": "*.mdx"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "activationEvents": [
@@ -446,7 +470,8 @@
       "onCustomEditor:doo.preview",
       "onCustomEditor:w3i.preview",
       "onCustomEditor:w3e.preview",
-      "onCustomEditor:slk.preview"
+      "onCustomEditor:slk.preview",
+      "onCustomEditor:mdx.preview"
     ],
     "commands": [
       {

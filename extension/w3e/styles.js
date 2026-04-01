@@ -449,6 +449,59 @@ function editorStyles() {
             border: 1px solid rgba(244, 71, 71, 0.3);
         }
 
+        /* ── Model viewer ──────────────────────────────────────── */
+        #modelViewerWindow .mv-toolbar,
+        #modelViewerWindow .mv-canvas-container {
+            /* These live inside the float-window <slot> (light DOM) */
+        }
+        .mv-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 4px 8px;
+            background: rgba(255, 255, 255, 0.03);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            flex-shrink: 0;
+            flex-wrap: wrap;
+            font-size: 12px;
+        }
+        .mv-toolbar strong {
+            font-size: 12px;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .mv-info {
+            color: var(--vscode-descriptionForeground, #888);
+            margin-left: auto;
+            font-size: 11px;
+            white-space: nowrap;
+        }
+        .mv-reset {
+            padding: 2px 8px;
+            background: var(--vscode-dropdown-background, #3c3c3c);
+            color: var(--vscode-dropdown-foreground, #ccc);
+            border: 1px solid var(--vscode-dropdown-border, #454545);
+            border-radius: 3px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+        .mv-reset:hover {
+            background: var(--vscode-button-hoverBackground, #505050);
+        }
+        .mv-canvas-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            min-height: 0;
+        }
+        .mv-canvas-container canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
         /* ── Custom context menu ──────────────────────────────── */
         .ctx-menu {
             position: fixed;

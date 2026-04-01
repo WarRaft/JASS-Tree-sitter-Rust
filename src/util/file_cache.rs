@@ -18,7 +18,7 @@ use crate::lng::jass::symbol::FileSymbols;
 use crate::lsp::ref_map::{DeclKey, RefMap};
 use crate::util::cache_db;
 use log::{error, info};
-use redb::ReadableTable;
+use redb::{ReadableDatabase, ReadableTable};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -192,11 +192,11 @@ pub fn load_all() -> Vec<(Url, CacheData)> {
     let Some(db) = cache_db::db() else {
         return vec![];
     };
-    let read_txn = match db.begin_read() {
+    let read_txn: redb::ReadTransaction = match db.begin_read() {
         Ok(t) => t,
         Err(_) => return vec![],
     };
-    let table = match read_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+    let table: redb::ReadOnlyTable<&str, &[u8]> = match read_txn.open_table(cache_db::FILE_CACHE_TABLE) {
         Ok(t) => t,
         Err(_) => return vec![],
     };
@@ -210,7 +210,7 @@ pub fn load_all() -> Vec<(Url, CacheData)> {
     };
 
     for entry_result in iter {
-        let (key_guard, val_guard) = match entry_result {
+        let (key_guard, val_guard): (redb::AccessGuard<&str>, redb::AccessGuard<&[u8]>) = match entry_result {
             Ok(kv) => kv,
             Err(_) => continue,
         };
@@ -308,11 +308,11 @@ pub fn gc(keep: &HashSet<String>) {
 
     // Read all keys first.
     let keys_to_remove: Vec<String> = {
-        let read_txn = match db.begin_read() {
+        let read_txn: redb::ReadTransaction = match db.begin_read() {
             Ok(t) => t,
             Err(_) => return,
         };
-        let table = match read_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+        let table: redb::ReadOnlyTable<&str, &[u8]> = match read_txn.open_table(cache_db::FILE_CACHE_TABLE) {
             Ok(t) => t,
             Err(_) => return,
         };
@@ -324,7 +324,7 @@ pub fn gc(keep: &HashSet<String>) {
         let mut to_remove = Vec::new();
         for entry_result in iter {
             if let Ok((key_guard, _)) = entry_result {
-                let uri_str = key_guard.value();
+                let uri_str: &str = key_guard.value();
                 if !keep.contains(uri_str) {
                     to_remove.push(uri_str.to_string());
                 }
@@ -342,7 +342,7 @@ pub fn gc(keep: &HashSet<String>) {
         Err(_) => return,
     };
     {
-        let mut table = match write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
+        let mut table: redb::Table<&str, &[u8]> = match write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
             Ok(t) => t,
             Err(_) => return,
         };

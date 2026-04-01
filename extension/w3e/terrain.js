@@ -1,6 +1,6 @@
 'use strict';
 
-(function () {
+(async function () {
     const DATA = window.__W3E_DATA__
     if (!DATA) return
 
@@ -37,6 +37,69 @@
 
         if (hasTerrain) {
             const D = DATA.renderData
+
+            // ── Binary data: fetch from HTTP server or decode base64 ─
+            // When the binary HTTP server is available, we fetch raw bytes
+            // directly — zero JSON/base64 overhead. Falls back to base64.
+            const binaryUrl = DATA.binaryTerrainUrl
+
+            if (binaryUrl) {
+                // ── Direct binary fetch (optimal path) ───────────
+                try {
+                    const resp = await fetch(binaryUrl)
+                    if (resp.ok) {
+                        const buf = await resp.arrayBuffer()
+                        const view = new DataView(buf)
+                        let off = 0
+                        D.w = view.getUint32(off, true); off += 4
+                        D.h = view.getUint32(off, true); off += 4
+                        D.offsetX = view.getFloat32(off, true); off += 4
+                        D.offsetY = view.getFloat32(off, true); off += 4
+                        D.totalTiles = view.getUint32(off, true); off += 4
+
+                        const N = D.w * D.h
+                        D.groundHeight = new Uint16Array(buf, off, N); off += N * 2
+                        D.groundTexture = new Uint8Array(buf, off, N); off += N
+                        D.groundVariation = new Uint8Array(buf, off, N); off += N
+                        D.cliffVariation = new Uint8Array(buf, off, N); off += N
+                        D.cliffTexture = new Uint8Array(buf, off, N); off += N
+                        D.layerHeight = new Uint8Array(buf, off, N); off += N
+                        D.flags = new Uint8Array(buf, off, N)
+                    } else {
+                        throw new Error('HTTP ' + resp.status)
+                    }
+                } catch (e) {
+                    console.warn('Binary fetch failed, falling back to base64:', e)
+                    decodeFallback(D)
+                }
+            } else {
+                // ── Base64 fallback ──────────────────────────────
+                decodeFallback(D)
+            }
+
+            function decodeFallback(D) {
+                function b64ToUint8(b64) {
+                    const bin = atob(b64)
+                    const u8 = new Uint8Array(bin.length)
+                    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
+                    return u8
+                }
+                function b64ToUint16(b64) {
+                    const bin = atob(b64)
+                    const buf = new ArrayBuffer(bin.length)
+                    const u8 = new Uint8Array(buf)
+                    for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
+                    return new Uint16Array(buf)
+                }
+                D.groundHeight = b64ToUint16(D.groundHeight)
+                D.groundTexture = b64ToUint8(D.groundTexture)
+                D.groundVariation = b64ToUint8(D.groundVariation)
+                D.cliffVariation = b64ToUint8(D.cliffVariation)
+                D.cliffTexture = b64ToUint8(D.cliffTexture)
+                D.layerHeight = b64ToUint8(D.layerHeight)
+                D.flags = b64ToUint8(D.flags)
+            }
+            // flags bitfield: bit0=water, bit1=boundary, bit2=blight, bit3=ramp
             // ── W3E data model ──────────────────────────────────
             // The map is stored as a grid of W×H tilepoints (vertices).
             // Between them there are (W-1)×(H-1) square cells (tiles).
@@ -258,19 +321,20 @@
 
                         // Per-cell flag overlays (bottom-left point flags)
                         const fi = cy * W + cx
-                        if (showWater && D.waterFlag[fi]) {
+                        const ff = D.flags[fi]
+                        if (showWater && (ff & 1)) {
                             ctx.fillStyle = 'rgba(0,60,200,0.4)'
                             ctx.fillRect(dstX, dstY, COLOR_CPX, COLOR_CPX)
                         }
-                        if (showBlight && D.blightFlag[fi]) {
+                        if (showBlight && (ff & 4)) {
                             ctx.fillStyle = 'rgba(180,0,0,0.3)'
                             ctx.fillRect(dstX, dstY, COLOR_CPX, COLOR_CPX)
                         }
-                        if (showRamp && D.rampFlag[fi]) {
+                        if (showRamp && (ff & 8)) {
                             ctx.fillStyle = 'rgba(200,200,0,0.3)'
                             ctx.fillRect(dstX, dstY, COLOR_CPX, COLOR_CPX)
                         }
-                        if (showBoundary && D.boundaryFlag[fi]) {
+                        if (showBoundary && (ff & 2)) {
                             ctx.fillStyle = 'rgba(0,0,0,0.6)'
                             ctx.fillRect(dstX, dstY, COLOR_CPX, COLOR_CPX)
                         }
@@ -730,10 +794,11 @@
                     const gameX = D.offsetX + vx + halfGridW
                     const gameY = D.offsetY + vy + halfGridH
                     const fl = []
-                    if (D.waterFlag[idx]) fl.push('water')
-                    if (D.boundaryFlag[idx]) fl.push('boundary')
-                    if (D.blightFlag[idx]) fl.push('blight')
-                    if (D.rampFlag[idx]) fl.push('ramp')
+                    const cf = D.flags[idx]
+                    if (cf & 1) fl.push('water')
+                    if (cf & 2) fl.push('boundary')
+                    if (cf & 4) fl.push('blight')
+                    if (cf & 8) fl.push('ramp')
                     infoEl.textContent = 'X: ' + gameX.toFixed(2) + '  Y: ' + gameY.toFixed(2) +
                         '  Z: ' + vz.toFixed(2) + '  Tex: ' + D.groundTexture[idx] +
                         '  Cliff: ' + D.cliffVariation[idx] + '/' + D.cliffTexture[idx] +
@@ -751,7 +816,7 @@
         }
 
         // ── Orbit controls ──────────────────────────────────────
-        const ctrl = makeOrbitControls(camera, canvas, maxDim)
+        const ctrl = W3E.makeOrbitControls(camera, canvas, maxDim)
         ctrl.target.set(0, 0, 0)
 
         function resize() {
@@ -769,76 +834,6 @@
             ctrl.update()
             renderer.render(scene, camera)
         })()
-
-        function makeOrbitControls(cam, domEl, maxD) {
-            const target = new THREE.Vector3()
-            const sph = new THREE.Spherical()
-            const sphDelta = new THREE.Spherical()
-            const panOff = new THREE.Vector3()
-            let zoomFactor = 1
-            const ROTATE_SPEED = 0.005, PAN_SPEED = 1.0
-            let rotating = false, panning = false, px = 0, py = 0
-
-            domEl.addEventListener('pointerdown', e => {
-                if (e.target.closest('float-window') || e.target.closest('.menubar')) return
-                if (e.button === 0) rotating = true
-                else if (e.button === 1 || e.button === 2) panning = true
-                px = e.clientX
-                py = e.clientY
-                domEl.setPointerCapture(e.pointerId)
-            })
-            domEl.addEventListener('pointermove', e => {
-                const dx = e.clientX - px, dy = e.clientY - py
-                px = e.clientX
-                py = e.clientY
-                if (rotating) {
-                    sphDelta.theta -= dx * ROTATE_SPEED
-                    sphDelta.phi -= dy * ROTATE_SPEED
-                }
-                if (panning) {
-                    const v = new THREE.Vector3()
-                    const factor = cam.position.distanceTo(target) * Math.tan(cam.fov / 2 * Math.PI / 180) * 2 / domEl.clientHeight
-                    v.setFromMatrixColumn(cam.matrix, 0)
-                    panOff.addScaledVector(v, -dx * factor * PAN_SPEED)
-                    v.setFromMatrixColumn(cam.matrix, 1)
-                    panOff.addScaledVector(v, dy * factor * PAN_SPEED)
-                }
-            })
-            domEl.addEventListener('pointerup', e => {
-                rotating = false
-                panning = false
-                try {
-                    domEl.releasePointerCapture(e.pointerId)
-                } catch (_) {
-                }
-            })
-            domEl.addEventListener('wheel', e => {
-                if (e.target.closest('float-window')) return
-                e.preventDefault()
-                zoomFactor *= e.deltaY > 0 ? 1.1 : 0.9
-            }, {passive: false})
-            domEl.addEventListener('contextmenu', e => e.preventDefault())
-
-            return {
-                target,
-                update() {
-                    const off = cam.position.clone().sub(target)
-                    sph.setFromVector3(off)
-                    sph.theta += sphDelta.theta
-                    sph.phi += sphDelta.phi
-                    sph.phi = Math.max(0.01, Math.min(Math.PI - 0.01, sph.phi))
-                    sph.radius *= zoomFactor
-                    sph.radius = Math.max(1, Math.min(maxD * 5, sph.radius))
-                    target.add(panOff)
-                    off.setFromSpherical(sph)
-                    cam.position.copy(target).add(off)
-                    cam.lookAt(target)
-                    sphDelta.set(0, 0, 0)
-                    panOff.set(0, 0, 0)
-                    zoomFactor = 1
-                }
-            }
-        }
     } catch (e) {
         console.error('Three.js init error:', e)
     }

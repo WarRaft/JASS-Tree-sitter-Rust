@@ -16,6 +16,7 @@ const {showTypeGraph} = require('./typeGraphPanel.js')
 const {DebugSidebarProvider, pushEntry} = require('./debugSidebarProvider.js')
 const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
 const {resolveSlkEditor} = require('./resolveSlkEditor.js')
+const {resolveMdxEditor} = require('./resolveMdxEditor.js')
 
 const path = require('path')
 const fs = require('fs')
@@ -250,6 +251,18 @@ module.exports = {
             pushEntry(entry)
         })
 
+        // ── Binary HTTP server (parallel data channel) ───────────────
+        // The Rust server starts a lightweight HTTP endpoint for binary
+        // terrain/model data.  The webview can fetch() directly from it.
+        /** @type {{port: number, token: string} | null} */
+        let binaryServer = null
+        client.onNotification('custom/binaryServerReady', (params) => {
+            binaryServer = params
+            console.log(`Binary server ready on http://127.0.0.1:${params.port}`)
+        })
+        /** @returns {{port: number, token: string} | null} */
+        function getBinaryServer() { return binaryServer }
+
 
         const inlaySelector = [
             {scheme: 'file', language: 'jass'},
@@ -414,14 +427,14 @@ module.exports = {
                                 dispose() {}
                             }
                             try {
-                                return await resolver(tmpDoc, webviewPanel, _token, client, context.extensionUri)
+                                return await resolver(tmpDoc, webviewPanel, _token, client, context.extensionUri, getBinaryServer)
                             } finally {
                                 try { fs.unlinkSync(tmpPath) } catch {}
                                 try { fs.rmdirSync(tmpDir) } catch {}
                             }
                         }
 
-                        return resolver(document, webviewPanel, _token, client, context.extensionUri)
+                        return resolver(document, webviewPanel, _token, client, context.extensionUri, getBinaryServer)
                     }
                 },
                 {
@@ -436,6 +449,7 @@ module.exports = {
             binaryEditor('doo.preview', resolveW3eEditor),
             binaryEditor('w3i.preview', resolveW3eEditor),
             binaryEditor('w3e.preview', resolveW3eEditor),
+            binaryEditor('mdx.preview', resolveMdxEditor),
 
             // SLK table editor (text-based — uses CustomTextEditorProvider for undo/redo)
             window.registerCustomEditorProvider(

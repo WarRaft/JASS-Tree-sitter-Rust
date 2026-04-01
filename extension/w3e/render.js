@@ -68,16 +68,14 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             offsetX: terrainData.offset_x,
             offsetY: terrainData.offset_y,
             tileTextures: terrainData._tileTextures || [],
-            groundTexture: terrainData.points.map(p => p.ground_texture),
-            groundVariation: terrainData.points.map(p => p.ground_variation),
-            groundHeight: terrainData.points.map(p => p.ground_height),
-            waterFlag: terrainData.points.map(p => p.water ? 1 : 0),
-            boundaryFlag: terrainData.points.map(p => p.boundary ? 1 : 0),
-            blightFlag: terrainData.points.map(p => p.blight ? 1 : 0),
-            rampFlag: terrainData.points.map(p => p.ramp ? 1 : 0),
-            cliffVariation: terrainData.points.map(p => p.cliff_variation),
-            cliffTexture: terrainData.points.map(p => p.cliff_texture),
-            layerHeight: terrainData.points.map(p => p.layer_height),
+            // base64-encoded TypedArrays (packed by Rust)
+            groundHeight: terrainData._packed.groundHeight,
+            groundTexture: terrainData._packed.groundTexture,
+            groundVariation: terrainData._packed.groundVariation,
+            cliffVariation: terrainData._packed.cliffVariation,
+            cliffTexture: terrainData._packed.cliffTexture,
+            layerHeight: terrainData._packed.layerHeight,
+            flags: terrainData._packed.flags,
         }
     }
 
@@ -113,7 +111,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         unitsSlkSource = terrainData._unitsSlk.source || ''
         if (terrainData._unitsSlk.units && terrainData._unitsSlk.units.length > 0) {
             unitsSlkItems = terrainData._unitsSlk.units.map(u => {
-                return `<unit-item unit-id="${esc(u.unitId)}" comment="${esc(u.comment)}" race="${esc(u.race)}" move-tp="${esc(u.moveTp)}" threat="${u.threat}" points="${u.points}"></unit-item>`
+                return `<unit-item unit-id="${esc(u.unitId)}" comment="${esc(u.comment)}" race="${esc(u.race)}" move-tp="${esc(u.moveTp)}" threat="${u.threat}" points="${u.points}" file="${esc(u.file || '')}"></unit-item>`
             }).join('\n')
         }
     }
@@ -124,12 +122,26 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const componentsSrc = mapInfo.componentsSrc || ''
     const terrainSrc = mapInfo.terrainSrc || ''
 
+    const connectSrc = mapInfo.binaryServer ? `connect-src http://127.0.0.1:${mapInfo.binaryServer.port};` : ''
+
+    // Build the binary fetch URL (if the HTTP server is available)
+    let binaryTerrainUrl = 'null'
+    if (hasTerrain && mapInfo.binaryServer && mapInfo.terrainUri) {
+        const bs = mapInfo.binaryServer
+        const params = new URLSearchParams({
+            token: bs.token,
+            uri: mapInfo.terrainUri,
+        })
+        if (mapInfo.archivePath) params.set('archive', mapInfo.archivePath)
+        binaryTerrainUrl = JSON.stringify(`http://127.0.0.1:${bs.port}/w3e/terrain?${params}`)
+    }
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${cspSource} data: blob:; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src ${cspSource};" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; ${connectSrc} img-src ${cspSource} data: blob:; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src ${cspSource};" />
     <style>${editorStyles()}</style>
 </head>
 <body>
@@ -158,11 +170,13 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         ${mapInfo.isArchive ? '<button class="menu-item" data-action="toggleWindow" data-target="filesWindow" title="Archive file list">\ud83d\udcc2 Files</button>' : ''}
         ${mapInfo.isArchive ? `<button class="menu-item menu-child${mapInfo.isArchiveFile ? '' : ' disabled'}" ${mapInfo.isArchiveFile ? 'id="browseMpqBtn"' : ''}
                 title="${mapInfo.isArchiveFile ? 'Browse archive as folder' : 'Already a folder on disk'}">\ud83d\udcc1 Browse</button>` : ''}
+        <button class="menu-item" data-action="toggleWindow" data-target="modelViewerWindow" title="3D Model Viewer">\ud83c\udfae Model</button>
     </div>
 
     <!-- ── Floating windows (Custom Elements) ─────────────────── -->
 
     <float-window id="gamePathWindow" title-text="\u2699 Game Path" hidden style="left:140px;top:16px;">
+        <reload-button slot="actions"></reload-button>
         <div id="gpBody">${gamePathContent}</div>
     </float-window>
 
@@ -183,6 +197,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     </float-window>
 
     <float-window id="unitsSlkWindow" title-text="\ud83d\udde1 Units" hidden style="left:140px;top:16px;width:600px;height:70vh;">
+        <reload-button slot="actions"></reload-button>
         <div id="usSlkSource" class="${unitsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${unitsSlkSource ? 'UnitData.slk: <span class="code">' + esc(unitsSlkSource) + '</span>' : 'UnitData.slk not found \u2014 set Game Path'}</div>
         <div class="tw-section-title">Units (<span id="usUnitCount">${hasUnitsSlk && terrainData._unitsSlk.units ? terrainData._unitsSlk.units.length : 0}</span>)</div>
         <div class="legend" id="usUnitList">${unitsSlkItems}</div>
@@ -193,6 +208,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     </float-window>
 
     <float-window id="doodadsSlkWindow" title-text="\ud83c\udf33 Doodads" hidden style="left:140px;top:16px;width:600px;height:70vh;">
+        <reload-button slot="actions"></reload-button>
         <div id="dsSlkSource" class="${doodadsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${doodadsSlkSource ? 'Doodads.slk: <span class="code">' + esc(doodadsSlkSource) + '</span>' : 'Doodads.slk not found \u2014 set Game Path'}</div>
         <div class="tw-section-title">Doodads (<span id="dsDoodadCount">${hasDoodadsSlk && terrainData._doodadsSlk.doodads ? terrainData._doodadsSlk.doodads.length : 0}</span>)</div>
         <div class="legend" id="dsDoodadList">${doodadsSlkItems}</div>
@@ -224,6 +240,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     ${hasTerrain ? `
     <float-window id="tilesetWindow" title-text="\ud83e\uddf1 Tileset" hidden style="left:140px;top:16px;">
+        <reload-button slot="actions"></reload-button>
         <div id="tsSlkSource" class="${terrainSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${terrainSlkSource ? 'Terrain.slk: <span class="code">' + esc(terrainSlkSource) + '</span>' : 'Terrain.slk not found \u2014 set Game Path'}</div>
         <div class="tw-section-title">Ground Tiles (<span id="tsGroundCount">${totalTiles}</span>)</div>
         <div class="legend" id="tsGroundTiles">${legendItems}</div>
@@ -239,12 +256,29 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     </float-window>
     ` : ''}
 
+    <float-window id="modelViewerWindow" title-text="\ud83c\udfae Model Viewer" no-padding hidden style="left:180px;top:40px;width:600px;height:500px;">
+        <div style="display:flex;flex-direction:column;height:100%;">
+            <div class="mv-toolbar" id="mvToolbar">
+                <strong id="modelName">Model</strong>
+                <label class="menu-cb"><input type="checkbox" id="mvWireframe" /> Wire</label>
+                <label class="menu-cb"><input type="checkbox" id="mvAxes" checked /> Axes</label>
+                <label class="menu-cb"><input type="checkbox" id="mvGrid" checked /> Grid</label>
+                <button class="mv-reset" id="mvResetCamera">Reset</button>
+                <span class="mv-info" id="modelInfo"></span>
+            </div>
+            <div class="mv-canvas-container" id="modelCanvasContainer">
+                <canvas id="modelCanvas"></canvas>
+            </div>
+        </div>
+    </float-window>
+
     <script nonce="${nonce}" src="${componentsSrc}"></script>
     <script nonce="${nonce}" src="${threeSrc}"></script>
     <script nonce="${nonce}">
     window.__W3E_DATA__ = {
         hasTerrain: ${hasTerrain},
         renderData: ${renderData ? JSON.stringify(renderData) : 'null'},
+        binaryTerrainUrl: ${binaryTerrainUrl},
         groundTileCodes: ${hasTerrain && terrainData.ground_tiles ? JSON.stringify(terrainData.ground_tiles) : '[]'},
         cliffTileCodes: ${hasTerrain && terrainData.cliff_tiles ? JSON.stringify(terrainData.cliff_tiles) : '[]'},
         isArchive: ${!!mapInfo.isArchive}

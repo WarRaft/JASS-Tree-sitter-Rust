@@ -22,7 +22,7 @@
 use crate::util::cache_db;
 use log::{error, info};
 use once_cell::sync::Lazy;
-use redb::ReadableTable;
+use redb::{ReadableDatabase, ReadableTable};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
@@ -129,7 +129,7 @@ impl ScopeResolver {
                     if let Ok(iter) = table.iter() {
                         let mut loaded = 0usize;
                         for entry_result in iter {
-                            let (key_guard, val_guard) = match entry_result {
+                            let (key_guard, val_guard): (redb::AccessGuard<&str>, redb::AccessGuard<&[u8]>) = match entry_result {
                                 Ok(kv) => kv,
                                 Err(_) => continue,
                             };

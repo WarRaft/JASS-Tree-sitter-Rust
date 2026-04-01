@@ -50,13 +50,19 @@ class FloatWindow extends HTMLElement {
 .title:active { cursor: grabbing; }
 .title-label { flex: 1; }
 .title-right { display: flex; align-items: center; gap: 2px; }
-.close {
+.close, .maximize {
     background: none; border: none;
     color: var(--vscode-editor-foreground, #ccc);
     cursor: pointer; font-size: 14px; line-height: 1;
     padding: 0 4px; border-radius: 3px; opacity: 0.6;
 }
-.close:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
+.close:hover, .maximize:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
+.maximize { font-size: 12px; }
+:host([maximized]) {
+    border-radius: 0;
+    max-height: none;
+}
+:host([maximized]) .resize-grip { display: none; }
 .body {
     padding: 10px;
     overflow-y: auto;
@@ -87,28 +93,57 @@ class FloatWindow extends HTMLElement {
 .resize-grip:hover::after {
     border-color: rgba(255,255,255,0.5);
 }
+.loading-bar {
+    height: 0; overflow: hidden; position: relative; flex-shrink: 0;
+}
+:host([loading]) .loading-bar { height: 2px; }
+.loading-bar::after {
+    content: '';
+    position: absolute; top: 0; left: -40%;
+    width: 40%; height: 100%;
+    background: var(--vscode-progressBar-background, #0e70c0);
+    animation: loading-slide 1.2s ease-in-out infinite;
+}
+@keyframes loading-slide {
+    0% { left: -40%; }
+    100% { left: 100%; }
+}
 </style>
 <div class="title" id="titleBar">
     <span class="title-label" id="titleText"></span>
     <div class="title-right">
         <slot name="actions"></slot>
+        <button class="maximize" id="maxBtn" title="Maximize">\u25a1</button>
         <button class="close" id="closeBtn">\u00d7</button>
     </div>
 </div>
+<div class="loading-bar"></div>
 <div class="body"><slot></slot></div>
 <div class="resize-grip" id="resizeGrip"></div>`;
 
         this._titleEl = shadow.getElementById('titleText');
         this._titleBar = shadow.getElementById('titleBar');
         this._resizeGrip = shadow.getElementById('resizeGrip');
+        this._maxBtn = shadow.getElementById('maxBtn');
+        this._savedRect = null; // saved geometry before maximize
 
         // Close
         shadow.getElementById('closeBtn').addEventListener('click', () => this.hide());
+
+        // Maximize / Restore
+        this._maxBtn.addEventListener('click', () => this._toggleMaximize());
+
+        // Double-click title bar to maximize/restore
+        this._titleBar.addEventListener('dblclick', (e) => {
+            if (e.target.closest('button')) return;
+            this._toggleMaximize();
+        });
 
         // Drag
         let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
         this._titleBar.addEventListener('pointerdown', e => {
             if (e.target.closest('button')) return;
+            if (this.hasAttribute('maximized')) return;
             dragging = true;
             sx = e.clientX; sy = e.clientY;
             ox = this.offsetLeft; oy = this.offsetTop;
@@ -137,6 +172,7 @@ class FloatWindow extends HTMLElement {
         // Resize
         let resizing = false, rsx = 0, rsy = 0, rw = 0, rh = 0;
         this._resizeGrip.addEventListener('pointerdown', e => {
+            if (this.hasAttribute('maximized')) return;
             resizing = true;
             rsx = e.clientX; rsy = e.clientY;
             rw = this.offsetWidth; rh = this.offsetHeight;
@@ -170,12 +206,30 @@ class FloatWindow extends HTMLElement {
 
     get open() { return !this.hasAttribute('hidden'); }
 
+    get loading() { return this.hasAttribute('loading'); }
+    set loading(v) {
+        if (v) this.setAttribute('loading', '');
+        else this.removeAttribute('loading');
+    }
+
     toggle() { if (this.open) this.hide(); else this.show(); }
 
     show() {
         this.removeAttribute('hidden');
         this._bringToFront();
-        this._clampToViewport();
+        if (this.hasAttribute('maximized')) {
+            // Re-apply maximize geometry (viewport may have changed)
+            const menubar = document.getElementById('menubar');
+            const menuW = menubar ? menubar.offsetWidth : 0;
+            const vb = window.innerHeight - this._BOTTOM_BAR;
+            this.style.left = menuW + 'px';
+            this.style.top = '0px';
+            this.style.right = 'auto';
+            this.style.width = (window.innerWidth - menuW) + 'px';
+            this.style.height = vb + 'px';
+        } else {
+            this._clampToViewport();
+        }
         this._notifyToggle();
     }
 
@@ -190,6 +244,7 @@ class FloatWindow extends HTMLElement {
     }
 
     _clampToViewport() {
+        if (this.hasAttribute('maximized')) return;
         const vb = window.innerHeight - this._BOTTOM_BAR;
         const vw = window.innerWidth;
         const rect = this.getBoundingClientRect();
@@ -218,12 +273,106 @@ class FloatWindow extends HTMLElement {
         }
     }
 
+    _toggleMaximize() {
+        if (this.hasAttribute('maximized')) {
+            this._restoreFromMaximize();
+        } else {
+            this._applyMaximize();
+        }
+    }
+
+    _applyMaximize() {
+        // Save current geometry
+        this._savedRect = {
+            left: this.style.left,
+            top: this.style.top,
+            right: this.style.right,
+            width: this.style.width,
+            height: this.style.height,
+        };
+        // Compute menubar width
+        const menubar = document.getElementById('menubar');
+        const menuW = menubar ? menubar.offsetWidth : 0;
+        const vb = window.innerHeight - this._BOTTOM_BAR;
+        this.style.left = menuW + 'px';
+        this.style.top = '0px';
+        this.style.right = 'auto';
+        this.style.width = (window.innerWidth - menuW) + 'px';
+        this.style.height = vb + 'px';
+        this.setAttribute('maximized', '');
+        this._maxBtn.textContent = '\u29c9'; // ⧉ restore icon
+        this._maxBtn.title = 'Restore';
+        this._bringToFront();
+    }
+
+    _restoreFromMaximize() {
+        this.removeAttribute('maximized');
+        if (this._savedRect) {
+            this.style.left = this._savedRect.left;
+            this.style.top = this._savedRect.top;
+            this.style.right = this._savedRect.right;
+            this.style.width = this._savedRect.width;
+            this.style.height = this._savedRect.height;
+            this._savedRect = null;
+        }
+        this._maxBtn.textContent = '\u25a1'; // □ maximize icon
+        this._maxBtn.title = 'Maximize';
+        this._clampToViewport();
+    }
+
     _notifyToggle() {
         document.dispatchEvent(new CustomEvent('float-toggled', {detail: {id: this.id}}));
     }
 }
 
 customElements.define('float-window', FloatWindow);
+
+
+// ── <reload-button> Custom Element ───────────────────────────────────
+// Usage:
+//   <reload-button slot="actions"></reload-button>
+// API: .loading (getter/setter)
+// Fires: 'reload' event (bubbles, composed) on click when not loading.
+
+class ReloadButton extends HTMLElement {
+    constructor() {
+        super();
+        const shadow = this.attachShadow({mode: 'open'});
+        shadow.innerHTML = `
+<style>
+:host { display: inline-flex; align-items: center; }
+button {
+    background: none; border: none;
+    color: var(--vscode-editor-foreground, #ccc);
+    cursor: pointer; font-size: 14px; line-height: 1;
+    padding: 0 4px; border-radius: 3px; opacity: 0.6;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px;
+}
+button:hover { opacity: 1; background: rgba(255, 255, 255, 0.1); }
+button[disabled] { cursor: default; opacity: 0.3; pointer-events: none; }
+.icon { display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+:host([loading]) .icon { animation: spin 0.8s linear infinite; }
+</style>
+<button id="btn" title="Reload"><span class="icon">\u27f3</span></button>`;
+
+        this._btn = shadow.getElementById('btn');
+        this._btn.addEventListener('click', () => {
+            if (this.loading) return;
+            this.dispatchEvent(new CustomEvent('reload', {bubbles: true, composed: true}));
+        });
+    }
+
+    get loading() { return this.hasAttribute('loading'); }
+    set loading(v) {
+        if (v) this.setAttribute('loading', '');
+        else this.removeAttribute('loading');
+        this._btn.disabled = !!v;
+    }
+}
+
+customElements.define('reload-button', ReloadButton);
 
 
 // ── <tile-item> Custom Element ───────────────────────────────────────
@@ -387,7 +536,7 @@ class DoodadItem extends HTMLElement {
                 padding: 3px 6px;
                 font-size: 12px;
                 border-bottom: 1px solid var(--vscode-editorWidget-border, #333);
-                cursor: default;
+                cursor: pointer;
             }
             :host(:hover) {
                 background: var(--vscode-list-hoverBackground, rgba(255,255,255,.06));
@@ -397,12 +546,24 @@ class DoodadItem extends HTMLElement {
             .cls { color: var(--vscode-descriptionForeground, #888); font-size: 11px; }
             .scale { color: var(--vscode-descriptionForeground, #888); font-size: 11px; }
             .tilesets { color: var(--vscode-descriptionForeground, #888); font-size: 11px; font-family: var(--vscode-editor-font-family, monospace); }
+            .file-link {
+                color: var(--vscode-textLink-foreground, #3794ff);
+                font-size: 10px;
+                font-family: var(--vscode-editor-font-family, monospace);
+                opacity: 0.7;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                max-width: 200px;
+            }
+            .file-link:hover { opacity: 1; text-decoration: underline; }
         </style>
         <span class="id" id="doodId"></span>
         <span class="comment" id="comment"></span>
         <span class="cls" id="cls"></span>
         <span class="tilesets" id="tilesets"></span>
-        <span class="scale" id="scale"></span>`;
+        <span class="scale" id="scale"></span>
+        <span class="file-link" id="fileLink"></span>`;
     }
 
     connectedCallback() { this._render(); }
@@ -424,6 +585,14 @@ class DoodadItem extends HTMLElement {
         s.getElementById('cls').textContent = cls !== '_' ? cls : '';
         s.getElementById('tilesets').textContent = tilesets;
         s.getElementById('scale').textContent = defScale ? '\u00d7' + defScale : '';
+        const fileLink = s.getElementById('fileLink');
+        if (file) {
+            const shortName = file.replace(/\\/g, '/').split('/').pop() || file;
+            fileLink.textContent = shortName;
+            fileLink.title = file;
+        } else {
+            fileLink.textContent = '';
+        }
     }
 }
 
@@ -444,7 +613,7 @@ class UnitItem extends HTMLElement {
                 padding: 3px 6px;
                 font-size: 12px;
                 border-bottom: 1px solid var(--vscode-editorWidget-border, #333);
-                cursor: default;
+                cursor: pointer;
             }
             :host(:hover) {
                 background: var(--vscode-list-hoverBackground, rgba(255,255,255,.06));
@@ -454,16 +623,28 @@ class UnitItem extends HTMLElement {
             .race { color: var(--vscode-descriptionForeground, #888); font-size: 11px; min-width: 50px; }
             .move { color: var(--vscode-descriptionForeground, #888); font-size: 11px; min-width: 36px; }
             .pts { color: var(--vscode-descriptionForeground, #888); font-size: 11px; font-family: var(--vscode-editor-font-family, monospace); min-width: 30px; text-align: right; }
+            .file-link {
+                color: var(--vscode-textLink-foreground, #3794ff);
+                font-size: 10px;
+                font-family: var(--vscode-editor-font-family, monospace);
+                opacity: 0.7;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                max-width: 200px;
+            }
+            .file-link:hover { opacity: 1; text-decoration: underline; }
         </style>
         <span class="id" id="unitId"></span>
         <span class="comment" id="comment"></span>
         <span class="race" id="race"></span>
         <span class="move" id="move"></span>
-        <span class="pts" id="pts"></span>`;
+        <span class="pts" id="pts"></span>
+        <span class="file-link" id="fileLink"></span>`;
     }
 
     connectedCallback() { this._render(); }
-    static get observedAttributes() { return ['unit-id', 'comment', 'race', 'move-tp', 'points']; }
+    static get observedAttributes() { return ['unit-id', 'comment', 'race', 'move-tp', 'points', 'file']; }
     attributeChangedCallback() { if (this.shadowRoot) this._render(); }
 
     _render() {
@@ -475,6 +656,15 @@ class UnitItem extends HTMLElement {
         s.getElementById('move').textContent = this.getAttribute('move-tp') || '';
         const pts = this.getAttribute('points') || '';
         s.getElementById('pts').textContent = pts && pts !== '0' ? pts + 'pt' : '';
+        const file = this.getAttribute('file') || '';
+        const fileLink = s.getElementById('fileLink');
+        if (file) {
+            const shortName = file.replace(/\\/g, '/').split('/').pop() || file;
+            fileLink.textContent = shortName;
+            fileLink.title = file;
+        } else {
+            fileLink.textContent = '';
+        }
     }
 }
 
@@ -689,9 +879,301 @@ window.W3E = (function () {
                 el.setAttribute('move-tp', u.moveTp || '');
                 el.setAttribute('threat', String(u.threat || 0));
                 el.setAttribute('points', String(u.points || 0));
+                el.setAttribute('file', u.file || '');
                 listEl.appendChild(el);
             }
         }
+    }
+
+    // ── Shared orbit controls (used by terrain & model viewer) ──
+    function makeOrbitControls(cam, domEl, maxD, opts) {
+        const skipGuards = opts && opts.skipGuards;
+        const target = new THREE.Vector3();
+        const sph = new THREE.Spherical();
+        const sphDelta = new THREE.Spherical();
+        const panOff = new THREE.Vector3();
+        let zoomFactor = 1;
+        const ROTATE_SPEED = 0.005, PAN_SPEED = 1.0;
+        let rotating = false, panning = false, px = 0, py = 0;
+
+        domEl.addEventListener('pointerdown', function (e) {
+            if (!skipGuards && (e.target.closest('float-window') || e.target.closest('.menubar'))) return;
+            if (e.button === 0) rotating = true;
+            else if (e.button === 1 || e.button === 2) panning = true;
+            px = e.clientX;
+            py = e.clientY;
+            domEl.setPointerCapture(e.pointerId);
+        });
+        domEl.addEventListener('pointermove', function (e) {
+            var dx = e.clientX - px, dy = e.clientY - py;
+            px = e.clientX;
+            py = e.clientY;
+            if (rotating) {
+                sphDelta.theta -= dx * ROTATE_SPEED;
+                sphDelta.phi -= dy * ROTATE_SPEED;
+            }
+            if (panning) {
+                var v = new THREE.Vector3();
+                var factor = cam.position.distanceTo(target) * Math.tan(cam.fov / 2 * Math.PI / 180) * 2 / domEl.clientHeight;
+                v.setFromMatrixColumn(cam.matrix, 0);
+                panOff.addScaledVector(v, -dx * factor * PAN_SPEED);
+                v.setFromMatrixColumn(cam.matrix, 1);
+                panOff.addScaledVector(v, dy * factor * PAN_SPEED);
+            }
+        });
+        domEl.addEventListener('pointerup', function (e) {
+            rotating = false;
+            panning = false;
+            try { domEl.releasePointerCapture(e.pointerId); } catch (_) {}
+        });
+        domEl.addEventListener('wheel', function (e) {
+            if (!skipGuards && e.target.closest('float-window')) return;
+            e.preventDefault();
+            zoomFactor *= e.deltaY > 0 ? 1.1 : 0.9;
+        }, {passive: false});
+        domEl.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+        var ctrl = {
+            target: target,
+            maxDist: maxD,
+            update: function () {
+                var off = cam.position.clone().sub(target);
+                sph.setFromVector3(off);
+                sph.theta += sphDelta.theta;
+                sph.phi += sphDelta.phi;
+                sph.phi = Math.max(0.01, Math.min(Math.PI - 0.01, sph.phi));
+                sph.radius *= zoomFactor;
+                sph.radius = Math.max(1, Math.min(ctrl.maxDist * 5, sph.radius));
+                target.add(panOff);
+                off.setFromSpherical(sph);
+                cam.position.copy(target).add(off);
+                cam.lookAt(target);
+                sphDelta.set(0, 0, 0);
+                panOff.set(0, 0, 0);
+                zoomFactor = 1;
+            }
+        };
+        return ctrl;
+    }
+
+    // ── Embedded model viewer ─────────────────────────────
+    function _initModelViewer() {
+        const win = document.getElementById('modelViewerWindow');
+        const container = document.getElementById('modelCanvasContainer');
+        const canvas = document.getElementById('modelCanvas');
+        const infoEl = document.getElementById('modelInfo');
+        const nameEl = document.getElementById('modelName');
+        if (!win || !container || !canvas) return {load() {}};
+
+        const renderer = new THREE.WebGLRenderer({canvas, antialias: true, alpha: false});
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.setClearColor(0x1e1e1e);
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 10000);
+        camera.position.set(300, 200, 300);
+        camera.lookAt(0, 50, 0);
+
+        scene.add(new THREE.AmbientLight(0x606060));
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(200, 400, 300);
+        scene.add(dirLight);
+        const dirLight2 = new THREE.DirectionalLight(0x4488ff, 0.3);
+        dirLight2.position.set(-200, 100, -300);
+        scene.add(dirLight2);
+
+        const gridHelper = new THREE.GridHelper(500, 20, 0x444444, 0x333333);
+        scene.add(gridHelper);
+        const axesHelper = new THREE.AxesHelper(100);
+        scene.add(axesHelper);
+
+        const COLORS = [
+            0x4fc3f7, 0xab47bc, 0x66bb6a, 0xffa726,
+            0xef5350, 0x26c6da, 0xd4e157, 0xec407a,
+        ];
+
+        const rootGroup = new THREE.Group();
+        rootGroup.rotation.x = -Math.PI / 2;
+        scene.add(rootGroup);
+
+        const meshGroup = new THREE.Group();
+        const wireframeGroup = new THREE.Group();
+        rootGroup.add(meshGroup);
+        rootGroup.add(wireframeGroup);
+
+        let defaultCamTarget = new THREE.Vector3();
+        let maxDim = 100;
+
+        // Orbit controls — same as terrain editor
+        var ctrl = makeOrbitControls(camera, canvas, maxDim, {skipGuards: true});
+
+        // Toolbar
+        const wireToggle = document.getElementById('mvWireframe');
+        const axesToggle = document.getElementById('mvAxes');
+        const gridToggle = document.getElementById('mvGrid');
+        const resetBtn = document.getElementById('mvResetCamera');
+
+        if (wireToggle) wireToggle.addEventListener('change', function (e) {
+            wireframeGroup.children.forEach(function (m) { m.visible = e.target.checked; });
+        });
+        if (axesToggle) axesToggle.addEventListener('change', function (e) { axesHelper.visible = e.target.checked; });
+        if (gridToggle) gridToggle.addEventListener('change', function (e) { gridHelper.visible = e.target.checked; });
+        if (resetBtn) resetBtn.addEventListener('click', function () {
+            ctrl.target.copy(defaultCamTarget);
+            const d2 = new THREE.Vector3(maxDim * 0.7, maxDim * 0.5, maxDim * 0.7);
+            camera.position.copy(defaultCamTarget).add(d2);
+            camera.lookAt(defaultCamTarget);
+        });
+
+        // Resize
+        function onResize() {
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            if (w === 0 || h === 0) return;
+            renderer.setSize(w, h);
+            camera.aspect = w / h;
+            camera.updateProjectionMatrix();
+        }
+        const resizeObs = new ResizeObserver(onResize);
+        resizeObs.observe(container);
+
+        // Animation loop
+        let animating = false;
+        function animate() {
+            if (!animating) return;
+            requestAnimationFrame(animate);
+            ctrl.update();
+            renderer.render(scene, camera);
+        }
+
+        // Show/hide animation
+        new MutationObserver(function () {
+            if (win.open) {
+                animating = true;
+                onResize();
+                animate();
+            } else {
+                animating = false;
+            }
+        }).observe(win, {attributes: true, attributeFilter: ['hidden']});
+
+        function b64ToFloat32(b64) {
+            if (!b64) return new Float32Array(0);
+            const bin = atob(b64);
+            const buf = new ArrayBuffer(bin.length);
+            const u8 = new Uint8Array(buf);
+            for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+            return new Float32Array(buf);
+        }
+
+        function b64ToUint16(b64) {
+            if (!b64) return new Uint16Array(0);
+            const bin = atob(b64);
+            const buf = new ArrayBuffer(bin.length);
+            const u8 = new Uint8Array(buf);
+            for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+            return new Uint16Array(buf);
+        }
+
+        function load(msg) {
+            // Clear old meshes
+            meshGroup.clear();
+            wireframeGroup.clear();
+
+            if (nameEl) nameEl.textContent = msg.name || 'Model';
+
+            const geosets = msg.geosets || [];
+            if (geosets.length === 0) {
+                if (infoEl) infoEl.textContent = 'No geosets';
+                win.show();
+                return;
+            }
+
+
+            let totalVerts = 0, totalFaces = 0;
+
+            geosets.forEach(function (g, idx) {
+                if (!g.vertex_count || !g.face_count) return;
+                const vertices = b64ToFloat32(g.vertices);
+                const normals = b64ToFloat32(g.normals);
+                const faces = b64ToUint16(g.faces);
+
+                totalVerts += g.vertex_count;
+                totalFaces += g.face_count;
+
+                const geometry = new THREE.BufferGeometry();
+                geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+                if (normals.length > 0) geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+                geometry.setIndex(new THREE.BufferAttribute(faces, 1));
+                if (normals.length === 0) geometry.computeVertexNormals();
+
+                const color = COLORS[idx % COLORS.length];
+                const material = new THREE.MeshPhongMaterial({
+                    color, side: THREE.DoubleSide, flatShading: false,
+                    transparent: true, opacity: 0.95,
+                });
+                const mesh = new THREE.Mesh(geometry, material);
+                meshGroup.add(mesh);
+
+                const wireMat = new THREE.MeshBasicMaterial({
+                    color: 0xffffff, wireframe: true, transparent: true, opacity: 0.15,
+                });
+                const wireMesh = new THREE.Mesh(geometry, wireMat);
+                wireMesh.visible = !!(wireToggle && wireToggle.checked);
+                wireframeGroup.add(wireMesh);
+            });
+
+            if (infoEl) {
+                infoEl.textContent = geosets.length + ' geoset(s) | ' + totalVerts + ' verts | ' + totalFaces + ' faces';
+            }
+
+            // Auto-fit camera
+            const box = new THREE.Box3();
+            meshGroup.children.forEach(function (m) {
+                m.geometry.computeBoundingBox();
+                const cb = m.geometry.boundingBox.clone();
+                cb.applyMatrix4(m.matrixWorld);
+                box.union(cb);
+            });
+
+            const tempGroup = new THREE.Group();
+            tempGroup.rotation.x = -Math.PI / 2;
+            tempGroup.updateMatrixWorld(true);
+
+            const center = new THREE.Vector3();
+            box.getCenter(center);
+            center.applyMatrix4(tempGroup.matrixWorld);
+
+            const size = new THREE.Vector3();
+            box.getSize(size);
+            maxDim = Math.max(size.x, size.y, size.z) || 100;
+            ctrl.maxDist = maxDim;
+
+            const dist = maxDim * 1.5;
+            ctrl.target.copy(center);
+            defaultCamTarget = center.clone();
+
+            const d2 = new THREE.Vector3().set(dist * 0.7, dist * 0.5, dist * 0.7);
+            camera.position.copy(center).add(d2);
+            camera.lookAt(center);
+
+            camera.near = maxDim * 0.001;
+            camera.far = maxDim * 20;
+            camera.updateProjectionMatrix();
+
+            win.show();
+            onResize();
+        }
+
+        function showUnsupported(msg) {
+            meshGroup.clear();
+            wireframeGroup.clear();
+            if (nameEl) nameEl.textContent = msg.name || 'Model';
+            if (infoEl) infoEl.textContent = '\u26a0 ' + (msg.reason || 'Unsupported format');
+            win.show();
+        }
+
+        return {load, showUnsupported};
     }
 
     // ── init() — main entry point ────────────────────────────
@@ -713,12 +1195,33 @@ window.W3E = (function () {
         });
         syncMenuActive();
 
+        // ── Loading state ──────────────────────────────────────
+        function setLoading(v) {
+            document.querySelectorAll('reload-button').forEach(btn => {
+                btn.loading = v;
+                const win = btn.closest('float-window');
+                if (win) win.loading = v;
+            });
+        }
+
+        // ── Reload button click → re-fetch all game-path data ──
+        document.addEventListener('reload', () => {
+            setLoading(true);
+            if (vscode) vscode.postMessage({command: 'reloadGamePath'});
+        });
+
         // ── Game Path ────────────────────────────────────────
         function bindGpButtons() {
             const b = document.getElementById('gamePathBrowse');
-            if (b && vscode) b.addEventListener('click', () => vscode.postMessage({command: 'browseGamePath'}));
+            if (b && vscode) b.addEventListener('click', () => {
+                setLoading(true);
+                vscode.postMessage({command: 'browseGamePath'});
+            });
             const c = document.getElementById('gamePathClear');
-            if (c && vscode) c.addEventListener('click', () => vscode.postMessage({command: 'setGamePath', value: ''}));
+            if (c && vscode) c.addEventListener('click', () => {
+                setLoading(true);
+                vscode.postMessage({command: 'setGamePath', value: ''});
+            });
         }
 
         bindGpButtons();
@@ -740,11 +1243,50 @@ window.W3E = (function () {
         // ── Units ────────────────────────────────────────────
         onGamePathChanged(data => rebuildUnits(data.unitsSlk));
 
+        // ── Doodad item click → open model ───────────────────
+        if (vscode) {
+            const dsList = document.getElementById('dsDoodadList');
+            if (dsList) {
+                dsList.addEventListener('click', function (e) {
+                    const item = e.target.closest('doodad-item');
+                    if (!item) return;
+                    const file = item.getAttribute('file') || '';
+                    if (!file) return;
+                    vscode.postMessage({command: 'openModel', path: file});
+                });
+            }
+
+            // ── Unit item click → open model ─────────────────────
+            const usList = document.getElementById('usUnitList');
+            if (usList) {
+                usList.addEventListener('click', function (e) {
+                    const item = e.target.closest('unit-item');
+                    if (!item) return;
+                    const file = item.getAttribute('file') || '';
+                    if (!file) return;
+                    vscode.postMessage({command: 'openModel', path: file});
+                });
+            }
+        }
+
+        // ── Model viewer (embedded float-window) ─────────────
+        const _modelViewer = _initModelViewer();
+
         // ── Message router ───────────────────────────────────
         window.addEventListener('message', e => {
             const msg = e.data;
             if (msg && msg.command === 'gamePathChanged') {
                 for (const fn of _gamePathHandlers) fn(msg);
+                setLoading(false);
+            }
+            if (msg && msg.command === 'loadingDone') {
+                setLoading(false);
+            }
+            if (msg && msg.command === 'modelData') {
+                _modelViewer.load(msg);
+            }
+            if (msg && msg.command === 'modelUnsupported') {
+                _modelViewer.showUnsupported(msg);
             }
         });
 
@@ -875,6 +1417,6 @@ window.W3E = (function () {
         }
     }
 
-    return {init, onGamePathChanged, indexToRgb, syncMenuActive};
+    return {init, onGamePathChanged, indexToRgb, syncMenuActive, makeOrbitControls};
 })();
 

@@ -1,3 +1,4 @@
+pub(crate) mod http;
 pub(crate) mod lsp;
 pub(crate) mod util;
 
@@ -11,6 +12,7 @@ use tokio::sync::Mutex;
 
 use crate::lng::blp::send::send as blp_send;
 use crate::lng::doo::send::send as doo_send;
+use crate::lng::mdx::send::send as mdx_send;
 use crate::lng::slk::send::send as slk_send;
 use crate::lng::w3abdhqtu::send::send as w3obj_send;
 use crate::lng::w3e::send::send as w3e_send;
@@ -110,6 +112,7 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::SlkRender(_) => "slk/render",
         MethodCall::SlkEdit(_) => "slk/edit",
         MethodCall::BlpRender(_) => "blp/render",
+        MethodCall::MdxRender(_) => "mdx/render",
         MethodCall::DooRender(_) => "doo/render",
         MethodCall::W3iRender(_) => "w3i/render",
         MethodCall::W3eRender(_) => "w3e/render",
@@ -119,6 +122,7 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::W3eTerrainSlk(_) => "w3e/terrainSlk",
         MethodCall::W3eDoodadsSlk(_) => "w3e/doodadsSlk",
         MethodCall::W3eUnitsSlk(_) => "w3e/unitsSlk",
+        MethodCall::W3eLookupFile(_) => "w3e/lookupFile",
         MethodCall::DebugLogEnable(_) => "custom/debugLogEnable",
         MethodCall::DebugInit(_) => "custom/debugInit",
     }
@@ -166,6 +170,9 @@ async fn main() {
     let writer = Arc::new(Mutex::new(stdout));
     // Set the global writer for background push notifications.
     let _ = LSP_WRITER.set(writer.clone());
+
+    // ── Start binary HTTP server for editor data ─────────────────
+    let http_port = crate::http::server::start_server().await.ok();
 
     loop {
         let msg = match read(&mut reader).await {
@@ -592,6 +599,10 @@ async fn main() {
                                 blp_send(&writer, call.id, &param.uri).await;
                             }
 
+                            MethodCall::MdxRender(param) => {
+                                mdx_send(&writer, call.id, &param.uri).await;
+                            }
+
                             MethodCall::DooRender(param) => {
                                 doo_send(&writer, call.id, &param.uri, param.is_unit, param.archive_path.as_deref()).await;
                             }
@@ -704,6 +715,37 @@ async fn main() {
                                 ).await;
                             }
 
+                            MethodCall::W3eLookupFile(param) => {
+                                let path = param.path.clone();
+                                let ap = param.archive_path.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    crate::lng::w3e::file_lookup::lookup_file_resolved(&path, ap.as_deref())
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+                                let result_val = match result {
+                                    Some((buf, source, resolved_path)) => {
+                                        use base64::Engine;
+                                        serde_json::json!({
+                                            "content": base64::engine::general_purpose::STANDARD.encode(&buf),
+                                            "source": source,
+                                            "resolvedPath": resolved_path,
+                                        })
+                                    }
+                                    None => serde_json::json!(null),
+                                };
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(result_val),
+                                        error: None,
+                                    },
+                                ).await;
+                            }
+
                             MethodCall::SlkRender(param) => {
                                 slk_send(&writer, call.id, &param.uri).await;
                             }
@@ -723,6 +765,24 @@ async fn main() {
                             }
 
                             MethodCall::Initialized(_) => {
+                                // ── Notify extension about binary HTTP server ─────
+                                if let Some(port) = http_port {
+                                    if let Some(info) = crate::http::server::BINARY_SERVER.get() {
+                                        send(
+                                            &writer,
+                                            &json!({
+                                                "jsonrpc": "2.0",
+                                                "method": "custom/binaryServerReady",
+                                                "params": {
+                                                    "port": port,
+                                                    "token": info.token
+                                                }
+                                            }),
+                                        )
+                                        .await;
+                                    }
+                                }
+
                                 use crate::util::cache_db;
                                 use crate::util::file_cache;
                                 use crate::util::import_graph::IMPORT_GRAPH;

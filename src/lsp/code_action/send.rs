@@ -741,6 +741,125 @@ fn leak_kind(diag: &Diagnostic) -> Option<String> {
     diag.data.as_ref()?.get("leak_kind")?.as_str().map(String::from)
 }
 
+/// Extract leak type from a diagnostic's `data` field.
+fn leak_type(diag: &Diagnostic) -> Option<String> {
+    diag.data.as_ref()?.get("leak_type")?.as_str().map(String::from)
+}
+
+/// Extract function name from a diagnostic's `data` field.
+fn leak_func_name(diag: &Diagnostic) -> Option<String> {
+    diag.data.as_ref()?.get("func_name")?.as_str().map(String::from)
+}
+
+/// Check if the diagnostic is for a returned local variable.
+fn is_returned_local(diag: &Diagnostic) -> bool {
+    diag.data
+        .as_ref()
+        .and_then(|d| d.get("returned_local"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Find the line number of the first `endglobals` keyword in the rope.
+/// Returns `None` if no globals block exists.
+fn find_endglobals_line(rope: &lapce_xi_rope::Rope) -> Option<usize> {
+    let line_count = rope.line_of_offset(rope.len()) + 1;
+    for line in 0..line_count {
+        let ls = rope.offset_of_line(line);
+        let le = rope.offset_of_line(line + 1).min(rope.len());
+        let text = rope.slice_to_cow(ls..le);
+        if text.trim() == "endglobals" {
+            return Some(line);
+        }
+    }
+    None
+}
+
+/// Generate a unique global variable name `funcname_varname`, appending a
+/// numeric suffix if the name already appears in the file text.
+fn unique_global_name(func_name: &str, var_name: &str, rope: &lapce_xi_rope::Rope) -> String {
+    let full_text = rope.slice_to_cow(0..rope.len());
+    let base = format!("{}_{}", func_name, var_name);
+    if !full_text.contains(&base) {
+        return base;
+    }
+    let mut suffix = 1u32;
+    loop {
+        let candidate = format!("{}{}", base, suffix);
+        if !full_text.contains(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+/// Build text edits for the "returned local" leak fix.
+///
+/// 1. Insert a global variable declaration before `endglobals`
+///    (or create a `globals`/`endglobals` block at line 0).
+/// 2. Replace the `return <var>` line with:
+///    ```
+///    set <global> = <var>
+///    set <var> = null
+///    return <global>
+///    ```
+fn returned_local_edits(
+    diag: &Diagnostic,
+    rope: &lapce_xi_rope::Rope,
+) -> Option<Vec<TextEdit>> {
+    let var = leak_var(diag)?;
+    let type_name = leak_type(diag)?;
+    let func_name = leak_func_name(diag)?;
+    let global_name = unique_global_name(&func_name, &var, rope);
+
+    let mut edits = Vec::new();
+
+    // ── 1. Insert global variable declaration ─────────────────────────────
+    if let Some(endglobals_line) = find_endglobals_line(rope) {
+        let glob_indent = body_indent(rope, endglobals_line);
+        let insert_pos = Position { line: endglobals_line, character: 0 };
+        edits.push(TextEdit {
+            range: Range { start: insert_pos.clone(), end: insert_pos },
+            new_text: format!("{}{} {}\n", glob_indent, type_name, global_name),
+        });
+    } else {
+        // No globals block — create one at the top of the file.
+        let insert_pos = Position { line: 0, character: 0 };
+        edits.push(TextEdit {
+            range: Range { start: insert_pos.clone(), end: insert_pos },
+            new_text: format!("globals\n    {} {}\nendglobals\n\n", type_name, global_name),
+        });
+    }
+
+    // ── 2. Replace the `return <var>` line ────────────────────────────────
+    let ret_line = diag.range.start.line;
+    let indent = line_indent(rope, ret_line);
+
+    // Find the full extent of the return line.
+    let line_count = rope.line_of_offset(rope.len()) + 1;
+    let ret_line_start = rope.offset_of_line(ret_line);
+    let ret_line_end = if ret_line + 1 < line_count {
+        rope.offset_of_line(ret_line + 1)
+    } else {
+        rope.len()
+    };
+    let _ret_text = rope.slice_to_cow(ret_line_start..ret_line_end);
+
+    let start_pos = Position { line: ret_line, character: 0 };
+    let end_pos = Position { line: ret_line + 1, character: 0 };
+    edits.push(TextEdit {
+        range: Range { start: start_pos, end: end_pos },
+        new_text: format!(
+            "{indent}set {global} = {var}\n{indent}set {var} = null\n{indent}return {global}\n",
+            indent = indent,
+            global = global_name,
+            var = var,
+        ),
+    });
+
+    Some(edits)
+}
+
 /// Read the leading whitespace of a line in a rope.
 fn line_indent(rope: &lapce_xi_rope::Rope, line: usize) -> String {
     let line_count = rope.line_of_offset(rope.len()) + 1;
@@ -846,7 +965,23 @@ fn compute_leak_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         if !seen.insert(key) {
             continue;
         }
-        if let Some(edit) = leak_text_edit(diag, rope) {
+        if is_returned_local(diag) {
+            // Returned local: create global + rewrite return.
+            if let Some(edits) = returned_local_edits(diag, rope) {
+                let title = crate::util::i18n::fix_handle_leak(&var);
+                let mut changes = HashMap::new();
+                changes.insert(uri.clone(), edits);
+                actions.push(CodeAction {
+                    title,
+                    kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+                    diagnostics: Some(vec![diag.clone()]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                    }),
+                    command: None,
+                });
+            }
+        } else if let Some(edit) = leak_text_edit(diag, rope) {
             let title = crate::util::i18n::fix_handle_leak(&var);
             let mut changes = HashMap::new();
             changes.insert(uri.clone(), vec![edit]);
@@ -904,7 +1039,13 @@ fn compute_fix_all_leaks(
         if !seen.insert(key) {
             continue;
         }
-        if let Some(edit) = leak_text_edit(diag, rope) {
+        if is_returned_local(diag) {
+            if let Some(ret_edits) = returned_local_edits(diag, rope) {
+                for e in ret_edits {
+                    edits.push((diag.range.start.line, e));
+                }
+            }
+        } else if let Some(edit) = leak_text_edit(diag, rope) {
             edits.push((diag.range.start.line, edit));
         }
     }

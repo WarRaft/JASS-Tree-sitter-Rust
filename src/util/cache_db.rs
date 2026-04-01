@@ -18,7 +18,7 @@
 
 use log::{error, info, warn};
 use once_cell::sync::Lazy;
-use redb::{Database, TableDefinition};
+use redb::{Database, ReadableDatabase, TableDefinition};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 

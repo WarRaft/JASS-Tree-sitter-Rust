@@ -4,7 +4,7 @@ use petgraph::algo::is_cyclic_directed;
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::{Bfs, EdgeRef};
 use petgraph::Direction;
-use redb::ReadableTable;
+use redb::{ReadableDatabase, ReadableTable};
 use std::collections::{HashMap, HashSet};
 use std::sync::RwLock;
 use url::Url;
@@ -95,7 +95,7 @@ impl ImportGraph {
                 if let Ok(table) = read_txn.open_table(cache_db::IMPORT_TABLE) {
                     if let Ok(iter) = table.iter() {
                         for entry_result in iter {
-                            let (key_guard, val_guard) = match entry_result {
+                            let (key_guard, val_guard): (redb::AccessGuard<&str>, redb::AccessGuard<&[u8]>) = match entry_result {
                                 Ok(kv) => kv,
                                 Err(_) => continue,
                             };

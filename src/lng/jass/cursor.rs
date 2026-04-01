@@ -1443,7 +1443,7 @@ impl Cursor {
 
                 // Handle leak detection (respects //@ignore leak on the function)
                 if !ann.ignore_tags.contains("leak") {
-                    self.check_handle_leaks(&f.body, &func_vars, &f.node);
+                    self.check_handle_leaks(&f.body, &func_vars, &f.node, &func_name);
                 }
 
                 // Redundant if-return simplification check.
@@ -3459,6 +3459,7 @@ impl Cursor {
         body: &[Statement],
         func_vars: &HashMap<String, VarInfo>,
         func_node: &Node,
+        func_name: &str,
     ) {
         // File-level `//ignore leak` suppresses all handle-leak diagnostics.
         if self.file_ignore_tags.contains("leak") {
@@ -3521,6 +3522,7 @@ impl Cursor {
             &mut null_map,
             &handle_locals,
             &mut top_exits,
+            func_name,
         );
 
         // 4. If the function can fall through (no unconditional return),
@@ -3541,6 +3543,8 @@ impl Cursor {
                         data: Some(serde_json::json!({
                             "leak_var": hl.name,
                             "leak_kind": "endfunction",
+                            "leak_type": hl.type_name,
+                            "func_name": func_name,
                         })),
                         ..Default::default()
                     });
@@ -3568,6 +3572,7 @@ impl Cursor {
         null_map: &mut NullMap,
         handle_locals: &[HandleLocal],
         exit_collector: &mut Vec<NullMap>,
+        func_name: &str,
     ) -> bool {
         for stmt in stmts {
             match stmt {
@@ -3622,22 +3627,38 @@ impl Cursor {
                     }
                 }
                 Statement::Exitwhen(_) => {
-                    // Record the current state as a potential loop exit point.
-                    // The enclosing loop handler will merge these with the
-                    // pre-loop state.  We do NOT analyse the exitwhen condition
-                    // (e.g. `exitwhen u == null`) — that would weaken the
-                    // analysis.  Saving the full pre-exitwhen state is strict:
-                    // any variable that is NonNull here will propagate to the
-                    // post-loop state.
                     exit_collector.push(null_map.clone());
                 }
                 Statement::Return(r) => {
-                    // Emit leak warnings for any handle local that isn't
-                    // definitely null at this return statement.
+                    // Detect whether the return value is exactly a handle local.
+                    let returned_local = r.value.as_ref().and_then(|val| {
+                        if let Expr::Id(id) = val {
+                            let name = id.node.text(&self.rope);
+                            handle_locals.iter().find(|hl| hl.name == name)
+                        } else {
+                            None
+                        }
+                    });
+
                     let ret_range = Self::return_keyword_range(&r.node, &self.rope);
                     for hl in handle_locals {
                         let state = null_map.get(&hl.name).copied().unwrap_or(NullState::Null);
                         if state != NullState::Null {
+                            // Check if THIS variable is the one being returned.
+                            let is_returned = returned_local
+                                .map(|rl| rl.name == hl.name)
+                                .unwrap_or(false);
+
+                            let mut data = serde_json::json!({
+                                "leak_var": hl.name,
+                                "leak_kind": "return",
+                                "leak_type": hl.type_name,
+                                "func_name": func_name,
+                            });
+                            if is_returned {
+                                data["returned_local"] = serde_json::json!(true);
+                            }
+
                             self.diagnostics.push(Diagnostic {
                                 range: ret_range.clone(),
                                 message: crate::util::i18n::handle_leak_before_return(
@@ -3646,10 +3667,7 @@ impl Cursor {
                                 severity: Some(DiagnosticSeverity::Error),
                                 source: Some("jass".into()),
                                 code: Some(DiagnosticCode::String("leak".into())),
-                                data: Some(serde_json::json!({
-                                    "leak_var": hl.name,
-                                    "leak_kind": "return",
-                                })),
+                                data: Some(data),
                                 ..Default::default()
                             });
                         }
@@ -3678,7 +3696,7 @@ impl Cursor {
                             }
                         }
                         let returned = this.walk_body_for_leaks(
-                            body, &mut branch_map, handle_locals, exit_collector,
+                            body, &mut branch_map, handle_locals, exit_collector, func_name,
                         );
                         (returned, branch_map, guard)
                     };
@@ -3751,6 +3769,7 @@ impl Cursor {
                         &mut loop_map,
                         handle_locals,
                         &mut loop_exits,
+                        func_name,
                     );
 
                     // After the loop, the state is the merge of ALL possible

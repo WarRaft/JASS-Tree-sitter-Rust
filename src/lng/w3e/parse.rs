@@ -93,6 +93,7 @@ pub struct W3eData {
     pub map_height: i32,
     pub offset_x: f32,
     pub offset_y: f32,
+    #[serde(skip_serializing)]
     pub points: Vec<W3ePoint>,
 }
 

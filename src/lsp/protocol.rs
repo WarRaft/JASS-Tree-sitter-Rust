@@ -67,6 +67,10 @@ pub enum MethodCall {
     #[serde(rename = "blp/render")]
     BlpRender(TextDocumentIdentifier),
 
+    /// MDX
+    #[serde(rename = "mdx/render")]
+    MdxRender(TextDocumentIdentifier),
+
     /// DOO
     #[serde(rename = "doo/render")]
     DooRender(DooRenderParams),
@@ -253,6 +257,10 @@ pub enum MethodCall {
     #[serde(rename = "w3e/unitsSlk")]
     W3eUnitsSlk(W3eUnitsSlkParams),
 
+    /// W3E cascading file lookup
+    #[serde(rename = "w3e/lookupFile")]
+    W3eLookupFile(W3eLookupFileParams),
+
     /// Debug init data request
     #[serde(rename = "custom/debugInit")]
     DebugInit(serde_json::Value),
@@ -393,6 +401,18 @@ pub struct W3ObjRenderParams {
     pub level_data: bool,
     /// When opened from an MPQ archive, the absolute path to the archive.
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_path: Option<String>,
+}
+
+/// Params for `w3e/lookupFile` — resolve a game-internal file path
+/// using the cascading lookup (map archive → game folder → game MPQs).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3eLookupFileParams {
+    /// Game-internal path (e.g. `"Doodads\\Ashenvale\\Plants\\AshenShrooms\\AshenShrooms.mdx"`).
+    pub path: String,
+    /// Optional archive path (for looking up inside the map archive first).
+    #[serde(default)]
     pub archive_path: Option<String>,
 }
 

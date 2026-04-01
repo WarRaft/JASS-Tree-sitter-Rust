@@ -14,7 +14,7 @@
 //! and **before** `fold_ir` / `uglify_ir`.
 
 use super::ir::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // ─── Nullability lattice (mirrors cursor.rs) ─────────────────────────────────
 
@@ -225,10 +225,18 @@ fn join_maps(a: &NullMap, b: &NullMap) -> NullMap {
 
 // ─── Leak-fix insertion ──────────────────────────────────────────────────────
 
-/// Generate `set <var> = null` statements for all leaking handle locals.
-fn null_sets_for_leaks(null_map: &NullMap, handle_locals: &[String]) -> Vec<IRStmt> {
+/// Generate `set <var> = null` statements for all leaking handle locals,
+/// **excluding** the variable named `skip` (if any).
+fn null_sets_for_leaks(
+    null_map: &NullMap,
+    handle_locals: &[String],
+    skip: Option<&str>,
+) -> Vec<IRStmt> {
     let mut stmts = Vec::new();
     for name in handle_locals {
+        if skip == Some(name.as_str()) {
+            continue;
+        }
         let state = null_map.get(name).copied().unwrap_or(NullState::Null);
         if state != NullState::Null {
             stmts.push(IRStmt::Set {
@@ -241,12 +249,37 @@ fn null_sets_for_leaks(null_map: &NullMap, handle_locals: &[String]) -> Vec<IRSt
     stmts
 }
 
+/// Context passed through `insert_fixes_in_body` for the returned-local
+/// temp-global transformation.
+struct LeakFixCtx {
+    /// `local_name → type_name` for handle-type locals.
+    local_types: HashMap<String, String>,
+    /// `type_name → temp_global_name` assigned by `fix_leaks`.
+    temp_globals: HashMap<String, String>,
+}
+
+impl LeakFixCtx {
+    /// If the return value is `IRExpr::Id(name)` referencing a handle local
+    /// that has a temp global, return `(local_name, temp_global_name)`.
+    fn returned_local_info(&self, val: &Option<IRExpr>) -> Option<(String, String)> {
+        if let Some(IRExpr::Id(name)) = val {
+            if let Some(type_name) = self.local_types.get(name) {
+                if let Some(temp) = self.temp_globals.get(type_name) {
+                    return Some((name.clone(), temp.clone()));
+                }
+            }
+        }
+        None
+    }
+}
+
 /// Recursively insert leak fixes before every `return` in a statement list.
 /// Returns a new list of statements with fixes inserted.
 fn insert_fixes_in_body(
     stmts: Vec<IRStmt>,
     null_map: &mut NullMap,
     handle_locals: &[String],
+    ctx: &LeakFixCtx,
 ) -> Vec<IRStmt> {
     let mut result = Vec::with_capacity(stmts.len());
 
@@ -274,9 +307,32 @@ fn insert_fixes_in_body(
                 }
                 result.push(stmt);
             }
-            IRStmt::Return(ref _val) => {
-                // Insert null-sets before the return.
-                result.extend(null_sets_for_leaks(null_map, handle_locals));
+            IRStmt::Return(ref val) => {
+                // Check if the return value is a handle-type local variable.
+                if let Some((local_name, temp_global)) = ctx.returned_local_info(val) {
+                    let state = null_map.get(&local_name).copied().unwrap_or(NullState::Null);
+                    if state != NullState::Null {
+                        // set temp_global = localvar
+                        result.push(IRStmt::Set {
+                            var: temp_global.clone(),
+                            index: None,
+                            value: IRExpr::Id(local_name.clone()),
+                        });
+                        // null-sets for all OTHER leaking locals
+                        result.extend(null_sets_for_leaks(null_map, handle_locals, Some(&local_name)));
+                        // set localvar = null
+                        result.push(IRStmt::Set {
+                            var: local_name,
+                            index: None,
+                            value: IRExpr::null(),
+                        });
+                        // return temp_global
+                        result.push(IRStmt::Return(Some(IRExpr::Id(temp_global))));
+                        return result;
+                    }
+                }
+                // Normal case: insert null-sets before the return.
+                result.extend(null_sets_for_leaks(null_map, handle_locals, None));
                 result.push(stmt);
                 return result; // everything after a return is dead
             }
@@ -297,7 +353,7 @@ fn insert_fixes_in_body(
                             branch_map.insert(var.clone(), state);
                         }
                     }
-                    new_if_body = insert_fixes_in_body(body, &mut branch_map, handle_locals);
+                    new_if_body = insert_fixes_in_body(body, &mut branch_map, handle_locals, ctx);
                     let returned = body_returns(&new_if_body);
                     if returned {
                         if let Some(g) = guard { returning_guards.push(g); }
@@ -318,7 +374,7 @@ fn insert_fixes_in_body(
                             branch_map.insert(var.clone(), state);
                         }
                     }
-                    let new_body = insert_fixes_in_body(branch.body, &mut branch_map, handle_locals);
+                    let new_body = insert_fixes_in_body(branch.body, &mut branch_map, handle_locals, ctx);
                     let returned = body_returns(&new_body);
                     if returned {
                         if let Some(g) = guard { returning_guards.push(g); }
@@ -373,7 +429,7 @@ fn insert_fixes_in_body(
 
                 // Second pass: insert fixes inside the loop body.
                 let mut inner_map = null_map.clone();
-                let new_body = insert_fixes_in_body(body, &mut inner_map, handle_locals);
+                let new_body = insert_fixes_in_body(body, &mut inner_map, handle_locals, ctx);
 
                 // Update post-loop state.
                 let mut post = null_map.clone();
@@ -423,13 +479,18 @@ fn body_returns(stmts: &[IRStmt]) -> bool {
 // ─── Per-function driver ─────────────────────────────────────────────────────
 
 /// Fix handle leaks in a single function's body.
-fn fix_function_leaks(func: &mut IRFunc) {
+///
+/// `temp_globals` maps `type_name → global_variable_name` for the
+/// returned-local transformation.
+fn fix_function_leaks(func: &mut IRFunc, temp_globals: &HashMap<String, String>) {
     // 1. Collect handle-type locals (after hoisting, all are at the top).
     let mut handle_locals: Vec<String> = Vec::new();
+    let mut local_types: HashMap<String, String> = HashMap::new();
     for stmt in &func.body {
         if let IRStmt::Local { type_name, is_array, name, .. } = stmt {
             if !is_array && is_handle_type(type_name) {
                 handle_locals.push(name.clone());
+                local_types.insert(name.clone(), type_name.clone());
             }
         }
     }
@@ -437,6 +498,11 @@ fn fix_function_leaks(func: &mut IRFunc) {
     if handle_locals.is_empty() {
         return;
     }
+
+    let ctx = LeakFixCtx {
+        local_types,
+        temp_globals: temp_globals.clone(),
+    };
 
     // 2. Build initial null state map — all handle locals start as Null.
     let mut null_map: NullMap = HashMap::new();
@@ -446,15 +512,45 @@ fn fix_function_leaks(func: &mut IRFunc) {
 
     // 3. Insert fixes and track null-state through the body.
     let body = std::mem::take(&mut func.body);
-    let mut fixed_body = insert_fixes_in_body(body, &mut null_map, &handle_locals);
+    let mut fixed_body = insert_fixes_in_body(body, &mut null_map, &handle_locals, &ctx);
 
     // 4. If the function can fall through (no unconditional return at the end),
     //    append null-sets for any leaking locals before the implicit exit.
     if !body_returns(&fixed_body) {
-        fixed_body.extend(null_sets_for_leaks(&null_map, &handle_locals));
+        fixed_body.extend(null_sets_for_leaks(&null_map, &handle_locals, None));
     }
 
     func.body = fixed_body;
+}
+
+// ─── Returned-local type scanning ────────────────────────────────────────────
+
+/// Recursively scan a function body for `return <handle_local>` patterns
+/// and collect the types that need a temp global variable.
+fn collect_returned_local_types(
+    stmts: &[IRStmt],
+    handle_locals: &HashMap<String, String>, // name → type_name
+    needed: &mut HashSet<String>,            // type_names
+) {
+    for stmt in stmts {
+        match stmt {
+            IRStmt::Return(Some(IRExpr::Id(name))) => {
+                if let Some(type_name) = handle_locals.get(name) {
+                    needed.insert(type_name.clone());
+                }
+            }
+            IRStmt::If { body, branches, .. } => {
+                collect_returned_local_types(body, handle_locals, needed);
+                for b in branches {
+                    collect_returned_local_types(&b.body, handle_locals, needed);
+                }
+            }
+            IRStmt::Loop(body) => {
+                collect_returned_local_types(body, handle_locals, needed);
+            }
+            _ => {}
+        }
+    }
 }
 
 // ─── Public entry point ──────────────────────────────────────────────────────
@@ -462,10 +558,75 @@ fn fix_function_leaks(func: &mut IRFunc) {
 /// Insert `set <var> = null` for all handle-type locals that would leak
 /// at function exit points.
 ///
+/// When a `return` expression references a handle-type local, a single
+/// temp global per type is created and the return is rewritten:
+///   `set <temp> = <local>`
+///   `set <local> = null`
+///   `return <temp>`
+///
 /// Call after `hoist_ir_locals` and before `fold_ir` / `uglify_ir`.
 pub(super) fn fix_leaks(ir: &mut BuildIR) {
+    // 1. Scan all functions to discover which handle types need a temp global.
+    let mut needed_types: HashSet<String> = HashSet::new();
+    for func in ir.functions.values() {
+        let mut handle_locals: HashMap<String, String> = HashMap::new();
+        for stmt in &func.body {
+            if let IRStmt::Local { type_name, is_array, name, .. } = stmt {
+                if !is_array && is_handle_type(type_name) {
+                    handle_locals.insert(name.clone(), type_name.clone());
+                }
+            }
+        }
+        if !handle_locals.is_empty() {
+            collect_returned_local_types(&func.body, &handle_locals, &mut needed_types);
+        }
+    }
+
+    // 2. Collect all existing global names to avoid collisions.
+    let mut all_names: HashSet<String> = HashSet::new();
+    for g in &ir.globals {
+        if let IRStmt::VarDecl { decls, .. } = g {
+            for d in decls {
+                all_names.insert(d.name.clone());
+            }
+        }
+    }
+    for name in ir.functions.keys() {
+        all_names.insert(name.clone());
+    }
+
+    // 3. Create one temp global per needed type.
+    //    Name: `_lr_<type>`, with numeric suffix for uniqueness.
+    let mut temp_globals: HashMap<String, String> = HashMap::new();
+    for type_name in &needed_types {
+        let base = format!("_lr_{}", type_name);
+        let mut candidate = base.clone();
+        let mut suffix = 1u32;
+        while all_names.contains(&candidate) {
+            candidate = format!("{}{}", base, suffix);
+            suffix += 1;
+        }
+        all_names.insert(candidate.clone());
+        temp_globals.insert(type_name.clone(), candidate);
+    }
+
+    // 4. Fix leaks in every function.
     for func in ir.functions.values_mut() {
-        fix_function_leaks(func);
+        fix_function_leaks(func, &temp_globals);
+    }
+
+    // 5. Emit temp global declarations into ir.globals.
+    for (type_name, var_name) in &temp_globals {
+        ir.globals.push(IRStmt::VarDecl {
+            is_constant: false,
+            is_array: false,
+            type_name: type_name.clone(),
+            decls: vec![IRVarInit {
+                name: var_name.clone(),
+                short_name: None,
+                value: None,
+            }],
+        });
     }
 }
 

@@ -30,7 +30,7 @@ impl From<&Mipmap> for BlpMipmapMeta {
     }
 }
 
-fn image_to_data_url(img: &RgbaImage) -> Option<String> {
+pub fn image_to_data_url(img: &RgbaImage) -> Option<String> {
     let dynamic = DynamicImage::ImageRgba8(img.clone());
     let mut cursor = Cursor::new(Vec::new());
 

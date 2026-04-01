@@ -277,6 +277,8 @@ pub struct UnitInfo {
     pub can_sleep: bool,
     pub cargo_size: u32,
     pub can_flee: bool,
+    /// Model file path from `Units\unitUI.slk` (`file` column).
+    pub file: String,
 }
 
 /// Result of loading `Units\UnitData.slk`.
@@ -290,6 +292,9 @@ pub struct UnitsSlkResult {
 }
 
 /// Try to load and parse `Units\UnitData.slk` via the cascading lookup.
+///
+/// Also attempts to load `Units\unitUI.slk` and merge the `file` (model path)
+/// column into each [`UnitInfo`].
 pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
     let (buf, source) = super::file_lookup::lookup_file(
         "Units\\UnitData.slk",
@@ -298,6 +303,24 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
 
     let rows = parse_slk(&buf);
 
+    // Load unitUI.slk to get model file paths keyed by unit ID.
+    let ui_file_map: HashMap<String, String> = super::file_lookup::lookup_file(
+        "Units\\unitUI.slk",
+        archive_path,
+    )
+    .map(|(ui_buf, _)| {
+        let ui_rows = parse_slk(&ui_buf);
+        ui_rows
+            .into_iter()
+            .filter_map(|row| {
+                let uid = row.get("unitUIID")?.clone();
+                let file = row.get("file").cloned().unwrap_or_default();
+                if uid.is_empty() { None } else { Some((uid, file)) }
+            })
+            .collect()
+    })
+    .unwrap_or_default();
+
     let units: Vec<UnitInfo> = rows
         .into_iter()
         .filter_map(|row| {
@@ -305,6 +328,7 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
             if unit_id.is_empty() {
                 return None;
             }
+            let file = ui_file_map.get(&unit_id).cloned().unwrap_or_default();
             Some(UnitInfo {
                 unit_id,
                 sort: row.get("sort").cloned().unwrap_or_default(),
@@ -317,6 +341,7 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
                 can_sleep: row.get("canSleep").map(|v| v == "1").unwrap_or(false),
                 cargo_size: row.get("cargoSize").and_then(|v| v.parse().ok()).unwrap_or(0),
                 can_flee: row.get("canFlee").map(|v| v == "1").unwrap_or(false),
+                file,
             })
         })
         .collect();

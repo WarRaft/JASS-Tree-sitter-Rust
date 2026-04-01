@@ -9,6 +9,7 @@
 
 use crate::util::cache_db::{db, META_TABLE};
 use log::error;
+use redb::ReadableDatabase;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -36,9 +37,12 @@ static GAME_PATH: Mutex<Option<String>> = Mutex::new(None);
 fn load_from_db() -> String {
     let Some(database) = db() else { return String::new() };
     let Ok(read_txn) = database.begin_read() else { return String::new() };
-    let Ok(table) = read_txn.open_table(META_TABLE) else { return String::new() };
+    let Ok(table): Result<redb::ReadOnlyTable<&str, &str>, _> = read_txn.open_table(META_TABLE) else { return String::new() };
     match table.get(META_KEY_GAME_PATH) {
-        Ok(Some(guard)) => guard.value().to_string(),
+        Ok(Some(guard)) => {
+            let val: &str = guard.value();
+            val.to_string()
+        }
         _ => String::new(),
     }
 }

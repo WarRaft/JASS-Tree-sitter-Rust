@@ -3747,4 +3747,113 @@ endfunction
             assert!(leaks[0].message.contains("`v`"), "Should mention var v: {}", leaks[0].message);
         });
     }
+
+    // ─── Returned local variable leak tests ───────────────────────────
+
+    #[test]
+    fn handle_leak_returned_local() {
+        // Returning a handle local → leak diagnostic with returned_local flag.
+        let src = "\
+type item extends handle
+native UnitItemInSlot takes integer slot returns item
+function GetUnitItem takes nothing returns item
+    local item itm = UnitItemInSlot(0)
+    return itm
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert_eq!(leaks.len(), 1, "Expected 1 leak for returned local, got: {:?}", leaks);
+            assert!(leaks[0].message.contains("`itm`"), "Should mention var name: {}", leaks[0].message);
+            assert!(leaks[0].message.contains("before `return`"), "Should warn at return: {}", leaks[0].message);
+
+            // Check diagnostic data fields.
+            let data = leaks[0].data.as_ref().expect("leak diagnostic should have data");
+            assert_eq!(data.get("returned_local").and_then(|v| v.as_bool()), Some(true),
+                "Should have returned_local: true");
+            assert_eq!(data.get("func_name").and_then(|v| v.as_str()), Some("GetUnitItem"),
+                "Should carry func_name");
+            assert_eq!(data.get("leak_type").and_then(|v| v.as_str()), Some("item"),
+                "Should carry leak_type");
+            assert_eq!(data.get("leak_var").and_then(|v| v.as_str()), Some("itm"),
+                "Should carry leak_var");
+        });
+    }
+
+    #[test]
+    fn handle_leak_returned_local_in_branch() {
+        // return inside if — only the returned variable gets returned_local flag.
+        let src = "\
+type item extends handle
+type unit extends handle
+native UnitItemInSlot takes integer slot returns item
+native CreateUnit takes nothing returns unit
+native GetRandomInt takes integer lo, integer hi returns integer
+function GetItem takes nothing returns item
+    local item itm = UnitItemInSlot(0)
+    local unit u = CreateUnit()
+    if GetRandomInt(0, 1) == 1 then
+        return itm
+    endif
+    set itm = null
+    set u = null
+    return null
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            // The early return leaks both itm (returned) and u (not nulled yet).
+            assert_eq!(leaks.len(), 2, "Expected 2 leaks at early return, got: {:?}", leaks);
+
+            let itm_leak = leaks.iter().find(|d| {
+                d.data.as_ref()
+                    .and_then(|data| data.get("leak_var"))
+                    .and_then(|v| v.as_str()) == Some("itm")
+            }).expect("Should have leak for itm");
+
+            let u_leak = leaks.iter().find(|d| {
+                d.data.as_ref()
+                    .and_then(|data| data.get("leak_var"))
+                    .and_then(|v| v.as_str()) == Some("u")
+            }).expect("Should have leak for u");
+
+            // itm is the one being returned → returned_local: true
+            let itm_data = itm_leak.data.as_ref().unwrap();
+            assert_eq!(itm_data.get("returned_local").and_then(|v| v.as_bool()), Some(true),
+                "itm is returned → returned_local: true");
+
+            // u is NOT the return expression → no returned_local
+            let u_data = u_leak.data.as_ref().unwrap();
+            assert!(u_data.get("returned_local").is_none(),
+                "u is not returned → no returned_local flag");
+        });
+    }
+
+    #[test]
+    fn handle_leak_return_non_local_expr_no_flag() {
+        // Returning a non-local expression (function call) → leak but no returned_local.
+        let src = "\
+type unit extends handle
+native CreateUnit takes nothing returns unit
+function MakeUnit takes nothing returns unit
+    local unit u = CreateUnit()
+    return CreateUnit()
+endfunction
+";
+        with_cursor(src, |c| {
+            let leaks: Vec<_> = c.diagnostics.iter()
+                .filter(|d| d.message.contains("Handle leak"))
+                .collect();
+            assert_eq!(leaks.len(), 1, "Expected 1 leak for u, got: {:?}", leaks);
+            let data = leaks[0].data.as_ref().unwrap();
+            assert!(data.get("returned_local").is_none(),
+                "Return of a call expr → no returned_local flag");
+            assert_eq!(data.get("func_name").and_then(|v| v.as_str()), Some("MakeUnit"));
+            assert_eq!(data.get("leak_type").and_then(|v| v.as_str()), Some("unit"));
+        });
+    }
 }
