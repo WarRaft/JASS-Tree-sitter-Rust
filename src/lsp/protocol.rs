@@ -178,6 +178,9 @@ pub enum MethodCall {
     #[serde(rename = "build/execute")]
     BuildExecute(TextDocumentIdentifier),
 
+    #[serde(rename = "build/hooks")]
+    BuildHooks(TextDocumentIdentifier),
+
     #[serde(rename = "rescan/execute")]
     RescanExecute(TextDocumentIdentifier),
 

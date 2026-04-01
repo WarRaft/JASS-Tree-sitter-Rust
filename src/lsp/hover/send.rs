@@ -193,6 +193,7 @@ fn compute_directive_hover(
                     let type_label = match def.kind {
                         crate::lng::directive::SetValueKind::Bool => "`0` | `1`",
                         crate::lng::directive::SetValueKind::Path => "`<path>`",
+                        crate::lng::directive::SetValueKind::Command => "`<command>`",
                     };
                     let md = format!(
                         "### `//set {}`\n\n{}\n\n**Type:** {}\\\n**Default:** `{}`",
@@ -208,6 +209,42 @@ fn compute_directive_hover(
                             end: Position { line: line_idx, character: key_end_col },
                         }),
                     });
+                }
+            }
+
+            // ── Per-{{var}} hover for Command values ─────────────────
+            let is_command = matches!(
+                crate::lng::directive::find_set_def(key),
+                Some(def) if def.kind == crate::lng::directive::SetValueKind::Command
+            );
+            if is_command && key_len < key_part.len() {
+                let after_key = &key_part[key_len..];
+                let value_part = after_key.trim_start();
+                let ws_before_value = after_key.len() - value_part.len();
+                let val_start_col = key_start_col + key_len + ws_before_value;
+
+                let spans = crate::lng::directive::find_template_spans(value_part);
+                for (span_off, span_len, var_name) in &spans {
+                    let var_start_col = val_start_col + span_off;
+                    let var_end_col = var_start_col + span_len;
+                    if col >= var_start_col && col < var_end_col {
+                        let detail = crate::util::i18n::template_var_detail(var_name);
+                        let md = if detail.is_empty() {
+                            format!("### `{{{{{}}}}}`\n\nUnknown template variable.", var_name)
+                        } else {
+                            format!("### `{{{{{}}}}}`\n\n{}", var_name, detail)
+                        };
+                        return Some(Hover {
+                            contents: MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: md,
+                            },
+                            range: Some(Range {
+                                start: Position { line: line_idx, character: var_start_col },
+                                end: Position { line: line_idx, character: var_end_col },
+                            }),
+                        });
+                    }
                 }
             }
         }

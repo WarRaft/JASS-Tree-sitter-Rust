@@ -262,6 +262,7 @@ pub fn build_jass(uri: &Url) -> BuildResult {
     let out_path = resolve_output_path(&base_dir, &target, "war3map.j");
     let archive_mode = is_archive_path(&out_path);
 
+
     // 2b. If target is an archive, read w3i + doo data from it.
     let map_data = if archive_mode {
         match read_map_data(&out_path) {
@@ -423,6 +424,7 @@ pub fn build_as(uri: &Url) -> BuildResult {
     let out_path = resolve_output_path(&base_dir, &target, "war3map.as");
     let archive_mode = is_archive_path(&out_path);
 
+
     // 2b. If target is an archive, read w3i + doo data from it.
     let map_data = if archive_mode {
         match read_map_data(&out_path) {
@@ -479,7 +481,7 @@ pub fn build_as(uri: &Url) -> BuildResult {
     // 7b. Resolve frozen-file dependencies — AFTER augmentation so that
     //     generated calls (InitBlizzard, SetPlayerAllianceStateBJ, …) are
     //     included in the reachability analysis.
-    resolve_frozen_deps(&mut ir, &file_order);
+    let frozen_global_names = resolve_frozen_deps(&mut ir, &file_order);
 
     // 7c. Hoist late locals (before semantic passes so hoisted defaults
     //     are processed by null→nil and array-cast too).
@@ -513,6 +515,11 @@ pub fn build_as(uri: &Url) -> BuildResult {
         global_map.insert(name.clone(), format!("Jass::{}", name));
     }
 
+    // 8b. Add Jass:: namespace prefix for frozen global variable names.
+    for name in &frozen_global_names {
+        global_map.insert(name.clone(), format!("Jass::{}", name));
+    }
+
     // 9. Render to text for inlining / StringHash passes.
     let empty_map = HashMap::new();
     let mut fragments = Fragments {
@@ -543,14 +550,46 @@ pub fn build_as(uri: &Url) -> BuildResult {
     let out_dir = out_path.parent().unwrap_or(Path::new("."));
     out.push_str(&emit_frozen_import_header(&ir.frozen_import_directives, out_dir));
 
-    // Globals → top-level variable declarations (rendered from IR).
+    // Globals: frozen globals go into namespace Jass { }, user globals at top level.
+    let empty_rn = HashMap::new();
+    let mut has_frozen_globals = false;
+    let mut has_user_globals = false;
+
+    // Frozen globals → namespace Jass { ... }
     for g in &ir.globals {
-        for line in render_as::render_as_stmt(g, "", &global_map) {
-            out.push_str(&line);
-            out.push('\n');
+        if let IRStmt::VarDecl { decls, .. } = g {
+            if decls.iter().any(|d| frozen_global_names.contains(&d.name)) {
+                if !has_frozen_globals {
+                    out.push_str("namespace Jass {\n");
+                    has_frozen_globals = true;
+                }
+                // Render inside namespace without Jass:: prefix (empty rename map).
+                for line in render_as::render_as_stmt(g, "    ", &empty_rn) {
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+            }
         }
     }
-    if !ir.globals.is_empty() {
+    if has_frozen_globals {
+        out.push_str("}\n\n");
+    }
+
+    // User globals → top-level declarations.
+    for g in &ir.globals {
+        let is_frozen = match g {
+            IRStmt::VarDecl { decls, .. } => decls.iter().any(|d| frozen_global_names.contains(&d.name)),
+            _ => false,
+        };
+        if !is_frozen {
+            for line in render_as::render_as_stmt(g, "", &global_map) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+            has_user_globals = true;
+        }
+    }
+    if has_user_globals {
         out.push('\n');
     }
 
@@ -614,3 +653,98 @@ fn err(msg: &str) -> BuildResult {
         message: msg.to_string(),
     }
 }
+
+/// Resolve hook commands for a build URI.
+///
+/// Returns `(before_cmd, after_cmd, cwd)` with all `{{variable}}` template
+/// placeholders expanded to full normalized paths.  Commands are empty
+/// strings when the corresponding `//set build-before` / `//set build-after`
+/// directive is absent.
+///
+/// The extension uses these to run hooks in VS Code's integrated terminal
+/// so the user can see the output in real time.
+pub fn resolve_hooks(uri: &Url) -> (String, String, String) {
+    // Find the entry file to resolve cwd and template variables.
+    let trigger_uri = find_build_setting(uri, "build-jass")
+        .or_else(|| find_build_setting(uri, "build-as"))
+        .map(|(u, _)| u);
+
+    let (entry_path, cwd) = match &trigger_uri {
+        Some(u) => match u.to_file_path() {
+            Ok(p) => {
+                let dir = p.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+                (p, dir)
+            }
+            Err(_) => return (String::new(), String::new(), String::new()),
+        },
+        None => return (String::new(), String::new(), String::new()),
+    };
+
+    let before = find_build_setting(uri, "build-before")
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(_, v)| expand_template_vars(uri, &v, &entry_path, &cwd))
+        .unwrap_or_default();
+
+    let after = find_build_setting(uri, "build-after")
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(_, v)| expand_template_vars(uri, &v, &entry_path, &cwd))
+        .unwrap_or_default();
+
+    let cwd_str = match cwd.canonicalize() {
+        Ok(c) => c.to_string_lossy().into_owned(),
+        Err(_) => cwd.to_string_lossy().into_owned(),
+    };
+
+    (before, after, cwd_str)
+}
+
+/// Expand `{{variable}}` placeholders in a command string.
+///
+/// All paths are fully normalized (canonicalized where possible, otherwise
+/// joined + cleaned) so they can be passed to external scripts reliably.
+fn expand_template_vars(
+    uri: &Url,
+    cmd: &str,
+    entry_path: &std::path::Path,
+    entry_dir: &std::path::Path,
+) -> String {
+    use self::io::resolve_output_path;
+
+    let norm = |p: &std::path::Path| -> String {
+        // Try to canonicalize; fall back to the raw path if the file
+        // doesn't exist yet (e.g. output before first build).
+        match p.canonicalize() {
+            Ok(c) => c.to_string_lossy().into_owned(),
+            Err(_) => p.to_string_lossy().into_owned(),
+        }
+    };
+
+    let entry_str = norm(entry_path);
+    let entry_dir_str = norm(entry_dir);
+
+    let target_jass_str = find_build_setting(uri, "build-jass")
+        .map(|(u, v)| {
+            let base = u.to_file_path().ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| entry_dir.to_path_buf());
+            norm(&resolve_output_path(&base, &v, "war3map.j"))
+        })
+        .unwrap_or_default();
+
+    let target_as_str = find_build_setting(uri, "build-as")
+        .map(|(u, v)| {
+            let base = u.to_file_path().ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| entry_dir.to_path_buf());
+            norm(&resolve_output_path(&base, &v, "war3map.as"))
+        })
+        .unwrap_or_default();
+
+    // Replace longer names first to avoid prefix conflicts
+    // (e.g. {{entry-dir}} must be replaced before {{entry}}).
+    cmd.replace("{{entry-dir}}", &entry_dir_str)
+        .replace("{{entry}}", &entry_str)
+        .replace("{{target-jass}}", &target_jass_str)
+        .replace("{{target-as}}", &target_as_str)
+}
+

@@ -161,6 +161,10 @@ fn wrap_stmt(stmt: &mut IRStmt, arrays: &HashMap<String, String>) {
                 }
             }
         }
+
+        IRStmt::TargetOnly { inner, .. } => {
+            wrap_stmt(inner, arrays);
+        }
     }
 }
 

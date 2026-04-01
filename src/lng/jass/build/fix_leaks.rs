@@ -14,6 +14,7 @@
 //! and **before** `fold_ir` / `uglify_ir`.
 
 use super::ir::*;
+use super::ir::{TARGET_JASS, TARGET_AS};
 use std::collections::{HashMap, HashSet};
 
 // ─── Nullability lattice (mirrors cursor.rs) ─────────────────────────────────
@@ -114,6 +115,9 @@ fn walk_body(
                 }
             }
             IRStmt::Call { .. } | IRStmt::Set { .. } | IRStmt::VarDecl { .. } => {}
+            IRStmt::TargetOnly { inner, .. } => {
+                let _ = walk_body(std::slice::from_ref(inner.as_ref()), null_map, handle_locals, exit_collector);
+            }
             IRStmt::Exitwhen(_) => {
                 exit_collector.push(null_map.clone());
             }
@@ -227,6 +231,10 @@ fn join_maps(a: &NullMap, b: &NullMap) -> NullMap {
 
 /// Generate `set <var> = null` statements for all leaking handle locals,
 /// **excluding** the variable named `skip` (if any).
+///
+/// Each generated statement is wrapped in `TargetOnly { target: TARGET_JASS }`
+/// because AS does not have local variable handle leaks and these null-sets
+/// are unnecessary there.
 fn null_sets_for_leaks(
     null_map: &NullMap,
     handle_locals: &[String],
@@ -239,10 +247,13 @@ fn null_sets_for_leaks(
         }
         let state = null_map.get(name).copied().unwrap_or(NullState::Null);
         if state != NullState::Null {
-            stmts.push(IRStmt::Set {
-                var: name.clone(),
-                index: None,
-                value: IRExpr::null(),
+            stmts.push(IRStmt::TargetOnly {
+                target: TARGET_JASS,
+                inner: Box::new(IRStmt::Set {
+                    var: name.clone(),
+                    index: None,
+                    value: IRExpr::null(),
+                }),
             });
         }
     }
@@ -312,22 +323,36 @@ fn insert_fixes_in_body(
                 if let Some((local_name, temp_global)) = ctx.returned_local_info(val) {
                     let state = null_map.get(&local_name).copied().unwrap_or(NullState::Null);
                     if state != NullState::Null {
-                        // set temp_global = localvar
-                        result.push(IRStmt::Set {
-                            var: temp_global.clone(),
-                            index: None,
-                            value: IRExpr::Id(local_name.clone()),
+                        // set temp_global = localvar  (JASS-only)
+                        result.push(IRStmt::TargetOnly {
+                            target: TARGET_JASS,
+                            inner: Box::new(IRStmt::Set {
+                                var: temp_global.clone(),
+                                index: None,
+                                value: IRExpr::Id(local_name.clone()),
+                            }),
                         });
-                        // null-sets for all OTHER leaking locals
+                        // null-sets for all OTHER leaking locals (already JASS-only)
                         result.extend(null_sets_for_leaks(null_map, handle_locals, Some(&local_name)));
-                        // set localvar = null
-                        result.push(IRStmt::Set {
-                            var: local_name,
-                            index: None,
-                            value: IRExpr::null(),
+                        // set localvar = null  (JASS-only)
+                        result.push(IRStmt::TargetOnly {
+                            target: TARGET_JASS,
+                            inner: Box::new(IRStmt::Set {
+                                var: local_name.clone(),
+                                index: None,
+                                value: IRExpr::null(),
+                            }),
                         });
-                        // return temp_global
-                        result.push(IRStmt::Return(Some(IRExpr::Id(temp_global))));
+                        // return temp_global  (JASS-only)
+                        result.push(IRStmt::TargetOnly {
+                            target: TARGET_JASS,
+                            inner: Box::new(IRStmt::Return(Some(IRExpr::Id(temp_global)))),
+                        });
+                        // Keep original return for AS
+                        result.push(IRStmt::TargetOnly {
+                            target: TARGET_AS,
+                            inner: Box::new(stmt),
+                        });
                         return result;
                     }
                 }
@@ -463,6 +488,12 @@ fn body_returns(stmts: &[IRStmt]) -> bool {
     for stmt in stmts.iter().rev() {
         match stmt {
             IRStmt::Return(_) => return true,
+            IRStmt::TargetOnly { inner, .. } => {
+                if body_returns(std::slice::from_ref(inner.as_ref())) {
+                    continue; // this TargetOnly path returns, check next
+                }
+                return false;
+            }
             IRStmt::If { branches, body, .. } => {
                 let has_else = branches.iter().any(|b| b.condition.is_none());
                 if has_else && body_returns(body) && branches.iter().all(|b| body_returns(&b.body)) {

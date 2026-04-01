@@ -93,6 +93,7 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::CallGraphSubgraph(_) => "callGraph/subgraph",
         MethodCall::TypeGraphSubgraph(_) => "typeGraph/subgraph",
         MethodCall::BuildExecute(_) => "build/execute",
+        MethodCall::BuildHooks(_) => "build/hooks",
         MethodCall::RescanExecute(_) => "rescan/execute",
         MethodCall::UjapiDownload(_) => "ujapi/download",
         MethodCall::DocumentColor(_) => "textDocument/documentColor",
@@ -1608,6 +1609,26 @@ async fn main() {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
                                         result: Some(json!(result)),
+                                        error: None,
+                                    },
+                                )
+                                .await;
+                            }
+
+                            MethodCall::BuildHooks(params) => {
+                                let uri = &params.uri;
+                                let (before_cmd, after_cmd, cwd) =
+                                    crate::lng::jass::build::resolve_hooks(uri);
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(json!({
+                                            "before_cmd": before_cmd,
+                                            "after_cmd": after_cmd,
+                                            "cwd": cwd
+                                        })),
                                         error: None,
                                     },
                                 )

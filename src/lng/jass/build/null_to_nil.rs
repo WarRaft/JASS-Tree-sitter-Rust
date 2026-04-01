@@ -354,6 +354,10 @@ fn rewrite_stmt(stmt: &mut IRStmt, return_type: &str, ctx: &FuncCtx) {
                 }
             }
         }
+
+        IRStmt::TargetOnly { inner, .. } => {
+            rewrite_stmt(inner, return_type, ctx);
+        }
     }
 }
 

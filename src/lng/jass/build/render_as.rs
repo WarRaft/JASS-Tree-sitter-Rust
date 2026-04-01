@@ -14,6 +14,9 @@ use super::ir::*;
 use super::render_jass::build_func_scope_map;
 use std::collections::{HashMap, HashSet};
 
+// Re-import target lang bitmask.
+use super::ir::TARGET_AS;
+
 // ─── Type / rename utilities ─────────────────────────────────────────────────
 
 /// AngelScript reserved words that cannot be used as identifiers.
@@ -211,6 +214,13 @@ pub(super) fn render_as_stmt(stmt: &IRStmt, indent: &str, rn: &HashMap<String, S
                     }
                 }
             }).collect()
+        }
+        IRStmt::TargetOnly { target, inner } => {
+            if *target & TARGET_AS != 0 {
+                render_as_stmt(inner, indent, rn)
+            } else {
+                vec![]
+            }
         }
     }
 }

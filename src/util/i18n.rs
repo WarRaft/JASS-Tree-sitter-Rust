@@ -822,6 +822,36 @@ pub fn set_def_backup() -> &'static str {
     )
 }
 
+pub fn set_def_build_uglify() -> &'static str {
+    pick(
+        "Minify identifiers in build output",
+        "Минифицировать идентификаторы в сборке",
+        "Мініфікувати ідентифікатори у збірці",
+        "在构建输出中压缩标识符",
+        "在建構輸出中壓縮標識符",
+    )
+}
+
+pub fn set_def_build_before() -> &'static str {
+    pick(
+        "Shell command to run before the build",
+        "Команда терминала, выполняемая перед сборкой",
+        "Команда терміналу, що виконується перед збіркою",
+        "构建前执行的终端命令",
+        "建構前執行的終端命令",
+    )
+}
+
+pub fn set_def_build_after() -> &'static str {
+    pick(
+        "Shell command to run after the build",
+        "Команда терминала, выполняемая после сборки",
+        "Команда терміналу, що виконується після збірки",
+        "构建后执行的终端命令",
+        "建構後執行的終端命令",
+    )
+}
+
 /// Get the localized detail for a `SetDef` by key.
 pub fn set_def_detail(key: &str) -> &'static str {
     match key {
@@ -830,7 +860,73 @@ pub fn set_def_detail(key: &str) -> &'static str {
         "build-jass" => set_def_build_jass(),
         "build-as" => set_def_build_as(),
         "backup" => set_def_backup(),
+        "build-uglify" => set_def_build_uglify(),
+        "build-before" => set_def_build_before(),
+        "build-after" => set_def_build_after(),
         _ => "",
+    }
+}
+
+// ─── Template variable details (localized) ──────────────────────────────────
+
+pub fn template_var_entry() -> &'static str {
+    pick(
+        "Full normalized path to the `//entry` file",
+        "Полный нормализованный путь к файлу `//entry`",
+        "Повний нормалізований шлях до файлу `//entry`",
+        "`//entry` 文件的完整规范化路径",
+        "`//entry` 檔案的完整正規化路徑",
+    )
+}
+
+pub fn template_var_entry_dir() -> &'static str {
+    pick(
+        "Full normalized path to the directory containing the `//entry` file",
+        "Полный нормализованный путь к каталогу с файлом `//entry`",
+        "Повний нормалізований шлях до каталогу з файлом `//entry`",
+        "包含 `//entry` 文件的目录的完整规范化路径",
+        "包含 `//entry` 檔案的目錄的完整正規化路徑",
+    )
+}
+
+pub fn template_var_target_jass() -> &'static str {
+    pick(
+        "Full normalized path to the JASS build output file (from `//set build-jass`)",
+        "Полный нормализованный путь к файлу сборки JASS (из `//set build-jass`)",
+        "Повний нормалізований шлях до файлу збірки JASS (з `//set build-jass`)",
+        "JASS 构建输出文件的完整规范化路径（来自 `//set build-jass`）",
+        "JASS 建構輸出檔案的完整正規化路徑（來自 `//set build-jass`）",
+    )
+}
+
+pub fn template_var_target_as() -> &'static str {
+    pick(
+        "Full normalized path to the AngelScript build output file (from `//set build-as`)",
+        "Полный нормализованный путь к файлу сборки AngelScript (из `//set build-as`)",
+        "Повний нормалізований шлях до файлу збірки AngelScript (з `//set build-as`)",
+        "AngelScript 构建输出文件的完整规范化路径（来自 `//set build-as`）",
+        "AngelScript 建構輸出檔案的完整正規化路徑（來自 `//set build-as`）",
+    )
+}
+
+/// Get the localized detail for a `TemplateVar` by name.
+pub fn template_var_detail(name: &str) -> &'static str {
+    match name {
+        "entry" => template_var_entry(),
+        "entry-dir" => template_var_entry_dir(),
+        "target-jass" => template_var_target_jass(),
+        "target-as" => template_var_target_as(),
+        _ => "",
+    }
+}
+
+pub fn unknown_template_var(name: &str) -> String {
+    match locale() {
+        Locale::En => format!("Unknown template variable `{{{{{}}}}}`. Known: `{{{{entry}}}}`, `{{{{entry-dir}}}}`, `{{{{target-jass}}}}`, `{{{{target-as}}}}`.", name),
+        Locale::Ru => format!("Неизвестная переменная шаблона `{{{{{}}}}}`. Доступные: `{{{{entry}}}}`, `{{{{entry-dir}}}}`, `{{{{target-jass}}}}`, `{{{{target-as}}}}`.", name),
+        Locale::Uk => format!("Невідома змінна шаблону `{{{{{}}}}}`. Доступні: `{{{{entry}}}}`, `{{{{entry-dir}}}}`, `{{{{target-jass}}}}`, `{{{{target-as}}}}`.", name),
+        Locale::Zh => format!("未知模板变量 `{{{{{}}}}}`. 可用：`{{{{entry}}}}`, `{{{{entry-dir}}}}`, `{{{{target-jass}}}}`, `{{{{target-as}}}}`.", name),
+        Locale::Tc => format!("未知模板變數 `{{{{{}}}}}`. 可用：`{{{{entry}}}}`, `{{{{entry-dir}}}}`, `{{{{target-jass}}}}`, `{{{{target-as}}}}`.", name),
     }
 }
 
@@ -956,6 +1052,28 @@ pub fn build_write_failed(path: &str, err: &str) -> String {
         Locale::Uk => format!("Помилка запису {}: {}", path, err),
         Locale::Zh => format!("写入 {} 失败：{}", path, err),
         Locale::Tc => format!("寫入 {} 失敗：{}", path, err),
+    }
+}
+
+#[allow(dead_code)]
+pub fn build_hook_failed(phase: &str, cmd: &str, detail: &str) -> String {
+    match locale() {
+        Locale::En => format!("`build-{}` command failed: `{}` — {}", phase, cmd, detail),
+        Locale::Ru => format!("Команда `build-{}` завершилась ошибкой: `{}` — {}", phase, cmd, detail),
+        Locale::Uk => format!("Команда `build-{}` завершилася помилкою: `{}` — {}", phase, cmd, detail),
+        Locale::Zh => format!("`build-{}` 命令失败：`{}` — {}", phase, cmd, detail),
+        Locale::Tc => format!("`build-{}` 命令失敗：`{}` — {}", phase, cmd, detail),
+    }
+}
+
+#[allow(dead_code)]
+pub fn build_hook_spawn_failed(phase: &str, cmd: &str, err: &str) -> String {
+    match locale() {
+        Locale::En => format!("Failed to start `build-{}` command: `{}` — {}", phase, cmd, err),
+        Locale::Ru => format!("Не удалось запустить команду `build-{}`: `{}` — {}", phase, cmd, err),
+        Locale::Uk => format!("Не вдалося запустити команду `build-{}`: `{}` — {}", phase, cmd, err),
+        Locale::Zh => format!("无法启动 `build-{}` 命令：`{}` — {}", phase, cmd, err),
+        Locale::Tc => format!("無法啟動 `build-{}` 命令：`{}` — {}", phase, cmd, err),
     }
 }
 

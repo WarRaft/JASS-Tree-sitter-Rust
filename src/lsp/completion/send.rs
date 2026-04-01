@@ -217,6 +217,24 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                             let path_typed = typed[space_pos..].trim_start();
                             return complete_path(uri, path_typed);
                         }
+                        crate::lng::directive::SetValueKind::Command => {
+                            // Suggest template variables for command values
+                            return crate::lng::directive::TEMPLATE_VARS
+                                .iter()
+                                .enumerate()
+                                .map(|(i, tv)| {
+                                    let detail = crate::util::i18n::template_var_detail(tv.name);
+                                    CompletionItem {
+                                        label: format!("{{{{{}}}}}", tv.name),
+                                        kind: Some(CompletionItemKind::Variable),
+                                        detail: Some(detail.into()),
+                                        insert_text: Some(format!("{{{{{}}}}}", tv.name)),
+                                        sort_text: Some(i.to_string()),
+                                        ..Default::default()
+                                    }
+                                })
+                                .collect();
+                        }
                     };
                 }
                 return vec![];
@@ -231,6 +249,7 @@ fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                         let insert = match def.kind {
                             SetValueKind::Bool => format!("{} {}", def.key, def.default),
                             SetValueKind::Path => format!("{} {}", def.key, def.default),
+                            SetValueKind::Command => format!("{} ", def.key),
                         };
                         CompletionItem {
                             label: def.key.into(),

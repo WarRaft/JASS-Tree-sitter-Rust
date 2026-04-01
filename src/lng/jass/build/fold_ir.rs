@@ -284,6 +284,10 @@ fn fold_stmt(stmt: &mut IRStmt, constants: &HashMap<String, IRConst>) {
                 }
             }
         }
+
+        IRStmt::TargetOnly { inner, .. } => {
+            fold_stmt(inner, constants);
+        }
     }
 }
 

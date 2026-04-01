@@ -414,7 +414,7 @@ pub(super) fn collect_ir(_trigger_uri: &Url, file_order: &[Url]) -> BuildIR {
 /// 2. BFS through frozen FILE_STORE callees → set of needed frozen functions.
 /// 3. Parse frozen files, extract only needed functions + candidate globals.
 /// 4. Walk all function bodies again to find referenced globals; keep only those.
-pub(super) fn resolve_frozen_deps(ir: &mut BuildIR, file_order: &[Url]) {
+pub(super) fn resolve_frozen_deps(ir: &mut BuildIR, file_order: &[Url]) -> HashSet<String> {
     // 1. Build a map: frozen_function_name → its callees (from FILE_STORE).
     let mut frozen_func_callees: HashMap<String, HashSet<String>> = HashMap::new();
     for file_uri in file_order {
@@ -425,7 +425,7 @@ pub(super) fn resolve_frozen_deps(ir: &mut BuildIR, file_order: &[Url]) {
             }
         }
     }
-    if frozen_func_callees.is_empty() { return; }
+    if frozen_func_callees.is_empty() { return HashSet::new(); }
 
     // 2. Seed: walk ALL current IR function bodies to find every call target.
     //    This picks up augmented calls like InitBlizzard, SetPlayerAllianceStateBJ, etc.
@@ -443,9 +443,8 @@ pub(super) fn resolve_frozen_deps(ir: &mut BuildIR, file_order: &[Url]) {
             worklist.extend(callees.iter().cloned());
         }
     }
-    if needed_funcs.is_empty() { return; }
 
-    // 4. Parse frozen files — extract only needed functions + all globals.
+    // 4. Parse frozen files — extract needed functions + all globals.
     let mut frozen_globals: Vec<IRStmt> = Vec::new();
 
     for file_uri in file_order {
@@ -550,17 +549,24 @@ pub(super) fn resolve_frozen_deps(ir: &mut BuildIR, file_order: &[Url]) {
 
         // Prepend only the frozen globals that are actually used.
         // (Frozen files are logically "earlier" — their globals go first.)
+        let mut included_frozen_names = HashSet::new();
         let user_globals = std::mem::take(&mut ir.globals);
         for stmt in frozen_globals {
             if let IRStmt::VarDecl { ref decls, .. } = stmt {
                 if decls.iter().any(|d| frozen_global_names.contains(&d.name)
                     && referenced.contains(&d.name))
                 {
+                    for d in decls {
+                        included_frozen_names.insert(d.name.clone());
+                    }
                     ir.globals.push(stmt);
                 }
             }
         }
         ir.globals.extend(user_globals);
+        included_frozen_names
+    } else {
+        HashSet::new()
     }
 }
 
@@ -603,6 +609,9 @@ fn collect_call_names_in_stmts(stmts: &[IRStmt], out: &mut Vec<String>) {
                 for d in decls {
                     if let Some(ref v) = d.value { collect_call_names_in_expr(v, out); }
                 }
+            }
+            IRStmt::TargetOnly { inner, .. } => {
+                collect_call_names_in_stmts(std::slice::from_ref(inner.as_ref()), out);
             }
         }
     }
@@ -707,6 +716,9 @@ fn collect_ids_in_stmts(stmts: &[IRStmt], locals: &HashSet<String>, out: &mut Ha
                 for d in decls {
                     if let Some(ref v) = d.value { collect_ids_in_expr(v, locals, out); }
                 }
+            }
+            IRStmt::TargetOnly { inner, .. } => {
+                collect_ids_in_stmts(std::slice::from_ref(inner.as_ref()), locals, out);
             }
         }
     }

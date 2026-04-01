@@ -8,6 +8,9 @@ use super::ir::*;
 use super::render_as::jass_type_to_as_type;
 use std::collections::{HashMap, HashSet};
 
+// Re-import target lang bitmask.
+use super::ir::TARGET_JASS;
+
 // ─── IR → JASS rendering ────────────────────────────────────────────────────
 
 pub(super) fn render_jass_expr(expr: &IRExpr, rn: &HashMap<String, String>) -> String {
@@ -110,6 +113,13 @@ pub(super) fn render_jass_stmt(stmt: &IRStmt, indent: &str, rn: &HashMap<String,
                 }
             }).collect();
             vec![format!("{}{} {}", indent, prefix, d.join(", "))]
+        }
+        IRStmt::TargetOnly { target, inner } => {
+            if *target & TARGET_JASS != 0 {
+                render_jass_stmt(inner, indent, rn)
+            } else {
+                vec![]
+            }
         }
     }
 }

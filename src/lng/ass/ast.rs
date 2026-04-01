@@ -29,6 +29,7 @@ const FIELD_HANDLER: u16 = Field::Handler as u16;
 const FIELD_EXCEPTION: u16 = Field::Exception as u16;
 const FIELD_ALIAS: u16 = Field::Alias as u16;
 const FIELD_MODULE: u16 = Field::Module as u16;
+const FIELD_NAMESPACE: u16 = Field::Namespace as u16;
 const FIELD_OPERATOR: u16 = Field::Operator as u16;
 
 // ─── Semantic role for identifiers ───────────────────────────────────────────
@@ -305,6 +306,9 @@ pub enum Expr<'tree> {
     Call {
         node: Node<'tree>,
         callee: Option<Id<'tree>>,
+        /// Namespace-qualified callee: `Ns::Func(args...)`.
+        /// Set when the callee is a `NamespaceAccess` node.
+        callee_expr: Option<Box<Expr<'tree>>>,
         args: Vec<Expr<'tree>>,
     },
     /// `obj.member`
@@ -930,7 +934,31 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
             role: IdRole::Variable,
         })),
         Kind::FunctionCall => {
-            let callee = maybe_id(node, FIELD_CALLEE, IdRole::FunctionCall);
+            let callee_node = node.child_by_field_id(FIELD_CALLEE);
+            // The callee may be wrapped in an Expression node — unwrap it.
+            let callee_inner = callee_node.and_then(|cn| {
+                if Kind::try_from(cn.kind_id()) == Ok(Kind::Expression) {
+                    let count = cn.child_count();
+                    for i in 0..count {
+                        if let Some(child) = cn.child(i as u32) {
+                            if child.is_named() {
+                                return Some(child);
+                            }
+                        }
+                    }
+                    Some(cn)
+                } else {
+                    Some(cn)
+                }
+            });
+            let (callee, callee_expr) = match callee_inner {
+                Some(cn) if Kind::try_from(cn.kind_id()) == Ok(Kind::NamespaceAccess) => {
+                    (None, build_expr(&cn).map(Box::new))
+                }
+                _ => {
+                    (callee_inner.map(|n| Id { node: n, role: IdRole::FunctionCall }), None)
+                }
+            };
             let mut args = Vec::new();
             if let Some(al) = node.child_by_field_id(FIELD_ARGS) {
                 let count = al.child_count();
@@ -945,6 +973,7 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
             Some(Expr::Call {
                 node: *node,
                 callee,
+                callee_expr,
                 args,
             })
         }
@@ -963,8 +992,8 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
         }
         Kind::NamespaceAccess => Some(Expr::NamespaceAccess {
             node: *node,
-            namespace: maybe_id(node, FIELD_LEFT, IdRole::NamespaceRef),
-            name: maybe_id(node, FIELD_RIGHT, IdRole::Variable),
+            namespace: maybe_id(node, FIELD_NAMESPACE, IdRole::NamespaceRef),
+            name: maybe_id(node, FIELD_MEMBER, IdRole::Variable),
         }),
         Kind::SubscriptExpression => {
             let object = node

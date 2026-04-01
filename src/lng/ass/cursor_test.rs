@@ -19,6 +19,24 @@ mod tests {
         f(&cursor);
     }
 
+    fn with_cursor_imported(
+        src: &str,
+        imported: &[crate::lng::ass::cursor::ImportedSymbol],
+        f: impl FnOnce(&Cursor),
+    ) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_as::language().into())
+            .expect("Failed to set language");
+        let tree = parser.parse(src, None).expect("Failed to parse");
+        let mut ast = build_ast(tree.root_node());
+        let rope = Rope::from(src);
+        let src_bytes: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
+        rewrite_directives(&mut ast, &src_bytes);
+        let cursor = Cursor::walk(&ast, &rope, imported);
+        f(&cursor);
+    }
+
     fn collect_tokens(src: &str, cursor: &Cursor) -> Vec<(String, TokenKind)> {
         let mut result = Vec::new();
         for (_line_idx, line) in &cursor.semantic.lines {
@@ -828,6 +846,87 @@ void baz() {}
                 assert_eq!(*kind, TokenKind::String,
                     "Expected '{}' to be String, got {:?}", text, kind);
             }
+        });
+    }
+
+    // ─── Namespace-qualified function calls ───────────────────────────────
+
+    #[test]
+    fn namespace_qualified_call_no_undeclared_with_import() {
+        use crate::lng::ass::cursor::{ImportedKind, ImportedSymbol};
+
+        let src = "\
+namespace Jass {
+    void UnitItemInSlot() {}
+}
+void main() {
+    Jass::UnitItemInSlot();
+}
+";
+        let imported = vec![
+            ImportedSymbol {
+                origin_uri: url::Url::parse("file:///common.j").unwrap(),
+                name: "UnitItemInSlot".to_string(),
+                kind: ImportedKind::Func,
+                origin_decl_key: None,
+                return_type: Some("item".to_string()),
+                type_name: None,
+                namespace: "Jass".to_string(),
+            },
+        ];
+        with_cursor_imported(src, &imported, |cursor| {
+            let undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("UnitItemInSlot"))
+                .collect();
+            assert!(undeclared.is_empty(),
+                "Expected no 'undeclared' diagnostic for Jass::UnitItemInSlot, got {:?}", undeclared);
+        });
+    }
+
+    #[test]
+    fn namespace_qualified_call_tokens() {
+        let src = "\
+namespace Jass {
+    void UnitItemInSlot() {}
+}
+void main() {
+    Jass::UnitItemInSlot();
+}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            // The namespace part should be Namespace
+            let jass_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "Jass")
+                .collect();
+            assert!(jass_tokens.iter().any(|(_, k)| *k == TokenKind::Namespace),
+                "Expected 'Jass' as Namespace in call, got: {:?}", jass_tokens);
+
+            // The function name part should be Function
+            let func_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "UnitItemInSlot")
+                .collect();
+            assert!(func_tokens.iter().any(|(_, k)| *k == TokenKind::Function),
+                "Expected 'UnitItemInSlot' as Function in call, got: {:?}", func_tokens);
+        });
+    }
+
+    #[test]
+    fn namespace_qualified_call_undeclared_without_import() {
+        // Without Jass namespace declared and without imports,
+        // Jass::UnknownFunc should produce an undeclared diagnostic.
+        let src = "\
+void main() {
+    Jass::UnknownFunc();
+}
+";
+        with_cursor(src, |cursor| {
+            let undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("UnknownFunc"))
+                .collect();
+            assert!(!undeclared.is_empty(),
+                "Expected 'undeclared' diagnostic for Jass::UnknownFunc without imports");
         });
     }
 }

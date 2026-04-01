@@ -1300,11 +1300,26 @@ impl Cursor {
                 }
                 self.id_roles.insert(id.node.start_byte(), id.role);
             }
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, callee_expr, args, .. } => {
                 if let Some(id) = callee {
                     let name = self.node_text(&id.node);
                     self.hl_reference_func(&name, &id.node, DocumentHighlightKind::Read);
                     self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
+                } else if let Some(expr) = callee_expr {
+                    // Namespace-qualified function call: Jass::Func(...)
+                    if let Expr::NamespaceAccess { namespace, name, .. } = expr.as_ref() {
+                        if let (Some(ns_id), Some(name_id)) = (namespace, name) {
+                            let ns_name = self.node_text(&ns_id.node);
+                            let member_name = self.node_text(&name_id.node);
+                            self.hl_reference_ns_qualified(
+                                &ns_name, &ns_id.node,
+                                &member_name, &name_id.node,
+                                true,
+                            );
+                            self.id_roles.insert(ns_id.node.start_byte(), IdRole::NamespaceRef);
+                            self.id_roles.insert(name_id.node.start_byte(), IdRole::FunctionCall);
+                        }
+                    }
                 }
                 for arg in args {
                     self.visit_expr(arg);

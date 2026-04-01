@@ -31,6 +31,8 @@ pub enum SetValueKind {
     Bool,
     /// A file or directory path (enables path completion).
     Path,
+    /// A shell command to execute (free-form text).
+    Command,
     // Future: EnumList(&'static [&'static str]),
 }
 
@@ -95,11 +97,76 @@ pub static SET_DEFS: &[SetDef] = &[
         default: "0",
         sort_order: 5,
     },
+    SetDef {
+        key: "build-before",
+        kind: SetValueKind::Command,
+        default: "",
+        sort_order: 6,
+    },
+    SetDef {
+        key: "build-after",
+        kind: SetValueKind::Command,
+        default: "",
+        sort_order: 7,
+    },
 ];
 
 /// Look up a `SetDef` by key name.
 pub fn find_set_def(key: &str) -> Option<&'static SetDef> {
     SET_DEFS.iter().find(|d| d.key == key)
+}
+
+// ─── Template variables for Command values ───────────────────────────────────
+
+/// Descriptor for a `{{variable}}` template placeholder usable inside
+/// `build-before` / `build-after` command values.
+#[derive(Debug, Clone)]
+pub struct TemplateVar {
+    /// Variable name (without the `{{ }}` delimiters).
+    pub name: &'static str,
+}
+
+/// All known `{{variable}}` names.
+///
+/// To add a new template variable:
+/// 1. Append a `TemplateVar` here.
+/// 2. Expand it in `run_build_hook` (`build/mod.rs`).
+/// 3. Add an i18n description via `template_var_detail`.
+pub static TEMPLATE_VARS: &[TemplateVar] = &[
+    TemplateVar { name: "entry" },
+    TemplateVar { name: "entry-dir" },
+    TemplateVar { name: "target-jass" },
+    TemplateVar { name: "target-as" },
+];
+
+/// Look up a `TemplateVar` by name.
+pub fn find_template_var(name: &str) -> Option<&'static TemplateVar> {
+    TEMPLATE_VARS.iter().find(|v| v.name == name)
+}
+
+/// Find all `{{variable}}` occurrences in a string.
+///
+/// Returns `(byte_offset_of_open_brace, full_match_len, var_name)` tuples.
+pub fn find_template_spans(text: &str) -> Vec<(usize, usize, String)> {
+    let mut result = Vec::new();
+    let mut search_from = 0;
+    while let Some(open) = text[search_from..].find("{{") {
+        let abs_open = search_from + open;
+        if let Some(close) = text[abs_open + 2..].find("}}") {
+            let name = &text[abs_open + 2..abs_open + 2 + close];
+            // Only accept names without nested braces or whitespace
+            if !name.contains('{') && !name.contains('}') && !name.contains(' ') && !name.contains('\t') && !name.is_empty() {
+                let full_len = 2 + close + 2; // {{ + name + }}
+                result.push((abs_open, full_len, name.to_string()));
+                search_from = abs_open + full_len;
+            } else {
+                search_from = abs_open + 2;
+            }
+        } else {
+            break;
+        }
+    }
+    result
 }
 
 /// Validate a value against the expected `SetValueKind`.
@@ -118,6 +185,10 @@ pub fn validate_set_value(def: &SetDef, value: &str) -> Option<String> {
         SetValueKind::Path => {
             // Paths are free-form; only empty is caught by the generic
             // "missing value" diagnostic.
+            None
+        }
+        SetValueKind::Command => {
+            // Commands are free-form shell strings; no validation.
             None
         }
     }
@@ -407,18 +478,77 @@ pub fn visit_set_semantic(
                 let ws_before_value = after_key.len() - value_part.len();
                 if !value_part.is_empty() {
                     let val_offset = key_offset + key_len + ws_before_value;
-                    // Pick token kind based on value type: Bool → Number, Path → String
-                    let val_token = match find_set_def(&sd.key) {
-                        Some(def) if def.kind == SetValueKind::Bool => TokenKind::Number,
-                        _ => TokenKind::String,
-                    };
-                    semantic.add_range(
-                        val_offset,
-                        value_part.len(),
-                        rope,
-                        val_token,
-                        0u32,
+
+                    let is_command = matches!(
+                        find_set_def(&sd.key),
+                        Some(def) if def.kind == SetValueKind::Command
                     );
+
+                    if is_command {
+                        // Split value into literal String parts and {{var}} Variable parts.
+                        let spans = find_template_spans(value_part);
+                        let mut cursor = 0usize;
+                        for (span_off, span_len, var_name) in &spans {
+                            // Literal text before this template var
+                            if *span_off > cursor {
+                                semantic.add_range(
+                                    val_offset + cursor,
+                                    span_off - cursor,
+                                    rope,
+                                    TokenKind::String,
+                                    0u32,
+                                );
+                            }
+                            // The {{ and }} delimiters as Operator
+                            semantic.add_range(val_offset + span_off, 2, rope, TokenKind::Operator, 0u32);
+                            // The variable name as Variable (or as Macro if unknown)
+                            let name_offset = val_offset + span_off + 2;
+                            let name_len = var_name.len();
+                            let name_kind = if find_template_var(var_name).is_some() {
+                                TokenKind::Variable
+                            } else {
+                                TokenKind::Macro
+                            };
+                            semantic.add_range(name_offset, name_len, rope, name_kind, 0u32);
+                            // Closing }}
+                            semantic.add_range(name_offset + name_len, 2, rope, TokenKind::Operator, 0u32);
+
+                            // Diagnostic for unknown template variable
+                            if find_template_var(var_name).is_none() {
+                                diagnostics.push(Diagnostic {
+                                    range: node.to_range(rope),
+                                    message: crate::util::i18n::unknown_template_var(var_name),
+                                    severity: Some(DiagnosticSeverity::Warning),
+                                    ..Diagnostic::new("jass", "unknown-template-var")
+                                });
+                            }
+
+                            cursor = span_off + span_len;
+                        }
+                        // Trailing literal text after the last template var
+                        if cursor < value_part.len() {
+                            semantic.add_range(
+                                val_offset + cursor,
+                                value_part.len() - cursor,
+                                rope,
+                                TokenKind::String,
+                                0u32,
+                            );
+                        }
+                    } else {
+                        // Pick token kind based on value type: Bool → Number, Path → String
+                        let val_token = match find_set_def(&sd.key) {
+                            Some(def) if def.kind == SetValueKind::Bool => TokenKind::Number,
+                            _ => TokenKind::String,
+                        };
+                        semantic.add_range(
+                            val_offset,
+                            value_part.len(),
+                            rope,
+                            val_token,
+                            0u32,
+                        );
+                    }
                 }
             }
         }

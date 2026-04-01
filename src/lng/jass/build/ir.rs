@@ -71,6 +71,22 @@ pub(super) fn decl_name(name: &str, short_name: &Option<String>) -> String {
     short_name.as_ref().cloned().unwrap_or_else(|| name.to_string())
 }
 
+// ─── Target language bitmask ─────────────────────────────────────────────────
+
+/// Bitmask indicating which build target(s) a node is emitted for.
+pub(super) type TargetLang = u8;
+
+/// Emit only in JASS builds.
+pub(super) const TARGET_JASS: TargetLang = 0b01;
+
+/// Emit only in AS builds.
+#[allow(dead_code)]
+pub(super) const TARGET_AS: TargetLang = 0b10;
+
+/// Emit in both JASS and AS builds (default).
+#[allow(dead_code)]
+pub(super) const TARGET_BOTH: TargetLang = 0b11;
+
 // ─── Expressions ─────────────────────────────────────────────────────────────
 
 /// Owned expression node.
@@ -159,6 +175,8 @@ pub(super) enum IRStmt {
     Loop(Vec<IRStmt>),
     /// Global variable declaration: `[constant] TYPE [array] NAME [= VALUE], …`
     VarDecl { is_constant: bool, is_array: bool, type_name: String, decls: Vec<IRVarInit> },
+    /// Target-specific wrapper: only emitted for the specified build target.
+    TargetOnly { target: TargetLang, inner: Box<IRStmt> },
 }
 
 impl IRStmt {

@@ -378,6 +378,18 @@
         "editor.selectionHighlight": false
       }
     },
+    "taskDefinitions": [
+      {
+        "type": "jass-hook",
+        "required": ["label"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Hook label (e.g. build-before, build-after)"
+          }
+        }
+      }
+    ],
     "grammars": [
       {
         "language": "jass",

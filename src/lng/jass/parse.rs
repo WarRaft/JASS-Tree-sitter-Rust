@@ -440,7 +440,7 @@ fn _parse(
     //     whether any entry points exist in the component.
     if !new_snapshot_is_entry {
         for (key, _) in &cursor_file_settings {
-            if key == "build-jass" || key == "build-as" || key == "backup" || key == "build-uglify" {
+            if key == "build-jass" || key == "build-as" || key == "backup" || key == "build-uglify" || key == "build-before" || key == "build-after" {
                 // Find the SetDir node in the AST to get its range.
                 for item in &ast.items {
                     if let Statement::SetDir(sd) = item {

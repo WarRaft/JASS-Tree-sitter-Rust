@@ -3,7 +3,8 @@
 const {
     window,
     Uri, ExtensionMode, commands, ProgressLocation, workspace,
-    languages, InlayHint, InlayHintKind, Position, Range, Location, EventEmitter
+    languages, InlayHint, InlayHintKind, Position, Range, Location, EventEmitter,
+    ShellExecution, Task, TaskScope, tasks
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
@@ -116,6 +117,45 @@ async function _collectFiles(mpqProvider, archivePath, dirPath, result) {
  * @typedef {import('vscode').Uri} Uri
  * @typedef {import('vscode-languageclient').LanguageClientOptions}
  */
+
+/**
+ * Run a shell command as a VS Code Task and wait for it to finish.
+ * The output is shown in a terminal panel so the user can see it.
+ *
+ * @param {string} label  Task label (e.g. "build-before")
+ * @param {string} cmd    Shell command to execute
+ * @param {string} cwd    Working directory
+ * @returns {Promise<number>} exit code (0 = success)
+ */
+function _runHookTask(label, cmd, cwd) {
+    return new Promise((resolve) => {
+        const execution = new ShellExecution(cmd, {cwd})
+        const task = new Task(
+            {type: 'jass-hook', label},
+            TaskScope.Workspace,
+            label,
+            'JASS',
+            execution
+        )
+        task.presentationOptions = {
+            reveal: 2 /* TaskRevealKind.Always */,
+            panel: 2 /* TaskPanelKind.Dedicated */,
+            clear: true,
+        }
+
+        tasks.executeTask(task).then(taskExecution => {
+            const disposable = tasks.onDidEndTaskProcess(e => {
+                if (e.execution === taskExecution) {
+                    disposable.dispose()
+                    resolve(e.exitCode ?? -1)
+                }
+            })
+        }, err => {
+            window.showErrorMessage(`Failed to start ${label}: ${err.message}`)
+            resolve(-1)
+        })
+    })
+}
 
 /** @type {LanguageClient} */ let client
 
@@ -291,6 +331,12 @@ module.exports = {
         context.subscriptions.push(
             inlayHintsProvider,
             inlayHintsChanged,
+
+            // TaskProvider for jass-hook tasks (hooks are created programmatically)
+            tasks.registerTaskProvider('jass-hook', {
+                provideTasks() { return [] },
+                resolveTask(_task) { return undefined }
+            }),
 
             workspace.registerFileSystemProvider('mpq', mpqProvider, {
                 isCaseSensitive: false,
@@ -562,11 +608,36 @@ module.exports = {
                 }
                 const uri = editor.document.uri.toString()
                 try {
+                    // 1. Resolve hook commands (expanded, with cwd).
+                    const hooks = await client.sendRequest('build/hooks', {uri})
+
+                    // 2. Run build-before hook in VS Code terminal (if present).
+                    if (hooks && hooks.before_cmd) {
+                        const exitCode = await _runHookTask('build-before', hooks.before_cmd, hooks.cwd)
+                        if (exitCode !== 0) {
+                            window.showErrorMessage(`✗ build-before exited with code ${exitCode}`)
+                            return
+                        }
+                    }
+
+                    // 3. Execute the actual build.
                     const result = await client.sendRequest('build/execute', {uri})
-                    if (result && result.ok) {
+                    if (!result) {
+                        window.showErrorMessage('✗ Build failed')
+                        return
+                    }
+
+                    if (result.ok) {
                         window.showInformationMessage(`✓ ${result.message}`)
+                        // 4. Run build-after hook in VS Code terminal (if present).
+                        if (hooks && hooks.after_cmd) {
+                            const exitCode = await _runHookTask('build-after', hooks.after_cmd, hooks.cwd)
+                            if (exitCode !== 0) {
+                                window.showWarningMessage(`⚠ build-after exited with code ${exitCode}`)
+                            }
+                        }
                     } else {
-                        window.showErrorMessage(`✗ ${result ? result.message : 'Build failed'}`)
+                        window.showErrorMessage(`✗ ${result.message}`)
                     }
                 } catch (e) {
                     window.showErrorMessage(`Build error: ${e.message}`)
