@@ -48,10 +48,19 @@ const TILESET_NAMES = {
     Z: 'Sunken Ruins', G: 'Underground', V: 'Village', Q: 'Village Fall',
 }
 
+const DOODAD_CATEGORIES = {
+    C: 'Cliffs/Terrain',
+    E: 'Environment',
+    O: 'Props',
+    S: 'Structures',
+    W: 'Water',
+    Z: 'Cinematic',
+}
+
 function fmtF(v) {
     if (v == null) return '—'
     return Number(v).toFixed(2)
 }
 
-module.exports = {esc, fmtSize, fmtF, errorHtml, indexToRgb, TILESET_NAMES}
+module.exports = {esc, fmtSize, fmtF, errorHtml, indexToRgb, TILESET_NAMES, DOODAD_CATEGORIES}
 

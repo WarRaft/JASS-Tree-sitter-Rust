@@ -6,7 +6,7 @@
 use crate::http::file_lookup::file_lookup_handler;
 use crate::http::game_path::{game_path_set_handler, game_path_status_handler};
 use crate::http::mdx_texture::mdx_texture_handler;
-use crate::http::slk::{terrain_slk_handler, doodads_slk_handler, units_slk_handler};
+use crate::http::slk::{terrain_slk_handler, doodads_slk_handler, units_slk_handler, tile_textures_handler};
 use crate::http::terrain::terrain_handler;
 use axum::{Router, http::StatusCode, routing::{get, post}};
 use once_cell::sync::OnceCell;
@@ -70,6 +70,7 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/w3e/terrainSlk", get(terrain_slk_handler))
         .route("/w3e/doodadsSlk", get(doodads_slk_handler))
         .route("/w3e/unitsSlk", get(units_slk_handler))
+        .route("/w3e/tileTextures", get(tile_textures_handler))
         .route("/w3e/gamePath/status", get(game_path_status_handler))
         .route("/w3e/gamePath/set", post(game_path_set_handler))
         .route("/mdx/texture", get(mdx_texture_handler));

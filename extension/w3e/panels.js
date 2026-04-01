@@ -236,10 +236,10 @@ function renderW3iContent(d) {
 
     // ── Description
     const descHtml = d.description
-        ? `<details><summary>Description</summary><pre class="w3i-desc">${esc(d.description)}</pre></details>`
+        ? `<collapse-group group-title="Description"><pre class="w3i-desc">${esc(d.description)}</pre></collapse-group>`
         : ''
     const pDescHtml = d.recommended_players
-        ? `<details><summary>Players description</summary><pre class="w3i-desc">${esc(d.recommended_players)}</pre></details>`
+        ? `<collapse-group group-title="Players description"><pre class="w3i-desc">${esc(d.recommended_players)}</pre></collapse-group>`
         : ''
 
     // ── Map flags (same decoder as header)
@@ -393,8 +393,8 @@ function renderW3iContent(d) {
                 const ids = ch.ids.map(id => `<td class="code">${esc(id)}</td>`).join('')
                 return `<tr><td class="num">${ch.chance}%</td>${ids}</tr>`
             }).join('')
-            return `<details><summary>${esc(g.name)} <span class="w3i-count">(#${g.num}, ${g.chances.length} rows)</span></summary>
-            <div class="table-wrap"><table><thead><tr>${chancesHead}</tr></thead><tbody>${chancesBody}</tbody></table></div></details>`
+            return `<collapse-group group-title="${esc(g.name)} (#${g.num}, ${g.chances.length} rows)">
+            <div class="table-wrap"><table><thead><tr>${chancesHead}</tr></thead><tbody>${chancesBody}</tbody></table></div></collapse-group>`
         }).join('')
         groupsHtml = `<div class="tw-section-title">🎲 Random Groups (${d.random_groups.length})</div>${gItems}`
     }
@@ -414,7 +414,7 @@ function renderW3iContent(d) {
                     <table><thead><tr><th>Chance</th><th>ID</th></tr></thead><tbody>${rows}</tbody></table>
                 </div>` : ''
             }).join('')
-            return `<details><summary>${esc(item.name)} <span class="w3i-count">(#${item.num})</span></summary>${gParts}</details>`
+            return `<collapse-group group-title="${esc(item.name)} (#${item.num})">${gParts}</collapse-group>`
         }).join('')
         itemsHtml = `<div class="tw-section-title">🎁 Random Item Tables (${d.random_item_tables.length})</div>${iItems}`
     }
@@ -495,9 +495,13 @@ function renderDooContent(data, isUnit) {
                 extra = isUnit ? '<td>—</td>' : '<td>—</td><td>—</td>'
             }
 
-            return `<tr>
+            const rawcodeHtml = isUnit
+                ? `<td class="code">${esc(it.rawcode)}</td>`
+                : `<td class="code"><a href="#" class="doo-id-link" data-dood-id="${esc(it.rawcode)}">${esc(it.rawcode)}</a></td>`
+
+            return `<tr data-doo-idx="${i}">
                 <td class="num">${i + 1}</td>
-                <td class="code">${esc(it.rawcode)}</td>
+                ${rawcodeHtml}
                 <td class="code">${skin}</td>
                 <td class="num">${it.variation}</td>
                 <td class="mono">${pos}</td>
@@ -530,12 +534,13 @@ function renderDooContent(data, isUnit) {
         <div class="table-wrap"><table><thead><tr>${chead}</tr></thead><tbody>${cbody}</tbody></table></div>`
     }
 
-    return `
+    return `<div class="doo-content">
     ${metaHtml}
     ${errorHtml}
     <table class="info">${headerHtml}</table>
     ${itemsHtml}
-    ${cliffsHtml}`
+    ${cliffsHtml}
+    </div>`
 }
 
 module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent, REQUIRED_MPQ_FILES}

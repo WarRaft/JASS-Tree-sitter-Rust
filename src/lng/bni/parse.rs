@@ -116,13 +116,15 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                         folding.end_line = node.end_position().row;
                     }
                 }
-                Kind::LeftBracket | Kind::RightBracket | Kind::Equal | Kind::Comma => {
+                Kind::LBracket | Kind::RightBracket | Kind::Equal | Kind::Comma
+                | Kind::DoubleQuote | Kind::SingleQuote => {
                     semantic.add_node(&node, &rope, TokenKind::Operator, 0u32);
                 }
                 Kind::Key => {
                     semantic.add_node(&node, &rope, TokenKind::Function, 0u32);
                 }
-                Kind::QuotedString | Kind::UnquotedString => {
+                Kind::QuotedString | Kind::UnquotedString
+                | Kind::DqStringContent | Kind::SqStringContent => {
                     semantic.add_node(&node, &rope, TokenKind::String, 0u32);
                 }
                 Kind::Int | Kind::Float => {

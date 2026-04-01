@@ -212,6 +212,121 @@ function editorStyles() {
             font-style: italic;
         }
 
+        /* ── Doodads sidebar ───────────────────────────────────── */
+        .ds-sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            width: 170px;
+            min-width: 140px;
+            background: rgba(30, 30, 30, 0.92);
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+            flex-shrink: 0;
+            overflow-y: auto;
+            padding: 6px 4px;
+        }
+        .ds-sidebar::-webkit-scrollbar { width: 6px; }
+        .ds-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .ds-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+        .ds-sidebar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+        .ds-sidebar .ts-source {
+            padding: 4px 6px;
+            margin: 0 0 4px;
+        }
+        .ds-filter-group {
+            margin-bottom: 4px;
+            padding: 0 6px;
+        }
+        .ds-filter-title {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--vscode-descriptionForeground, #888);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin: 6px 0 3px;
+            padding-bottom: 2px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .ds-sidebar .terrain-checks {
+            flex-direction: column;
+            gap: 1px;
+        }
+        .ds-sidebar .menu-cb {
+            font-size: 11px;
+            padding: 1px 0;
+        }
+        .ds-ts-badge {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            line-height: 16px;
+            text-align: center;
+            font-size: 10px;
+            font-family: var(--vscode-editor-font-family, monospace);
+            font-weight: 600;
+            border-radius: 3px;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--vscode-descriptionForeground, #999);
+            flex-shrink: 0;
+        }
+        .ds-search {
+            display: block;
+            width: 100%;
+            padding: 6px 10px;
+            border: none;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--vscode-editor-foreground, #ccc);
+            font-family: var(--vscode-editor-font-family, monospace);
+            font-size: 12px;
+            outline: none;
+            flex-shrink: 0;
+        }
+        .ds-search::placeholder { color: var(--vscode-descriptionForeground, #666); }
+        .ds-search:focus { background: rgba(255, 255, 255, 0.07); }
+        #dsDoodadList::-webkit-scrollbar,
+        #usUnitList::-webkit-scrollbar { width: 6px; }
+        #dsDoodadList::-webkit-scrollbar-track,
+        #usUnitList::-webkit-scrollbar-track { background: transparent; }
+        #dsDoodadList::-webkit-scrollbar-thumb,
+        #usUnitList::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+        #dsDoodadList::-webkit-scrollbar-thumb:hover,
+        #usUnitList::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+
+        /* ── Doodads sort bar ──────────────────────────────────── */
+        .ds-sort-bar {
+            display: flex;
+            align-items: center;
+            gap: 0;
+            padding: 0 6px;
+            background: rgba(255, 255, 255, 0.03);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            flex-shrink: 0;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--vscode-descriptionForeground, #888);
+            user-select: none;
+        }
+        .ds-sort-col {
+            cursor: pointer;
+            padding: 3px 6px;
+            border-radius: 3px;
+            white-space: nowrap;
+        }
+        .ds-sort-col:hover { background: rgba(255, 255, 255, 0.06); color: var(--vscode-foreground, #ccc); }
+        .ds-sort-col.ds-sort-active { color: var(--vscode-textLink-foreground, #3794ff); }
+        .ds-sort-col::after { content: ''; margin-left: 2px; }
+        .ds-sort-col.ds-sort-asc::after { content: ' ▲'; }
+        .ds-sort-col.ds-sort-desc::after { content: ' ▼'; }
+        .ds-sort-name { flex: 1; }
+        .ds-sort-cat { min-width: 80px; text-align: right; }
+        .ds-sort-info {
+            font-weight: normal;
+            font-size: 10px;
+            padding: 0 4px;
+            white-space: nowrap;
+        }
+
         /* ── Files window ───────────────────────────────────────── */
         .file-filter {
             display: block;
@@ -357,10 +472,6 @@ function editorStyles() {
             font-family: var(--vscode-editor-font-family, monospace);
             color: var(--vscode-editor-foreground, #ccc);
         }
-        .w3i-count {
-            color: var(--vscode-descriptionForeground, #888);
-            font-weight: normal;
-        }
         .w3i-sub-group {
             margin: 4px 0;
         }
@@ -405,22 +516,70 @@ function editorStyles() {
         }
         #w3iWindow .num { text-align: right; font-variant-numeric: tabular-nums; }
         #w3iWindow .mono { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
-        #w3iWindow details {
-            margin: 4px 0;
+        #w3iWindow .tags, #w3iWindow .flag-tags { margin-bottom: 8px; }
+
+        /* ── DOO Placed windows (doodads / units) ────────────── */
+        .doo-content {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+            padding: 6px 10px;
+        }
+        .doo-content > .meta-banner,
+        .doo-content > .info,
+        .doo-content > .tw-section-title {
+            flex-shrink: 0;
+        }
+        #doodadDooWindow .table-wrap,
+        #unitDooWindow .table-wrap {
+            flex: 1;
+            min-height: 0;
+            overflow: auto;
             border: 1px solid rgba(255, 255, 255, 0.08);
             border-radius: 4px;
-            padding: 2px 6px;
         }
-        #w3iWindow details[open] {
-            padding-bottom: 6px;
+        #doodadDooWindow table,
+        #unitDooWindow table {
+            width: 100%;
+            border-collapse: collapse;
+            white-space: nowrap;
         }
-        #w3iWindow summary {
-            cursor: pointer;
-            padding: 3px 0;
+        #doodadDooWindow thead,
+        #unitDooWindow thead {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        #doodadDooWindow th,
+        #unitDooWindow th {
+            background: rgba(255, 255, 255, 0.04);
+            color: var(--vscode-descriptionForeground, #888);
+            text-align: left;
+            padding: 3px 6px;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.08);
             font-weight: 600;
+            font-size: 11px;
+        }
+        #doodadDooWindow td,
+        #unitDooWindow td {
+            padding: 2px 6px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
             font-size: 12px;
         }
-        #w3iWindow .tags, #w3iWindow .flag-tags { margin-bottom: 8px; }
+        #doodadDooWindow tr:hover td,
+        #unitDooWindow tr:hover td {
+            background: rgba(255, 255, 255, 0.04);
+        }
+        #doodadDooWindow .num,
+        #unitDooWindow .num { text-align: right; font-variant-numeric: tabular-nums; }
+        #doodadDooWindow .mono,
+        #unitDooWindow .mono { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+        #doodadDooWindow .code,
+        #unitDooWindow .code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
+        .doo-highlight td {
+            background: rgba(55, 148, 255, 0.2) !important;
+        }
 
         /* ── Meta banner (bytes read) ─────────────────────────── */
         .meta-banner {
@@ -664,6 +823,44 @@ function editorStyles() {
             height: 1px;
             background: rgba(255, 255, 255, 0.08);
             margin: 4px 0;
+        }
+
+        /* ── Doodad detail model links ───────────────────────── */
+        .dd-model-link {
+            display: block;
+            font-family: var(--vscode-editor-font-family, monospace);
+            font-size: 11px;
+            color: var(--vscode-textLink-foreground, #3794ff);
+            text-decoration: none;
+            padding: 1px 0;
+            cursor: pointer;
+        }
+        .dd-model-link:hover {
+            text-decoration: underline;
+            color: var(--vscode-textLink-activeForeground, #4fc3f7);
+        }
+
+        /* ── Placed doodad ID links ─────────────────────────── */
+        .doo-id-link {
+            color: var(--vscode-textLink-foreground, #3794ff);
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .doo-id-link:hover {
+            text-decoration: underline;
+            color: var(--vscode-textLink-activeForeground, #4fc3f7);
+        }
+
+        /* ── Doodad detail color badge ────────────────────────── */
+
+        .dd-color-badge {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            vertical-align: middle;
+            margin-left: 4px;
         }
     `
 }

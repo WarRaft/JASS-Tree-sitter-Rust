@@ -379,6 +379,89 @@ button[disabled] { cursor: default; opacity: 0.3; pointer-events: none; }
 customElements.define('reload-button', ReloadButton);
 
 
+// ── <collapse-group> Custom Element ─────────────────────────────────
+// Usage:
+//   <collapse-group group-title="🏷 Title" open>…content…</collapse-group>
+// API: standard <details> open attribute via reflection.
+
+class CollapseGroup extends HTMLElement {
+    static get observedAttributes() { return ['group-title', 'open']; }
+
+    constructor() {
+        super();
+        const s = this.attachShadow({mode: 'open'});
+        s.innerHTML = `
+<style>
+:host {
+    display: block;
+    margin-bottom: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 4px;
+    overflow: hidden;
+}
+:host + :host { margin-top: 2px; }
+summary {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 8px;
+    cursor: pointer;
+    color: var(--vscode-foreground, #ccc);
+    background: rgba(255, 255, 255, 0.04);
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+}
+summary::-webkit-details-marker { display: none; }
+summary::before {
+    content: '▶';
+    display: inline-block;
+    width: 12px;
+    font-size: 9px;
+    margin-right: 4px;
+    transition: transform 0.15s;
+    flex-shrink: 0;
+}
+details[open] > summary::before { transform: rotate(90deg); }
+summary:hover { background: rgba(255, 255, 255, 0.08); }
+.body {
+    padding: 2px 8px 4px;
+}
+</style>
+<details id="d">
+    <summary id="s"></summary>
+    <div class="body"><slot></slot></div>
+</details>`;
+        this._details = s.getElementById('d');
+        this._summary = s.getElementById('s');
+    }
+
+    connectedCallback() {
+        this._sync();
+        this._details.addEventListener('toggle', () => {
+            this.dispatchEvent(new CustomEvent('collapse-toggle', {
+                bubbles: true,
+                detail: {title: this.getAttribute('group-title') || '', open: this._details.open}
+            }));
+        });
+    }
+    attributeChangedCallback() { this._sync(); }
+
+    _sync() {
+        this._summary.textContent = this.getAttribute('group-title') || '';
+        this._details.open = this.hasAttribute('open');
+    }
+
+    get open() { return this._details.open; }
+    set open(v) {
+        if (v) this.setAttribute('open', '');
+        else this.removeAttribute('open');
+    }
+}
+
+customElements.define('collapse-group', CollapseGroup);
+
+
 // ── <tile-item> Custom Element ───────────────────────────────────────
 // Usage:
 //   <tile-item index="0" code="Ldrt" tile-name="Dirt"
@@ -525,6 +608,25 @@ class TileItem extends HTMLElement {
 
 customElements.define('tile-item', TileItem);
 
+// ── Doodad / tileset label constants ─────────────────────────────────
+
+const TILESET_NAMES = {
+    A: 'Ashenvale', B: 'Barrens', K: 'Black Citadel', Y: 'Cityscape',
+    X: 'Dalaran', J: 'Dalaran Ruins', D: 'Dungeon', C: 'Felwood',
+    I: 'Icecrown Glacier', F: 'Lordaeron Fall', L: 'Lordaeron Summer',
+    W: 'Lordaeron Winter', N: 'Northrend', O: 'Outland',
+    Z: 'Sunken Ruins', G: 'Underground', V: 'Village', Q: 'Village Fall',
+};
+
+const DOODAD_CATEGORIES = {
+    C: 'Cliffs/Terrain',
+    E: 'Environment',
+    O: 'Props',
+    S: 'Structures',
+    W: 'Water',
+    Z: 'Cinematic',
+};
+
 // ── Doodad item ──────────────────────────────────────────────────────
 
 class DoodadItem extends HTMLElement {
@@ -535,7 +637,7 @@ class DoodadItem extends HTMLElement {
         <style>
             :host {
                 display: flex;
-                align-items: baseline;
+                align-items: center;
                 gap: 6px;
                 padding: 3px 6px;
                 font-size: 12px;
@@ -545,57 +647,74 @@ class DoodadItem extends HTMLElement {
             :host(:hover) {
                 background: var(--vscode-list-hoverBackground, rgba(255,255,255,.06));
             }
-            .id { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-textLink-foreground, #3794ff); min-width: 40px; }
-            .comment { flex: 1; color: var(--vscode-foreground, #ccc); }
-            .cls { color: var(--vscode-descriptionForeground, #888); font-size: 11px; }
-            .scale { color: var(--vscode-descriptionForeground, #888); font-size: 11px; }
-            .tilesets { color: var(--vscode-descriptionForeground, #888); font-size: 11px; font-family: var(--vscode-editor-font-family, monospace); }
-            .file-link {
-                color: var(--vscode-textLink-foreground, #3794ff);
+            .id { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-textLink-foreground, #3794ff); min-width: 40px; flex-shrink: 0; }
+            .name { flex: 1; color: var(--vscode-foreground, #ccc); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .tilesets { display: flex; gap: 2px; flex-shrink: 0; flex-wrap: nowrap; }
+            .ts-badge {
+                display: inline-block;
+                width: 16px;
+                height: 16px;
+                line-height: 16px;
+                text-align: center;
                 font-size: 10px;
                 font-family: var(--vscode-editor-font-family, monospace);
-                opacity: 0.7;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                white-space: nowrap;
-                max-width: 200px;
+                font-weight: 600;
+                border-radius: 3px;
+                background: rgba(255, 255, 255, 0.08);
+                color: var(--vscode-descriptionForeground, #999);
+                flex-shrink: 0;
             }
-            .file-link:hover { opacity: 1; text-decoration: underline; }
+            .ts-badge.ts-all {
+                background: rgba(78, 154, 241, 0.25);
+                color: var(--vscode-textLink-foreground, #3794ff);
+                width: 16px;
+            }
+            .cat { color: var(--vscode-descriptionForeground, #888); font-size: 11px; flex-shrink: 0; min-width: 80px; text-align: right; padding-right: 4px; }
         </style>
         <span class="id" id="doodId"></span>
-        <span class="comment" id="comment"></span>
-        <span class="cls" id="cls"></span>
+        <span class="name" id="name"></span>
         <span class="tilesets" id="tilesets"></span>
-        <span class="scale" id="scale"></span>
-        <span class="file-link" id="fileLink"></span>`;
+        <span class="cat" id="cat"></span>`;
     }
 
     connectedCallback() { this._render(); }
-    static get observedAttributes() { return ['dood-id', 'comment', 'dood-class', 'tilesets', 'def-scale']; }
+    static get observedAttributes() { return ['dood-id', 'dood-name', 'category', 'tilesets']; }
     attributeChangedCallback() { if (this.shadowRoot) this._render(); }
 
     _render() {
         const s = this.shadowRoot;
-        const id = this.getAttribute('dood-id') || '';
-        const comment = this.getAttribute('comment') || '';
-        const cls = this.getAttribute('dood-class') || '';
-        const tilesets = this.getAttribute('tilesets') || '';
-        const defScale = this.getAttribute('def-scale') || '';
-        const file = this.getAttribute('file') || '';
+        s.getElementById('doodId').textContent = this.getAttribute('dood-id') || '';
+        const name = this.getAttribute('dood-name') || '';
+        const nameEl = s.getElementById('name');
+        nameEl.textContent = name;
+        nameEl.title = this.getAttribute('comment') || '';
+        const cat = this.getAttribute('category') || '';
+        const catEl = s.getElementById('cat');
+        const catLabel = (typeof DOODAD_CATEGORIES !== 'undefined' && DOODAD_CATEGORIES[cat]) || cat;
+        catEl.textContent = catLabel;
+        catEl.title = cat ? cat + ' \u2014 ' + catLabel : '';
 
-        s.getElementById('doodId').textContent = id;
-        s.getElementById('comment').textContent = comment;
-        s.getElementById('comment').title = file;
-        s.getElementById('cls').textContent = cls !== '_' ? cls : '';
-        s.getElementById('tilesets').textContent = tilesets;
-        s.getElementById('scale').textContent = defScale ? '\u00d7' + defScale : '';
-        const fileLink = s.getElementById('fileLink');
-        if (file) {
-            const shortName = file.replace(/\\/g, '/').split('/').pop() || file;
-            fileLink.textContent = shortName;
-            fileLink.title = file;
-        } else {
-            fileLink.textContent = '';
+        // Tileset badges
+        const ts = this.getAttribute('tilesets') || '';
+        const tsEl = s.getElementById('tilesets');
+        tsEl.innerHTML = '';
+        if (ts === '*') {
+            const badge = document.createElement('span');
+            badge.className = 'ts-badge ts-all';
+            badge.textContent = '*';
+            badge.title = 'All tilesets';
+            tsEl.appendChild(badge);
+        } else if (ts) {
+            const chars = ts.split(',').filter(Boolean);
+            for (const ch of chars) {
+                const badge = document.createElement('span');
+                badge.className = 'ts-badge';
+                badge.textContent = ch;
+                if (typeof TILESET_NAMES !== 'undefined' && TILESET_NAMES[ch]) {
+                    badge.title = TILESET_NAMES[ch];
+                }
+                tsEl.appendChild(badge);
+            }
         }
     }
 }
@@ -678,10 +797,12 @@ customElements.define('unit-item', UnitItem);
 // ── W3E application logic ────────────────────────────────────────────
 window.W3E = (function () {
     const _gamePathHandlers = [];
+    let _vscode = null;
 
     function esc(s) {
         return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
+
 
     function indexToRgb(index) {
         const golden = 137.508;
@@ -806,12 +927,238 @@ window.W3E = (function () {
     }
 
     // ── Doodads SLK rebuilder ────────────────────────────────
+    // Stores the full doodad array for the detail window.
+    let _doodadDataMap = {};
+    let _allDoodads = [];
+
+    // ── Doodads state persistence helpers ─────────────────────
+    function _getWvState() {
+        if (!_vscode) return {};
+        try { return _vscode.getState() || {}; } catch (_) { return {}; }
+    }
+
+    function _patchWvState(patch) {
+        if (!_vscode) return;
+        try {
+            const s = _getWvState();
+            Object.assign(s, patch);
+            _vscode.setState(s);
+        } catch (_) { /* ignore */ }
+    }
+
+    function _saveDoodSort() {
+        _patchWvState({_doodSort: {field: _doodSort.field, dir: _doodSort.dir}});
+    }
+
+    function _saveDoodFilters() {
+        const uncheckedCats = [];
+        document.querySelectorAll('.ds-cat-cb').forEach(cb => {
+            if (!cb.checked) uncheckedCats.push(cb.getAttribute('data-cat'));
+        });
+        const uncheckedTs = [];
+        document.querySelectorAll('.ds-ts-cb').forEach(cb => {
+            if (!cb.checked) uncheckedTs.push(cb.getAttribute('data-ts'));
+        });
+        _patchWvState({_doodUncheckedCats: uncheckedCats, _doodUncheckedTs: uncheckedTs});
+    }
+
+    function _restoreDoodFilters() {
+        const s = _getWvState();
+        const uncheckedCats = s._doodUncheckedCats || [];
+        const uncheckedTs = s._doodUncheckedTs || [];
+        if (uncheckedCats.length) {
+            document.querySelectorAll('.ds-cat-cb').forEach(cb => {
+                if (uncheckedCats.includes(cb.getAttribute('data-cat'))) cb.checked = false;
+            });
+        }
+        if (uncheckedTs.length) {
+            document.querySelectorAll('.ds-ts-cb').forEach(cb => {
+                if (uncheckedTs.includes(cb.getAttribute('data-ts'))) cb.checked = false;
+            });
+        }
+    }
+
+    function _restoreDoodSort() {
+        const s = _getWvState();
+        if (s._doodSort && s._doodSort.field) {
+            _doodSort = {field: s._doodSort.field, dir: s._doodSort.dir || 'asc'};
+        }
+    }
+
+    // Sort state: { field: 'doodId'|'name'|'category'|null, dir: 'asc'|'desc' }
+    let _doodSort = {field: null, dir: 'asc'};
+
+    function _cycleDoodSort(field) {
+        if (_doodSort.field !== field) {
+            // First click on a new field → asc
+            _doodSort = {field, dir: 'asc'};
+        } else if (_doodSort.dir === 'asc') {
+            // Second click → desc
+            _doodSort.dir = 'desc';
+        } else {
+            // Third click → off
+            _doodSort = {field: null, dir: 'asc'};
+        }
+        _saveDoodSort();
+        _updateSortButtons();
+        _filterAndRenderDoodads();
+    }
+
+    function _updateSortButtons() {
+        document.querySelectorAll('.ds-sort-col').forEach(btn => {
+            const f = btn.getAttribute('data-sort');
+            btn.classList.remove('ds-sort-active', 'ds-sort-asc', 'ds-sort-desc');
+            if (f === _doodSort.field) {
+                btn.classList.add('ds-sort-active', _doodSort.dir === 'asc' ? 'ds-sort-asc' : 'ds-sort-desc');
+            }
+        });
+    }
+
+    function _filterAndRenderDoodads(saveState) {
+        // Collect enabled categories
+        const enabledCats = new Set();
+        document.querySelectorAll('.ds-cat-cb').forEach(cb => {
+            if (cb.checked) enabledCats.add(cb.getAttribute('data-cat'));
+        });
+        // Collect enabled tilesets
+        const enabledTs = new Set();
+        document.querySelectorAll('.ds-ts-cb').forEach(cb => {
+            if (cb.checked) enabledTs.add(cb.getAttribute('data-ts'));
+        });
+
+        // Persist filter state when triggered by user action
+        if (saveState !== false) _saveDoodFilters();
+
+        // Search text
+        const searchEl = document.getElementById('dsSearchInput');
+        const q = searchEl ? searchEl.value.toLowerCase().trim() : '';
+
+        const filtered = _allDoodads.filter(d => {
+            // Search filter: match name or rawcode
+            if (q) {
+                const name = (d.name || '').toLowerCase();
+                const id = (d.doodId || '').toLowerCase();
+                const comment = (d.comment || '').toLowerCase();
+                if (!name.includes(q) && !id.includes(q) && !comment.includes(q)) return false;
+            }
+            // Category filter
+            if (d.category && !enabledCats.has(d.category)) return false;
+            // Tileset filter: show if '*' or if at least one tileset char is enabled
+            if (d.tilesets) {
+                if (d.tilesets === '*') return true;
+                const chars = d.tilesets.replace(/,/g, '');
+                if (chars.length > 0) {
+                    let match = false;
+                    for (const ch of chars) {
+                        if (enabledTs.has(ch)) { match = true; break; }
+                    }
+                    if (!match) return false;
+                }
+            }
+            return true;
+        });
+
+        // Apply sorting
+        if (_doodSort.field) {
+            const f = _doodSort.field;
+            const mul = _doodSort.dir === 'desc' ? -1 : 1;
+            filtered.sort((a, b) => {
+                const va = (a[f] || '').toLowerCase();
+                const vb = (b[f] || '').toLowerCase();
+                return va < vb ? -1 * mul : va > vb ? 1 * mul : 0;
+            });
+        }
+
+        const listEl = document.getElementById('dsDoodadList');
+        if (listEl) {
+            listEl.innerHTML = '';
+            for (const d of filtered) {
+                const el = document.createElement('doodad-item');
+                el.setAttribute('dood-id', d.doodId || '');
+                el.setAttribute('dood-name', d.name || '');
+                el.setAttribute('comment', d.comment || '');
+                el.setAttribute('category', d.category || '');
+                el.setAttribute('tilesets', d.tilesets || '');
+                listEl.appendChild(el);
+            }
+        }
+
+        const cntEl = document.getElementById('dsDoodadCount');
+        if (cntEl) cntEl.textContent = String(filtered.length);
+    }
+
+    function _rebuildDoodadSidebarCheckboxes() {
+        const catSet = new Set();
+        const tsSet = new Set();
+        for (const d of _allDoodads) {
+            if (d.category) catSet.add(d.category);
+            if (d.tilesets) {
+                for (const ch of d.tilesets) {
+                    if (ch !== ',' && ch !== '*') tsSet.add(ch);
+                }
+            }
+        }
+
+        const catChecks = document.getElementById('dsCatChecks');
+        if (catChecks) {
+            catChecks.innerHTML = '';
+            for (const code of Array.from(catSet).sort()) {
+                const label = DOODAD_CATEGORIES[code] || code;
+                const lbl = document.createElement('label');
+                lbl.className = 'menu-cb';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'ds-cat-cb';
+                cb.setAttribute('data-cat', code);
+                cb.checked = true;
+                cb.addEventListener('change', _filterAndRenderDoodads);
+                lbl.appendChild(cb);
+                const badge = document.createElement('span');
+                badge.className = 'ds-ts-badge';
+                badge.textContent = code;
+                lbl.appendChild(badge);
+                lbl.appendChild(document.createTextNode(' ' + label));
+                catChecks.appendChild(lbl);
+            }
+        }
+
+        const tsChecks = document.getElementById('dsTsChecks');
+        if (tsChecks) {
+            tsChecks.innerHTML = '';
+            for (const code of Array.from(tsSet).sort()) {
+                const label = TILESET_NAMES[code] || code;
+                const lbl = document.createElement('label');
+                lbl.className = 'menu-cb';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'ds-ts-cb';
+                cb.setAttribute('data-ts', code);
+                cb.checked = true;
+                cb.addEventListener('change', _filterAndRenderDoodads);
+                lbl.appendChild(cb);
+                const badge = document.createElement('span');
+                badge.className = 'ds-ts-badge';
+                badge.textContent = code;
+                lbl.appendChild(badge);
+                lbl.appendChild(document.createTextNode(' ' + label));
+                tsChecks.appendChild(lbl);
+            }
+        }
+        _restoreDoodFilters();
+    }
+
     function rebuildDoodads(slkData) {
         let source = '';
-        let doodads = [];
+        _allDoodads = [];
+        _doodadDataMap = {};
         if (slkData && slkData.doodads) {
             source = slkData.source || '';
-            doodads = slkData.doodads;
+            _allDoodads = slkData.doodads;
+        }
+
+        // Build lookup map
+        for (const d of _allDoodads) {
+            _doodadDataMap[d.doodId] = d;
         }
 
         const srcEl = document.getElementById('dsSlkSource');
@@ -825,28 +1172,250 @@ window.W3E = (function () {
             }
         }
 
-        const cntEl = document.getElementById('dsDoodadCount');
-        if (cntEl) cntEl.textContent = String(doodads.length);
+        const totalEl = document.getElementById('dsDoodadTotal');
+        if (totalEl) totalEl.textContent = String(_allDoodads.length);
 
-        const listEl = document.getElementById('dsDoodadList');
-        if (listEl) {
-            listEl.innerHTML = '';
-            for (const d of doodads) {
-                const el = document.createElement('doodad-item');
-                el.setAttribute('dood-id', d.doodId || '');
-                el.setAttribute('dood-name', d.name || '');
-                el.setAttribute('comment', d.comment || '');
-                el.setAttribute('dood-class', d.doodClass || '');
-                el.setAttribute('category', d.category || '');
-                el.setAttribute('file', d.file || '');
-                el.setAttribute('tilesets', d.tilesets || '');
-                el.setAttribute('num-var', String(d.numVar || 0));
-                el.setAttribute('def-scale', String(d.defScale || 1));
-                el.setAttribute('min-scale', String(d.minScale || 0));
-                el.setAttribute('max-scale', String(d.maxScale || 0));
-                listEl.appendChild(el);
-            }
+        _rebuildDoodadSidebarCheckboxes();
+        _restoreDoodSort();
+        _updateSortButtons();
+        _filterAndRenderDoodads(false);
+
+        // Bind search input
+        const searchEl = document.getElementById('dsSearchInput');
+        if (searchEl && !searchEl._dsBound) {
+            searchEl._dsBound = true;
+            searchEl.addEventListener('input', _filterAndRenderDoodads);
         }
+
+        // Bind sort column headers
+        document.querySelectorAll('.ds-sort-col').forEach(btn => {
+            if (btn._dsSortBound) return;
+            btn._dsSortBound = true;
+            btn.addEventListener('click', () => _cycleDoodSort(btn.getAttribute('data-sort')));
+        });
+    }
+
+    // ── Doodad detail window populator ────────────────────────
+
+    // Field grouping definition for doodad detail view.
+    const _DOOD_GROUPS = [
+        {
+            title: '🏷 Identity', fields: [
+                'doodID', 'Name', 'comment', 'category', 'doodClass',
+                'tilesets', 'tilesetSpecific',
+            ]
+        },
+        {
+            title: '🎨 Model', modelFiles: true, fields: [
+                'soundLoop',
+            ]
+        },
+        {
+            title: '📐 Scale', fields: [
+                'defScale', 'minScale', 'maxScale', 'canPlaceRandScale',
+            ]
+        },
+        {
+            title: '📍 Placement', fields: [
+                'onCliffs', 'onWater', 'floats', 'walkable', 'fixedRot',
+                'maxPitch', 'maxRoll', 'pathTex',
+            ]
+        },
+        {
+            title: '👆 Interaction', fields: [
+                'selSize', 'useClickHelper', 'ignoreModelClick', 'visRadius',
+            ]
+        },
+        {
+            title: '👁 Rendering', fields: [
+                'shadow', 'showInFog', 'animInFog',
+            ]
+        },
+        {
+            title: '🗺 Minimap', fields: [
+                'showInMM', 'useMMColor',
+            ],
+            color: {r: 'MMRed', g: 'MMGreen', b: 'MMBlue', label: 'Color'},
+        },
+        {
+            title: '🌈 Vertex Colors', vertexColors: true,
+        },
+        {
+            title: 'ℹ Meta', fields: [
+                'InBeta', 'version',
+            ]
+        },
+    ];
+
+    function _colorBadge(r, g, b) {
+        return '<span class="dd-color-badge" style="background:rgb(' + r + ',' + g + ',' + b + ')" title="rgb(' + r + ',' + g + ',' + b + ')"></span>';
+    }
+
+    // Collapsed state persistence for doodad detail view
+    function _getDoodCollapseState() {
+        const s = _getWvState();
+        return s._doodCollapse || {};
+    }
+
+    function _setDoodCollapseState(state) {
+        _patchWvState({_doodCollapse: state});
+    }
+
+    /**
+     * Build model file paths based on the base path and number of variations.
+     * numVar=1 → [basePath.mdx] (appends .mdx if no extension)
+     * numVar>1 → [basePath0.mdx, basePath1.mdx, …]
+     */
+    function _buildModelPaths(filePath, numVar) {
+        // Detect whether the path already has a file extension
+        const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+        const dotIdx = filePath.lastIndexOf('.');
+        const hasExt = dotIdx > lastSlash && dotIdx >= 0;
+
+        const base = hasExt ? filePath.substring(0, dotIdx) : filePath;
+        const ext = hasExt ? filePath.substring(dotIdx) : '.mdx';
+
+        if (numVar <= 1) return [base + ext];
+
+        const paths = [];
+        for (let i = 0; i < numVar; i++) {
+            paths.push(base + i + ext);
+        }
+        return paths;
+    }
+
+    function showDoodadDetail(doodId) {
+        const d = _doodadDataMap[doodId];
+        if (!d) return;
+
+        const win = document.getElementById('doodadDetailWindow');
+        if (!win) return;
+
+        const body = document.getElementById('doodadDetailBody');
+        if (!body) return;
+
+        const raw = d.raw || {};
+        const used = new Set();
+        let html = '';
+        const collapseState = _getDoodCollapseState();
+
+        for (const group of _DOOD_GROUPS) {
+            let rows = '';
+
+            if (group.vertexColors) {
+                // Collect vertex color variations 01..10
+                for (let i = 1; i <= 10; i++) {
+                    const idx = String(i).padStart(2, '0');
+                    const rk = 'vertR' + idx, gk = 'vertG' + idx, bk = 'vertB' + idx;
+                    used.add(rk); used.add(gk); used.add(bk);
+                    if (raw[rk] === undefined && raw[gk] === undefined && raw[bk] === undefined) continue;
+                    const rv = raw[rk] ?? '255', gv = raw[gk] ?? '255', bv = raw[bk] ?? '255';
+                    rows += '<tr><td class="key">Variation ' + idx + '</td><td>'
+                        + esc(rv) + ',' + esc(gv) + ',' + esc(bv) + ' '
+                        + _colorBadge(rv, gv, bv) + '</td></tr>';
+                }
+            } else if (group.modelFiles) {
+                // Model files with variation links
+                used.add('file'); used.add('numVar');
+                const filePath = raw.file;
+                const numVar = parseInt(raw.numVar, 10) || 1;
+                if (filePath) {
+                    const paths = _buildModelPaths(filePath, numVar);
+                    const links = paths.map(p =>
+                        '<a href="#" class="dd-model-link" data-path="' + esc(p) + '">' + esc(p) + '</a>'
+                    ).join('');
+                    rows += '<tr><td class="key">file</td><td>' + links + '</td></tr>';
+                }
+                rows += '<tr><td class="key">numVar</td><td>' + esc(String(raw.numVar ?? '')) + '</td></tr>';
+                // Regular fields in this group
+                if (group.fields) {
+                    for (const k of group.fields) {
+                        used.add(k);
+                        if (raw[k] === undefined) continue;
+                        rows += '<tr><td class="key">' + esc(k) + '</td><td>' + esc(String(raw[k] ?? '')) + '</td></tr>';
+                    }
+                }
+            } else {
+                // Regular fields
+                if (group.fields) {
+                    for (const k of group.fields) {
+                        used.add(k);
+                        if (raw[k] === undefined) continue;
+                        let val = esc(String(raw[k] ?? ''));
+                        // Decode category code
+                        if (k === 'category' && raw[k] && DOODAD_CATEGORIES[raw[k]]) {
+                            val = esc(raw[k]) + ' — ' + esc(DOODAD_CATEGORIES[raw[k]]);
+                        }
+                        // Decode tileset codes
+                        if (k === 'tilesets' && raw[k]) {
+                            const ts = raw[k];
+                            if (ts === '*') {
+                                val = '* — All';
+                            } else {
+                                const decoded = ts.replace(/,/g, '').split('').map(function (ch) {
+                                    return TILESET_NAMES[ch] ? ch + ' ' + TILESET_NAMES[ch] : ch;
+                                }).join(', ');
+                                val = esc(decoded);
+                            }
+                        }
+                        rows += '<tr><td class="key">' + esc(k) + '</td><td>' + val + '</td></tr>';
+                    }
+                }
+                // Single color row (e.g. minimap)
+                if (group.color) {
+                    const c = group.color;
+                    used.add(c.r); used.add(c.g); used.add(c.b);
+                    const rv = raw[c.r], gv = raw[c.g], bv = raw[c.b];
+                    if (rv !== undefined || gv !== undefined || bv !== undefined) {
+                        const rn = rv ?? '0', gn = gv ?? '0', bn = bv ?? '0';
+                        rows += '<tr><td class="key">' + esc(c.label) + '</td><td>'
+                            + esc(rn) + ',' + esc(gn) + ',' + esc(bn) + ' '
+                            + _colorBadge(rn, gn, bn) + '</td></tr>';
+                    }
+                }
+            }
+
+            if (!rows) continue;
+
+            // Default: open; respect saved state if present
+            const isOpen = collapseState.hasOwnProperty(group.title) ? collapseState[group.title] : true;
+            html += '<collapse-group group-title="' + esc(group.title) + '"' + (isOpen ? ' open' : '') + '>'
+                + '<table class="info">' + rows + '</table>'
+                + '</collapse-group>';
+        }
+
+        // Catch any fields not covered by groups
+        const remaining = Object.keys(raw).filter(k => !used.has(k)).sort();
+        if (remaining.length) {
+            let rows = '';
+            for (const k of remaining) {
+                rows += '<tr><td class="key">' + esc(k) + '</td><td>' + esc(String(raw[k] ?? '')) + '</td></tr>';
+            }
+            const otherTitle = '❓ Other';
+            const isOtherOpen = collapseState.hasOwnProperty(otherTitle) ? collapseState[otherTitle] : true;
+            html += '<collapse-group group-title="' + esc(otherTitle) + '"' + (isOtherOpen ? ' open' : '') + '>'
+                + '<table class="info">' + rows + '</table>'
+                + '</collapse-group>';
+        }
+
+        body.innerHTML = html;
+        win.setAttribute('title-text', '\ud83c\udf33 ' + (d.name || d.doodId));
+        win.show();
+
+        // Listen for collapse-group toggle events and persist state
+        body.addEventListener('collapse-toggle', function (e) {
+            const state = _getDoodCollapseState();
+            state[e.detail.title] = e.detail.open;
+            _setDoodCollapseState(state);
+        });
+
+        // Bind model file links
+        body.querySelectorAll('.dd-model-link').forEach(function (link) {
+            link.addEventListener('click', function (e) {
+                e.preventDefault();
+                if (_vscode) _vscode.postMessage({command: 'openModel', path: link.getAttribute('data-path')});
+            });
+        });
     }
 
     // ── Units SLK rebuilder ──────────────────────────────────
@@ -1422,6 +1991,7 @@ window.W3E = (function () {
                 m.geometry.computeBoundingBox();
                 const cb = m.geometry.boundingBox.clone();
                 cb.applyMatrix4(m.matrixWorld);
+
                 box.union(cb);
             });
 
@@ -1470,9 +2040,43 @@ window.W3E = (function () {
     // ── init() — main entry point ────────────────────────────
     function init(config) {
         const vscode = config.vscode;
+        _vscode = vscode;
         const groundTileCodes = config.groundTileCodes || [];
         const cliffTileCodes = config.cliffTileCodes || [];
         const isArchive = !!config.isArchive;
+
+        // ── Populate initial doodad data map for detail window ──
+        if (config.initialDoodadsSlk && config.initialDoodadsSlk.doodads) {
+            _allDoodads = config.initialDoodadsSlk.doodads;
+            for (const d of _allDoodads) {
+                _doodadDataMap[d.doodId] = d;
+            }
+            // Restore saved filter state
+            _restoreDoodFilters();
+            // Bind initial filter checkbox events
+            document.querySelectorAll('.ds-cat-cb').forEach(cb => {
+                cb.addEventListener('change', _filterAndRenderDoodads);
+            });
+            document.querySelectorAll('.ds-ts-cb').forEach(cb => {
+                cb.addEventListener('change', _filterAndRenderDoodads);
+            });
+            // Bind initial sort column headers
+            document.querySelectorAll('.ds-sort-col').forEach(btn => {
+                if (btn._dsSortBound) return;
+                btn._dsSortBound = true;
+                btn.addEventListener('click', () => _cycleDoodSort(btn.getAttribute('data-sort')));
+            });
+            // Bind initial search input
+            const searchEl = document.getElementById('dsSearchInput');
+            if (searchEl && !searchEl._dsBound) {
+                searchEl._dsBound = true;
+                searchEl.addEventListener('input', _filterAndRenderDoodads);
+            }
+            // Restore saved sort state and re-render
+            _restoreDoodSort();
+            _updateSortButtons();
+            _filterAndRenderDoodads(false);
+        }
 
         // ── Menu sync ────────────────────────────────────────
         document.addEventListener('float-toggled', syncMenuActive);
@@ -1505,12 +2109,10 @@ window.W3E = (function () {
         function bindGpButtons() {
             const b = document.getElementById('gamePathBrowse');
             if (b && vscode) b.addEventListener('click', () => {
-                setLoading(true);
                 vscode.postMessage({command: 'browseGamePath'});
             });
             const c = document.getElementById('gamePathClear');
             if (c && vscode) c.addEventListener('click', () => {
-                setLoading(true);
                 vscode.postMessage({command: 'setGamePath', value: ''});
             });
         }
@@ -1534,19 +2136,36 @@ window.W3E = (function () {
         // ── Units ────────────────────────────────────────────
         onGamePathChanged(data => rebuildUnits(data.unitsSlk));
 
-        // ── Doodad item click → open model ───────────────────
-        if (vscode) {
+        // ── Doodad item click → show detail window ──────────────
+        {
             const dsList = document.getElementById('dsDoodadList');
             if (dsList) {
                 dsList.addEventListener('click', function (e) {
                     const item = e.target.closest('doodad-item');
                     if (!item) return;
-                    const file = item.getAttribute('file') || '';
-                    if (!file) return;
-                    vscode.postMessage({command: 'openModel', path: file});
+                    const id = item.getAttribute('dood-id') || '';
+                    if (!id) return;
+                    showDoodadDetail(id);
                 });
             }
+        }
 
+        // ── Placed doodad rawcode click → show detail window ────
+        {
+            const dooWin = document.getElementById('doodadDooWindow');
+            if (dooWin) {
+                dooWin.addEventListener('click', function (e) {
+                    const link = e.target.closest('.doo-id-link');
+                    if (!link) return;
+                    e.preventDefault();
+                    const id = link.getAttribute('data-dood-id') || '';
+                    if (!id) return;
+                    showDoodadDetail(id);
+                });
+            }
+        }
+
+        if (vscode) {
             // ── Unit item click → open model ─────────────────────
             const usList = document.getElementById('usUnitList');
             if (usList) {
@@ -1572,6 +2191,9 @@ window.W3E = (function () {
             }
             if (msg && msg.command === 'loadingDone') {
                 setLoading(false);
+            }
+            if (msg && msg.command === 'loadingStart') {
+                setLoading(true);
             }
             if (msg && msg.command === 'modelData') {
                 _modelViewer.load(msg);
@@ -1708,6 +2330,24 @@ window.W3E = (function () {
         }
     }
 
-    return {init, onGamePathChanged, indexToRgb, syncMenuActive, makeOrbitControls};
+    // ── Highlight a placed doodad by DOO index ──────────────
+    function highlightPlacedDoodad(dooIndex) {
+        const win = document.getElementById('doodadDooWindow');
+        if (!win) return;
+        // Open the window
+        win.show();
+        // Find the row by data-doo-idx attribute
+        const row = win.querySelector('tr[data-doo-idx="' + dooIndex + '"]');
+        if (!row) return;
+        // Remove previous highlight
+        win.querySelectorAll('.doo-highlight').forEach(function (el) {
+            el.classList.remove('doo-highlight');
+        });
+        // Highlight and scroll
+        row.classList.add('doo-highlight');
+        row.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }
+
+    return {init, onGamePathChanged, indexToRgb, syncMenuActive, makeOrbitControls, highlightPlacedDoodad};
 })();
 

@@ -415,6 +415,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         }
     })
 
+
     // ── Message handling ────────────────────────────────────────
     webviewPanel.webview.onDidReceiveMessage(async (msg) => {
         if (msg.command === 'openFile' && isArchive) {
@@ -561,7 +562,109 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         } else if (msg.command === 'extractTo' && isArchive && msg.name) {
             const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
             await commands.executeCommand('mpq.extractTo', uri)
+        } else if (msg.command === 'loadMapObjects' && msg.paths) {
+            // Bulk-load MDX models for placing doodads/units on the terrain.
+            const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+            const fs = require('fs')
+            const os = require('os')
+
+            for (const modelPath of msg.paths) {
+                try {
+                    const hasExt = /\.\w+$/.test(modelPath)
+                    const pathsToTry = hasExt
+                        ? [modelPath]
+                        : [modelPath + '.mdx', modelPath + '.mdl']
+
+                    let buf = null
+                    let resolvedPath = modelPath
+
+                    for (const tryPath of pathsToTry) {
+                        if (bs && !buf) {
+                            const params = new URLSearchParams({token: bs.token, path: tryPath})
+                            if (isArchive) params.set('archive', filePath)
+                            try {
+                                const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
+                                if (resp.ok) {
+                                    buf = Buffer.from(await resp.arrayBuffer())
+                                    resolvedPath = resp.headers.get('x-resolved-path') || tryPath
+                                }
+                            } catch (_) {}
+                        }
+                        if (!buf) {
+                            try {
+                                const result = await client.sendRequest('w3e/lookupFile', {
+                                    path: tryPath,
+                                    archivePath: isArchive ? filePath : undefined,
+                                })
+                                if (result && result.content) {
+                                    buf = Buffer.from(result.content, 'base64')
+                                    resolvedPath = result.resolvedPath || tryPath
+                                }
+                            } catch (_) {}
+                        }
+                        if (buf) break
+                    }
+
+                    if (!buf) {
+                        webviewPanel.webview.postMessage({
+                            command: 'mapObjectModelNotFound',
+                            path: modelPath,
+                        })
+                        continue
+                    }
+                    const resolvedExt = (resolvedPath.split('.').pop() || '').toLowerCase()
+                    if (resolvedExt !== 'mdx') {
+                        webviewPanel.webview.postMessage({
+                            command: 'mapObjectModelNotFound',
+                            path: modelPath,
+                        })
+                        continue
+                    }
+
+                    const fname = resolvedPath.replace(/\\/g, '/').split('/').pop() || 'model.mdx'
+                    const tmpDir = path.join(os.tmpdir(), `vscode-mdx-map-${Date.now()}`)
+                    fs.mkdirSync(tmpDir, {recursive: true})
+                    const tmpPath = path.join(tmpDir, fname)
+                    fs.writeFileSync(tmpPath, buf)
+
+                    try {
+                        const renderResult = await client.sendRequest('mdx/render', {
+                            uri: Uri.file(tmpPath).toString()
+                        })
+                        if (renderResult && !renderResult.error && renderResult.geosets) {
+                            webviewPanel.webview.postMessage({
+                                command: 'mapObjectModel',
+                                path: modelPath,
+                                geosets: renderResult.geosets,
+                                textures: renderResult.textures || [],
+                                materials: renderResult.materials || [],
+                            })
+                        } else {
+                            webviewPanel.webview.postMessage({
+                                command: 'mapObjectModelNotFound',
+                                path: modelPath,
+                            })
+                        }
+                    } catch (_) {
+                        webviewPanel.webview.postMessage({
+                            command: 'mapObjectModelNotFound',
+                            path: modelPath,
+                        })
+                    }
+
+                    try { fs.unlinkSync(tmpPath) } catch (_) {}
+                    try { fs.rmdirSync(tmpDir) } catch (_) {}
+                } catch (_) {
+                    webviewPanel.webview.postMessage({
+                        command: 'mapObjectModelNotFound',
+                        path: modelPath,
+                    })
+                }
+            }
+
+            webviewPanel.webview.postMessage({command: 'mapObjectsLoaded'})
         } else if (msg.command === 'setGamePath') {
+            webviewPanel.webview.postMessage({command: 'loadingStart'})
             try {
                 const status = await setGamePathViaHttp(msg.value) ||
                     await client.sendRequest('w3e/gamePath/set', {gamePath: msg.value})
@@ -570,6 +673,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                 webviewPanel.webview.postMessage({command: 'loadingDone'})
             }
         } else if (msg.command === 'reloadGamePath') {
+            webviewPanel.webview.postMessage({command: 'loadingStart'})
             try {
                 let status = null
                 const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
@@ -592,10 +696,10 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                 openLabel: 'Select Warcraft III Folder',
             })
             if (!uris || uris.length === 0) {
-                webviewPanel.webview.postMessage({command: 'loadingDone'})
                 return
             }
             const selectedPath = uris[0].fsPath
+            webviewPanel.webview.postMessage({command: 'loadingStart'})
             try {
                 const status = await setGamePathViaHttp(selectedPath) ||
                     await client.sendRequest('w3e/gamePath/set', {gamePath: selectedPath})

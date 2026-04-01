@@ -10,7 +10,8 @@
         vscode: vscode,
         groundTileCodes: DATA.groundTileCodes,
         cliffTileCodes: DATA.cliffTileCodes,
-        isArchive: DATA.isArchive
+        isArchive: DATA.isArchive,
+        initialDoodadsSlk: DATA.initialDoodadsSlk
     })
 
     // ── Three.js setup ──────────────────────────────────────────
@@ -363,6 +364,123 @@
             let canvasTex = null
             let useTextures = true
 
+            // ── Reusable sub-tile coordinate helper ──────────────
+            const FILL_SQUARE = [1, 16]
+            const FILL_RECT = []
+            for (let f = 17; f <= 32; f++) FILL_RECT.push(f)
+            FILL_RECT.push(1, 16)
+
+            function subtileSrc(subtile, texW, texH) {
+                const isRect = texW >= texH * 2
+                const cellW = texW / (isRect ? 8 : 4)
+                const cellH = texH / 4
+                const n = subtile - 1 // 0-based
+                let col, row
+                if (isRect && n >= 16) {
+                    // right half (sub-tiles 17-32)
+                    const m = n - 16
+                    col = 4 + (m % 4)
+                    row = Math.floor(m / 4)
+                } else {
+                    // left half (sub-tiles 1-16) or square texture
+                    col = n % 4
+                    row = Math.floor(n / 4)
+                }
+                return {x: col * cellW, y: row * cellH, w: cellW, h: cellH}
+            }
+
+            // ── Build composited canvas from loaded tile images ──
+            function buildComposited(tileImages) {
+                const CPX = 32
+                const c2 = document.createElement('canvas')
+                c2.width = cellsX * CPX
+                c2.height = cellsY * CPX
+                const ctx = c2.getContext('2d')
+
+                for (let cy = 0; cy < cellsY; cy++) {
+                    for (let cx = 0; cx < cellsX; cx++) {
+                        const iBL = cy * W + cx
+                        const iBR = cy * W + cx + 1
+                        const iTL = (cy + 1) * W + cx
+                        const iTR = (cy + 1) * W + cx + 1
+
+                        const bl = D.groundTexture[iBL]
+                        const br = D.groundTexture[iBR]
+                        const tl = D.groundTexture[iTL]
+                        const tr = D.groundTexture[iTR]
+
+                        const unique = [...new Set([bl, br, tl, tr])].sort((a, b) => a - b)
+
+                        const dstX = cx * CPX
+                        const dstY = (cellsY - 1 - cy) * CPX
+
+                        for (let li = 0; li < unique.length; li++) {
+                            const L = unique[li]
+                            const img = tileImages[L]
+                            if (!img) {
+                                // Fallback: fill with palette colour
+                                const col = palette[L] || [0.5, 0.5, 0.5]
+                                ctx.fillStyle = 'rgb(' + Math.round(col[0] * 255) + ',' +
+                                    Math.round(col[1] * 255) + ',' + Math.round(col[2] * 255) + ')'
+                                ctx.fillRect(dstX, dstY, CPX, CPX)
+                                continue
+                            }
+
+                            let mask = 0
+                            if (li === 0 && unique.length > 1) {
+                                mask = 15
+                            } else {
+                                if (bl === L) mask |= 2
+                                if (br === L) mask |= 1
+                                if (tl === L) mask |= 8
+                                if (tr === L) mask |= 4
+                            }
+
+                            if (mask === 0) continue
+
+                            const texW = img.naturalWidth
+                            const texH = img.naturalHeight
+                            const isRect = texW >= texH * 2
+                            let subtile
+
+                            if (mask === 15) {
+                                const variation = D.groundVariation[iBL]
+                                const pool = isRect ? FILL_RECT : FILL_SQUARE
+                                subtile = pool[variation % pool.length]
+                            } else {
+                                subtile = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 1][mask]
+                            }
+
+                            const src = subtileSrc(subtile, texW, texH)
+                            ctx.drawImage(img, src.x, src.y, src.w, src.h,
+                                dstX, dstY, CPX, CPX)
+                        }
+                    }
+                }
+
+                canvasTex = new THREE.CanvasTexture(c2)
+                canvasTex.magFilter = THREE.LinearFilter
+                canvasTex.minFilter = THREE.LinearFilter
+                if (useTextures) {
+                    mat.map = canvasTex
+                    mat.needsUpdate = true
+                }
+
+                // ── Set tile previews on <tile-item> elements ────
+                const tileItems = document.querySelectorAll('#tsGroundTiles tile-item')
+                tileItems.forEach(el => {
+                    const i = parseInt(el.getAttribute('index'), 10)
+                    const img = tileImages[i]
+                    if (!img) return
+                    const src = subtileSrc(1, img.naturalWidth, img.naturalHeight)
+                    const pc = document.createElement('canvas')
+                    pc.width = src.w
+                    pc.height = src.h
+                    pc.getContext('2d').drawImage(img, src.x, src.y, src.w, src.h, 0, 0, src.w, src.h)
+                    el.setAttribute('tile-preview', pc.toDataURL())
+                })
+            }
+
             // ── Load tile texture images and build composited canvas ──
             // Each ground tile texture is a 4×4 (or 8×4 for rectangular)
             // grid of sub-tiles. For each cell, we determine which textures
@@ -371,220 +489,48 @@
             //   1) The lowest texture always draws a full fill (base layer).
             //   2) Each subsequent texture draws a transition sub-tile
             //      covering only the corners that have exactly that texture.
-            if (TILE_TEXTURES.length > 0) {
-                const tileImages = new Array(TILE_TEXTURES.length).fill(null)
+            function loadAndComposite(textures) {
+                if (!textures || textures.length === 0) return
+                const tileImages = new Array(textures.length).fill(null)
                 let toLoad = 0
                 let loaded = 0
 
-                TILE_TEXTURES.forEach((entry, i) => {
+                textures.forEach((entry, i) => {
                     if (!entry || !entry.dataUrl) return
                     toLoad++
                     const img = new Image()
                     img.onload = () => {
                         tileImages[i] = img
-                        if (++loaded === toLoad) buildComposited()
+                        if (++loaded === toLoad) buildComposited(tileImages)
                     }
                     img.onerror = () => {
-                        if (++loaded === toLoad) buildComposited()
+                        if (++loaded === toLoad) buildComposited(tileImages)
                     }
                     img.src = entry.dataUrl
                 })
 
-                if (toLoad === 0) buildComposited()
-
-                function buildComposited() {
-                    const CPX = 32
-                    const c2 = document.createElement('canvas')
-                    c2.width = cellsX * CPX
-                    c2.height = cellsY * CPX
-                    const ctx = c2.getContext('2d')
-
-                    // Fill tile pools: sub-tile indices used for full coverage (mask=15).
-                    // When all 4 corners have the same texture (or it's the base
-                    // layer), we pick a variation from this pool using
-                    // groundVariation[iBL] to avoid tiling repetition.
-                    //
-                    // Square textures (4×4 = 16 sub-tiles):
-                    //   only sub-tiles 1 and 16 are full-fill → 2 variants
-                    //
-                    // Rectangular textures (8×4 = 32 sub-tiles):
-                    //   sub-tiles 17..32 (right half) + 1 and 16 → 18 variants
-                    const FILL_SQUARE = [1, 16]
-                    const FILL_RECT = []
-                    for (let f = 17; f <= 32; f++) FILL_RECT.push(f)
-                    FILL_RECT.push(1, 16)
-
-                    // Convert a 1-based sub-tile index to pixel coordinates
-                    // in the texture image.
-                    //
-                    // Square (4×4):
-                    //   1  2  3  4
-                    //   5  6  7  8
-                    //   9 10 11 12
-                    //  13 14 15 16
-                    //
-                    // Rectangular (two 4×4 halves side-by-side):
-                    //   1  2  3  4 | 17 18 19 20
-                    //   5  6  7  8 | 21 22 23 24
-                    //   9 10 11 12 | 25 26 27 28
-                    //  13 14 15 16 | 29 30 31 32
-                    function subtileSrc(subtile, texW, texH) {
-                        const isRect = texW >= texH * 2
-                        const cellW = texW / (isRect ? 8 : 4)
-                        const cellH = texH / 4
-                        const n = subtile - 1 // 0-based
-                        let col, row
-                        if (isRect && n >= 16) {
-                            // right half (sub-tiles 17-32)
-                            const m = n - 16
-                            col = 4 + (m % 4)
-                            row = Math.floor(m / 4)
-                        } else {
-                            // left half (sub-tiles 1-16) or square texture
-                            col = n % 4
-                            row = Math.floor(n / 4)
-                        }
-                        return {x: col * cellW, y: row * cellH, w: cellW, h: cellH}
-                    }
-
-                    // W×H points → (W-1)×(H-1) cells.
-                    //
-                    // Cell (cx, cy) uses four corner tilepoints:
-                    //   TL ── TR       TL = point(cx,   cy+1)
-                    //    │    │        TR = point(cx+1, cy+1)
-                    //   BL ── BR       BL = point(cx,   cy  )
-                    //                  BR = point(cx+1, cy  )
-                    //
-                    // Example: corners have textures
-                    //   A=6  B=3       (TL=6, TR=3)
-                    //   D=2  C=0       (BL=2, BR=0)
-                    //
-                    // Sorted unique: [0, 2, 3, 6]
-                    // Rendering order (bottom → top):
-                    //   1) tex 0 → full fill (base, because multiple textures)
-                    //   2) tex 2 → D only   (BL===2)  → subtile 3
-                    //   3) tex 3 → B only   (TR===3)  → subtile 5
-                    //   4) tex 6 → A only   (TL===6)  → subtile 9
-
-                    for (let cy = 0; cy < cellsY; cy++) {
-                        for (let cx = 0; cx < cellsX; cx++) {
-                            const iBL = cy * W + cx
-                            const iBR = cy * W + cx + 1
-                            const iTL = (cy + 1) * W + cx
-                            const iTR = (cy + 1) * W + cx + 1
-
-                            const bl = D.groundTexture[iBL]
-                            const br = D.groundTexture[iBR]
-                            const tl = D.groundTexture[iTL]
-                            const tr = D.groundTexture[iTR]
-
-                            // Unique layers sorted ascending (lower index = lower layer)
-                            const unique = [...new Set([bl, br, tl, tr])].sort((a, b) => a - b)
-
-                            // Canvas Y is flipped: canvas row 0 = terrain top
-                            const dstX = cx * CPX
-                            const dstY = (cellsY - 1 - cy) * CPX
-
-                            for (let li = 0; li < unique.length; li++) {
-                                const L = unique[li]
-                                const img = tileImages[L]
-                                if (!img) {
-                                    // Fallback: fill with palette colour
-                                    const col = palette[L] || [0.5, 0.5, 0.5]
-                                    ctx.fillStyle = 'rgb(' + Math.round(col[0] * 255) + ',' +
-                                        Math.round(col[1] * 255) + ',' + Math.round(col[2] * 255) + ')'
-                                    ctx.fillRect(dstX, dstY, CPX, CPX)
-                                    continue
-                                }
-
-                                // 4-bit mask: which corners have exactly this texture
-                                let mask = 0
-                                if (li === 0 && unique.length > 1) {
-                                    // Lowest layer with multiple textures → full fill as base
-                                    mask = 15
-                                } else {
-                                    if (bl === L) mask |= 2 // bit 1 = BL
-                                    if (br === L) mask |= 1 // bit 0 = BR
-                                    if (tl === L) mask |= 8 // bit 3 = TL
-                                    if (tr === L) mask |= 4 // bit 2 = TR
-                                }
-
-                                if (mask === 0) continue
-
-                                const texW = img.naturalWidth
-                                const texH = img.naturalHeight
-                                const isRect = texW >= texH * 2
-                                let subtile
-
-                                if (mask === 15) {
-                                    // Full fill — select from fill pool using variation
-                                    const variation = D.groundVariation[iBL]
-                                    const pool = isRect ? FILL_RECT : FILL_SQUARE
-                                    subtile = pool[variation % pool.length]
-                                } else {
-                                    // ── Transition sub-tile selection ──
-                                    //
-                                    // Cell corners (as in geometry):
-                                    //   A B      A = TL (top-left)
-                                    //   D C      B = TR (top-right)
-                                    //            C = BR (bottom-right)
-                                    //            D = BL (bottom-left)
-                                    //
-                                    // Mask bits:
-                                    //   bit 0 (1) = BR = C
-                                    //   bit 1 (2) = BL = D
-                                    //   bit 2 (4) = TR = B
-                                    //   bit 3 (8) = TL = A
-                                    //
-                                    // Sub-tile layout in the texture (4×4 grid):
-                                    //   1: ABCD    2: C       3: D       4: CD
-                                    //   5: B       6: BC      7: BD      8: BCD
-                                    //   9: A      10: AC     11: AD     12: ACD
-                                    //  13: AB     14: ABC    15: ABD    16: ABCD
-                                    //
-                                    // Lookup: mask → subtile index
-                                    //   mask  1 (C)    → 2      mask  9 (AC)   → 10
-                                    //   mask  2 (D)    → 3      mask 10 (AD)   → 11
-                                    //   mask  3 (CD)   → 4      mask 11 (ACD)  → 12
-                                    //   mask  4 (B)    → 5      mask 12 (AB)   → 13
-                                    //   mask  5 (BC)   → 6      mask 13 (ABC)  → 14
-                                    //   mask  6 (BD)   → 7      mask 14 (ABD)  → 15
-                                    //   mask  7 (BCD)  → 8      mask 15 (ABCD) → 1
-                                    //   mask  8 (A)    → 9
-                                    //
-                                    subtile = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 1][mask]
-                                }
-
-                                const src = subtileSrc(subtile, texW, texH)
-                                ctx.drawImage(img, src.x, src.y, src.w, src.h,
-                                    dstX, dstY, CPX, CPX)
-                            }
-                        }
-                    }
-
-                    canvasTex = new THREE.CanvasTexture(c2)
-                    canvasTex.magFilter = THREE.LinearFilter
-                    canvasTex.minFilter = THREE.LinearFilter
-                    if (useTextures) {
-                        mat.map = canvasTex
-                        mat.needsUpdate = true
-                    }
-
-                    // ── Set tile previews on <tile-item> elements ────
-                    const tileItems = document.querySelectorAll('#tsGroundTiles tile-item')
-                    tileItems.forEach(el => {
-                        const i = parseInt(el.getAttribute('index'), 10)
-                        const img = tileImages[i]
-                        if (!img) return
-                        const src = subtileSrc(1, img.naturalWidth, img.naturalHeight)
-                        const pc = document.createElement('canvas')
-                        pc.width = src.w
-                        pc.height = src.h
-                        pc.getContext('2d').drawImage(img, src.x, src.y, src.w, src.h, 0, 0, src.w, src.h)
-                        el.setAttribute('tile-preview', pc.toDataURL())
-                    })
-                }
+                if (toLoad === 0) buildComposited(tileImages)
             }
+
+            // Initial load from render data
+            loadAndComposite(TILE_TEXTURES)
+
+            // Reload textures when game path changes — fetch directly
+            // from the HTTP server to avoid large base64 data going
+            // through the extension host → webview postMessage IPC.
+            W3E.onGamePathChanged(function () {
+                const bs = DATA.binaryServer
+                const codes = DATA.groundTileCodes
+                if (!bs || !codes || codes.length === 0) return
+                const params = new URLSearchParams({token: bs.token, codes: codes.join(',')})
+                if (DATA.archivePath) params.set('archive', DATA.archivePath)
+                fetch('http://127.0.0.1:' + bs.port + '/w3e/tileTextures?' + params)
+                .then(function (resp) { return resp.ok ? resp.json() : null })
+                .then(function (textures) {
+                    if (textures) loadAndComposite(textures)
+                })
+                .catch(function (e) { console.warn('tileTextures fetch error:', e) })
+            })
 
             // ── Wireframe grid ───────────────────────────────────
             // Two-level wireframe:
@@ -649,7 +595,7 @@
                 if (!vscode) return
                 const st = vscode.getState() || {}
                 const checks = {};
-                ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation'].forEach(id => {
+                ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation', 'cbObjects'].forEach(id => {
                     const el = document.getElementById(id)
                     if (el) checks[id] = el.checked
                 })
@@ -657,7 +603,7 @@
                 vscode.setState(st)
             }
 
-            ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation'].forEach(id => {
+            ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation', 'cbObjects'].forEach(id => {
                 const el = document.getElementById(id)
                 if (el && cbState[id] != null) el.checked = cbState[id]
             })
@@ -812,6 +758,312 @@
             canvas.addEventListener('mouseleave', () => {
                 markerMesh.visible = false
                 document.getElementById('cursor-info').textContent = ''
+            })
+
+            // ── Click on object → highlight in Placed window ────
+            var _clickStartX = 0, _clickStartY = 0
+            canvas.addEventListener('pointerdown', function (e) {
+                _clickStartX = e.clientX
+                _clickStartY = e.clientY
+            })
+            canvas.addEventListener('click', function (e) {
+                // Ignore if it was a drag (orbit/pan)
+                var dx = e.clientX - _clickStartX, dy = e.clientY - _clickStartY
+                if (dx * dx + dy * dy > 9) return
+                if (e.target.closest('float-window') || e.target.closest('.menubar')) return
+                if (!objectGroup.visible) return
+                var rect = canvas.getBoundingClientRect()
+                var ndc = new THREE.Vector2(
+                    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+                    -((e.clientY - rect.top) / rect.height) * 2 + 1
+                )
+                var rc = new THREE.Raycaster()
+                rc.setFromCamera(ndc, camera)
+                var hits = rc.intersectObjects(objectGroup.children, false)
+                if (hits.length > 0) {
+                    var hit = hits[0]
+                    var obj = hit.object
+                    if (obj.userData && obj.userData._items && hit.instanceId != null) {
+                        var item = obj.userData._items[hit.instanceId]
+                        if (item && item.i != null) {
+                            W3E.highlightPlacedDoodad(item.i)
+                        }
+                    }
+                }
+            })
+
+            // ── Map objects (doodads & units) on terrain ─────────
+            const objectGroup = new THREE.Group()
+            scene.add(objectGroup)
+
+            let _doodFileMap = DATA.doodadFileMap || {}
+            let _unitFileMap = DATA.unitFileMap || {}
+            const _doodItems = DATA.doodadPlacements || []
+            const _unitItems = DATA.unitPlacements || []
+
+            const _modelCache = {} // path → [{geometry, material}]
+            const _pendingItems = {} // path → [items]
+            const _textureLoader = new THREE.TextureLoader()
+            _textureLoader.crossOrigin = 'anonymous'
+
+            // Red cube fallback for missing models
+            const _FALLBACK_SIZE = TILE * 0.35
+            const _fallbackGeo = new THREE.BoxGeometry(_FALLBACK_SIZE, _FALLBACK_SIZE, _FALLBACK_SIZE)
+            const _fallbackMat = new THREE.MeshPhongMaterial({color: 0xff0000, flatShading: true})
+            const _fallbackEntries = [{geometry: _fallbackGeo, material: _fallbackMat}]
+
+            function _b64f32(b64) {
+                if (!b64) return new Float32Array(0)
+                const bin = atob(b64), buf = new ArrayBuffer(bin.length), u8 = new Uint8Array(buf)
+                for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
+                return new Float32Array(buf)
+            }
+
+            function _b64u16(b64) {
+                if (!b64) return new Uint16Array(0)
+                const bin = atob(b64), buf = new ArrayBuffer(bin.length), u8 = new Uint8Array(buf)
+                for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
+                return new Uint16Array(buf)
+            }
+
+            function _texUrl(texPath) {
+                const bs = DATA.binaryServer
+                if (!bs || !texPath) return null
+                const params = new URLSearchParams({token: bs.token, path: texPath})
+                if (DATA.archivePath) params.set('archive', DATA.archivePath)
+                return 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params
+            }
+
+            function _buildModel(data) {
+                const geosets = data.geosets || []
+                const textures = data.textures || []
+                const materials = data.materials || []
+                const entries = []
+
+                for (const g of geosets) {
+                    if (!g.vertex_count || !g.face_count) continue
+                    const verts = _b64f32(g.vertices)
+                    const norms = _b64f32(g.normals)
+                    const faces = _b64u16(g.faces)
+                    const uvs = _b64f32(g.uvs)
+
+                    const geo = new THREE.BufferGeometry()
+                    geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
+                    if (norms.length > 0) geo.setAttribute('normal', new THREE.BufferAttribute(norms, 3))
+                    if (uvs.length > 0) geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+                    geo.setIndex(new THREE.BufferAttribute(faces, 1))
+                    if (norms.length === 0) geo.computeVertexNormals()
+
+                    const matOpts = {
+                        color: 0xcccccc,
+                        side: THREE.DoubleSide,
+                        flatShading: false,
+                    }
+
+                    // Look up texture via material_id → material → layer → texture
+                    if (g.material_id != null && g.material_id < materials.length) {
+                        const mat = materials[g.material_id]
+                        const layers = mat.layers || []
+                        if (layers.length > 0) {
+                            const layer = layers[0]
+                            const texId = layer.texture_id
+                            if (texId < textures.length) {
+                                const tex = textures[texId]
+                                if (tex && tex.file_name && !tex.replaceable_id) {
+                                    const url = _texUrl(tex.file_name)
+                                    if (url) {
+                                        const t = _textureLoader.load(url)
+                                        t.wrapS = THREE.RepeatWrapping
+                                        t.wrapT = THREE.RepeatWrapping
+                                        t.magFilter = THREE.LinearFilter
+                                        t.minFilter = THREE.LinearMipmapLinearFilter
+                                        matOpts.map = t
+                                        matOpts.color = 0xffffff
+                                    }
+                                }
+                            }
+                            const fm = layer.filter_mode
+                            if (fm === 1) {
+                                matOpts.transparent = true
+                                matOpts.alphaTest = 0.5
+                            } else if (fm === 2 || fm === 3) {
+                                matOpts.transparent = true
+                                matOpts.blending = fm === 3 ? THREE.AdditiveBlending : THREE.NormalBlending
+                                matOpts.depthWrite = false
+                            }
+                            if (layer.alpha < 1.0) {
+                                matOpts.transparent = true
+                                matOpts.opacity = layer.alpha
+                            }
+                        }
+                    }
+
+                    entries.push({geometry: geo, material: new THREE.MeshPhongMaterial(matOpts)})
+                }
+                return entries
+            }
+
+            function _placeInstances(items, entries) {
+                if (entries.length === 0 || items.length === 0) return
+                const mat4 = new THREE.Matrix4()
+                const pos = new THREE.Vector3()
+                const quat = new THREE.Quaternion()
+                const scl = new THREE.Vector3()
+                const euler = new THREE.Euler()
+
+                for (const entry of entries) {
+                    const instMesh = new THREE.InstancedMesh(entry.geometry, entry.material, items.length)
+                    instMesh.userData._items = items
+                    for (let i = 0; i < items.length; i++) {
+                        const it = items[i]
+                        pos.set(
+                            it.p[0] - D.offsetX - halfGridW,
+                            it.p[1] - D.offsetY - halfGridH,
+                            it.p[2]
+                        )
+                        euler.set(0, 0, it.a || 0)
+                        quat.setFromEuler(euler)
+                        scl.set(it.s[0] || 1, it.s[1] || 1, it.s[2] || 1)
+                        mat4.compose(pos, quat, scl)
+                        instMesh.setMatrixAt(i, mat4)
+                    }
+                    instMesh.instanceMatrix.needsUpdate = true
+                    objectGroup.add(instMesh)
+                }
+            }
+
+            // Resolve the model file path for a doodad, applying variation logic
+            function _resolveModelPath(baseFile, numVar, variation) {
+                var lastSlash = Math.max(baseFile.lastIndexOf('/'), baseFile.lastIndexOf('\\'))
+                var dotIdx = baseFile.lastIndexOf('.')
+                var hasExt = dotIdx > lastSlash && dotIdx >= 0
+                var base = hasExt ? baseFile.substring(0, dotIdx) : baseFile
+                var ext = hasExt ? baseFile.substring(dotIdx) : '.mdx'
+                if (numVar <= 1) return base + ext
+                var idx = (variation || 0) % numVar
+                return base + idx + ext
+            }
+
+            function _collectAndLoad() {
+                // Clear existing objects
+                while (objectGroup.children.length > 0) {
+                    const c = objectGroup.children[0]
+                    objectGroup.remove(c)
+                    // Don't dispose shared fallback geometry/material
+                    if (c.geometry && c.geometry !== _fallbackGeo) c.geometry.dispose()
+                    if (c.material && c.material !== _fallbackMat) {
+                        if (c.material.map) c.material.map.dispose()
+                        c.material.dispose()
+                    }
+                }
+
+                const byPath = {} // modelPath → [items]
+                const _unmappedItems = [] // items with no rawcode→file mapping
+                for (const item of _doodItems) {
+                    const entry = _doodFileMap[item.r]
+                    if (!entry) { _unmappedItems.push(item); continue }
+                    const file = typeof entry === 'string' ? entry : entry.file
+                    const numVar = typeof entry === 'object' ? (entry.numVar || 1) : 1
+                    const resolved = _resolveModelPath(file, numVar, item.v)
+                    if (!byPath[resolved]) byPath[resolved] = []
+                    byPath[resolved].push(item)
+                }
+                for (const item of _unitItems) {
+                    const file = _unitFileMap[item.r]
+                    if (!file) { _unmappedItems.push(item); continue }
+                    if (!byPath[file]) byPath[file] = []
+                    byPath[file].push(item)
+                }
+
+                // Place red cubes for items with no rawcode→file mapping
+                if (_unmappedItems.length > 0) {
+                    _placeInstances(_unmappedItems, _fallbackEntries)
+                }
+
+                // Place already-cached models; collect uncached for loading
+                const toLoad = []
+                for (const [filePath, items] of Object.entries(byPath)) {
+                    if (_modelCache[filePath]) {
+                        _placeInstances(items, _modelCache[filePath])
+                    } else {
+                        toLoad.push(filePath)
+                        _pendingItems[filePath] = items
+                    }
+                }
+
+                if (toLoad.length > 0 && vscode) {
+                    vscode.postMessage({command: 'loadMapObjects', paths: toLoad})
+                }
+            }
+
+            // Listen for model data coming back from the extension host
+            window.addEventListener('message', function (e) {
+                const msg = e.data
+                if (msg && msg.command === 'mapObjectModel') {
+                    const entries = _buildModel(msg)
+                    _modelCache[msg.path] = entries
+                    const items = _pendingItems[msg.path]
+                    if (items && objectGroup.visible) {
+                        _placeInstances(items, entries)
+                        delete _pendingItems[msg.path]
+                    }
+                } else if (msg && msg.command === 'mapObjectModelNotFound') {
+                    // Model file could not be loaded — place red cubes
+                    _modelCache[msg.path] = _fallbackEntries
+                    const items = _pendingItems[msg.path]
+                    if (items && objectGroup.visible) {
+                        _placeInstances(items, _fallbackEntries)
+                        delete _pendingItems[msg.path]
+                    }
+                } else if (msg && msg.command === 'mapObjectsLoaded') {
+                    // After all loading finishes, place red cubes for any remaining pending items
+                    for (const [filePath, items] of Object.entries(_pendingItems)) {
+                        if (!_modelCache[filePath]) {
+                            _modelCache[filePath] = _fallbackEntries
+                            if (objectGroup.visible) {
+                                _placeInstances(items, _fallbackEntries)
+                            }
+                        }
+                    }
+                    // Clear all pending
+                    for (const key of Object.keys(_pendingItems)) delete _pendingItems[key]
+                }
+            })
+
+            // Checkbox: toggle object visibility
+            const cbObjectsEl = document.getElementById('cbObjects')
+            if (cbObjectsEl && cbState.cbObjects != null) cbObjectsEl.checked = cbState.cbObjects
+            if (cbObjectsEl && !cbObjectsEl.checked) objectGroup.visible = false
+
+            cb('cbObjects', e => {
+                objectGroup.visible = e.target.checked
+                saveCbState()
+            })
+
+            // Initial load if SLK maps have data
+            const _hasMaps = Object.keys(_doodFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
+            if (_hasMaps && (_doodItems.length > 0 || _unitItems.length > 0)) {
+                _collectAndLoad()
+            }
+
+            // Reload when game path changes (SLK data updated)
+            W3E.onGamePathChanged(function (data) {
+                if (data.doodadsSlk && data.doodadsSlk.doodads) {
+                    _doodFileMap = {}
+                    for (const d of data.doodadsSlk.doodads) {
+                        if (d.doodId && d.file) _doodFileMap[d.doodId] = {file: d.file, numVar: d.numVar || 1}
+                    }
+                }
+                if (data.unitsSlk && data.unitsSlk.units) {
+                    _unitFileMap = {}
+                    for (const u of data.unitsSlk.units) {
+                        if (u.unitId && u.file) _unitFileMap[u.unitId] = u.file
+                    }
+                }
+                const hasData = Object.keys(_doodFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
+                if (hasData && (_doodItems.length > 0 || _unitItems.length > 0)) {
+                    _collectAndLoad()
+                }
             })
         }
 

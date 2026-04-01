@@ -1,4 +1,4 @@
-const {esc, indexToRgb, TILESET_NAMES} = require('./utils.js')
+const {esc, indexToRgb, TILESET_NAMES, DOODAD_CATEGORIES} = require('./utils.js')
 const {renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent} = require('./panels.js')
 const {editorStyles} = require('./styles.js')
 
@@ -94,15 +94,37 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     // Build doodads SLK data
     let doodadsSlkSource = ''
     let doodadsSlkItems = ''
+    const doodadCategoriesSet = new Set()
+    const doodadTilesetsSet = new Set()
     if (terrainData && terrainData._doodadsSlk) {
         doodadsSlkSource = terrainData._doodadsSlk.source || ''
         if (terrainData._doodadsSlk.doodads && terrainData._doodadsSlk.doodads.length > 0) {
+            for (const d of terrainData._doodadsSlk.doodads) {
+                if (d.category) doodadCategoriesSet.add(d.category)
+                if (d.tilesets) {
+                    for (const ch of d.tilesets) {
+                        if (ch !== ',' && ch !== '*') doodadTilesetsSet.add(ch)
+                    }
+                }
+            }
             doodadsSlkItems = terrainData._doodadsSlk.doodads.map(d => {
-                return `<doodad-item dood-id="${esc(d.doodId)}" dood-name="${esc(d.name)}" comment="${esc(d.comment)}" dood-class="${esc(d.doodClass)}" category="${esc(d.category)}" file="${esc(d.file)}" tilesets="${esc(d.tilesets)}" num-var="${d.numVar}" def-scale="${d.defScale}" min-scale="${d.minScale}" max-scale="${d.maxScale}"></doodad-item>`
+                return `<doodad-item dood-id="${esc(d.doodId)}" dood-name="${esc(d.name)}" comment="${esc(d.comment)}" category="${esc(d.category)}" tilesets="${esc(d.tilesets)}"></doodad-item>`
             }).join('\n')
         }
     }
     const hasDoodadsSlk = !!(terrainData && terrainData._doodadsSlk)
+
+    // Build category & tileset checkbox HTML for the doodads sidebar
+    const categoryCheckboxes = Object.keys(DOODAD_CATEGORIES).sort().map(code => {
+        const label = DOODAD_CATEGORIES[code] || code
+        return `<label class="menu-cb"><input type="checkbox" class="ds-cat-cb" data-cat="${esc(code)}" checked /> <span class="ds-ts-badge">${esc(code)}</span> ${esc(label)}</label>`
+    }).join('\n')
+
+    const sortedTilesets = Array.from(doodadTilesetsSet).sort()
+    const tilesetCheckboxes = sortedTilesets.map(code => {
+        const label = TILESET_NAMES[code] || code
+        return `<label class="menu-cb"><input type="checkbox" class="ds-ts-cb" data-ts="${esc(code)}" checked /> <span class="ds-ts-badge">${esc(code)}</span> ${esc(label)}</label>`
+    }).join('\n')
 
     // Build units SLK data
     let unitsSlkSource = ''
@@ -116,6 +138,38 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         }
     }
     const hasUnitsSlk = !!(terrainData && terrainData._unitsSlk)
+
+    // Build rawcode → model file maps for placing objects on terrain
+    const doodadFileMap = {}
+    if (terrainData && terrainData._doodadsSlk && terrainData._doodadsSlk.doodads) {
+        for (const d of terrainData._doodadsSlk.doodads) {
+            if (d.doodId && d.file) doodadFileMap[d.doodId] = {file: d.file, numVar: d.numVar || 1}
+        }
+    }
+    const unitFileMap = {}
+    if (terrainData && terrainData._unitsSlk && terrainData._unitsSlk.units) {
+        for (const u of terrainData._unitsSlk.units) {
+            if (u.unitId && u.file) unitFileMap[u.unitId] = u.file
+        }
+    }
+
+    // Extract minimal DOO placement data
+    const doodadPlacements = mapInfo.doodadDooData && mapInfo.doodadDooData.items
+        ? mapInfo.doodadDooData.items.map((it, i) => ({
+            r: it.rawcode,
+            v: it.variation,
+            i: i,
+            p: [it.position.x, it.position.y, it.position.z],
+            a: it.angle,
+            s: [it.scale.x, it.scale.y, it.scale.z]
+        })) : []
+    const unitPlacements = mapInfo.unitDooData && mapInfo.unitDooData.items
+        ? mapInfo.unitDooData.items.map(it => ({
+            r: it.rawcode,
+            p: [it.position.x, it.position.y, it.position.z],
+            a: it.angle,
+            s: [it.scale.x, it.scale.y, it.scale.z]
+        })) : []
 
     const nonce = mapInfo.nonce || ''
     const cspSource = mapInfo.cspSource || ''
@@ -193,7 +247,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     </float-window>
     ` : ''}
 
-    <float-window id="unitDooWindow" title-text="\ud83d\udccd Placed Units" ${isDoo && mapInfo.isDooUnit ? '' : 'hidden'} style="left:140px;top:16px;">
+    <float-window id="unitDooWindow" title-text="\ud83d\udccd Placed Units" no-padding ${isDoo && mapInfo.isDooUnit ? '' : 'hidden'} style="left:140px;top:16px;width:800px;height:70vh;">
         ${hasUnitDoo ? unitDooContent : '<div class="fi-empty">\u26a0 war3mapUnits.doo not found</div>'}
     </float-window>
 
@@ -204,15 +258,39 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         <div class="legend" id="usUnitList">${unitsSlkItems}</div>
     </float-window>
 
-    <float-window id="doodadDooWindow" title-text="\ud83d\udccd Placed Doodads" ${isDoo && !mapInfo.isDooUnit ? '' : 'hidden'} style="left:140px;top:16px;">
+    <float-window id="doodadDooWindow" title-text="\ud83d\udccd Placed Doodads" no-padding ${isDoo && !mapInfo.isDooUnit ? '' : 'hidden'} style="left:140px;top:16px;width:800px;height:70vh;">
         ${hasDoodadDoo ? doodadDooContent : '<div class="fi-empty">\u26a0 war3map.doo not found</div>'}
     </float-window>
 
-    <float-window id="doodadsSlkWindow" title-text="\ud83c\udf33 Doodads" hidden style="left:140px;top:16px;width:600px;height:70vh;">
+    <float-window id="doodadsSlkWindow" title-text="\ud83c\udf33 Doodads" no-padding hidden style="left:140px;top:16px;width:750px;height:70vh;">
         <reload-button slot="actions"></reload-button>
-        <div id="dsSlkSource" class="${doodadsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${doodadsSlkSource ? 'Doodads.slk: <span class="code">' + esc(doodadsSlkSource) + '</span>' : 'Doodads.slk not found \u2014 set Game Path'}</div>
-        <div class="tw-section-title">Doodads (<span id="dsDoodadCount">${hasDoodadsSlk && terrainData._doodadsSlk.doodads ? terrainData._doodadsSlk.doodads.length : 0}</span>)</div>
-        <div class="legend" id="dsDoodadList">${doodadsSlkItems}</div>
+        <div style="display:flex;height:100%;overflow:hidden;">
+            <div class="ds-sidebar" id="dsSidebar">
+                <div id="dsSlkSource" class="${doodadsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${doodadsSlkSource ? 'Doodads.slk: <span class="code">' + esc(doodadsSlkSource) + '</span>' : 'Doodads.slk not found \u2014 set Game Path'}</div>
+                <div class="ds-filter-group">
+                    <div class="ds-filter-title">Categories</div>
+                    <div class="terrain-checks" id="dsCatChecks">${categoryCheckboxes}</div>
+                </div>
+                <div class="ds-filter-group">
+                    <div class="ds-filter-title">Tilesets</div>
+                    <div class="terrain-checks" id="dsTsChecks">${tilesetCheckboxes}</div>
+                </div>
+            </div>
+            <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
+                <input type="text" id="dsSearchInput" placeholder="Search by name or ID\u2026" class="ds-search" />
+                <div class="ds-sort-bar">
+                    <span class="ds-sort-col" data-sort="doodId">ID</span>
+                    <span class="ds-sort-col ds-sort-name" data-sort="name">Name</span>
+                    <span class="ds-sort-col ds-sort-cat" data-sort="category">Category</span>
+                    <span class="ds-sort-info">(<span id="dsDoodadCount">${hasDoodadsSlk && terrainData._doodadsSlk.doodads ? terrainData._doodadsSlk.doodads.length : 0}</span> / <span id="dsDoodadTotal">${hasDoodadsSlk && terrainData._doodadsSlk.doodads ? terrainData._doodadsSlk.doodads.length : 0}</span>)</span>
+                </div>
+                <div class="legend" id="dsDoodadList" style="overflow-y:auto;flex:1;min-height:0;">${doodadsSlkItems}</div>
+            </div>
+        </div>
+    </float-window>
+
+    <float-window id="doodadDetailWindow" title-text="\ud83c\udf33 Doodad" hidden style="left:200px;top:60px;width:560px;">
+        <div id="doodadDetailBody"></div>
     </float-window>
 
     ${hasTerrain ? `
@@ -235,6 +313,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             <label class="menu-cb"><input type="checkbox" id="cbWireframe" checked /> Wireframe</label>
             <label class="menu-cb"><input type="checkbox" id="cbTextures" checked /> Textures</label>
             <label class="menu-cb"><input type="checkbox" id="cbDeformation" checked /> Deformation</label>
+            <label class="menu-cb"><input type="checkbox" id="cbObjects" checked /> Objects</label>
         </div>
     </float-window>
     ` : ''}
@@ -301,7 +380,12 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         cliffTileCodes: ${hasTerrain && terrainData.cliff_tiles ? JSON.stringify(terrainData.cliff_tiles) : '[]'},
         isArchive: ${!!mapInfo.isArchive},
         binaryServer: ${mapInfo.binaryServer ? JSON.stringify({port: mapInfo.binaryServer.port, token: mapInfo.binaryServer.token}) : 'null'},
-        archivePath: ${mapInfo.archivePath ? JSON.stringify(mapInfo.archivePath) : 'null'}
+        archivePath: ${mapInfo.archivePath ? JSON.stringify(mapInfo.archivePath) : 'null'},
+        doodadFileMap: ${JSON.stringify(doodadFileMap)},
+        unitFileMap: ${JSON.stringify(unitFileMap)},
+        doodadPlacements: ${JSON.stringify(doodadPlacements)},
+        unitPlacements: ${JSON.stringify(unitPlacements)},
+        initialDoodadsSlk: ${hasDoodadsSlk ? JSON.stringify(terrainData._doodadsSlk) : 'null'}
     };
     </script>
     <script nonce="${nonce}" src="${terrainSrc}"></script>

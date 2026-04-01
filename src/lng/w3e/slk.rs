@@ -210,6 +210,8 @@ pub struct DoodadInfo {
     pub def_scale: f64,
     pub min_scale: f64,
     pub max_scale: f64,
+    /// All raw SLK columns for this row (key → value).
+    pub raw: HashMap<String, String>,
 }
 
 /// Result of loading `Doodads\Doodads.slk`.
@@ -229,27 +231,36 @@ pub fn load_doodads_slk(archive_path: Option<&str>) -> Option<DoodadsSlkResult> 
         archive_path,
     )?;
 
+    // Ensure WorldEditStrings are loaded for WESTRING_* resolution.
+    super::westrings::ensure_loaded(archive_path);
+
     let rows = parse_slk(&buf);
 
     let doodads: Vec<DoodadInfo> = rows
         .into_iter()
-        .filter_map(|row| {
+        .filter_map(|mut row| {
             let dood_id = row.get("doodID")?.clone();
             if dood_id.is_empty() {
                 return None;
             }
+            // Resolve WESTRING_* references in the Name field.
+            let raw_name = row.get("Name").cloned().unwrap_or_default();
+            let name = super::westrings::resolve_value(&raw_name);
+            // Store the resolved name back into raw so the detail view shows it.
+            row.insert("Name".to_string(), name.clone());
             Some(DoodadInfo {
                 dood_id,
                 category: row.get("category").cloned().unwrap_or_default(),
                 tilesets: row.get("tilesets").cloned().unwrap_or_default(),
                 file: row.get("file").cloned().unwrap_or_default(),
                 comment: row.get("comment").cloned().unwrap_or_default(),
-                name: row.get("Name").cloned().unwrap_or_default(),
+                name,
                 dood_class: row.get("doodClass").cloned().unwrap_or_default(),
                 num_var: row.get("numVar").and_then(|v| v.parse().ok()).unwrap_or(0),
                 def_scale: row.get("defScale").and_then(|v| v.parse().ok()).unwrap_or(1.0),
                 min_scale: row.get("minScale").and_then(|v| v.parse().ok()).unwrap_or(0.0),
                 max_scale: row.get("maxScale").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+                raw: row,
             })
         })
         .collect();
@@ -388,6 +399,108 @@ mod tests {
         assert_eq!(first.get("doodID").map(|s| s.as_str()), Some("APms"));
         assert_eq!(first.get("comment").map(|s| s.as_str()), Some("Mushrooms"));
         assert!(first.get("file").is_some());
+    }
+
+    /// Collect all unique `category` values, tileset characters, and doodad
+    /// names from `Doodads\Doodads.slk` so we can use them for UI filters.
+    ///
+    /// Run manually:
+    /// ```sh
+    /// cargo test --package JASS-Tree-sitter-Rust w3e::slk::tests::dump_doodad_categories_and_tilesets -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn dump_doodad_categories_and_tilesets() {
+        use std::collections::BTreeMap;
+
+        let data = include_bytes!("../../lng/slk/fixtures/Doodads/Doodads.slk");
+        let rows = parse_slk(data);
+        assert!(!rows.is_empty(), "should parse some doodad rows");
+
+        let mut categories: BTreeMap<String, usize> = BTreeMap::new();
+        let mut tilesets: BTreeMap<char, usize> = BTreeMap::new();
+        let mut names: Vec<(String, String, String, String)> = Vec::new(); // (doodID, Name, category, tilesets)
+
+        for row in &rows {
+            let dood_id = row.get("doodID").cloned().unwrap_or_default();
+            if dood_id.is_empty() {
+                continue;
+            }
+
+            // Category
+            let cat = row.get("category").cloned().unwrap_or_default();
+            if !cat.is_empty() {
+                *categories.entry(cat.clone()).or_insert(0) += 1;
+            }
+
+            // Tilesets – each character is a separate tileset code
+            let ts = row.get("tilesets").cloned().unwrap_or_default();
+            for ch in ts.chars() {
+                *tilesets.entry(ch).or_insert(0) += 1;
+            }
+
+            // Name
+            let name = row.get("Name").cloned().unwrap_or_default();
+            names.push((dood_id, name, cat, ts));
+        }
+
+        println!("\n══════════════════════════════════════════");
+        println!("  Doodads.slk — {} entries", rows.len());
+        println!("══════════════════════════════════════════\n");
+
+        println!("── Categories ({}) ──", categories.len());
+        for (cat, count) in &categories {
+            println!("  {:<20} {:>4} doodads", cat, count);
+        }
+
+        println!("\n── Tileset characters ({}) ──", tilesets.len());
+        for (ch, count) in &tilesets {
+            println!("  '{}' {:>5} doodads", ch, count);
+        }
+
+        println!("\n── Doodad names (first 30) ──");
+        for (id, name, cat, ts) in names.iter().take(30) {
+            println!("  {} | {:<40} | cat={:<16} | ts={}", id, name, cat, ts);
+        }
+
+        println!("\nTotal categories: {}", categories.len());
+        println!("Total tileset chars: {}", tilesets.len());
+        println!("Total doodad entries: {}", rows.len());
+    }
+
+    /// Dump all column names from `Doodads.slk` into a text file next to the fixture.
+    ///
+    /// Run manually:
+    /// ```sh
+    /// cargo test --package JASS-Tree-sitter-Rust w3e::slk::tests::dump_doodad_field_names -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn dump_doodad_field_names() {
+        use std::collections::BTreeSet;
+
+        let data = include_bytes!("../../lng/slk/fixtures/Doodads/Doodads.slk");
+        let rows = parse_slk(data);
+        assert!(!rows.is_empty(), "should parse some doodad rows");
+
+        let mut fields = BTreeSet::new();
+        for row in &rows {
+            for key in row.keys() {
+                fields.insert(key.clone());
+            }
+        }
+
+        let out_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/lng/slk/fixtures/Doodads/field_names.txt"
+        );
+        let content = fields.iter().cloned().collect::<Vec<_>>().join("\n");
+        std::fs::write(out_path, &content).expect("failed to write field_names.txt");
+
+        println!("\nWrote {} field names to {}", fields.len(), out_path);
+        for f in &fields {
+            println!("  {}", f);
+        }
     }
 
     #[test]

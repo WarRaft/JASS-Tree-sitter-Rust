@@ -81,6 +81,8 @@ pub fn set_game_path(path: &str) {
         *gp = Some(path.to_string());
     }
     save_to_db(path);
+    // Invalidate cached WorldEditStrings so they are reloaded from the new path.
+    super::westrings::invalidate();
 }
 
 /// Read the current game path (lazy-loads from disk on first call).
