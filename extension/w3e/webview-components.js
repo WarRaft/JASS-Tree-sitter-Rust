@@ -11,10 +11,14 @@
 class FloatWindow extends HTMLElement {
     static get observedAttributes() { return ['title-text']; }
 
+    // Dynamic bottom-bar height: reads the actual rendered height of #cursor-info
+    get _BOTTOM_BAR() {
+        const el = document.getElementById('cursor-info');
+        return el ? el.offsetHeight : 0;
+    }
+
     constructor() {
         super();
-        // Height of the bottom cursor-info bar (min-height:24 + padding:4*2 + border:1)
-        this._BOTTOM_BAR = 33;
 
         const shadow = this.attachShadow({mode: 'open'});
         shadow.innerHTML = `
@@ -1007,22 +1011,103 @@ window.W3E = (function () {
         // Orbit controls — same as terrain editor
         var ctrl = makeOrbitControls(camera, canvas, maxDim, {skipGuards: true});
 
-        // Toolbar
-        const wireToggle = document.getElementById('mvWireframe');
-        const axesToggle = document.getElementById('mvAxes');
-        const gridToggle = document.getElementById('mvGrid');
+        // Toolbar — sidebar buttons
+        const wireBtn = document.getElementById('mvWireBtn');
+        const axesBtn = document.getElementById('mvAxesBtn');
+        const gridBtn = document.getElementById('mvGridBtn');
         const resetBtn = document.getElementById('mvResetCamera');
+        const geosetBtn = document.getElementById('mvGeosetBtn');
+        const geosetsPanel = document.getElementById('mvGeosetsPanel');
+        const geosetList = document.getElementById('mvGeosetList');
+        const materialBtn = document.getElementById('mvMaterialBtn');
+        const materialsPanel = document.getElementById('mvMaterialsPanel');
+        const materialList = document.getElementById('mvMaterialList');
 
-        if (wireToggle) wireToggle.addEventListener('change', function (e) {
-            wireframeGroup.children.forEach(function (m) { m.visible = e.target.checked; });
+        let wireOn = false, axesOn = true, gridOn = true;
+
+        function toggleSbBtn(btn, on) {
+            if (on) btn.classList.add('active');
+            else btn.classList.remove('active');
+        }
+
+        if (wireBtn) wireBtn.addEventListener('click', function () {
+            wireOn = !wireOn;
+            toggleSbBtn(wireBtn, wireOn);
+            wireframeGroup.children.forEach(function (m, i) {
+                var mainMesh = meshGroup.children[i];
+                m.visible = wireOn && (!mainMesh || mainMesh.visible);
+            });
         });
-        if (axesToggle) axesToggle.addEventListener('change', function (e) { axesHelper.visible = e.target.checked; });
-        if (gridToggle) gridToggle.addEventListener('change', function (e) { gridHelper.visible = e.target.checked; });
+        if (axesBtn) axesBtn.addEventListener('click', function () {
+            axesOn = !axesOn;
+            toggleSbBtn(axesBtn, axesOn);
+            axesHelper.visible = axesOn;
+        });
+        if (gridBtn) gridBtn.addEventListener('click', function () {
+            gridOn = !gridOn;
+            toggleSbBtn(gridBtn, gridOn);
+            gridHelper.visible = gridOn;
+        });
         if (resetBtn) resetBtn.addEventListener('click', function () {
             ctrl.target.copy(defaultCamTarget);
             const d2 = new THREE.Vector3(maxDim * 0.7, maxDim * 0.5, maxDim * 0.7);
             camera.position.copy(defaultCamTarget).add(d2);
             camera.lookAt(defaultCamTarget);
+        });
+
+        // Geoset panel toggle
+        if (geosetBtn && geosetsPanel) {
+            geosetBtn.addEventListener('click', function () {
+                const show = geosetsPanel.hidden;
+                geosetsPanel.hidden = !show;
+                toggleSbBtn(geosetBtn, show);
+                // Hide materials panel if opening geosets
+                if (show && materialsPanel && !materialsPanel.hidden) {
+                    materialsPanel.hidden = true;
+                    toggleSbBtn(materialBtn, false);
+                }
+            });
+        }
+
+        // Material panel toggle
+        if (materialBtn && materialsPanel) {
+            materialBtn.addEventListener('click', function () {
+                const show = materialsPanel.hidden;
+                materialsPanel.hidden = !show;
+                toggleSbBtn(materialBtn, show);
+                // Hide geosets panel if opening materials
+                if (show && geosetsPanel && !geosetsPanel.hidden) {
+                    geosetsPanel.hidden = true;
+                    toggleSbBtn(geosetBtn, false);
+                }
+            });
+        }
+
+        // ── Panel resize handles ────────────────────────────────
+        document.querySelectorAll('.mv-panel-resize-handle').forEach(function (handle) {
+            handle.addEventListener('mousedown', function (e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var panel = handle.parentElement;
+                if (!panel) return;
+                var startX = e.clientX;
+                var startW = panel.offsetWidth;
+                handle.classList.add('active');
+
+                function onMove(ev) {
+                    ev.preventDefault();
+                    var delta = startX - ev.clientX;
+                    var newW = Math.max(120, Math.min(panel.parentElement.clientWidth * 0.8, startW + delta));
+                    panel.style.width = newW + 'px';
+                }
+                function onUp() {
+                    handle.classList.remove('active');
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                }
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
         });
 
         // Resize
@@ -1075,6 +1160,23 @@ window.W3E = (function () {
             return new Uint16Array(buf);
         }
 
+        // Filter mode names
+        var FILTER_MODE_NAMES = [
+            'None', 'Transparent', 'Blend', 'Additive',
+            'AddAlpha', 'Modulate', 'Modulate2x'
+        ];
+
+        /** Build texture URL for the HTTP server. */
+        function textureUrl(bs, archivePath, texPath) {
+            if (!bs || !texPath) return null;
+            var params = new URLSearchParams({
+                token: bs.token,
+                path: texPath,
+            });
+            if (archivePath) params.set('archive', archivePath);
+            return 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params;
+        }
+
         function load(msg) {
             // Clear old meshes
             meshGroup.clear();
@@ -1083,12 +1185,36 @@ window.W3E = (function () {
             if (nameEl) nameEl.textContent = msg.name || 'Model';
 
             const geosets = msg.geosets || [];
+            const textures = msg.textures || [];
+            const materials = msg.materials || [];
+            const bs = msg.binaryServer || window.__W3E_DATA__.binaryServer || null;
+            const archivePath = msg.archivePath || window.__W3E_DATA__.archivePath || null;
+
             if (geosets.length === 0) {
                 if (infoEl) infoEl.textContent = 'No geosets';
                 win.show();
                 return;
             }
 
+            // ── Pre-load textures via HTTP server ─────────────────
+            var loadedTextures = new Array(textures.length).fill(null);
+            var textureLoader = new THREE.TextureLoader();
+            textureLoader.crossOrigin = 'anonymous';
+
+            /** Look up the THREE.Texture for a geoset by its materialId. */
+            function getTextureForMaterial(materialId) {
+                if (materialId < materials.length) {
+                    var mat = materials[materialId];
+                    var layers = mat.layers || [];
+                    if (layers.length > 0) {
+                        var texId = layers[0].texture_id;
+                        if (texId < loadedTextures.length && loadedTextures[texId]) {
+                            return {texture: loadedTextures[texId], layer: layers[0], texIndex: texId};
+                        }
+                    }
+                }
+                return null;
+            }
 
             let totalVerts = 0, totalFaces = 0;
 
@@ -1097,6 +1223,7 @@ window.W3E = (function () {
                 const vertices = b64ToFloat32(g.vertices);
                 const normals = b64ToFloat32(g.normals);
                 const faces = b64ToUint16(g.faces);
+                const uvs = b64ToFloat32(g.uvs);
 
                 totalVerts += g.vertex_count;
                 totalFaces += g.face_count;
@@ -1104,27 +1231,189 @@ window.W3E = (function () {
                 const geometry = new THREE.BufferGeometry();
                 geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
                 if (normals.length > 0) geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+                if (uvs.length > 0) geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
                 geometry.setIndex(new THREE.BufferAttribute(faces, 1));
                 if (normals.length === 0) geometry.computeVertexNormals();
 
                 const color = COLORS[idx % COLORS.length];
-                const material = new THREE.MeshPhongMaterial({
-                    color, side: THREE.DoubleSide, flatShading: false,
-                    transparent: true, opacity: 0.95,
-                });
+                var texInfo = getTextureForMaterial(g.material_id);
+
+                var matOpts = {
+                    side: THREE.DoubleSide,
+                    flatShading: false,
+                };
+                if (texInfo) {
+                    matOpts.map = texInfo.texture;
+                    var fm = texInfo.layer.filter_mode;
+                    if (fm === 1) {
+                        matOpts.transparent = true;
+                        matOpts.alphaTest = 0.5;
+                    } else if (fm === 2 || fm === 3) {
+                        matOpts.transparent = true;
+                        matOpts.blending = fm === 3 ? THREE.AdditiveBlending : THREE.NormalBlending;
+                        matOpts.depthWrite = false;
+                    } else {
+                        matOpts.transparent = false;
+                    }
+                    if (texInfo.layer.alpha < 1.0) {
+                        matOpts.transparent = true;
+                        matOpts.opacity = texInfo.layer.alpha;
+                    }
+                } else {
+                    matOpts.color = color;
+                    matOpts.transparent = true;
+                    matOpts.opacity = 0.95;
+                }
+                const material = new THREE.MeshPhongMaterial(matOpts);
+                material.userData = {hasTexture: !!texInfo, fallbackColor: color, materialId: g.material_id};
                 const mesh = new THREE.Mesh(geometry, material);
+                mesh.userData.geoIndex = idx;
+                mesh.userData.materialId = g.material_id;
                 meshGroup.add(mesh);
 
                 const wireMat = new THREE.MeshBasicMaterial({
                     color: 0xffffff, wireframe: true, transparent: true, opacity: 0.15,
                 });
                 const wireMesh = new THREE.Mesh(geometry, wireMat);
-                wireMesh.visible = !!(wireToggle && wireToggle.checked);
+                wireMesh.visible = wireOn;
                 wireframeGroup.add(wireMesh);
             });
 
             if (infoEl) {
                 infoEl.textContent = geosets.length + ' geoset(s) | ' + totalVerts + ' verts | ' + totalFaces + ' faces';
+            }
+
+            // ── Start loading textures now that meshes exist ──────
+            if (bs) {
+                textures.forEach(function (tex, i) {
+                    if (!tex || !tex.file_name || tex.replaceable_id) return;
+                    var url = textureUrl(bs, archivePath, tex.file_name);
+                    if (!url) return;
+
+                    var threeTex = textureLoader.load(url, function () {
+                        // Texture loaded — update all meshes that reference it
+                        meshGroup.children.forEach(function (m) {
+                            var matId = m.userData.materialId;
+                            var info = getTextureForMaterial(matId);
+                            if (info && info.texIndex === i) {
+                                m.material.map = threeTex;
+                                m.material.color.set(0xffffff);
+                                m.material.needsUpdate = true;
+                            }
+                        });
+                        // Update material panel texture thumbnails
+                        var imgs = document.querySelectorAll('[data-mv-tex-index="' + i + '"]');
+                        imgs.forEach(function (img) {
+                            img.src = url;
+                            img.style.display = '';
+                        });
+                    });
+                    threeTex.wrapS = THREE.RepeatWrapping;
+                    threeTex.wrapT = THREE.RepeatWrapping;
+                    threeTex.magFilter = THREE.LinearFilter;
+                    threeTex.minFilter = THREE.LinearMipmapLinearFilter;
+                    loadedTextures[i] = threeTex;
+                });
+            }
+
+            // ── Populate geosets panel ─────────────────────────────
+            if (geosetList) {
+                geosetList.innerHTML = '';
+                geosets.forEach(function (g, idx) {
+                    if (!g.vertex_count || !g.face_count) return;
+                    const color = COLORS[idx % COLORS.length];
+                    const r = (color >> 16) & 0xff;
+                    const gv = (color >> 8) & 0xff;
+                    const b = color & 0xff;
+                    const row = document.createElement('div');
+                    row.className = 'mv-mat-row';
+                    row.innerHTML =
+                        '<div class="mv-mat-swatch" style="background:rgb(' + r + ',' + gv + ',' + b + ')"></div>' +
+                        '<span class="mv-mat-label">Geoset ' + idx + ' <span style="opacity:.5;font-size:11px">' + (g.vertex_count || 0) + 'v / ' + (g.face_count || 0) + 'f' + (g.material_id !== undefined ? ' mat=' + g.material_id : '') + '</span></span>' +
+                        '<span class="mv-mat-eye">\ud83d\udc41</span>';
+                    row.addEventListener('click', function () {
+                        const mesh = meshGroup.children[idx];
+                        const wire = wireframeGroup.children[idx];
+                        if (!mesh) return;
+                        const vis = !mesh.visible;
+                        mesh.visible = vis;
+                        if (wire) wire.visible = vis && wireOn;
+                        row.classList.toggle('mv-hidden', !vis);
+                    });
+                    geosetList.appendChild(row);
+                });
+            }
+
+            // ── Populate materials panel ──────────────────────────
+            if (materialList) {
+                materialList.innerHTML = '';
+                materials.forEach(function (mat, i) {
+                    var item = document.createElement('div');
+                    item.className = 'mv-mat-item';
+
+                    var header = document.createElement('div');
+                    header.className = 'mv-mat-item-header';
+                    var headerText = 'Material #' + i;
+                    if (mat.priority_plane) headerText += ' (plane: ' + mat.priority_plane + ')';
+                    if (mat.flags) headerText += ' [0x' + mat.flags.toString(16) + ']';
+                    header.textContent = headerText;
+                    item.appendChild(header);
+
+                    var layers = mat.layers || [];
+                    layers.forEach(function (layer, li) {
+                        var layerDiv = document.createElement('div');
+                        layerDiv.className = 'mv-mat-layer';
+
+                        var fmName = FILTER_MODE_NAMES[layer.filter_mode] || 'Unknown(' + layer.filter_mode + ')';
+
+                        var layerHtml =
+                            '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Layer #' + li + '</span></div>' +
+                            '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Filter:</span> <span>' + fmName + '</span></div>' +
+                            '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Shading:</span> <span>0x' + layer.shading_flags.toString(16) + '</span></div>' +
+                            '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Texture:</span> <span title="' + (tex && tex.file_name ? tex.file_name.replace(/"/g, '&quot;') : '') + '">#' + layer.texture_id;
+
+                        var tex = textures[layer.texture_id];
+                        if (tex && tex.file_name) {
+                            layerHtml += ' — ' + tex.file_name.replace(/\\\\/g, '/');
+                        }
+                        layerHtml += '</span></div>';
+                        layerHtml += '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Alpha:</span> <span>' + (layer.alpha !== undefined ? layer.alpha.toFixed(2) : '1.00') + '</span></div>';
+                        layerDiv.innerHTML = layerHtml;
+
+                        // Texture thumbnail
+                        if (tex && tex.file_name && !tex.replaceable_id && bs) {
+                            var thumbUrl = textureUrl(bs, archivePath, tex.file_name);
+                            if (thumbUrl) {
+                                var thumb = document.createElement('img');
+                                thumb.className = 'mv-mat-thumb';
+                                thumb.src = thumbUrl;
+                                thumb.alt = tex.file_name;
+                                thumb.setAttribute('data-mv-tex-index', layer.texture_id);
+                                thumb.onerror = function () {
+                                    thumb.style.display = 'none';
+                                    var ph = document.createElement('div');
+                                    ph.className = 'mv-mat-thumb-placeholder';
+                                    ph.textContent = 'Texture not found';
+                                    thumb.parentNode.replaceChild(ph, thumb);
+                                };
+                                layerDiv.appendChild(thumb);
+                            }
+                        } else if (tex && tex.replaceable_id) {
+                            var ph = document.createElement('div');
+                            ph.className = 'mv-mat-thumb-placeholder';
+                            ph.textContent = 'Replaceable (ID ' + tex.replaceable_id + ')';
+                            layerDiv.appendChild(ph);
+                        }
+
+                        item.appendChild(layerDiv);
+                    });
+
+                    materialList.appendChild(item);
+                });
+
+                if (materials.length === 0) {
+                    materialList.innerHTML = '<div style="padding:8px;opacity:.5">No materials</div>';
+                }
             }
 
             // Auto-fit camera
@@ -1168,6 +1457,8 @@ window.W3E = (function () {
         function showUnsupported(msg) {
             meshGroup.clear();
             wireframeGroup.clear();
+            if (geosetList) geosetList.innerHTML = '';
+            if (materialList) materialList.innerHTML = '';
             if (nameEl) nameEl.textContent = msg.name || 'Model';
             if (infoEl) infoEl.textContent = '\u26a0 ' + (msg.reason || 'Unsupported format');
             win.show();

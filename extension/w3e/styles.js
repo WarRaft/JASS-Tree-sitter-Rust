@@ -450,10 +450,37 @@ function editorStyles() {
         }
 
         /* ── Model viewer ──────────────────────────────────────── */
-        #modelViewerWindow .mv-toolbar,
-        #modelViewerWindow .mv-canvas-container {
-            /* These live inside the float-window <slot> (light DOM) */
+        .mv-sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 6px 4px;
+            width: auto;
+            background: rgba(30, 30, 30, 0.92);
+            border-right: 1px solid rgba(255, 255, 255, 0.08);
+            flex-shrink: 0;
+            overflow-y: auto;
         }
+        .mv-sb-item {
+            background: none;
+            border: 1px solid transparent;
+            border-radius: 4px;
+            color: var(--vscode-editor-foreground, #ccc);
+            cursor: pointer;
+            padding: 5px 14px;
+            font-family: inherit;
+            font-size: 12px;
+            line-height: 1;
+            white-space: nowrap;
+            text-align: left;
+        }
+        .mv-sb-item:hover { background: rgba(255, 255, 255, 0.08); border-color: rgba(255, 255, 255, 0.1); }
+        .mv-sb-item.active {
+            background: rgba(255, 255, 255, 0.12);
+            border-color: var(--vscode-focusBorder, #007acc);
+            color: #fff;
+        }
+        .mv-sb-sep { height: 1px; background: rgba(255, 255, 255, 0.12); margin: 4px 0; }
         .mv-toolbar {
             display: flex;
             align-items: center;
@@ -462,7 +489,6 @@ function editorStyles() {
             background: rgba(255, 255, 255, 0.03);
             border-bottom: 1px solid rgba(255, 255, 255, 0.06);
             flex-shrink: 0;
-            flex-wrap: wrap;
             font-size: 12px;
         }
         .mv-toolbar strong {
@@ -478,18 +504,6 @@ function editorStyles() {
             font-size: 11px;
             white-space: nowrap;
         }
-        .mv-reset {
-            padding: 2px 8px;
-            background: var(--vscode-dropdown-background, #3c3c3c);
-            color: var(--vscode-dropdown-foreground, #ccc);
-            border: 1px solid var(--vscode-dropdown-border, #454545);
-            border-radius: 3px;
-            font-size: 11px;
-            cursor: pointer;
-        }
-        .mv-reset:hover {
-            background: var(--vscode-button-hoverBackground, #505050);
-        }
         .mv-canvas-container {
             flex: 1;
             position: relative;
@@ -500,6 +514,121 @@ function editorStyles() {
             display: block;
             width: 100%;
             height: 100%;
+        }
+        .mv-materials-panel {
+            position: absolute;
+            top: 0; right: 0; bottom: 0;
+            width: 220px;
+            min-width: 120px;
+            max-width: 80%;
+            background: rgba(37, 37, 38, 0.95);
+            border-left: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            overflow-y: auto;
+            z-index: 2;
+        }
+        .mv-materials-panel[hidden] { display: none !important; }
+        .mv-panel-resize-handle {
+            position: absolute;
+            left: -3px; top: 0; bottom: 0;
+            width: 6px;
+            cursor: col-resize;
+            z-index: 3;
+        }
+        .mv-panel-resize-handle:hover,
+        .mv-panel-resize-handle.active {
+            background: var(--vscode-focusBorder, #007acc);
+            opacity: 0.5;
+        }
+        .mv-mat-title {
+            font-size: 11px; font-weight: 600;
+            color: var(--vscode-descriptionForeground, #888);
+            padding: 8px 10px 4px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .mv-mat-list { padding: 0 6px 6px; }
+        .mv-mat-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .mv-mat-row:hover { background: rgba(255, 255, 255, 0.06); }
+        .mv-mat-row.mv-hidden { opacity: 0.35; }
+        .mv-mat-swatch {
+            width: 14px; height: 14px;
+            border-radius: 3px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            flex-shrink: 0;
+        }
+        .mv-mat-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .mv-mat-eye { font-size: 11px; opacity: 0.5; }
+        .mv-sidebar::-webkit-scrollbar,
+        .mv-materials-panel::-webkit-scrollbar { width: 6px; }
+        .mv-sidebar::-webkit-scrollbar-track,
+        .mv-materials-panel::-webkit-scrollbar-track { background: transparent; }
+        .mv-sidebar::-webkit-scrollbar-thumb,
+        .mv-materials-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+        .mv-sidebar::-webkit-scrollbar-thumb:hover,
+        .mv-materials-panel::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+
+        /* ── Model viewer: material items ─────────────────────── */
+        .mv-mat-item {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 6px;
+        }
+        .mv-mat-item-header {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--vscode-editor-foreground, #ccc);
+            margin-bottom: 4px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .mv-mat-layer {
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 3px;
+            padding: 4px 6px;
+            margin: 4px 0;
+            font-size: 11px;
+        }
+        .mv-mat-layer-row {
+            display: flex;
+            gap: 4px;
+            padding: 1px 0;
+            min-width: 0;
+        }
+        .mv-mat-layer-row > span:last-child {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .mv-mat-layer-label {
+            color: var(--vscode-descriptionForeground, #888);
+            white-space: nowrap;
+        }
+        .mv-mat-thumb {
+            display: block;
+            max-width: 100%;
+            max-height: 96px;
+            margin-top: 4px;
+            border-radius: 3px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            object-fit: contain;
+        }
+        .mv-mat-thumb-placeholder {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground, #666);
+            font-style: italic;
+            padding: 4px 0;
         }
 
         /* ── Custom context menu ──────────────────────────────── */

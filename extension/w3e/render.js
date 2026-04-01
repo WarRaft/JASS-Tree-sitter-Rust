@@ -123,6 +123,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const terrainSrc = mapInfo.terrainSrc || ''
 
     const connectSrc = mapInfo.binaryServer ? `connect-src http://127.0.0.1:${mapInfo.binaryServer.port};` : ''
+    const imgSrcExtra = mapInfo.binaryServer ? ` http://127.0.0.1:${mapInfo.binaryServer.port}` : ''
 
     // Build the binary fetch URL (if the HTTP server is available)
     let binaryTerrainUrl = 'null'
@@ -141,7 +142,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 <head>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; ${connectSrc} img-src ${cspSource} data: blob:; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src ${cspSource};" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; ${connectSrc} img-src ${cspSource}${imgSrcExtra} data: blob:; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; font-src ${cspSource};" />
     <style>${editorStyles()}</style>
 </head>
 <body>
@@ -256,18 +257,35 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     </float-window>
     ` : ''}
 
-    <float-window id="modelViewerWindow" title-text="\ud83c\udfae Model Viewer" no-padding hidden style="left:180px;top:40px;width:600px;height:500px;">
-        <div style="display:flex;flex-direction:column;height:100%;">
-            <div class="mv-toolbar" id="mvToolbar">
-                <strong id="modelName">Model</strong>
-                <label class="menu-cb"><input type="checkbox" id="mvWireframe" /> Wire</label>
-                <label class="menu-cb"><input type="checkbox" id="mvAxes" checked /> Axes</label>
-                <label class="menu-cb"><input type="checkbox" id="mvGrid" checked /> Grid</label>
-                <button class="mv-reset" id="mvResetCamera">Reset</button>
-                <span class="mv-info" id="modelInfo"></span>
+    <float-window id="modelViewerWindow" title-text="\ud83c\udfae Model Viewer" no-padding hidden style="left:160px;top:32px;width:800px;height:650px;">
+        <div style="display:flex;height:100%;">
+            <div class="mv-sidebar" id="mvSidebar">
+                <button class="mv-sb-item" id="mvWireBtn" title="Wireframe overlay">\ud83d\udd32 Wire</button>
+                <button class="mv-sb-item active" id="mvAxesBtn" title="Show axes helper">\ud83d\udccf Axes</button>
+                <button class="mv-sb-item active" id="mvGridBtn" title="Show grid">\u229e Grid</button>
+                <div class="mv-sb-sep"></div>
+                <button class="mv-sb-item" id="mvResetCamera" title="Reset camera">\ud83c\udfaf Reset</button>
+                <button class="mv-sb-item" id="mvGeosetBtn" title="Geoset visibility">\ud83e\udde9 Geosets</button>
+                <button class="mv-sb-item" id="mvMaterialBtn" title="Materials & textures">\ud83c\udfa8 Material</button>
             </div>
-            <div class="mv-canvas-container" id="modelCanvasContainer">
-                <canvas id="modelCanvas"></canvas>
+            <div style="display:flex;flex-direction:column;flex:1;min-width:0;">
+                <div class="mv-toolbar" id="mvToolbar">
+                    <strong id="modelName">Model</strong>
+                    <span class="mv-info" id="modelInfo"></span>
+                </div>
+                <div class="mv-canvas-container" id="modelCanvasContainer">
+                    <canvas id="modelCanvas"></canvas>
+                    <div class="mv-materials-panel" id="mvGeosetsPanel" hidden>
+                        <div class="mv-panel-resize-handle" data-resize-panel="mvGeosetsPanel"></div>
+                        <div class="mv-mat-title">Geosets</div>
+                        <div class="mv-mat-list" id="mvGeosetList"></div>
+                    </div>
+                    <div class="mv-materials-panel" id="mvMaterialsPanel" hidden>
+                        <div class="mv-panel-resize-handle" data-resize-panel="mvMaterialsPanel"></div>
+                        <div class="mv-mat-title">Materials</div>
+                        <div class="mv-mat-list" id="mvMaterialList"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </float-window>
@@ -281,7 +299,9 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         binaryTerrainUrl: ${binaryTerrainUrl},
         groundTileCodes: ${hasTerrain && terrainData.ground_tiles ? JSON.stringify(terrainData.ground_tiles) : '[]'},
         cliffTileCodes: ${hasTerrain && terrainData.cliff_tiles ? JSON.stringify(terrainData.cliff_tiles) : '[]'},
-        isArchive: ${!!mapInfo.isArchive}
+        isArchive: ${!!mapInfo.isArchive},
+        binaryServer: ${mapInfo.binaryServer ? JSON.stringify({port: mapInfo.binaryServer.port, token: mapInfo.binaryServer.token}) : 'null'},
+        archivePath: ${mapInfo.archivePath ? JSON.stringify(mapInfo.archivePath) : 'null'}
     };
     </script>
     <script nonce="${nonce}" src="${terrainSrc}"></script>

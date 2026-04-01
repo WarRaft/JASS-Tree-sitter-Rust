@@ -521,12 +521,18 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                         })
 
                         if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
+                            const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
                             webviewPanel.webview.postMessage({
                                 command: 'modelData',
                                 name: fname,
                                 geosets: renderResult.geosets,
+                                textures: renderResult.textures || [],
+                                materials: renderResult.materials || [],
+                                sequences: renderResult.sequences || [],
                                 total_vertices: renderResult.total_vertices,
                                 total_faces: renderResult.total_faces,
+                                binaryServer: bs ? {port: bs.port, token: bs.token} : null,
+                                archivePath: isArchive ? filePath : null,
                             })
                         } else {
                             window.showWarningMessage(`Failed to render model: ${fname}`)
