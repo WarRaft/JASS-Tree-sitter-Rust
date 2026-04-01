@@ -1,5 +1,5 @@
 {
-  "version": "0.0.36",
+  "version": "0.0.37",
   "license": "MIT",
   "author": "WarRaft",
   "publisher": "WarRaft",
@@ -381,7 +381,9 @@
     "taskDefinitions": [
       {
         "type": "jass-hook",
-        "required": ["label"],
+        "required": [
+          "label"
+        ],
         "properties": {
           "label": {
             "type": "string",
