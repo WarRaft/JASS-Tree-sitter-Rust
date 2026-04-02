@@ -48,6 +48,13 @@ Settings (column widths, hidden columns, etc.) are persisted directly in the fil
 Built-in viewer for **DOO** placement files (`war3map.doo`, `war3mapUnits.doo`).
 Displays unit/doodad placements, positions, rawcodes, and cliff decorations in a structured table.
 
+### W3E — `.w3e`
+
+Built-in viewer for **W3E** terrain files (`war3map.w3e`).
+Renders the terrain heightmap with 3D preview (Three.js), texture transitions, layer heights, water/blight/boundary/ramp overlays, wireframe grid, and cursor-info bar.
+Supports both palette-based and real texture rendering (when game path is configured).
+See [docs/w3e/terrain.md](docs/w3e/terrain.md) for format details.
+
 ### W3I — `.w3i`
 
 Built-in viewer for **W3I** map information files (`war3map.w3i`).
