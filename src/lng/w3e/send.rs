@@ -1,5 +1,5 @@
 use crate::lng::w3e::parse::W3eData;
-use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk};
+use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk};
 use crate::lng::w3e::textures::load_tile_textures;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
@@ -140,12 +140,13 @@ async fn _send(
             let tex = load_tile_textures(&ground_tiles, slk.as_ref(), ap2.as_deref());
             let dood_slk = load_doodads_slk(ap2.as_deref());
             let unit_slk = load_units_slk(ap2.as_deref());
-            (slk, tex, dood_slk, unit_slk)
+            let dest_slk = load_destructables_slk(ap2.as_deref());
+            (slk, tex, dood_slk, unit_slk, dest_slk)
         })
         .await
         .ok();
 
-        if let Some((slk, tex, dood_slk, unit_slk)) = slk_and_tex {
+        if let Some((slk, tex, dood_slk, unit_slk, dest_slk)) = slk_and_tex {
             if let Some(slk_data) = slk {
                 val["_terrainSlk"] = to_value(slk_data)?;
             }
@@ -155,6 +156,9 @@ async fn _send(
             }
             if let Some(unit_data) = unit_slk {
                 val["_unitsSlk"] = to_value(unit_data)?;
+            }
+            if let Some(dest_data) = dest_slk {
+                val["_destructablesSlk"] = to_value(dest_data)?;
             }
         }
 
@@ -176,12 +180,13 @@ async fn _send(
             let tex = load_tile_textures(&ground_tiles, slk.as_ref(), None);
             let dood_slk = load_doodads_slk(None);
             let unit_slk = load_units_slk(None);
-            (slk, tex, dood_slk, unit_slk)
+            let dest_slk = load_destructables_slk(None);
+            (slk, tex, dood_slk, unit_slk, dest_slk)
         })
         .await
         .ok();
 
-        if let Some((slk, tex, dood_slk, unit_slk)) = slk_and_tex {
+        if let Some((slk, tex, dood_slk, unit_slk, dest_slk)) = slk_and_tex {
             if let Some(slk_data) = slk {
                 val["_terrainSlk"] = to_value(slk_data)?;
             }
@@ -191,6 +196,9 @@ async fn _send(
             }
             if let Some(unit_data) = unit_slk {
                 val["_unitsSlk"] = to_value(unit_data)?;
+            }
+            if let Some(dest_data) = dest_slk {
+                val["_destructablesSlk"] = to_value(dest_data)?;
             }
         }
 

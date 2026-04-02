@@ -12,10 +12,67 @@
 //!
 //! Access to individual entries is O(1) via `HashMap`.
 
+use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tree_sitter::Parser;
 use crate::lng::bni::kind::Kind;
+
+// ─── GameString ──────────────────────────────────────────────────────────────
+
+/// A string value that may have been resolved from a `WESTRING_*` reference.
+///
+/// When serialized to JSON:
+/// - If no WESTRING resolution occurred (`original == value`), emits a plain string.
+/// - Otherwise emits `{"value": "...", "original": "...", "source": "..."}`.
+#[derive(Debug, Clone)]
+pub struct GameString {
+    /// The resolved (display) value.
+    pub value: String,
+    /// The original raw value (e.g. `"WESTRING_GE_BRIDGE"`).
+    /// Equal to `value` when no resolution occurred.
+    pub original: String,
+    /// Source file that provided the resolution (e.g. `"WorldEditStrings.txt"`).
+    /// Empty when no resolution occurred.
+    pub source: String,
+}
+
+impl GameString {
+    /// Create a plain (non-resolved) GameString.
+    pub fn plain(value: String) -> Self {
+        Self {
+            original: value.clone(),
+            value,
+            source: String::new(),
+        }
+    }
+
+    /// Whether a WESTRING resolution was applied.
+    pub fn is_resolved(&self) -> bool {
+        !self.source.is_empty() && self.original != self.value
+    }
+}
+
+impl From<String> for GameString {
+    fn from(s: String) -> Self {
+        Self::plain(s)
+    }
+}
+
+impl Serialize for GameString {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        if self.is_resolved() {
+            use serde::ser::SerializeStruct;
+            let mut s = serializer.serialize_struct("GameString", 3)?;
+            s.serialize_field("value", &self.value)?;
+            s.serialize_field("original", &self.original)?;
+            s.serialize_field("source", &self.source)?;
+            s.end()
+        } else {
+            serializer.serialize_str(&self.value)
+        }
+    }
+}
 
 // ─── Parser ──────────────────────────────────────────────────────────────────
 
@@ -77,7 +134,7 @@ pub fn parse_westrings(data: &[u8]) -> HashMap<String, String> {
                                     let Ok(qk) = Kind::try_from(qs_child.grammar_id()) else {
                                         continue;
                                     };
-                                    if matches!(qk, Kind::DqStringContent | Kind::SqStringContent) {
+                                    if matches!(qk, Kind::StringContent) {
                                         value = qs_child
                                             .utf8_text(text.as_bytes())
                                             .unwrap_or_default()
@@ -114,9 +171,16 @@ pub fn parse_westrings(data: &[u8]) -> HashMap<String, String> {
 
 // ─── Global cache ────────────────────────────────────────────────────────────
 
-static WESTRINGS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+/// Each entry stores `(resolved_value, source_file)`.
+static WESTRINGS: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
 
-/// Load `UI\WorldEditStrings.txt` via the cascading file lookup and cache it.
+/// Files to load, in priority order (later files override earlier entries).
+const STRING_FILES: &[&str] = &[
+    "UI\\WorldEditStrings.txt",
+    "UI\\WorldEditGameStrings.txt",
+];
+
+/// Load all WorldEdit string files via cascading file lookup and cache them.
 ///
 /// If already loaded, returns immediately.  Call [`invalidate`] to force a
 /// reload (e.g. when the game path changes).
@@ -129,22 +193,33 @@ pub fn ensure_loaded(archive_path: Option<&str>) {
         return;
     }
 
-    let mut map = HashMap::new();
+    let mut map: HashMap<String, (String, String)> = HashMap::new();
 
-    // Load from cascading lookup (picks highest-priority source).
-    if let Some((buf, _source)) =
-        super::file_lookup::lookup_file("UI\\WorldEditStrings.txt", archive_path)
-    {
-        map = parse_westrings(&buf);
+    for &file_path in STRING_FILES {
+        if let Some((buf, _lookup_source)) =
+            super::file_lookup::lookup_file(file_path, archive_path)
+        {
+            // Extract just the filename for display (e.g. "WorldEditStrings.txt")
+            let source_name = file_path
+                .rsplit('\\')
+                .next()
+                .unwrap_or(file_path)
+                .to_string();
+
+            let parsed = parse_westrings(&buf);
+            for (k, v) in parsed {
+                map.insert(k, (v, source_name.clone()));
+            }
+        }
     }
 
     *guard = Some(map);
 }
 
-/// Look up a single key (e.g. `"WESTRING_DOOD_APMS"`) → `Some("Mushrooms")`.
+/// Look up a single key (e.g. `"WESTRING_DOOD_APMS"`) → `Some(("Mushrooms", "WorldEditStrings.txt"))`.
 ///
 /// Returns `None` if the cache is empty or the key is absent.
-pub fn resolve(key: &str) -> Option<String> {
+pub fn resolve(key: &str) -> Option<(String, String)> {
     let guard = match WESTRINGS.lock() {
         Ok(g) => g,
         Err(e) => e.into_inner(),
@@ -152,23 +227,45 @@ pub fn resolve(key: &str) -> Option<String> {
     guard.as_ref()?.get(key).cloned()
 }
 
-/// Resolve a value that may itself be a `WESTRING_*` reference (one level).
+/// Convenience wrapper: resolve a `WESTRING_*` key (or return the input
+/// unchanged) and return only the display string.
+#[allow(dead_code)]
+pub fn resolve_value(raw_value: &str) -> String {
+    resolve_game_string(raw_value).value
+}
+
+/// Resolve a value into a [`GameString`] that tracks provenance.
 ///
-/// If `value` starts with `"WESTRING_"`, try to look it up; otherwise return
-/// the value unchanged.  Also handles the rare case where a resolved value
-/// is itself a `WESTRING_*` reference (up to 3 levels).
-pub fn resolve_value(value: &str) -> String {
-    let mut current = value.to_string();
+/// If the value starts with `"WESTRING_"`, looks it up and returns a
+/// `GameString` with `original`, `value` (resolved), and `source` populated.
+/// Otherwise returns a plain `GameString` (`original == value`, empty `source`).
+pub fn resolve_game_string(raw_value: &str) -> GameString {
+    if raw_value.is_empty() {
+        return GameString::plain(String::new());
+    }
+
+    let original = raw_value.to_string();
+    let mut current = raw_value.to_string();
+    let mut source = String::new();
+
     for _ in 0..3 {
         if !current.starts_with("WESTRING_") {
             break;
         }
         match resolve(&current) {
-            Some(resolved) => current = resolved,
+            Some((resolved, src)) => {
+                source = src;
+                current = resolved;
+            }
             None => break,
         }
     }
-    current
+
+    GameString {
+        value: current,
+        original,
+        source,
+    }
 }
 
 /// Drop the cached map so the next [`ensure_loaded`] call re-reads the file.
@@ -178,6 +275,18 @@ pub fn invalidate() {
         Err(e) => e.into_inner(),
     };
     *guard = None;
+}
+
+/// Return a clone of the full WESTRING map (keys → resolved values).
+pub fn get_all() -> HashMap<String, String> {
+    let guard = match WESTRINGS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    match guard.as_ref() {
+        Some(m) => m.iter().map(|(k, (v, _))| (k.clone(), v.clone())).collect(),
+        None => HashMap::new(),
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -227,14 +336,44 @@ mod tests {
         {
             let mut guard = WESTRINGS.lock().unwrap();
             let mut map = HashMap::new();
-            map.insert("WESTRING_A".into(), "WESTRING_B".into());
-            map.insert("WESTRING_B".into(), "Final Value".into());
+            map.insert("WESTRING_A".into(), ("WESTRING_B".into(), "file1.txt".into()));
+            map.insert("WESTRING_B".into(), ("Final Value".into(), "file2.txt".into()));
             *guard = Some(map);
         }
         assert_eq!(resolve_value("WESTRING_A"), "Final Value");
         assert_eq!(resolve_value("plain text"), "plain text");
+
+        let gs = resolve_game_string("WESTRING_A");
+        assert_eq!(gs.value, "Final Value");
+        assert_eq!(gs.original, "WESTRING_A");
+        assert_eq!(gs.source, "file2.txt");
+        assert!(gs.is_resolved());
+
+        let gs_plain = resolve_game_string("plain text");
+        assert_eq!(gs_plain.value, "plain text");
+        assert!(!gs_plain.is_resolved());
+
         // Cleanup
         invalidate();
     }
-}
 
+    #[test]
+    fn game_string_json_plain() {
+        let gs = GameString::plain("hello".into());
+        let json = serde_json::to_string(&gs).unwrap();
+        assert_eq!(json, "\"hello\"");
+    }
+
+    #[test]
+    fn game_string_json_resolved() {
+        let gs = GameString {
+            value: "Bridge".into(),
+            original: "WESTRING_GE_BRIDGE".into(),
+            source: "WorldEditStrings.txt".into(),
+        };
+        let json = serde_json::to_string(&gs).unwrap();
+        assert!(json.contains("\"value\":\"Bridge\""));
+        assert!(json.contains("\"original\":\"WESTRING_GE_BRIDGE\""));
+        assert!(json.contains("\"source\":\"WorldEditStrings.txt\""));
+    }
+}

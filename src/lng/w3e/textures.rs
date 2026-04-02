@@ -46,7 +46,7 @@ pub fn load_tile_textures(
     ground_tile_codes
         .iter()
         .map(|code| {
-            let tile_info = slk.tiles.iter().find(|t| t.tile_id == code.0)?;
+            let tile_info = slk.tiles.iter().find(|t| t.tile_id == code.text)?;
             if tile_info.dir.is_empty() || tile_info.file.is_empty() || tile_info.ext.is_empty() {
                 debug!("textures: tile {} has incomplete path info", code);
                 return None;

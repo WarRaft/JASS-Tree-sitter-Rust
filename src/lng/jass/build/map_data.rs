@@ -322,7 +322,7 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
             let de = match &item.doodad { Some(d) => d, None => continue };
             need_destr_local = true;
             stmts.push(IRStmt::set("d", IRExpr::call("CreateDestructable", vec![
-                IRExpr::rawcode(&item.rawcode.0),
+                IRExpr::rawcode(&item.rawcode.text),
                 IRExpr::float1(item.position.x), IRExpr::float1(item.position.y),
                 IRExpr::float3(item.angle.to_degrees()), IRExpr::float3(item.scale.x),
                 IRExpr::int(item.variation),
@@ -346,7 +346,7 @@ pub(super) fn augment_main(ir: &mut BuildIR, md: &MapData) {
     if let Some(ref doo) = md.units_doo {
         for item in &doo.items {
             let ue = match &item.unit { Some(u) => u, None => continue };
-            let rawcode = &item.rawcode.0;
+            let rawcode = &item.rawcode.text;
             if rawcode == "sloc" { continue; }
             let first_char = rawcode.chars().next().unwrap_or('\0');
             let is_item = first_char == 'I' || first_char == 'i';

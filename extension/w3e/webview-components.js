@@ -83,7 +83,7 @@ class FloatWindow extends HTMLElement {
     right: 0; bottom: 0;
     width: 16px; height: 16px;
     cursor: nwse-resize;
-    z-index: 1;
+    z-index: 5;
 }
 .resize-grip::after {
     content: '';
@@ -721,6 +721,106 @@ class DoodadItem extends HTMLElement {
 
 customElements.define('doodad-item', DoodadItem);
 
+// ── Destructable item ────────────────────────────────────────────────
+
+const DESTRUCTABLE_CATEGORIES = {
+    B: 'Bridges/Ramps',
+    D: 'Destructibles',
+    P: 'Pathing Blockers',
+};
+
+class DestructableItem extends HTMLElement {
+    constructor() {
+        super();
+        const s = this.attachShadow({mode: 'open'});
+        s.innerHTML = `
+        <style>
+            :host {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 3px 6px;
+                font-size: 12px;
+                border-bottom: 1px solid var(--vscode-editorWidget-border, #333);
+                cursor: pointer;
+            }
+            :host(:hover) {
+                background: var(--vscode-list-hoverBackground, rgba(255,255,255,.06));
+            }
+            .id { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-textLink-foreground, #3794ff); min-width: 40px; flex-shrink: 0; }
+            .name { flex: 1; color: var(--vscode-foreground, #ccc); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .tilesets { display: flex; gap: 2px; flex-shrink: 0; flex-wrap: nowrap; }
+            .ts-badge {
+                display: inline-block;
+                width: 16px;
+                height: 16px;
+                line-height: 16px;
+                text-align: center;
+                font-size: 10px;
+                font-family: var(--vscode-editor-font-family, monospace);
+                font-weight: 600;
+                border-radius: 3px;
+                background: rgba(255, 255, 255, 0.08);
+                color: var(--vscode-descriptionForeground, #999);
+                flex-shrink: 0;
+            }
+            .ts-badge.ts-all {
+                background: rgba(78, 154, 241, 0.25);
+                color: var(--vscode-textLink-foreground, #3794ff);
+                width: 16px;
+            }
+            .cat { color: var(--vscode-descriptionForeground, #888); font-size: 11px; flex-shrink: 0; min-width: 80px; text-align: right; padding-right: 4px; }
+        </style>
+        <span class="id" id="destId"></span>
+        <span class="name" id="name"></span>
+        <span class="tilesets" id="tilesets"></span>
+        <span class="cat" id="cat"></span>`;
+    }
+
+    connectedCallback() { this._render(); }
+    static get observedAttributes() { return ['dest-id', 'dest-name', 'category', 'tilesets']; }
+    attributeChangedCallback() { if (this.shadowRoot) this._render(); }
+
+    _render() {
+        const s = this.shadowRoot;
+        s.getElementById('destId').textContent = this.getAttribute('dest-id') || '';
+        const name = this.getAttribute('dest-name') || '';
+        const nameEl = s.getElementById('name');
+        nameEl.textContent = name;
+        nameEl.title = this.getAttribute('comment') || '';
+        const cat = this.getAttribute('category') || '';
+        const catEl = s.getElementById('cat');
+        const catLabel = (typeof DESTRUCTABLE_CATEGORIES !== 'undefined' && DESTRUCTABLE_CATEGORIES[cat]) || cat;
+        catEl.textContent = catLabel;
+        catEl.title = cat ? cat + ' \u2014 ' + catLabel : '';
+
+        // Tileset badges
+        const ts = this.getAttribute('tilesets') || '';
+        const tsEl = s.getElementById('tilesets');
+        tsEl.innerHTML = '';
+        if (ts === '*') {
+            const badge = document.createElement('span');
+            badge.className = 'ts-badge ts-all';
+            badge.textContent = '*';
+            badge.title = 'All tilesets';
+            tsEl.appendChild(badge);
+        } else if (ts) {
+            const chars = ts.split(',').filter(Boolean);
+            for (const ch of chars) {
+                const badge = document.createElement('span');
+                badge.className = 'ts-badge';
+                badge.textContent = ch;
+                if (typeof TILESET_NAMES !== 'undefined' && TILESET_NAMES[ch]) {
+                    badge.title = TILESET_NAMES[ch];
+                }
+                tsEl.appendChild(badge);
+            }
+        }
+    }
+}
+
+customElements.define('destructable-item', DestructableItem);
+
 // ── Unit item ────────────────────────────────────────────────────────
 
 class UnitItem extends HTMLElement {
@@ -796,8 +896,110 @@ customElements.define('unit-item', UnitItem);
 
 // ── W3E application logic ────────────────────────────────────────────
 window.W3E = (function () {
-    const _gamePathHandlers = [];
     let _vscode = null;
+
+    // ── Reactive dependency graph ────────────────────────────────
+    // Source nodes are fed from 'gamePathChanged' messages.
+    // Computed / subscriber nodes react to data changes.
+    //
+    //   status (game path)
+    //     └→ westrings
+    //          ├→ terrainSlk
+    //          ├→ doodadsSlk ─────────┐
+    //          ├→ destructablesSlk ───┼→ placed (name resolution)
+    //          └→ unitsSlk ──────────┘
+    //
+    // Tile textures are fetched directly by terrain.js (status subscriber).
+    // All source nodes also feed → _gamePathData (backward compat).
+    var _graph = new ReactiveGraph();
+
+    // Source nodes (values arrive from extension host messages)
+    _graph.define('status');
+    _graph.define('westrings');
+    _graph.define('terrainSlk');
+    _graph.define('doodadsSlk');
+    _graph.define('unitsSlk');
+    _graph.define('destructablesSlk');
+
+    // ── WESTRING resolution map ─────────────────────────────────
+    var _westringsMap = {};
+
+    function _resolveWestring(val) {
+        if (!val || typeof val !== 'string') return val || '';
+        var current = val;
+        for (var i = 0; i < 3; i++) {
+            if (!current.startsWith('WESTRING_')) break;
+            var resolved = _westringsMap[current];
+            if (resolved === undefined) break;
+            current = resolved;
+        }
+        return current;
+    }
+
+    // ── GameString helpers ────────────────────────────────────────
+    // A GameString from the server is either:
+    //   - a plain string (no WESTRING resolution occurred)
+    //   - an object { value, original, source }
+
+    /** Extract the display text from a GameString (string or object). */
+    function _gsValue(gs) {
+        if (!gs) return '';
+        if (typeof gs === 'object' && gs.value !== undefined) return gs.value;
+        return String(gs);
+    }
+
+    /** Render a GameString as HTML — resolved values shown as clickable links. */
+    function _gsHtml(gs) {
+        if (!gs) return '';
+        if (typeof gs === 'object' && gs.value !== undefined) {
+            var v = esc(gs.value);
+            if (gs.original && gs.original !== gs.value) {
+                return '<a href="#" class="gs-resolved" data-gs-original="' + esc(gs.original) + '" data-gs-source="' + esc(gs.source || '') + '">' + v + '</a>';
+            }
+            return v;
+        }
+        return esc(String(gs));
+    }
+
+    /** Show the GameString info window with provenance details. */
+    function _showGameStringInfo(value, original, source) {
+        var win = document.getElementById('gameStringInfoWindow');
+        if (!win) return;
+        var body = win.querySelector('#gsInfoBody');
+        if (!body) return;
+        body.innerHTML =
+            '<table class="info">' +
+            '<tr><td class="key">value</td><td>' + esc(value) + '</td></tr>' +
+            '<tr><td class="key">original</td><td><span class="code">' + esc(original) + '</span></td></tr>' +
+            '<tr><td class="key">source</td><td>' + esc(source) + '</td></tr>' +
+            '</table>';
+        win.setAttribute('title-text', '\ud83d\udd17 ' + value);
+        win.show();
+    }
+
+    /** Delegate click on .gs-resolved links to open the info window. */
+    document.addEventListener('click', function (e) {
+        var link = e.target.closest('.gs-resolved');
+        if (!link) return;
+        e.preventDefault();
+        var original = link.getAttribute('data-gs-original') || '';
+        var source = link.getAttribute('data-gs-source') || '';
+        var value = link.textContent || '';
+        _showGameStringInfo(value, original, source);
+    });
+
+    // Placed objects — depends on all SLK catalogs for name resolution
+    _graph.define('placed',
+        ['doodadsSlk', 'destructablesSlk', 'unitsSlk'],
+        function () { _updatePlacedNames(); return true; }
+    );
+
+    // Combined node for backward compatibility — depends on all sources.
+    // Its value is the aggregated object {status, westrings, terrainSlk, …}.
+    _graph.define('_gamePathData',
+        ['status', 'westrings', 'terrainSlk', 'doodadsSlk', 'unitsSlk', 'destructablesSlk'],
+        function (deps) { return deps; }
+    );
 
     function esc(s) {
         return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -822,7 +1024,12 @@ window.W3E = (function () {
         return [Math.round((r + mm) * 255), Math.round((g + mm) * 255), Math.round((b + mm) * 255)];
     }
 
-    function onGamePathChanged(fn) { _gamePathHandlers.push(fn); }
+    /**
+     * Backward-compatible API: register a handler that fires when
+     * any game-path-related data changes.  The handler receives the
+     * combined data object {status, terrainSlk, doodadsSlk, …}.
+     */
+    function onGamePathChanged(fn) { _graph.subscribe('_gamePathData', fn); }
 
     function syncMenuActive() {
         document.querySelectorAll('[data-action="toggleWindow"]').forEach(btn => {
@@ -927,9 +1134,11 @@ window.W3E = (function () {
     }
 
     // ── Doodads SLK rebuilder ────────────────────────────────
-    // Stores the full doodad array for the detail window.
+    // _doodadDataMap is keyed by rawcode u32 (matching the HashMap from Rust).
     let _doodadDataMap = {};
     let _allDoodads = [];
+    /** Whether doodadsSlk has been loaded at least once (even if empty). */
+    var _doodadsSlkLoaded = false;
 
     // ── Doodads state persistence helpers ─────────────────────
     function _getWvState() {
@@ -1036,7 +1245,7 @@ window.W3E = (function () {
         const filtered = _allDoodads.filter(d => {
             // Search filter: match name or rawcode
             if (q) {
-                const name = (d.name || '').toLowerCase();
+                const name = _gsValue(d.name).toLowerCase();
                 const id = (d.doodId || '').toLowerCase();
                 const comment = (d.comment || '').toLowerCase();
                 if (!name.includes(q) && !id.includes(q) && !comment.includes(q)) return false;
@@ -1063,8 +1272,8 @@ window.W3E = (function () {
             const f = _doodSort.field;
             const mul = _doodSort.dir === 'desc' ? -1 : 1;
             filtered.sort((a, b) => {
-                const va = (a[f] || '').toLowerCase();
-                const vb = (b[f] || '').toLowerCase();
+                const va = _gsValue(a[f]).toLowerCase();
+                const vb = _gsValue(b[f]).toLowerCase();
                 return va < vb ? -1 * mul : va > vb ? 1 * mul : 0;
             });
         }
@@ -1074,8 +1283,9 @@ window.W3E = (function () {
             listEl.innerHTML = '';
             for (const d of filtered) {
                 const el = document.createElement('doodad-item');
+                el.setAttribute('data-raw-id', d._rawKey || '');
                 el.setAttribute('dood-id', d.doodId || '');
-                el.setAttribute('dood-name', d.name || '');
+                el.setAttribute('dood-name', _gsValue(d.name));
                 el.setAttribute('comment', d.comment || '');
                 el.setAttribute('category', d.category || '');
                 el.setAttribute('tilesets', d.tilesets || '');
@@ -1148,17 +1358,15 @@ window.W3E = (function () {
     }
 
     function rebuildDoodads(slkData) {
+        _doodadsSlkLoaded = true;
         let source = '';
         _allDoodads = [];
         _doodadDataMap = {};
         if (slkData && slkData.doodads) {
             source = slkData.source || '';
-            _allDoodads = slkData.doodads;
-        }
-
-        // Build lookup map
-        for (const d of _allDoodads) {
-            _doodadDataMap[d.doodId] = d;
+            // slkData.doodads is a HashMap<u32, Doodad> from Rust
+            _doodadDataMap = slkData.doodads;
+            _allDoodads = Object.entries(slkData.doodads).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
         }
 
         const srcEl = document.getElementById('dsSlkSource');
@@ -1198,57 +1406,95 @@ window.W3E = (function () {
     // ── Doodad detail window populator ────────────────────────
 
     // Field grouping definition for doodad detail view.
+    // Each group contains `fields` mapping display labels to camelCase struct field names.
     const _DOOD_GROUPS = [
         {
             title: '🏷 Identity', fields: [
-                'doodID', 'Name', 'comment', 'category', 'doodClass',
-                'tilesets', 'tilesetSpecific',
+                ['doodID', 'doodId'],
+                ['Name', 'name'],
+                ['comment', 'comment'],
+                ['category', 'category'],
+                ['doodClass', 'doodClass'],
+                ['tilesets', 'tilesets'],
+                ['tilesetSpecific', 'tilesetSpecific'],
             ]
         },
         {
             title: '🎨 Model', modelFiles: true, fields: [
-                'soundLoop',
+                ['soundLoop', 'soundLoop'],
             ]
         },
         {
             title: '📐 Scale', fields: [
-                'defScale', 'minScale', 'maxScale', 'canPlaceRandScale',
+                ['defScale', 'defScale'],
+                ['minScale', 'minScale'],
+                ['maxScale', 'maxScale'],
+                ['canPlaceRandScale', 'canPlaceRandScale'],
             ]
         },
         {
             title: '📍 Placement', fields: [
-                'onCliffs', 'onWater', 'floats', 'walkable', 'fixedRot',
-                'maxPitch', 'maxRoll', 'pathTex',
+                ['onCliffs', 'onCliffs'],
+                ['onWater', 'onWater'],
+                ['floats', 'floats'],
+                ['walkable', 'walkable'],
+                ['fixedRot', 'fixedRot'],
+                ['maxPitch', 'maxPitch'],
+                ['maxRoll', 'maxRoll'],
+                ['pathTex', 'pathTex'],
             ]
         },
         {
             title: '👆 Interaction', fields: [
-                'selSize', 'useClickHelper', 'ignoreModelClick', 'visRadius',
+                ['selSize', 'selSize'],
+                ['useClickHelper', 'useClickHelper'],
+                ['ignoreModelClick', 'ignoreModelClick'],
+                ['visRadius', 'visRadius'],
             ]
         },
         {
             title: '👁 Rendering', fields: [
-                'shadow', 'showInFog', 'animInFog',
+                ['shadow', 'shadow'],
+                ['showInFog', 'showInFog'],
+                ['animInFog', 'animInFog'],
             ]
         },
         {
             title: '🗺 Minimap', fields: [
-                'showInMM', 'useMMColor',
+                ['showInMM', 'showInMm'],
+                ['useMMColor', 'useMmColor'],
             ],
-            color: {r: 'MMRed', g: 'MMGreen', b: 'MMBlue', label: 'Color'},
+            color: {key: 'mmColor', label: 'Color'},
         },
         {
             title: '🌈 Vertex Colors', vertexColors: true,
         },
         {
             title: 'ℹ Meta', fields: [
-                'InBeta', 'version',
+                ['InBeta', 'inBeta'],
+                ['version', 'version'],
             ]
         },
     ];
 
     function _colorBadge(r, g, b) {
         return '<span class="dd-color-badge" style="background:rgb(' + r + ',' + g + ',' + b + ')" title="rgb(' + r + ',' + g + ',' + b + ')"></span>';
+    }
+
+    function _categoryBadge(code, categoriesMap) {
+        const label = categoriesMap[code] || code;
+        return '<span class="ds-ts-badge">' + esc(code) + '</span> ' + esc(label);
+    }
+
+    function _tilesetBadges(val) {
+        if (val === '*') {
+            return '<span class="ds-ts-badge" style="background:rgba(78,154,241,0.25);color:var(--vscode-textLink-foreground,#3794ff);">*</span> All';
+        }
+        const chars = val.replace(/,/g, '').split('');
+        return chars.map(function (ch) {
+            const label = TILESET_NAMES[ch] || ch;
+            return '<span class="ds-ts-badge" title="' + esc(label) + '">' + esc(ch) + '</span>';
+        }).join(' ');
     }
 
     // Collapsed state persistence for doodad detail view
@@ -1286,7 +1532,20 @@ window.W3E = (function () {
 
     function showDoodadDetail(doodId) {
         const d = _doodadDataMap[doodId];
-        if (!d) return;
+        if (!d) {
+            // Doodad not found in SLK data — show feedback
+            const win = document.getElementById('doodadDetailWindow');
+            const body = document.getElementById('doodadDetailBody');
+            if (win && body) {
+                body.innerHTML = '<div style="padding:1rem;color:var(--vscode-errorForeground,#f44);">'
+                    + '<b>' + esc(String(doodId)) + '</b> not found in Doodads.slk<br>'
+                    + '<small style="opacity:0.7;">Loaded doodads: ' + Object.keys(_doodadDataMap).length + '</small>'
+                    + '</div>';
+                win.setAttribute('title-text', '\ud83c\udf33 ' + esc(String(doodId)));
+                win.show();
+            }
+            return;
+        }
 
         const win = document.getElementById('doodadDetailWindow');
         if (!win) return;
@@ -1294,8 +1553,6 @@ window.W3E = (function () {
         const body = document.getElementById('doodadDetailBody');
         if (!body) return;
 
-        const raw = d.raw || {};
-        const used = new Set();
         let html = '';
         const collapseState = _getDoodCollapseState();
 
@@ -1303,22 +1560,20 @@ window.W3E = (function () {
             let rows = '';
 
             if (group.vertexColors) {
-                // Collect vertex color variations 01..10
-                for (let i = 1; i <= 10; i++) {
-                    const idx = String(i).padStart(2, '0');
-                    const rk = 'vertR' + idx, gk = 'vertG' + idx, bk = 'vertB' + idx;
-                    used.add(rk); used.add(gk); used.add(bk);
-                    if (raw[rk] === undefined && raw[gk] === undefined && raw[bk] === undefined) continue;
-                    const rv = raw[rk] ?? '255', gv = raw[gk] ?? '255', bv = raw[bk] ?? '255';
-                    rows += '<tr><td class="key">Variation ' + idx + '</td><td>'
-                        + esc(rv) + ',' + esc(gv) + ',' + esc(bv) + ' '
-                        + _colorBadge(rv, gv, bv) + '</td></tr>';
+                // Render vertex colours from the typed array
+                if (d.vertColors && d.vertColors.length > 0) {
+                    for (let i = 0; i < d.vertColors.length; i++) {
+                        const c = d.vertColors[i];
+                        const idx = String(i + 1).padStart(2, '0');
+                        rows += '<tr><td class="key">Variation ' + idx + '</td><td>'
+                            + c.r + ',' + c.g + ',' + c.b + ' '
+                            + _colorBadge(c.r, c.g, c.b) + '</td></tr>';
+                    }
                 }
             } else if (group.modelFiles) {
                 // Model files with variation links
-                used.add('file'); used.add('numVar');
-                const filePath = raw.file;
-                const numVar = parseInt(raw.numVar, 10) || 1;
+                const filePath = d.file;
+                const numVar = d.numVar || 1;
                 if (filePath) {
                     const paths = _buildModelPaths(filePath, numVar);
                     const links = paths.map(p =>
@@ -1326,51 +1581,47 @@ window.W3E = (function () {
                     ).join('');
                     rows += '<tr><td class="key">file</td><td>' + links + '</td></tr>';
                 }
-                rows += '<tr><td class="key">numVar</td><td>' + esc(String(raw.numVar ?? '')) + '</td></tr>';
+                rows += '<tr><td class="key">numVar</td><td>' + numVar + '</td></tr>';
                 // Regular fields in this group
                 if (group.fields) {
-                    for (const k of group.fields) {
-                        used.add(k);
-                        if (raw[k] === undefined) continue;
-                        rows += '<tr><td class="key">' + esc(k) + '</td><td>' + esc(String(raw[k] ?? '')) + '</td></tr>';
+                    for (const [label, key] of group.fields) {
+                        const val = d[key];
+                        if (val === undefined || val === '' || val === null) continue;
+                        rows += '<tr><td class="key">' + esc(label) + '</td><td>' + esc(String(val)) + '</td></tr>';
                     }
                 }
             } else {
                 // Regular fields
                 if (group.fields) {
-                    for (const k of group.fields) {
-                        used.add(k);
-                        if (raw[k] === undefined) continue;
-                        let val = esc(String(raw[k] ?? ''));
-                        // Decode category code
-                        if (k === 'category' && raw[k] && DOODAD_CATEGORIES[raw[k]]) {
-                            val = esc(raw[k]) + ' — ' + esc(DOODAD_CATEGORIES[raw[k]]);
+                    for (const [label, key] of group.fields) {
+                        const val = d[key];
+                        if (val === undefined || val === '' || val === null) continue;
+                        let display;
+                        if (key === 'name') {
+                            display = _gsHtml(val);
+                        } else if (key === 'pathTex') {
+                            display = '<a href="#" class="dd-pathtex-link" data-pathtex="' + esc(String(val)) + '">' + esc(String(val)) + '</a>';
+                        } else {
+                            display = esc(String(val));
                         }
-                        // Decode tileset codes
-                        if (k === 'tilesets' && raw[k]) {
-                            const ts = raw[k];
-                            if (ts === '*') {
-                                val = '* — All';
-                            } else {
-                                const decoded = ts.replace(/,/g, '').split('').map(function (ch) {
-                                    return TILESET_NAMES[ch] ? ch + ' ' + TILESET_NAMES[ch] : ch;
-                                }).join(', ');
-                                val = esc(decoded);
-                            }
+                        // Decode category code with badge
+                        if (key === 'category' && val) {
+                            display = _categoryBadge(val, DOODAD_CATEGORIES);
                         }
-                        rows += '<tr><td class="key">' + esc(k) + '</td><td>' + val + '</td></tr>';
+                        // Decode tileset codes with badges
+                        if (key === 'tilesets' && val) {
+                            display = _tilesetBadges(val);
+                        }
+                        rows += '<tr><td class="key">' + esc(label) + '</td><td>' + display + '</td></tr>';
                     }
                 }
-                // Single color row (e.g. minimap)
+                // Single color (e.g. minimap)
                 if (group.color) {
-                    const c = group.color;
-                    used.add(c.r); used.add(c.g); used.add(c.b);
-                    const rv = raw[c.r], gv = raw[c.g], bv = raw[c.b];
-                    if (rv !== undefined || gv !== undefined || bv !== undefined) {
-                        const rn = rv ?? '0', gn = gv ?? '0', bn = bv ?? '0';
-                        rows += '<tr><td class="key">' + esc(c.label) + '</td><td>'
-                            + esc(rn) + ',' + esc(gn) + ',' + esc(bn) + ' '
-                            + _colorBadge(rn, gn, bn) + '</td></tr>';
+                    const c = d[group.color.key];
+                    if (c) {
+                        rows += '<tr><td class="key">' + esc(group.color.label) + '</td><td>'
+                            + c.r + ',' + c.g + ',' + c.b + ' '
+                            + _colorBadge(c.r, c.g, c.b) + '</td></tr>';
                     }
                 }
             }
@@ -1384,22 +1635,8 @@ window.W3E = (function () {
                 + '</collapse-group>';
         }
 
-        // Catch any fields not covered by groups
-        const remaining = Object.keys(raw).filter(k => !used.has(k)).sort();
-        if (remaining.length) {
-            let rows = '';
-            for (const k of remaining) {
-                rows += '<tr><td class="key">' + esc(k) + '</td><td>' + esc(String(raw[k] ?? '')) + '</td></tr>';
-            }
-            const otherTitle = '❓ Other';
-            const isOtherOpen = collapseState.hasOwnProperty(otherTitle) ? collapseState[otherTitle] : true;
-            html += '<collapse-group group-title="' + esc(otherTitle) + '"' + (isOtherOpen ? ' open' : '') + '>'
-                + '<table class="info">' + rows + '</table>'
-                + '</collapse-group>';
-        }
-
         body.innerHTML = html;
-        win.setAttribute('title-text', '\ud83c\udf33 ' + (d.name || d.doodId));
+        win.setAttribute('title-text', '\ud83c\udf33 ' + (_gsValue(d.name) || d.doodId));
         win.show();
 
         // Listen for collapse-group toggle events and persist state
@@ -1409,22 +1646,35 @@ window.W3E = (function () {
             _setDoodCollapseState(state);
         });
 
-        // Bind model file links
-        body.querySelectorAll('.dd-model-link').forEach(function (link) {
-            link.addEventListener('click', function (e) {
+        // Bind model file & pathTex links via event delegation
+        body.addEventListener('click', function (e) {
+            var link = e.target.closest('.dd-model-link');
+            if (link) {
                 e.preventDefault();
                 if (_vscode) _vscode.postMessage({command: 'openModel', path: link.getAttribute('data-path')});
-            });
+                return;
+            }
+            var ptLink = e.target.closest('.dd-pathtex-link');
+            if (ptLink) {
+                e.preventDefault();
+                showPathTex(ptLink.getAttribute('data-pathtex'));
+            }
         });
     }
 
     // ── Units SLK rebuilder ──────────────────────────────────
+    let _unitDataMap = {};
+
     function rebuildUnits(slkData) {
         let source = '';
         let units = [];
+        _unitDataMap = {};
         if (slkData && slkData.units) {
             source = slkData.source || '';
             units = slkData.units;
+            for (var ui = 0; ui < units.length; ui++) {
+                if (units[ui].unitId) _unitDataMap[units[ui].unitId] = units[ui];
+            }
         }
 
         const srcEl = document.getElementById('usSlkSource');
@@ -1456,6 +1706,627 @@ window.W3E = (function () {
                 listEl.appendChild(el);
             }
         }
+    }
+
+    // ── Destructables SLK rebuilder ────────────────────────────
+    let _destructableDataMap = {};
+    let _allDestructables = [];
+    /** Whether destructablesSlk has been loaded at least once (even if empty). */
+    var _destructablesSlkLoaded = false;
+
+    // Sort state for destructables
+    let _destSort = {field: null, dir: 'asc'};
+
+    function _saveDestSort() {
+        _patchWvState({_destSort: {field: _destSort.field, dir: _destSort.dir}});
+    }
+
+    function _saveDestFilters() {
+        const uncheckedCats = [];
+        document.querySelectorAll('.dt-cat-cb').forEach(cb => {
+            if (!cb.checked) uncheckedCats.push(cb.getAttribute('data-cat'));
+        });
+        const uncheckedTs = [];
+        document.querySelectorAll('.dt-ts-cb').forEach(cb => {
+            if (!cb.checked) uncheckedTs.push(cb.getAttribute('data-ts'));
+        });
+        _patchWvState({_destUncheckedCats: uncheckedCats, _destUncheckedTs: uncheckedTs});
+    }
+
+    function _restoreDestFilters() {
+        const s = _getWvState();
+        const uncheckedCats = s._destUncheckedCats || [];
+        const uncheckedTs = s._destUncheckedTs || [];
+        if (uncheckedCats.length) {
+            document.querySelectorAll('.dt-cat-cb').forEach(cb => {
+                if (uncheckedCats.includes(cb.getAttribute('data-cat'))) cb.checked = false;
+            });
+        }
+        if (uncheckedTs.length) {
+            document.querySelectorAll('.dt-ts-cb').forEach(cb => {
+                if (uncheckedTs.includes(cb.getAttribute('data-ts'))) cb.checked = false;
+            });
+        }
+    }
+
+    function _restoreDestSort() {
+        const s = _getWvState();
+        if (s._destSort && s._destSort.field) {
+            _destSort = {field: s._destSort.field, dir: s._destSort.dir || 'asc'};
+        }
+    }
+
+    function _cycleDestSort(field) {
+        if (_destSort.field !== field) {
+            _destSort = {field, dir: 'asc'};
+        } else if (_destSort.dir === 'asc') {
+            _destSort.dir = 'desc';
+        } else {
+            _destSort = {field: null, dir: 'asc'};
+        }
+        _saveDestSort();
+        _updateDestSortButtons();
+        _filterAndRenderDestructables();
+    }
+
+    function _updateDestSortButtons() {
+        document.querySelectorAll('.dt-sort-col').forEach(btn => {
+            const f = btn.getAttribute('data-sort');
+            btn.classList.remove('ds-sort-active', 'ds-sort-asc', 'ds-sort-desc');
+            if (f === _destSort.field) {
+                btn.classList.add('ds-sort-active', _destSort.dir === 'asc' ? 'ds-sort-asc' : 'ds-sort-desc');
+            }
+        });
+    }
+
+    function _filterAndRenderDestructables(saveState) {
+        const enabledCats = new Set();
+        document.querySelectorAll('.dt-cat-cb').forEach(cb => {
+            if (cb.checked) enabledCats.add(cb.getAttribute('data-cat'));
+        });
+        const enabledTs = new Set();
+        document.querySelectorAll('.dt-ts-cb').forEach(cb => {
+            if (cb.checked) enabledTs.add(cb.getAttribute('data-ts'));
+        });
+
+        if (saveState !== false) _saveDestFilters();
+
+        const searchEl = document.getElementById('dtSearchInput');
+        const q = searchEl ? searchEl.value.toLowerCase().trim() : '';
+
+        const filtered = _allDestructables.filter(d => {
+            if (q) {
+                const rn = _gsValue(d.name);
+                const rs = _gsValue(d.editorSuffix);
+                const name = ((rn || '') + (rs ? ' ' + rs : '')).toLowerCase();
+                const id = (d.destructableId || '').toLowerCase();
+                const comment = (_gsValue(d.comment) || '').toLowerCase();
+                if (!name.includes(q) && !id.includes(q) && !comment.includes(q)) return false;
+            }
+            if (d.category && !enabledCats.has(d.category)) return false;
+            if (d.tilesets) {
+                if (d.tilesets === '*') return true;
+                const chars = d.tilesets.replace(/,/g, '');
+                if (chars.length > 0) {
+                    let match = false;
+                    for (const ch of chars) {
+                        if (enabledTs.has(ch)) { match = true; break; }
+                    }
+                    if (!match) return false;
+                }
+            }
+            return true;
+        });
+
+        if (_destSort.field) {
+            const f = _destSort.field;
+            const mul = _destSort.dir === 'desc' ? -1 : 1;
+            filtered.sort((a, b) => {
+                const va = _gsValue(a[f]).toLowerCase();
+                const vb = _gsValue(b[f]).toLowerCase();
+                return va < vb ? -1 * mul : va > vb ? 1 * mul : 0;
+            });
+        }
+
+        const listEl = document.getElementById('dtDestList');
+        if (listEl) {
+            listEl.innerHTML = '';
+            for (const d of filtered) {
+                const el = document.createElement('destructable-item');
+                el.setAttribute('data-raw-id', d._rawKey || '');
+                el.setAttribute('dest-id', d.destructableId || '');
+                const resolvedName = _gsValue(d.name);
+                const resolvedSuffix = _gsValue(d.editorSuffix);
+                el.setAttribute('dest-name', (resolvedName || '') + (resolvedSuffix ? ' ' + resolvedSuffix : ''));
+                el.setAttribute('comment', _gsValue(d.comment) || '');
+                el.setAttribute('category', d.category || '');
+                el.setAttribute('tilesets', d.tilesets || '');
+                el.setAttribute('hp', String(d.hp || 0));
+                el.setAttribute('armor', d.armor || '');
+                listEl.appendChild(el);
+            }
+        }
+
+        const cntEl = document.getElementById('dtDestCount');
+        if (cntEl) cntEl.textContent = String(filtered.length);
+    }
+
+    function _rebuildDestructableSidebarCheckboxes() {
+        const catSet = new Set();
+        const tsSet = new Set();
+        for (const d of _allDestructables) {
+            if (d.category) catSet.add(d.category);
+            if (d.tilesets) {
+                for (const ch of d.tilesets) {
+                    if (ch !== ',' && ch !== '*') tsSet.add(ch);
+                }
+            }
+        }
+
+        const catChecks = document.getElementById('dtCatChecks');
+        if (catChecks) {
+            catChecks.innerHTML = '';
+            for (const code of Array.from(catSet).sort()) {
+                const label = DESTRUCTABLE_CATEGORIES[code] || code;
+                const lbl = document.createElement('label');
+                lbl.className = 'menu-cb';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'dt-cat-cb';
+                cb.setAttribute('data-cat', code);
+                cb.checked = true;
+                cb.addEventListener('change', _filterAndRenderDestructables);
+                lbl.appendChild(cb);
+                const badge = document.createElement('span');
+                badge.className = 'ds-ts-badge';
+                badge.textContent = code;
+                lbl.appendChild(badge);
+                lbl.appendChild(document.createTextNode(' ' + label));
+                catChecks.appendChild(lbl);
+            }
+        }
+
+        const tsChecks = document.getElementById('dtTsChecks');
+        if (tsChecks) {
+            tsChecks.innerHTML = '';
+            for (const code of Array.from(tsSet).sort()) {
+                const label = TILESET_NAMES[code] || code;
+                const lbl = document.createElement('label');
+                lbl.className = 'menu-cb';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'dt-ts-cb';
+                cb.setAttribute('data-ts', code);
+                cb.checked = true;
+                cb.addEventListener('change', _filterAndRenderDestructables);
+                lbl.appendChild(cb);
+                const badge = document.createElement('span');
+                badge.className = 'ds-ts-badge';
+                badge.textContent = code;
+                lbl.appendChild(badge);
+                lbl.appendChild(document.createTextNode(' ' + label));
+                tsChecks.appendChild(lbl);
+            }
+        }
+        _restoreDestFilters();
+    }
+
+    function rebuildDestructables(slkData) {
+        _destructablesSlkLoaded = true;
+        let source = '';
+        _allDestructables = [];
+        _destructableDataMap = {};
+        if (slkData && slkData.destructables) {
+            source = slkData.source || '';
+            _destructableDataMap = slkData.destructables;
+            _allDestructables = Object.entries(slkData.destructables).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
+        }
+
+        const srcEl = document.getElementById('dtSlkSource');
+        if (srcEl) {
+            if (source) {
+                srcEl.className = 'ts-source';
+                srcEl.innerHTML = 'DestructableData.slk: <span class="code">' + esc(source) + '</span>';
+            } else {
+                srcEl.className = 'ts-source ts-no-slk';
+                srcEl.textContent = 'DestructableData.slk not found \u2014 set Game Path';
+            }
+        }
+
+        const totalEl = document.getElementById('dtDestTotal');
+        if (totalEl) totalEl.textContent = String(_allDestructables.length);
+
+        _rebuildDestructableSidebarCheckboxes();
+        _restoreDestSort();
+        _updateDestSortButtons();
+        _filterAndRenderDestructables(false);
+
+        const searchEl = document.getElementById('dtSearchInput');
+        if (searchEl && !searchEl._dtBound) {
+            searchEl._dtBound = true;
+            searchEl.addEventListener('input', _filterAndRenderDestructables);
+        }
+
+        document.querySelectorAll('.dt-sort-col').forEach(btn => {
+            if (btn._dtSortBound) return;
+            btn._dtSortBound = true;
+            btn.addEventListener('click', () => _cycleDestSort(btn.getAttribute('data-sort')));
+        });
+    }
+
+    // ── Destructable detail window populator ────────────────────
+
+    const _DEST_GROUPS = [
+        {
+            title: '\ud83c\udff7 Identity', fields: [
+                ['DestructableID', 'destructableId'],
+                ['Name', 'name'],
+                ['EditorSuffix', 'editorSuffix'],
+                ['comment', 'comment'],
+                ['category', 'category'],
+                ['doodClass', 'doodClass'],
+                ['tilesets', 'tilesets'],
+                ['tilesetSpecific', 'tilesetSpecific'],
+            ]
+        },
+        {
+            title: '\ud83c\udfa8 Model', modelFiles: true, fields: [
+                ['texID', 'texId'],
+                ['texFile', 'texFile'],
+            ]
+        },
+        {
+            title: '\ud83d\udee1 Combat', fields: [
+                ['HP', 'hp'],
+                ['armor', 'armor'],
+                ['targType', 'targType'],
+            ]
+        },
+        {
+            title: '\ud83d\udcd0 Scale', fields: [
+                ['minScale', 'minScale'],
+                ['maxScale', 'maxScale'],
+                ['canPlaceRandScale', 'canPlaceRandScale'],
+            ]
+        },
+        {
+            title: '\ud83d\udccd Placement', fields: [
+                ['onCliffs', 'onCliffs'],
+                ['onWater', 'onWater'],
+                ['walkable', 'walkable'],
+                ['canPlaceDead', 'canPlaceDead'],
+                ['cliffHeight', 'cliffHeight'],
+                ['fixedRot', 'fixedRot'],
+                ['maxPitch', 'maxPitch'],
+                ['maxRoll', 'maxRoll'],
+                ['pathTex', 'pathTex'],
+                ['pathTexDeath', 'pathTexDeath'],
+                ['occH', 'occH'],
+                ['flyH', 'flyH'],
+            ]
+        },
+        {
+            title: '\ud83d\udc46 Interaction', fields: [
+                ['selSize', 'selSize'],
+                ['useClickHelper', 'useClickHelper'],
+                ['selectable', 'selectable'],
+                ['selcircsize', 'selcircsize'],
+                ['radius', 'radius'],
+                ['fogRadius', 'fogRadius'],
+                ['fogVis', 'fogVis'],
+                ['lightweight', 'lightweight'],
+                ['fatLOS', 'fatLos'],
+            ]
+        },
+        {
+            title: '\ud83d\udc41 Rendering', fields: [
+                ['shadow', 'shadow'],
+                ['deathSnd', 'deathSnd'],
+                ['portraitmodel', 'portraitmodel'],
+            ],
+            color: {key: 'color', label: 'Tint Color'},
+        },
+        {
+            title: '\ud83d\uddfa Minimap', fields: [
+                ['showInMM', 'showInMm'],
+                ['useMMColor', 'useMmColor'],
+            ],
+            color: {key: 'mmColor', label: 'Color'},
+        },
+        {
+            title: '\ud83d\udee0 Economy', fields: [
+                ['buildTime', 'buildTime'],
+                ['repairTime', 'repairTime'],
+                ['goldRep', 'goldRep'],
+                ['lumberRep', 'lumberRep'],
+            ]
+        },
+        {
+            title: '\u2139 Meta', fields: [
+                ['InBeta', 'inBeta'],
+                ['version', 'version'],
+            ]
+        },
+    ];
+
+    // Collapsed state persistence for destructable detail view
+    function _getDestCollapseState() {
+        const s = _getWvState();
+        return s._destCollapse || {};
+    }
+
+    function _setDestCollapseState(state) {
+        _patchWvState({_destCollapse: state});
+    }
+
+    function showDestructableDetail(destId) {
+        const d = _destructableDataMap[destId];
+        if (!d) {
+            const win = document.getElementById('destructableDetailWindow');
+            const body = document.getElementById('destructableDetailBody');
+            if (win && body) {
+                body.innerHTML = '<div style="padding:1rem;color:var(--vscode-errorForeground,#f44);">'
+                    + '<b>' + esc(String(destId)) + '</b> not found in DestructableData.slk<br>'
+                    + '<small style="opacity:0.7;">Loaded destructables: ' + Object.keys(_destructableDataMap).length + '</small>'
+                    + '</div>';
+                win.setAttribute('title-text', '\ud83c\udfda ' + esc(String(destId)));
+                win.show();
+            }
+            return;
+        }
+
+        const win = document.getElementById('destructableDetailWindow');
+        if (!win) return;
+
+        const body = document.getElementById('destructableDetailBody');
+        if (!body) return;
+
+        let html = '';
+        const collapseState = _getDestCollapseState();
+
+        for (const group of _DEST_GROUPS) {
+            let rows = '';
+
+            if (group.modelFiles) {
+                const filePath = d.file;
+                const numVar = d.numVar || 1;
+                const dtTexId = d.texId || 0;
+                const dtTexFile = d.texFile || '';
+                if (filePath) {
+                    const paths = _buildModelPaths(filePath, numVar);
+                    const links = paths.map(p =>
+                        '<a href="#" class="dd-model-link" data-path="' + esc(p) + '"'
+                        + (dtTexId ? ' data-tex-id="' + dtTexId + '"' : '')
+                        + (dtTexFile ? ' data-tex-file="' + esc(dtTexFile) + '"' : '')
+                        + '>' + esc(p) + '</a>'
+                    ).join('');
+                    rows += '<tr><td class="key">file</td><td>' + links + '</td></tr>';
+                }
+                rows += '<tr><td class="key">numVar</td><td>' + numVar + '</td></tr>';
+                if (group.fields) {
+                    for (const [label, key] of group.fields) {
+                        const val = d[key];
+                        if (val === undefined || val === '' || val === null) continue;
+                        rows += '<tr><td class="key">' + esc(label) + '</td><td>' + esc(String(val)) + '</td></tr>';
+                    }
+                }
+            } else {
+                if (group.fields) {
+                    for (const [label, key] of group.fields) {
+                        let val = d[key];
+                        if (val === undefined || val === '' || val === null) continue;
+                        let display;
+                        if (key === 'name' || key === 'editorSuffix' || key === 'comment') {
+                            display = _gsHtml(val);
+                        } else if (key === 'pathTex' || key === 'pathTexDeath') {
+                            display = '<a href="#" class="dd-pathtex-link" data-pathtex="' + esc(String(val)) + '">' + esc(String(val)) + '</a>';
+                        } else {
+                            display = esc(String(val));
+                        }
+                        if (key === 'category' && val) {
+                            display = _categoryBadge(val, DESTRUCTABLE_CATEGORIES);
+                        }
+                        if (key === 'tilesets' && val) {
+                            display = _tilesetBadges(val);
+                        }
+                        rows += '<tr><td class="key">' + esc(label) + '</td><td>' + display + '</td></tr>';
+                    }
+                }
+                if (group.color) {
+                    const c = d[group.color.key];
+                    if (c) {
+                        rows += '<tr><td class="key">' + esc(group.color.label) + '</td><td>'
+                            + c.r + ',' + c.g + ',' + c.b + ' '
+                            + _colorBadge(c.r, c.g, c.b) + '</td></tr>';
+                    }
+                }
+            }
+
+            if (!rows) continue;
+
+            const isOpen = collapseState.hasOwnProperty(group.title) ? collapseState[group.title] : true;
+            html += '<collapse-group group-title="' + esc(group.title) + '"' + (isOpen ? ' open' : '') + '>'
+                + '<table class="info">' + rows + '</table>'
+                + '</collapse-group>';
+        }
+
+        body.innerHTML = html;
+        const titleName = _gsValue(d.name) || d.destructableId;
+        const titleSuffix = _gsValue(d.editorSuffix);
+        win.setAttribute('title-text', '\ud83c\udfda ' + titleName + (titleSuffix ? ' ' + titleSuffix : ''));
+        win.show();
+
+        body.addEventListener('collapse-toggle', function (e) {
+            const state = _getDestCollapseState();
+            state[e.detail.title] = e.detail.open;
+            _setDestCollapseState(state);
+        });
+
+        body.addEventListener('click', function (e) {
+            var link = e.target.closest('.dd-model-link');
+            if (link) {
+                e.preventDefault();
+                var cmd = {command: 'openModel', path: link.getAttribute('data-path')};
+                var tId = link.getAttribute('data-tex-id');
+                var tFile = link.getAttribute('data-tex-file');
+                if (tId) cmd.texId = parseInt(tId, 10);
+                if (tFile) cmd.texFile = tFile;
+                if (_vscode) _vscode.postMessage(cmd);
+                return;
+            }
+            var ptLink = e.target.closest('.dd-pathtex-link');
+            if (ptLink) {
+                e.preventDefault();
+                showPathTex(ptLink.getAttribute('data-pathtex'));
+            }
+        });
+    }
+
+    // ── Placed objects — name resolution from SLK data ──────────
+
+    /** All DOO items from war3map.doo, set during init(). */
+    var _doodadDooItems = [];
+
+    function _fmtPlacedF(v) {
+        return v != null ? Number(v).toFixed(1) : '—';
+    }
+
+    /** Build an HTML table row for a placed DOO item. */
+    function _placedRow(it, obj, isError) {
+        var rawText = esc(it.text);
+        var name = '';
+        if (obj && obj.name) {
+            name = _gsValue(obj.name);
+        }
+        var pos = _fmtPlacedF(it.position.x) + ', ' + _fmtPlacedF(it.position.y) + ', ' + _fmtPlacedF(it.position.z);
+        var angle = it.angle != null ? _fmtPlacedF(it.angle * 180 / Math.PI) : '—';
+        var scale = _fmtPlacedF(it.scale.x) + ', ' + _fmtPlacedF(it.scale.y) + ', ' + _fmtPlacedF(it.scale.z);
+        var cls = isError ? ' class="doo-error-row"' : '';
+        var linkCls = 'doo-id-link';
+        return '<tr' + cls + ' data-doo-idx="' + it.index + '">'
+            + '<td class="num">' + (it.index + 1) + '</td>'
+            + '<td class="code"><span class="' + linkCls + '" data-dood-id="' + it.raw + '">' + rawText + '</span></td>'
+            + '<td>' + esc(name) + '</td>'
+            + '<td class="num">' + it.variation + '</td>'
+            + '<td class="mono">' + pos + '</td>'
+            + '<td class="num">' + angle + '</td>'
+            + '<td class="mono">' + scale + '</td>'
+            + '<td>' + (it.health != null ? it.health : '—') + '</td>'
+            + '</tr>';
+    }
+
+    /** Categorize DOO items into doodad/destructable/error and populate both placed windows. */
+    function _categorizePlacedItems() {
+        var doodadRows = [];
+        var destructableRows = [];
+        var errorItems = [];
+
+        for (var i = 0; i < _doodadDooItems.length; i++) {
+            var it = _doodadDooItems[i];
+            var rawKey = String(it.raw);
+            if (_doodadDataMap[rawKey]) {
+                doodadRows.push(_placedRow(it, _doodadDataMap[rawKey], false));
+            } else if (_destructableDataMap[rawKey]) {
+                destructableRows.push(_placedRow(it, _destructableDataMap[rawKey], false));
+            } else {
+                errorItems.push(it);
+            }
+        }
+
+        // Build error rows HTML (shown in both lists)
+        var errorHtml = '';
+        if (errorItems.length > 0) {
+            for (var j = 0; j < errorItems.length; j++) {
+                errorHtml += _placedRow(errorItems[j], null, true);
+            }
+        }
+
+        var theadHtml = '<thead><tr><th>#</th><th>Rawcode</th><th>Name</th><th>Var</th><th>Position</th><th>Angle\u00b0</th><th>Scale</th><th>HP</th></tr></thead>';
+
+        // Populate placed doodads
+        var doodPlacedEl = document.getElementById('doodadDooPlaced');
+        if (doodPlacedEl) {
+            if (doodadRows.length > 0 || errorItems.length > 0) {
+                doodPlacedEl.innerHTML =
+                    '<div class="tw-section-title">\ud83c\udf33 Placed Doodads (' + doodadRows.length + (errorItems.length ? ' + ' + errorItems.length + ' unknown' : '') + ')</div>'
+                    + '<div class="table-wrap"><table>' + theadHtml + '<tbody>'
+                    + errorHtml + doodadRows.join('') + '</tbody></table></div>';
+            } else {
+                doodPlacedEl.innerHTML = '';
+            }
+        }
+
+        // Populate placed destructables
+        var destPlacedEl = document.getElementById('destructableDooPlaced');
+        if (destPlacedEl) {
+            if (destructableRows.length > 0 || errorItems.length > 0) {
+                destPlacedEl.innerHTML =
+                    '<div class="tw-section-title">\ud83c\udfda Placed Destructables (' + destructableRows.length + (errorItems.length ? ' + ' + errorItems.length + ' unknown' : '') + ')</div>'
+                    + '<div class="table-wrap"><table>' + theadHtml + '<tbody>'
+                    + errorHtml + destructableRows.join('') + '</tbody></table></div>';
+            } else {
+                destPlacedEl.innerHTML = '';
+            }
+        }
+
+        // Bind click handlers on newly created .doo-id-link elements in placed lists
+        document.querySelectorAll('#doodadDooPlaced .doo-id-link, #destructableDooPlaced .doo-id-link').forEach(function (link) {
+            if (link._placedBound) return;
+            link._placedBound = true;
+            link.addEventListener('click', function () {
+                var id = link.getAttribute('data-dood-id') || '';
+                if (!id) return;
+                if (_doodadDataMap[id]) {
+                    showDoodadDetail(id);
+                } else if (_destructableDataMap[id]) {
+                    showDestructableDetail(id);
+                }
+            });
+        });
+    }
+
+    /** Categorize DOO items and populate placed-doodad / placed-destructable windows. */
+    function _updatePlacedNames() {
+        // Only categorize DOO items when both SLK catalogs have been loaded
+        if (_doodadDooItems.length && _doodadsSlkLoaded && _destructablesSlkLoaded) {
+            _categorizePlacedItems();
+        }
+
+        // Also resolve names in the raw DOO table (existing .doo-id-link elements from panels.js)
+        document.querySelectorAll('.doo-content .doo-id-link').forEach(function (link) {
+            var rawId = link.getAttribute('data-dood-id');
+            if (!rawId) return;
+            var obj = _doodadDataMap[rawId] || _destructableDataMap[rawId];
+            var nameSpan = link.querySelector('.doo-resolved-name');
+            if (obj && obj.name) {
+                if (!nameSpan) {
+                    nameSpan = document.createElement('span');
+                    nameSpan.className = 'doo-resolved-name';
+                    link.parentNode.appendChild(nameSpan);
+                }
+                nameSpan.textContent = ' \u2014 ' + _gsValue(obj.name);
+            } else if (nameSpan) {
+                nameSpan.remove();
+            }
+        });
+
+        // Resolve placed unit names
+        document.querySelectorAll('.doo-unit-link').forEach(function (link) {
+            var unitId = link.getAttribute('data-unit-id');
+            if (!unitId) return;
+            var obj = _unitDataMap[unitId];
+            var nameSpan = link.querySelector('.doo-resolved-name');
+            if (obj && obj.comment) {
+                if (!nameSpan) {
+                    nameSpan = document.createElement('span');
+                    nameSpan.className = 'doo-resolved-name';
+                    link.parentNode.appendChild(nameSpan);
+                }
+                nameSpan.textContent = ' \u2014 ' + obj.comment;
+            } else if (nameSpan) {
+                nameSpan.remove();
+            }
+        });
     }
 
     // ── Shared orbit controls (used by terrain & model viewer) ──
@@ -1758,6 +2629,7 @@ window.W3E = (function () {
             const materials = msg.materials || [];
             const bs = msg.binaryServer || window.__W3E_DATA__.binaryServer || null;
             const archivePath = msg.archivePath || window.__W3E_DATA__.archivePath || null;
+            const replaceableTextures = msg.replaceableTextures || null;
 
             if (geosets.length === 0) {
                 if (infoEl) infoEl.textContent = 'No geosets';
@@ -1855,8 +2727,16 @@ window.W3E = (function () {
             // ── Start loading textures now that meshes exist ──────
             if (bs) {
                 textures.forEach(function (tex, i) {
-                    if (!tex || !tex.file_name || tex.replaceable_id) return;
-                    var url = textureUrl(bs, archivePath, tex.file_name);
+                    if (!tex) return;
+                    // Determine actual texture path: use replaceable override if available
+                    var actualPath = null;
+                    if (tex.replaceable_id && replaceableTextures && replaceableTextures[tex.replaceable_id]) {
+                        actualPath = replaceableTextures[tex.replaceable_id];
+                    } else if (tex.file_name && !tex.replaceable_id) {
+                        actualPath = tex.file_name;
+                    }
+                    if (!actualPath) return;
+                    var url = textureUrl(bs, archivePath, actualPath);
                     if (!url) return;
 
                     var threeTex = textureLoader.load(url, function () {
@@ -1967,6 +2847,24 @@ window.W3E = (function () {
                                 };
                                 layerDiv.appendChild(thumb);
                             }
+                        } else if (tex && tex.replaceable_id && replaceableTextures && replaceableTextures[tex.replaceable_id] && bs) {
+                            var replPath = replaceableTextures[tex.replaceable_id];
+                            var thumbUrl = textureUrl(bs, archivePath, replPath);
+                            if (thumbUrl) {
+                                var thumb = document.createElement('img');
+                                thumb.className = 'mv-mat-thumb';
+                                thumb.src = thumbUrl;
+                                thumb.alt = replPath;
+                                thumb.setAttribute('data-mv-tex-index', layer.texture_id);
+                                thumb.onerror = function () {
+                                    thumb.style.display = 'none';
+                                    var ph = document.createElement('div');
+                                    ph.className = 'mv-mat-thumb-placeholder';
+                                    ph.textContent = 'Texture not found';
+                                    thumb.parentNode.replaceChild(ph, thumb);
+                                };
+                                layerDiv.appendChild(thumb);
+                            }
                         } else if (tex && tex.replaceable_id) {
                             var ph = document.createElement('div');
                             ph.className = 'mv-mat-thumb-placeholder';
@@ -2046,11 +2944,13 @@ window.W3E = (function () {
         const isArchive = !!config.isArchive;
 
         // ── Populate initial doodad data map for detail window ──
+        if (config.doodadDooItems) {
+            _doodadDooItems = config.doodadDooItems;
+        }
         if (config.initialDoodadsSlk && config.initialDoodadsSlk.doodads) {
-            _allDoodads = config.initialDoodadsSlk.doodads;
-            for (const d of _allDoodads) {
-                _doodadDataMap[d.doodId] = d;
-            }
+            _doodadsSlkLoaded = true;
+            _doodadDataMap = config.initialDoodadsSlk.doodads;
+            _allDoodads = Object.entries(config.initialDoodadsSlk.doodads).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
             // Restore saved filter state
             _restoreDoodFilters();
             // Bind initial filter checkbox events
@@ -2077,6 +2977,36 @@ window.W3E = (function () {
             _updateSortButtons();
             _filterAndRenderDoodads(false);
         }
+
+        // ── Populate initial destructable data map for detail window ──
+        if (config.initialDestructablesSlk && config.initialDestructablesSlk.destructables) {
+            _destructablesSlkLoaded = true;
+            _destructableDataMap = config.initialDestructablesSlk.destructables;
+            _allDestructables = Object.entries(config.initialDestructablesSlk.destructables).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
+            _restoreDestFilters();
+            document.querySelectorAll('.dt-cat-cb').forEach(cb => {
+                cb.addEventListener('change', _filterAndRenderDestructables);
+            });
+            document.querySelectorAll('.dt-ts-cb').forEach(cb => {
+                cb.addEventListener('change', _filterAndRenderDestructables);
+            });
+            document.querySelectorAll('.dt-sort-col').forEach(btn => {
+                if (btn._dtSortBound) return;
+                btn._dtSortBound = true;
+                btn.addEventListener('click', () => _cycleDestSort(btn.getAttribute('data-sort')));
+            });
+            const dtSearchEl = document.getElementById('dtSearchInput');
+            if (dtSearchEl && !dtSearchEl._dtBound) {
+                dtSearchEl._dtBound = true;
+                dtSearchEl.addEventListener('input', _filterAndRenderDestructables);
+            }
+            _restoreDestSort();
+            _updateDestSortButtons();
+            _filterAndRenderDestructables(false);
+        }
+
+        // ── Resolve placed object names from initial SLK data ──
+        _updatePlacedNames();
 
         // ── Menu sync ────────────────────────────────────────
         document.addEventListener('float-toggled', syncMenuActive);
@@ -2119,22 +3049,41 @@ window.W3E = (function () {
 
         bindGpButtons();
 
-        onGamePathChanged(data => {
-            if (!data.status) return;
-            const gpBody = document.getElementById('gpBody');
+        // ── Direct graph subscriptions (granular reactivity) ──────
+        // Each subscriber fires only when its specific data source changes.
+
+        _graph.subscribe('status', function (status) {
+            if (!status) return;
+            var gpBody = document.getElementById('gpBody');
             if (!gpBody) return;
-            gpBody.innerHTML = renderGpBody(data.status);
+            gpBody.innerHTML = renderGpBody(status);
             bindGpButtons();
         });
 
         // ── Tileset ──────────────────────────────────────────
-        onGamePathChanged(data => rebuildTileset(data.terrainSlk, groundTileCodes, cliffTileCodes));
+        _graph.subscribe('terrainSlk', function (terrainSlk) {
+            rebuildTileset(terrainSlk, groundTileCodes, cliffTileCodes);
+        });
+
+        // ── Westrings ──────────────────────────────────────────
+        _graph.subscribe('westrings', function (westrings) {
+            _westringsMap = (westrings && typeof westrings === 'object') ? westrings : {};
+        });
 
         // ── Doodads ──────────────────────────────────────────
-        onGamePathChanged(data => rebuildDoodads(data.doodadsSlk));
+        _graph.subscribe('doodadsSlk', function (doodadsSlk) {
+            rebuildDoodads(doodadsSlk);
+        });
+
+        // ── Destructables ──────────────────────────────────────
+        _graph.subscribe('destructablesSlk', function (destructablesSlk) {
+            rebuildDestructables(destructablesSlk);
+        });
 
         // ── Units ────────────────────────────────────────────
-        onGamePathChanged(data => rebuildUnits(data.unitsSlk));
+        _graph.subscribe('unitsSlk', function (unitsSlk) {
+            rebuildUnits(unitsSlk);
+        });
 
         // ── Doodad item click → show detail window ──────────────
         {
@@ -2143,27 +3092,42 @@ window.W3E = (function () {
                 dsList.addEventListener('click', function (e) {
                     const item = e.target.closest('doodad-item');
                     if (!item) return;
-                    const id = item.getAttribute('dood-id') || '';
+                    const id = item.getAttribute('data-raw-id') || '';
                     if (!id) return;
                     showDoodadDetail(id);
                 });
             }
         }
 
-        // ── Placed doodad rawcode click → show detail window ────
+        // ── Destructable item click → show detail window ─────────
         {
-            const dooWin = document.getElementById('doodadDooWindow');
-            if (dooWin) {
-                dooWin.addEventListener('click', function (e) {
-                    const link = e.target.closest('.doo-id-link');
-                    if (!link) return;
-                    e.preventDefault();
-                    const id = link.getAttribute('data-dood-id') || '';
+            const dtList = document.getElementById('dtDestList');
+            if (dtList) {
+                dtList.addEventListener('click', function (e) {
+                    const item = e.target.closest('destructable-item');
+                    if (!item) return;
+                    const id = item.getAttribute('data-raw-id') || '';
                     if (!id) return;
-                    showDoodadDetail(id);
+                    showDestructableDetail(id);
                 });
             }
         }
+
+        // ── Placed doodad/destructable rawcode click → show detail window ────
+        document.querySelectorAll('.doo-content .doo-id-link').forEach(function (link) {
+            link.addEventListener('click', function () {
+                var id = link.getAttribute('data-dood-id') || '';
+                if (!id) return;
+                if (_doodadDataMap[id]) {
+                    showDoodadDetail(id);
+                } else if (_destructableDataMap[id]) {
+                    showDestructableDetail(id);
+                } else {
+                    // Try doodad first as fallback
+                    showDoodadDetail(id);
+                }
+            });
+        });
 
         if (vscode) {
             // ── Unit item click → open model ─────────────────────
@@ -2186,8 +3150,23 @@ window.W3E = (function () {
         window.addEventListener('message', e => {
             const msg = e.data;
             if (msg && msg.command === 'gamePathChanged') {
-                for (const fn of _gamePathHandlers) fn(msg);
-                setLoading(false);
+                // Feed each data source into the reactive graph.
+                // setMany runs a single propagation pass → _gamePathData
+                // fires once with the combined values, subscribers run
+                // in topological order.
+                var entries = [];
+                if (msg.status !== undefined) entries.push(['status', msg.status]);
+                if (msg.westrings !== undefined) entries.push(['westrings', msg.westrings]);
+                if (msg.terrainSlk !== undefined) entries.push(['terrainSlk', msg.terrainSlk]);
+                if (msg.doodadsSlk !== undefined) entries.push(['doodadsSlk', msg.doodadsSlk]);
+                if (msg.unitsSlk !== undefined) entries.push(['unitsSlk', msg.unitsSlk]);
+                if (msg.destructablesSlk !== undefined) entries.push(['destructablesSlk', msg.destructablesSlk]);
+                _graph.setMany(entries).then(function () {
+                    setLoading(false);
+                }).catch(function (err) {
+                    console.error('[W3E MSG] setMany ERROR:', err)
+                    setLoading(false);
+                });
             }
             if (msg && msg.command === 'loadingDone') {
                 setLoading(false);
@@ -2330,24 +3309,139 @@ window.W3E = (function () {
         }
     }
 
-    // ── Highlight a placed doodad by DOO index ──────────────
-    function highlightPlacedDoodad(dooIndex) {
-        const win = document.getElementById('doodadDooWindow');
-        if (!win) return;
-        // Open the window
+    // ── Path Texture viewer ────────────────────────────────────────
+
+    /**
+     * Fetch and display a pathing texture in the pathTexWindow.
+     * @param {string} texPath  Game-internal path (e.g. "PathTextures\\4x4Default.tga")
+     */
+    function showPathTex(texPath) {
+        var win = document.getElementById('pathTexWindow');
+        var body = document.getElementById('pathTexBody');
+        if (!win || !body) return;
+
+        win.setAttribute('title-text', '\ud83d\udea7 ' + texPath.replace(/\\/g, '/').split('/').pop());
         win.show();
-        // Find the row by data-doo-idx attribute
-        const row = win.querySelector('tr[data-doo-idx="' + dooIndex + '"]');
+        body.innerHTML = '<div class="ptex-loading">\u231b Loading\u2026</div>';
+
+        var data = window.__W3E_DATA__;
+        if (!data || !data.binaryServer) {
+            body.innerHTML = '<div class="ptex-error">\u26a0 Binary server not available</div>';
+            return;
+        }
+
+        var bs = data.binaryServer;
+        var params = new URLSearchParams({token: bs.token, path: texPath});
+        if (data.isArchive && data.archivePath) params.set('archive', data.archivePath);
+
+        fetch('http://127.0.0.1:' + bs.port + '/w3e/pathTex?' + params)
+            .then(function (resp) {
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                return resp.json();
+            })
+            .then(function (result) {
+                _renderPathTexGrid(body, result, texPath);
+            })
+            .catch(function (err) {
+                body.innerHTML = '<div class="ptex-error">\u26a0 ' + esc(String(err)) + '</div>';
+            });
+    }
+
+    function _renderPathTexGrid(container, result, texPath) {
+        var w = result.width;
+        var h = result.height;
+        var px = result.pixels; // flat [R,G,B, R,G,B, ...]
+
+        // Legend
+        var html = '<div class="ptex-legend">'
+            + '<div class="ptex-legend-row">'
+            + '<div class="ptex-legend-cell">'
+            + '<span style="background:#e53935"></span>'
+            + '<span style="background:#43a047"></span>'
+            + '<span style="background:#1e88e5"></span>'
+            + '<span style="background:#666"></span>'
+            + '</div>'
+            + '<span>\u2190</span>'
+            + '</div>'
+            + '<div class="ptex-legend-row">'
+            + '<span style="color:#e53935">\u25cf</span> 1 Walk'
+            + '<span>\u2003</span>'
+            + '<span style="color:#43a047">\u25cf</span> 2 Fly'
+            + '</div>'
+            + '<div class="ptex-legend-row">'
+            + '<span style="color:#1e88e5">\u25cf</span> 3 Build'
+            + '<span>\u2003</span>'
+            + '<span style="background:#666;display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;border:1px solid rgba(255,255,255,0.2);"></span> 4 Color'
+            + '</div>'
+            + '</div>';
+
+        html += '<div class="ptex-source">' + esc(texPath) + ' \u2014 ' + w + '\u00d7' + h + ' \u2014 source: ' + esc(result.source) + '</div>';
+
+        // Grid
+        html += '<div class="ptex-grid" style="grid-template-columns:repeat(' + w + ', 24px);">';
+
+        for (var y = 0; y < h; y++) {
+            for (var x = 0; x < w; x++) {
+                var idx = (y * w + x) * 3;
+                var r = px[idx];
+                var g = px[idx + 1];
+                var b = px[idx + 2];
+
+                // 0x00 = allowed, 0xFF = blocked
+                var canWalk = (r === 0);
+                var canFly = (g === 0);
+                var canBuild = (b === 0);
+
+                var walkColor = canWalk ? '#e53935' : 'rgba(229,57,53,0.12)';
+                var flyColor = canFly ? '#43a047' : 'rgba(67,160,71,0.12)';
+                var buildColor = canBuild ? '#1e88e5' : 'rgba(30,136,229,0.12)';
+                var rgbColor = 'rgb(' + r + ',' + g + ',' + b + ')';
+
+                var title = 'x=' + x + ' y=' + y
+                    + '  R=' + r + ' G=' + g + ' B=' + b
+                    + '\nWalk: ' + (canWalk ? 'YES' : 'no')
+                    + '  Fly: ' + (canFly ? 'YES' : 'no')
+                    + '  Build: ' + (canBuild ? 'YES' : 'no');
+
+                html += '<div class="ptex-cell" title="' + esc(title) + '">'
+                    + '<span style="background:' + walkColor + '"></span>'
+                    + '<span style="background:' + flyColor + '"></span>'
+                    + '<span style="background:' + buildColor + '"></span>'
+                    + '<span style="background:' + rgbColor + '"></span>'
+                    + '</div>';
+            }
+        }
+
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    // ── Highlight a placed doodad/destructable by DOO index ──────────────
+    function highlightPlacedDoodad(dooIndex) {
+        // Search categorized placed lists first, then fall back to raw DOO table
+        var row = document.querySelector('#doodadDooPlaced tr[data-doo-idx="' + dooIndex + '"]');
+        var winId = 'doodadDooWindow';
+        if (!row) {
+            row = document.querySelector('#destructableDooPlaced tr[data-doo-idx="' + dooIndex + '"]');
+            winId = 'destructableDooWindow';
+        }
+        if (!row) {
+            // Fall back to raw DOO table
+            row = document.querySelector('#doodadDooWindow .doo-content tr[data-doo-idx="' + dooIndex + '"]');
+            winId = 'doodadDooWindow';
+        }
         if (!row) return;
-        // Remove previous highlight
-        win.querySelectorAll('.doo-highlight').forEach(function (el) {
+        var win = document.getElementById(winId);
+        if (!win) return;
+        win.show();
+        // Clear highlights in both windows
+        document.querySelectorAll('#doodadDooWindow .doo-highlight, #destructableDooWindow .doo-highlight').forEach(function (el) {
             el.classList.remove('doo-highlight');
         });
-        // Highlight and scroll
         row.classList.add('doo-highlight');
         row.scrollIntoView({behavior: 'smooth', block: 'center'});
     }
 
-    return {init, onGamePathChanged, indexToRgb, syncMenuActive, makeOrbitControls, highlightPlacedDoodad};
+    return {init, onGamePathChanged, graph: _graph, indexToRgb, syncMenuActive, makeOrbitControls, highlightPlacedDoodad};
 })();
 

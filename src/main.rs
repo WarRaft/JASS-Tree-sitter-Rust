@@ -123,6 +123,7 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::W3eTerrainSlk(_) => "w3e/terrainSlk",
         MethodCall::W3eDoodadsSlk(_) => "w3e/doodadsSlk",
         MethodCall::W3eUnitsSlk(_) => "w3e/unitsSlk",
+        MethodCall::W3eDestructablesSlk(_) => "w3e/destructablesSlk",
         MethodCall::W3eLookupFile(_) => "w3e/lookupFile",
         MethodCall::DebugLogEnable(_) => "custom/debugLogEnable",
         MethodCall::DebugInit(_) => "custom/debugInit",
@@ -697,6 +698,29 @@ async fn main() {
                                 let ap = param.archive_path.clone();
                                 let slk = tokio::task::spawn_blocking(move || {
                                     crate::lng::w3e::slk::load_units_slk(ap.as_deref())
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+                                let result_val = match slk {
+                                    Some(data) => serde_json::to_value(data).unwrap_or_default(),
+                                    None => serde_json::json!(null),
+                                };
+                                send(
+                                    &writer,
+                                    &ResponseMessage {
+                                        jsonrpc: "2.0".into(),
+                                        id: call.id,
+                                        result: Some(result_val),
+                                        error: None,
+                                    },
+                                ).await;
+                            }
+
+                            MethodCall::W3eDestructablesSlk(param) => {
+                                let ap = param.archive_path.clone();
+                                let slk = tokio::task::spawn_blocking(move || {
+                                    crate::lng::w3e::slk::load_destructables_slk(ap.as_deref())
                                 })
                                 .await
                                 .ok()

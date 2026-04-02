@@ -57,10 +57,16 @@ const DOODAD_CATEGORIES = {
     Z: 'Cinematic',
 }
 
+const DESTRUCTABLE_CATEGORIES = {
+    B: 'Bridges/Ramps',
+    D: 'Destructibles',
+    P: 'Pathing Blockers',
+}
+
 function fmtF(v) {
     if (v == null) return '—'
     return Number(v).toFixed(2)
 }
 
-module.exports = {esc, fmtSize, fmtF, errorHtml, indexToRgb, TILESET_NAMES, DOODAD_CATEGORIES}
+module.exports = {esc, fmtSize, fmtF, errorHtml, indexToRgb, TILESET_NAMES, DOODAD_CATEGORIES, DESTRUCTABLE_CATEGORIES}
 

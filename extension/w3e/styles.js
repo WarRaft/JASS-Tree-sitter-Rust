@@ -20,6 +20,33 @@ function editorStyles() {
             z-index: 0;
         }
 
+        /* ── Global loading bar (terrain texture loading) ─────── */
+        #globalLoadingBar {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 3px;
+            z-index: 30;
+            overflow: hidden;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        #globalLoadingBar.active {
+            opacity: 1;
+        }
+        #globalLoadingBar::after {
+            content: '';
+            position: absolute;
+            top: 0; left: -40%;
+            width: 40%; height: 100%;
+            background: var(--vscode-progressBar-background, #0e70c0);
+            animation: global-loading-slide 1.2s ease-in-out infinite;
+        }
+        @keyframes global-loading-slide {
+            0% { left: -40%; }
+            100% { left: 100%; }
+        }
+
         /* ── Sidebar menu ───────────────────────────────────────── */
         .menubar {
             position: absolute;
@@ -186,6 +213,16 @@ function editorStyles() {
         table.info { border-collapse: collapse; margin-bottom: 8px; width: 100%; }
         table.info td { padding: 2px 8px 2px 0; font-size: 12px; }
         table.info .key { color: var(--vscode-descriptionForeground, #888); white-space: nowrap; }
+        .gs-resolved {
+            color: var(--vscode-textLink-foreground, #3794ff);
+            cursor: pointer;
+            text-decoration: none;
+            border-bottom: 1px dotted var(--vscode-textLink-foreground, #3794ff);
+        }
+        .gs-resolved:hover {
+            color: var(--vscode-textLink-activeForeground, #3794ff);
+            border-bottom-style: solid;
+        }
         .tw-section-title {
             font-size: 11px; font-weight: 600;
             color: var(--vscode-descriptionForeground, #888);
@@ -265,6 +302,7 @@ function editorStyles() {
             font-family: var(--vscode-editor-font-family, monospace);
             font-weight: 600;
             border-radius: 3px;
+            vertical-align: middle;
             background: rgba(255, 255, 255, 0.08);
             color: var(--vscode-descriptionForeground, #999);
             flex-shrink: 0;
@@ -532,6 +570,7 @@ function editorStyles() {
             flex-shrink: 0;
         }
         #doodadDooWindow .table-wrap,
+        #destructableDooWindow .table-wrap,
         #unitDooWindow .table-wrap {
             flex: 1;
             min-height: 0;
@@ -540,18 +579,21 @@ function editorStyles() {
             border-radius: 4px;
         }
         #doodadDooWindow table,
+        #destructableDooWindow table,
         #unitDooWindow table {
             width: 100%;
             border-collapse: collapse;
             white-space: nowrap;
         }
         #doodadDooWindow thead,
+        #destructableDooWindow thead,
         #unitDooWindow thead {
             position: sticky;
             top: 0;
             z-index: 1;
         }
         #doodadDooWindow th,
+        #destructableDooWindow th,
         #unitDooWindow th {
             background: rgba(255, 255, 255, 0.04);
             color: var(--vscode-descriptionForeground, #888);
@@ -562,20 +604,25 @@ function editorStyles() {
             font-size: 11px;
         }
         #doodadDooWindow td,
+        #destructableDooWindow td,
         #unitDooWindow td {
             padding: 2px 6px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.04);
             font-size: 12px;
         }
         #doodadDooWindow tr:hover td,
+        #destructableDooWindow tr:hover td,
         #unitDooWindow tr:hover td {
             background: rgba(255, 255, 255, 0.04);
         }
         #doodadDooWindow .num,
+        #destructableDooWindow .num,
         #unitDooWindow .num { text-align: right; font-variant-numeric: tabular-nums; }
         #doodadDooWindow .mono,
+        #destructableDooWindow .mono,
         #unitDooWindow .mono { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
         #doodadDooWindow .code,
+        #destructableDooWindow .code,
         #unitDooWindow .code { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; }
         .doo-highlight td {
             background: rgba(55, 148, 255, 0.2) !important;
@@ -766,9 +813,7 @@ function editorStyles() {
         }
         .mv-mat-layer-row > span:last-child {
             min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
+            word-break: break-all;
         }
         .mv-mat-layer-label {
             color: var(--vscode-descriptionForeground, #888);
@@ -841,14 +886,26 @@ function editorStyles() {
         }
 
         /* ── Placed doodad ID links ─────────────────────────── */
-        .doo-id-link {
+        .doo-id-link, .doo-unit-link {
             color: var(--vscode-textLink-foreground, #3794ff);
             text-decoration: none;
             cursor: pointer;
         }
-        .doo-id-link:hover {
+        .doo-id-link:hover, .doo-unit-link:hover {
             text-decoration: underline;
             color: var(--vscode-textLink-activeForeground, #4fc3f7);
+        }
+        .doo-resolved-name {
+            opacity: 0.7;
+            font-style: italic;
+            font-family: inherit;
+        }
+        .doo-error-row {
+            background: rgba(255, 80, 80, 0.10);
+        }
+        .doo-error-row td:first-child::before {
+            content: '\u26a0 ';
+            color: var(--vscode-errorForeground, #f44);
         }
 
         /* ── Doodad detail color badge ────────────────────────── */
@@ -861,6 +918,86 @@ function editorStyles() {
             border: 1px solid rgba(255, 255, 255, 0.25);
             vertical-align: middle;
             margin-left: 4px;
+        }
+
+        /* ── Path texture link ─────────────────────────────────── */
+        .dd-pathtex-link {
+            display: block;
+            font-family: var(--vscode-editor-font-family, monospace);
+            font-size: 11px;
+            color: var(--vscode-textLink-foreground, #3794ff);
+            text-decoration: none;
+            padding: 1px 0;
+            cursor: pointer;
+        }
+        .dd-pathtex-link:hover {
+            text-decoration: underline;
+            color: var(--vscode-textLink-activeForeground, #4fc3f7);
+        }
+
+        /* ── Path texture viewer ───────────────────────────────── */
+        .ptex-legend {
+            display: flex;
+            gap: 16px;
+            padding: 8px 10px;
+            font-size: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .ptex-legend-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .ptex-legend-cell {
+            display: inline-grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            width: 20px;
+            height: 20px;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .ptex-legend-cell > span {
+            width: 10px;
+            height: 10px;
+        }
+        .ptex-source {
+            padding: 4px 10px;
+            font-size: 11px;
+            opacity: 0.6;
+        }
+        .ptex-grid {
+            display: grid;
+            gap: 1px;
+            padding: 10px;
+            background: rgba(0,0,0,0.2);
+        }
+        .ptex-cell {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            width: 24px;
+            height: 24px;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .ptex-cell > span {
+            width: 12px;
+            height: 12px;
+        }
+        .ptex-loading {
+            padding: 16px;
+            text-align: center;
+            opacity: 0.6;
+        }
+        .ptex-error {
+            padding: 16px;
+            text-align: center;
+            color: var(--vscode-errorForeground, #f44);
         }
     `
 }

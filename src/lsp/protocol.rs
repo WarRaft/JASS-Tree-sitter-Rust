@@ -260,6 +260,10 @@ pub enum MethodCall {
     #[serde(rename = "w3e/unitsSlk")]
     W3eUnitsSlk(W3eUnitsSlkParams),
 
+    /// W3E destructables SLK lookup
+    #[serde(rename = "w3e/destructablesSlk")]
+    W3eDestructablesSlk(W3eDestructablesSlkParams),
+
     /// W3E cascading file lookup
     #[serde(rename = "w3e/lookupFile")]
     W3eLookupFile(W3eLookupFileParams),
@@ -387,6 +391,15 @@ pub struct W3eDoodadsSlkParams {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct W3eUnitsSlkParams {
+    /// Optional archive path (for looking up SLK inside the map archive).
+    #[serde(default)]
+    pub archive_path: Option<String>,
+}
+
+/// Params for `w3e/destructablesSlk` — request destructables SLK metadata.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3eDestructablesSlkParams {
     /// Optional archive path (for looking up SLK inside the map archive).
     #[serde(default)]
     pub archive_path: Option<String>,

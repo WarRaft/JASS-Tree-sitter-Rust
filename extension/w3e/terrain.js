@@ -11,7 +11,9 @@
         groundTileCodes: DATA.groundTileCodes,
         cliffTileCodes: DATA.cliffTileCodes,
         isArchive: DATA.isArchive,
-        initialDoodadsSlk: DATA.initialDoodadsSlk
+        initialDoodadsSlk: DATA.initialDoodadsSlk,
+        initialDestructablesSlk: DATA.initialDestructablesSlk,
+        doodadDooItems: DATA.doodadDooItems || []
     })
 
     // ── Three.js setup ──────────────────────────────────────────
@@ -391,6 +393,15 @@
 
             // ── Build composited canvas from loaded tile images ──
             function buildComposited(tileImages) {
+                // If no images loaded at all, fall back to palette mode
+                const hasAnyImage = tileImages.some(function (img) { return img != null })
+                if (!hasAnyImage) {
+                    canvasTex = null
+                    mat.map = colorTex
+                    mat.needsUpdate = true
+                    return
+                }
+
                 const CPX = 32
                 const c2 = document.createElement('canvas')
                 c2.width = cellsX * CPX
@@ -489,8 +500,15 @@
             //   1) The lowest texture always draws a full fill (base layer).
             //   2) Each subsequent texture draws a transition sub-tile
             //      covering only the corners that have exactly that texture.
+            const _loadingBar = document.getElementById('globalLoadingBar')
+            function _showLoading() { if (_loadingBar) _loadingBar.classList.add('active') }
+            function _hideLoading() { if (_loadingBar) _loadingBar.classList.remove('active') }
+
             function loadAndComposite(textures) {
-                if (!textures || textures.length === 0) return
+                if (!textures || textures.length === 0) {
+                    _hideLoading()
+                    return
+                }
                 const tileImages = new Array(textures.length).fill(null)
                 let toLoad = 0
                 let loaded = 0
@@ -501,35 +519,71 @@
                     const img = new Image()
                     img.onload = () => {
                         tileImages[i] = img
-                        if (++loaded === toLoad) buildComposited(tileImages)
+                        if (++loaded === toLoad) {
+                            buildComposited(tileImages)
+                            _hideLoading()
+                        }
                     }
                     img.onerror = () => {
-                        if (++loaded === toLoad) buildComposited(tileImages)
+                        console.warn('[W3E TEX] image', i, 'load error')
+                        if (++loaded === toLoad) {
+                            buildComposited(tileImages)
+                            _hideLoading()
+                        }
                     }
                     img.src = entry.dataUrl
                 })
 
-                if (toLoad === 0) buildComposited(tileImages)
+                if (toLoad === 0) {
+                    buildComposited(tileImages)
+                    _hideLoading()
+                } else {
+                    _showLoading()
+                }
             }
 
             // Initial load from render data
             loadAndComposite(TILE_TEXTURES)
 
-            // Reload textures when game path changes — fetch directly
-            // from the HTTP server to avoid large base64 data going
-            // through the extension host → webview postMessage IPC.
-            W3E.onGamePathChanged(function () {
+            // Reload textures when game path changes — subscribe directly
+            // to the 'status' source node for immediate reaction.
+            // Fetches tile textures via HTTP (avoids large IPC payloads).
+            W3E.graph.subscribe('status', function (status) {
                 const bs = DATA.binaryServer
                 const codes = DATA.groundTileCodes
-                if (!bs || !codes || codes.length === 0) return
-                const params = new URLSearchParams({token: bs.token, codes: codes.join(',')})
-                if (DATA.archivePath) params.set('archive', DATA.archivePath)
-                fetch('http://127.0.0.1:' + bs.port + '/w3e/tileTextures?' + params)
-                .then(function (resp) { return resp.ok ? resp.json() : null })
-                .then(function (textures) {
-                    if (textures) loadAndComposite(textures)
-                })
-                .catch(function (e) { console.warn('tileTextures fetch error:', e) })
+
+                if (!status || !status.hasPath) {
+                    // Game path cleared → fall back to palette mode
+                    loadAndComposite(codes ? codes.map(function () { return null }) : [])
+                    return
+                }
+
+                if (bs && codes && codes.length > 0) {
+                    // codes are Rawcode objects {raw, text} — extract text strings
+                    const codeStrings = codes.map(function (c) { return typeof c === 'string' ? c : c.text })
+                    const params = new URLSearchParams({token: bs.token, codes: codeStrings.join(',')})
+                    if (DATA.archivePath) params.set('archive', DATA.archivePath)
+                    const url = 'http://127.0.0.1:' + bs.port + '/w3e/tileTextures?' + params
+                    _showLoading()
+                    fetch(url)
+                    .then(function (resp) {
+                        return resp.ok ? resp.json() : null
+                    })
+                    .then(function (textures) {
+                        if (textures) {
+                            loadAndComposite(textures)
+                        } else {
+                            console.warn('[W3E TEX] no textures in response')
+                            _hideLoading()
+                        }
+                    })
+                    .catch(function (e) {
+                        console.error('[W3E TEX] fetch error:', e)
+                        _hideLoading()
+                    })
+                } else {
+                    console.warn('[W3E TEX] no binary server or no codes, cannot fetch textures')
+                }
             })
 
             // ── Wireframe grid ───────────────────────────────────
@@ -797,6 +851,7 @@
             scene.add(objectGroup)
 
             let _doodFileMap = DATA.doodadFileMap || {}
+            let _destFileMap = DATA.destructableFileMap || {}
             let _unitFileMap = DATA.unitFileMap || {}
             const _doodItems = DATA.doodadPlacements || []
             const _unitItems = DATA.unitPlacements || []
@@ -834,7 +889,7 @@
                 return 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params
             }
 
-            function _buildModel(data) {
+            function _buildModel(data, replaceableTextures) {
                 const geosets = data.geosets || []
                 const textures = data.textures || []
                 const materials = data.materials || []
@@ -869,8 +924,15 @@
                             const texId = layer.texture_id
                             if (texId < textures.length) {
                                 const tex = textures[texId]
-                                if (tex && tex.file_name && !tex.replaceable_id) {
-                                    const url = _texUrl(tex.file_name)
+                                // Determine texture path: use replaceable texture override if available
+                                var texPath = null
+                                if (tex && tex.replaceable_id && replaceableTextures && replaceableTextures[tex.replaceable_id]) {
+                                    texPath = replaceableTextures[tex.replaceable_id]
+                                } else if (tex && tex.file_name && !tex.replaceable_id) {
+                                    texPath = tex.file_name
+                                }
+                                if (texPath) {
+                                    const url = _texUrl(texPath)
                                     if (url) {
                                         const t = _textureLoader.load(url)
                                         t.wrapS = THREE.RepeatWrapping
@@ -944,6 +1006,8 @@
                 return base + idx + ext
             }
 
+            const _rawModelData = {} // modelPath → raw msg data (shared across texture variants)
+
             function _collectAndLoad() {
                 // Clear existing objects
                 while (objectGroup.children.length > 0) {
@@ -957,22 +1021,29 @@
                     }
                 }
 
-                const byPath = {} // modelPath → [items]
+                const pathsNeeded = {} // modelPath → true (for loading dedup)
+                const byCacheKey = {} // cacheKey → {path, items, texId, texFile}
                 const _unmappedItems = [] // items with no rawcode→file mapping
                 for (const item of _doodItems) {
-                    const entry = _doodFileMap[item.r]
+                    const entry = _doodFileMap[item.r] || _destFileMap[item.r]
                     if (!entry) { _unmappedItems.push(item); continue }
                     const file = typeof entry === 'string' ? entry : entry.file
                     const numVar = typeof entry === 'object' ? (entry.numVar || 1) : 1
                     const resolved = _resolveModelPath(file, numVar, item.v)
-                    if (!byPath[resolved]) byPath[resolved] = []
-                    byPath[resolved].push(item)
+                    const texFile = typeof entry === 'object' ? (entry.texFile || '') : ''
+                    const texId = typeof entry === 'object' ? (entry.texId || 0) : 0
+                    const cacheKey = texFile ? (resolved + '|' + texFile) : resolved
+                    if (!byCacheKey[cacheKey]) byCacheKey[cacheKey] = {path: resolved, items: [], texId, texFile}
+                    byCacheKey[cacheKey].items.push(item)
+                    pathsNeeded[resolved] = true
                 }
                 for (const item of _unitItems) {
                     const file = _unitFileMap[item.r]
                     if (!file) { _unmappedItems.push(item); continue }
-                    if (!byPath[file]) byPath[file] = []
-                    byPath[file].push(item)
+                    const cacheKey = file
+                    if (!byCacheKey[cacheKey]) byCacheKey[cacheKey] = {path: file, items: [], texId: 0, texFile: ''}
+                    byCacheKey[cacheKey].items.push(item)
+                    pathsNeeded[file] = true
                 }
 
                 // Place red cubes for items with no rawcode→file mapping
@@ -982,12 +1053,18 @@
 
                 // Place already-cached models; collect uncached for loading
                 const toLoad = []
-                for (const [filePath, items] of Object.entries(byPath)) {
-                    if (_modelCache[filePath]) {
-                        _placeInstances(items, _modelCache[filePath])
+                for (const [cacheKey, info] of Object.entries(byCacheKey)) {
+                    if (_modelCache[cacheKey]) {
+                        _placeInstances(info.items, _modelCache[cacheKey])
+                    } else if (_rawModelData[info.path]) {
+                        // Model data already loaded but not yet built for this texture variant
+                        const replTex = info.texId && info.texFile ? {[info.texId]: info.texFile} : null
+                        const entries = _buildModel(_rawModelData[info.path], replTex)
+                        _modelCache[cacheKey] = entries
+                        _placeInstances(info.items, entries)
                     } else {
-                        toLoad.push(filePath)
-                        _pendingItems[filePath] = items
+                        _pendingItems[cacheKey] = info
+                        if (!toLoad.includes(info.path)) toLoad.push(info.path)
                     }
                 }
 
@@ -1000,28 +1077,35 @@
             window.addEventListener('message', function (e) {
                 const msg = e.data
                 if (msg && msg.command === 'mapObjectModel') {
-                    const entries = _buildModel(msg)
-                    _modelCache[msg.path] = entries
-                    const items = _pendingItems[msg.path]
-                    if (items && objectGroup.visible) {
-                        _placeInstances(items, entries)
-                        delete _pendingItems[msg.path]
+                    _rawModelData[msg.path] = msg
+                    // Build entries for each pending cache key that references this model path
+                    for (const [cacheKey, info] of Object.entries(_pendingItems)) {
+                        if (info.path !== msg.path) continue
+                        const replTex = info.texId && info.texFile ? {[info.texId]: info.texFile} : null
+                        const entries = _buildModel(msg, replTex)
+                        _modelCache[cacheKey] = entries
+                        if (info.items && objectGroup.visible) {
+                            _placeInstances(info.items, entries)
+                        }
+                        delete _pendingItems[cacheKey]
                     }
                 } else if (msg && msg.command === 'mapObjectModelNotFound') {
                     // Model file could not be loaded — place red cubes
-                    _modelCache[msg.path] = _fallbackEntries
-                    const items = _pendingItems[msg.path]
-                    if (items && objectGroup.visible) {
-                        _placeInstances(items, _fallbackEntries)
-                        delete _pendingItems[msg.path]
+                    for (const [cacheKey, info] of Object.entries(_pendingItems)) {
+                        if (info.path !== msg.path) continue
+                        _modelCache[cacheKey] = _fallbackEntries
+                        if (info.items && objectGroup.visible) {
+                            _placeInstances(info.items, _fallbackEntries)
+                        }
+                        delete _pendingItems[cacheKey]
                     }
                 } else if (msg && msg.command === 'mapObjectsLoaded') {
                     // After all loading finishes, place red cubes for any remaining pending items
-                    for (const [filePath, items] of Object.entries(_pendingItems)) {
-                        if (!_modelCache[filePath]) {
-                            _modelCache[filePath] = _fallbackEntries
+                    for (const [cacheKey, info] of Object.entries(_pendingItems)) {
+                        if (!_modelCache[cacheKey]) {
+                            _modelCache[cacheKey] = _fallbackEntries
                             if (objectGroup.visible) {
-                                _placeInstances(items, _fallbackEntries)
+                                _placeInstances(info.items, _fallbackEntries)
                             }
                         }
                     }
@@ -1041,7 +1125,7 @@
             })
 
             // Initial load if SLK maps have data
-            const _hasMaps = Object.keys(_doodFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
+            const _hasMaps = Object.keys(_doodFileMap).length > 0 || Object.keys(_destFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
             if (_hasMaps && (_doodItems.length > 0 || _unitItems.length > 0)) {
                 _collectAndLoad()
             }
@@ -1050,8 +1134,14 @@
             W3E.onGamePathChanged(function (data) {
                 if (data.doodadsSlk && data.doodadsSlk.doodads) {
                     _doodFileMap = {}
-                    for (const d of data.doodadsSlk.doodads) {
-                        if (d.doodId && d.file) _doodFileMap[d.doodId] = {file: d.file, numVar: d.numVar || 1}
+                    for (const [rawId, d] of Object.entries(data.doodadsSlk.doodads)) {
+                        if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1}
+                    }
+                }
+                if (data.destructablesSlk && data.destructablesSlk.destructables) {
+                    _destFileMap = {}
+                    for (const [rawId, d] of Object.entries(data.destructablesSlk.destructables)) {
+                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || ''}
                     }
                 }
                 if (data.unitsSlk && data.unitsSlk.units) {
@@ -1060,7 +1150,7 @@
                         if (u.unitId && u.file) _unitFileMap[u.unitId] = u.file
                     }
                 }
-                const hasData = Object.keys(_doodFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
+                const hasData = Object.keys(_doodFileMap).length > 0 || Object.keys(_destFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
                 if (hasData && (_doodItems.length > 0 || _unitItems.length > 0)) {
                     _collectAndLoad()
                 }

@@ -249,29 +249,69 @@ impl BinRead for String {
 
 // ─── Rawcode ─────────────────────────────────────────────────────────────────
 
-/// 4-byte fixed-length string (rawcode), e.g. `'hfoo'`, `'Hamg'`.
+/// Returns `true` when the byte is a printable ASCII character suitable for
+/// display in a rawcode string.  Single-quote (`'`, 0x27) and control / high
+/// bytes are treated as non-printable.
+#[inline]
+fn is_rawcode_printable(b: u8) -> bool {
+    b >= 0x21 && b <= 0x7E && b != b'\''
+}
+
+/// 4-byte rawcode used throughout Warcraft III data files (e.g. `'hfoo'`,
+/// `'Hamg'`).
 ///
-/// Corresponds to hexpat `char id[4]`.  Serializes transparently as a plain
-/// JSON string.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(transparent)]
-pub struct Rawcode(pub String);
+/// Stores two representations:
+/// - `raw`  — the 4 bytes as a **little-endian** `u32`.
+/// - `text` — human-readable string: either 4 ASCII characters (e.g. `"hfoo"`)
+///   or hex format (e.g. `"0x68006F6F"`) when any byte is non-printable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rawcode {
+    /// Raw 4-byte value as a little-endian `u32`.
+    pub raw: u32,
+    /// Human-readable representation.
+    pub text: String,
+}
+
+impl Rawcode {
+    /// Create a `Rawcode` from 4 raw bytes (in file order).
+    pub fn from_bytes(b: [u8; 4]) -> Self {
+        let raw = u32::from_le_bytes(b);
+        let text = if b.iter().all(|&byte| is_rawcode_printable(byte)) {
+            // Safety: all bytes are ASCII, so this is valid UTF-8.
+            String::from_utf8(b.to_vec()).unwrap()
+        } else {
+            format!("0x{:02X}{:02X}{:02X}{:02X}", b[0], b[1], b[2], b[3])
+        };
+        Self { raw, text }
+    }
+}
+
+impl serde::Serialize for Rawcode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("Rawcode", 2)?;
+        s.serialize_field("raw", &self.raw)?;
+        s.serialize_field("text", &self.text)?;
+        s.end()
+    }
+}
 
 impl BinRead for Rawcode {
     #[inline]
     fn bin_read(r: &mut BinReader) -> BinResult<Self> {
-        Ok(Self(r.read_fixed_string(4)?))
+        let b = r.read_bytes(4)?;
+        Ok(Self::from_bytes([b[0], b[1], b[2], b[3]]))
     }
 }
 
 impl std::ops::Deref for Rawcode {
     type Target = str;
     #[inline]
-    fn deref(&self) -> &str { &self.0 }
+    fn deref(&self) -> &str { &self.text }
 }
 
 impl fmt::Display for Rawcode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.0.fmt(f) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { self.text.fmt(f) }
 }
 
 // ─── Declarative macros ──────────────────────────────────────────────────────
@@ -426,6 +466,35 @@ mod tests {
         let data = b"hfoo";
         let mut r = BinReader::new(data);
         assert_eq!(r.read_rawcode().unwrap(), *b"hfoo");
+    }
+
+    #[test]
+    fn rawcode_printable() {
+        let rc = Rawcode::from_bytes(*b"hfoo");
+        assert_eq!(rc.text, "hfoo");
+        assert_eq!(rc.raw, u32::from_le_bytes(*b"hfoo"));
+    }
+
+    #[test]
+    fn rawcode_non_printable() {
+        let rc = Rawcode::from_bytes([0x00, 0x41, 0x42, 0x43]);
+        assert_eq!(rc.text, "0x00414243");
+    }
+
+    #[test]
+    fn rawcode_single_quote_non_printable() {
+        let rc = Rawcode::from_bytes(*b"h'oo");
+        assert_eq!(rc.text, "0x68276F6F");
+    }
+
+    #[test]
+    fn rawcode_bin_read() {
+        let data = b"Hamg";
+        let mut r = BinReader::new(data);
+        let rc = Rawcode::bin_read(&mut r).unwrap();
+        assert_eq!(rc.text, "Hamg");
+        assert_eq!(&*rc, "Hamg"); // Deref to str
+        assert_eq!(format!("{}", rc), "Hamg"); // Display
     }
 
     #[test]

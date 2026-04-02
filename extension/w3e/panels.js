@@ -274,7 +274,7 @@ function renderW3iContent(d) {
             ['End', fmtF(d.fog_z_end)],
             ['Density', fmtF(d.fog_density)],
             ['Fog color', d.fog_color != null ? `0x${d.fog_color.toString(16).padStart(8, '0')}` : '—'],
-            ['Weather', d.global_weather || '—'],
+            ['Weather', d.global_weather ? d.global_weather.text : '—'],
             ['Sound', d.ambient_sound || '—'],
             ['Water color', d.water_tint_color != null ? `0x${d.water_tint_color.toString(16).padStart(8, '0')}` : '—'],
         ]
@@ -357,7 +357,7 @@ function renderW3iContent(d) {
             const status = u.status ? (typeof u.status === 'string' ? u.status : JSON.stringify(u.status)) : '—'
             return `<tr>
                 <td class="num">${i + 1}</td>
-                <td class="code">${esc(u.id)}</td>
+                <td class="code">${esc(u.id.text)}</td>
                 <td class="num">${u.level}</td>
                 <td>${esc(status)}</td>
             </tr>`
@@ -375,7 +375,7 @@ function renderW3iContent(d) {
         const tHead = ['#', 'ID'].map(c => `<th>${c}</th>`).join('')
         const tBody = d.disabled_techs.map((t, i) => `<tr>
             <td class="num">${i + 1}</td>
-            <td class="code">${esc(t.id)}</td>
+            <td class="code">${esc(t.id.text)}</td>
         </tr>`).join('')
         techsHtml = `
         <div class="tw-section-title">🔬 Disabled Techs (${d.disabled_techs.length})</div>
@@ -390,7 +390,7 @@ function renderW3iContent(d) {
         const gItems = d.random_groups.map((g) => {
             const chancesHead = ['Chance %', ...g.column_types.map((_, ci) => `Col ${ci + 1}`)].map(c => `<th>${c}</th>`).join('')
             const chancesBody = g.chances.map(ch => {
-                const ids = ch.ids.map(id => `<td class="code">${esc(id)}</td>`).join('')
+                const ids = ch.ids.map(id => `<td class="code">${esc(id.text)}</td>`).join('')
                 return `<tr><td class="num">${ch.chance}%</td>${ids}</tr>`
             }).join('')
             return `<collapse-group group-title="${esc(g.name)} (#${g.num}, ${g.chances.length} rows)">
@@ -408,7 +408,7 @@ function renderW3iContent(d) {
             const gParts = item.groups.map((g, gi) => {
                 const rows = g.chances.map(ch => `<tr>
                     <td class="num">${ch.chance}%</td>
-                    <td class="code">${esc(ch.id)}</td>
+                    <td class="code">${esc(ch.id.text)}</td>
                 </tr>`).join('')
                 return rows ? `<div class="w3i-sub-group"><em>Set ${gi + 1}</em>
                     <table><thead><tr><th>Chance</th><th>ID</th></tr></thead><tbody>${rows}</tbody></table>
@@ -496,8 +496,8 @@ function renderDooContent(data, isUnit) {
             }
 
             const rawcodeHtml = isUnit
-                ? `<td class="code">${esc(it.rawcode)}</td>`
-                : `<td class="code"><a href="#" class="doo-id-link" data-dood-id="${esc(it.rawcode)}">${esc(it.rawcode)}</a></td>`
+                ? `<td class="code"><span class="doo-unit-link" data-unit-id="${esc(it.rawcode.text)}">${esc(it.rawcode.text)}</span></td>`
+                : `<td class="code"><span class="doo-id-link" data-dood-id="${it.rawcode.raw}">${esc(it.rawcode.text)}</span></td>`
 
             return `<tr data-doo-idx="${i}">
                 <td class="num">${i + 1}</td>
@@ -523,7 +523,7 @@ function renderDooContent(data, isUnit) {
         const chead = ['#', 'Rawcode', 'Variation', 'X', 'Y'].map(c => `<th>${c}</th>`).join('')
         const cbody = data.cliffs.map((c, i) => `<tr>
             <td class="num">${i + 1}</td>
-            <td class="code">${esc(c.rawcode)}</td>
+            <td class="code">${esc(c.rawcode.text)}</td>
             <td class="num">${c.variation}</td>
             <td class="num">${c.x}</td>
             <td class="num">${c.y}</td>

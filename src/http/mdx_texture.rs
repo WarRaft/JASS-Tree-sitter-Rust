@@ -54,11 +54,22 @@ fn render_texture_png(relative_path: &str, archive_path: Option<&str>) -> Result
     use image::{DynamicImage, ImageFormat};
     use std::io::Cursor;
 
+    // If the path has no file extension, try .tga first, then .blp
+    let lower = relative_path.to_ascii_lowercase();
+    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+    if !lower[last_sep..].contains('.') {
+        let tga_path = format!("{relative_path}.tga");
+        if let Ok(result) = render_texture_png(&tga_path, archive_path) {
+            return Ok(result);
+        }
+        let blp_path = format!("{relative_path}.blp");
+        return render_texture_png(&blp_path, archive_path);
+    }
+
     let (buf, _source) = crate::lng::w3e::file_lookup::lookup_file(relative_path, archive_path)
         .ok_or_else(|| format!("Texture not found: {relative_path}"))?;
 
     // Determine format by extension
-    let lower = relative_path.to_ascii_lowercase();
 
     let rgba = if lower.ends_with(".blp") {
         let mut image = ImageBlp::from_buf(&buf)

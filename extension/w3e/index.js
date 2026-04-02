@@ -7,6 +7,7 @@ const {MpqFileSystemProvider} = require('../mpqFileSystemProvider.js')
 const {SUPPORTED_BINARIES, findMapRoot, scanMapBinaries} = require('./mapRoot.js')
 const {errorHtml} = require('./utils.js')
 const {renderMapEditor} = require('./render.js')
+const {ReactiveGraph} = require('./reactiveGraph.js')
 
 /**
  * @param {import('vscode').CustomDocument} document
@@ -260,6 +261,11 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         Uri.joinPath(extensionUri, 'extension', 'vendor', 'three.min.js')
     )
 
+    // ── ReactiveGraph URI ────────────────────────────────────────
+    const reactiveGraphUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(extensionUri, 'extension', 'w3e', 'reactiveGraph.js')
+    )
+
     // ── Components URI ───────────────────────────────────────────
     const componentsUri = webviewPanel.webview.asWebviewUri(
         Uri.joinPath(extensionUri, 'extension', 'w3e', 'webview-components.js')
@@ -316,6 +322,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         mpqStatus: gamePathStatus.mpqStatus,
         nonce,
         cspSource,
+        reactiveGraphSrc: reactiveGraphUri.toString(),
         componentsSrc: componentsUri.toString(),
         terrainSrc: terrainUri.toString(),
         binaryServer,
@@ -323,25 +330,65 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         archivePath: isArchive ? filePath : undefined,
     })
 
-    // ── Game-path event dispatcher ──────────────────────────────
-    // All logic that depends on the game directory subscribes here.
-    // When the path changes we collect the data once and broadcast
-    // a single `gamePathChanged` message to the webview.
+    // ── Reactive dependency graph ────────────────────────────────
+    // Hierarchy:
+    //   status (game path)
+    //     └→ westrings
+    //          ├→ terrainSlk
+    //          ├→ doodadsSlk ─────────┐
+    //          ├→ destructablesSlk ───┼→ placed (name resolution, webview-side)
+    //          └→ unitsSlk ──────────┘
+    //
+    // Tile textures are fetched directly by terrain.js (status subscriber).
+    // Changing 'status' cascades to everything.
+    // Changing 'westrings' alone cascades to all SLK nodes → placed.
 
-    const gamePathListeners = []
+    const graph = new ReactiveGraph()
 
-    function onGamePathChanged(fn) { gamePathListeners.push(fn) }
+    // ── Source node ──────────────────────────────────────────────
+    graph.define('status')
 
+    // ── Computed: WESTRINGS ─────────────────────────────────────
+    graph.define('westrings', ['status'], async () => {
+        try { return await fetchSlk('westrings') } catch (_) { return null }
+    })
+
+    // ── Computed: terrain SLK (depends on westrings for name resolution) ──
+    graph.define('terrainSlk', ['status', 'westrings'], async () => {
+        try { return await fetchSlk('terrainSlk') } catch (_) { return null }
+    })
+
+    // ── Computed: doodads SLK ───────────────────────────────────
+    graph.define('doodadsSlk', ['status', 'westrings'], async () => {
+        try { return await fetchSlk('doodadsSlk') } catch (_) { return null }
+    })
+
+    // ── Computed: units SLK ─────────────────────────────────────
+    graph.define('unitsSlk', ['status', 'westrings'], async () => {
+        try { return await fetchSlk('unitsSlk') } catch (_) { return null }
+    })
+
+    // ── Computed: destructables SLK ─────────────────────────────
+    graph.define('destructablesSlk', ['status', 'westrings'], async () => {
+        try { return await fetchSlk('destructablesSlk') } catch (_) { return null }
+    })
+
+    // NOTE: tileTextures is NOT in the extension graph.
+    // The webview fetches textures directly from HTTP (terrain.js)
+    // to avoid bloating the postMessage payload with megabytes of
+    // base64 PNG data.
+
+    /**
+     * Set 'status' and cascade to all dependents, then broadcast
+     * the collected values to the webview.
+     */
     async function emitGamePathChanged(status) {
-        /** @type {Record<string,any>} */
-        const payload = {status}
-
-        // Let every listener enrich the payload with its data.
-        for (const fn of gamePathListeners) {
-            try { await fn(payload) } catch (_) {}
-        }
-
-        webviewPanel.webview.postMessage({command: 'gamePathChanged', ...payload})
+        await graph.set('status', status)
+        const payload = graph.getAll()
+        webviewPanel.webview.postMessage({
+            command: 'gamePathChanged',
+            ...payload
+        })
     }
 
     // ── Helper: fetch JSON from the binary HTTP server ─────────
@@ -373,47 +420,6 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         return null
     }
 
-    // ── Listener: terrain SLK ───────────────────────────────────
-    onGamePathChanged(async (payload) => {
-        try {
-            payload.terrainSlk = await fetchSlk('terrainSlk')
-            if (payload.terrainSlk == null) {
-                payload.terrainSlk = await client.sendRequest('w3e/terrainSlk', {
-                    archivePath: isArchive ? filePath : undefined,
-                })
-            }
-        } catch (_) {
-            payload.terrainSlk = null
-        }
-    })
-
-    // ── Listener: doodads SLK ───────────────────────────────────
-    onGamePathChanged(async (payload) => {
-        try {
-            payload.doodadsSlk = await fetchSlk('doodadsSlk')
-            if (payload.doodadsSlk == null) {
-                payload.doodadsSlk = await client.sendRequest('w3e/doodadsSlk', {
-                    archivePath: isArchive ? filePath : undefined,
-                })
-            }
-        } catch (_) {
-            payload.doodadsSlk = null
-        }
-    })
-
-    // ── Listener: units SLK ─────────────────────────────────────
-    onGamePathChanged(async (payload) => {
-        try {
-            payload.unitsSlk = await fetchSlk('unitsSlk')
-            if (payload.unitsSlk == null) {
-                payload.unitsSlk = await client.sendRequest('w3e/unitsSlk', {
-                    archivePath: isArchive ? filePath : undefined,
-                })
-            }
-        } catch (_) {
-            payload.unitsSlk = null
-        }
-    })
 
 
     // ── Message handling ────────────────────────────────────────
@@ -523,6 +529,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
 
                         if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
                             const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+                            const replTex = msg.texId && msg.texFile ? {[msg.texId]: msg.texFile} : null
                             webviewPanel.webview.postMessage({
                                 command: 'modelData',
                                 name: fname,
@@ -534,6 +541,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                                 total_faces: renderResult.total_faces,
                                 binaryServer: bs ? {port: bs.port, token: bs.token} : null,
                                 archivePath: isArchive ? filePath : null,
+                                replaceableTextures: replTex,
                             })
                         } else {
                             window.showWarningMessage(`Failed to render model: ${fname}`)

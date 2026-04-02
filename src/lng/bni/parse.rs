@@ -117,14 +117,14 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                     }
                 }
                 Kind::LBracket | Kind::RightBracket | Kind::Equal | Kind::Comma
-                | Kind::DoubleQuote | Kind::SingleQuote => {
+                | Kind::DoubleQuote => {
                     semantic.add_node(&node, &rope, TokenKind::Operator, 0u32);
                 }
                 Kind::Key => {
                     semantic.add_node(&node, &rope, TokenKind::Function, 0u32);
                 }
                 Kind::QuotedString | Kind::UnquotedString
-                | Kind::DqStringContent | Kind::SqStringContent => {
+                | Kind::StringContent => {
                     semantic.add_node(&node, &rope, TokenKind::String, 0u32);
                 }
                 Kind::Int | Kind::Float => {

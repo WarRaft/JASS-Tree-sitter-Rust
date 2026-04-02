@@ -93,7 +93,7 @@ function renderDoo(data, fname, isUnit) {
 
             return `<tr>
                 <td class="num">${i + 1}</td>
-                <td class="code">${escapeHtml(it.rawcode)}</td>
+                <td class="code">${escapeHtml(it.rawcode.text)}</td>
                 <td class="code">${skin}</td>
                 <td class="num">${it.variation}</td>
                 <td class="mono">${pos}</td>
@@ -120,7 +120,7 @@ function renderDoo(data, fname, isUnit) {
         const chead = ['#', 'Rawcode', 'Variation', 'X', 'Y'].map(c => `<th>${c}</th>`).join('')
         const cbody = data.cliffs.map((c, i) => `<tr>
             <td class="num">${i + 1}</td>
-            <td class="code">${escapeHtml(c.rawcode)}</td>
+            <td class="code">${escapeHtml(c.rawcode.text)}</td>
             <td class="num">${c.variation}</td>
             <td class="num">${c.x}</td>
             <td class="num">${c.y}</td>
