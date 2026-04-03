@@ -895,12 +895,27 @@
             const halfGridW = (W - 1) * TILE / 2
             const halfGridH = (H - 1) * TILE / 2
 
-            // ── Point marker (cube at hovered grid vertex) ───────
-            const MARKER_SIZE = TILE * 0.2
-            const markerGeo = new THREE.BoxGeometry(MARKER_SIZE, MARKER_SIZE, MARKER_SIZE)
-            const markerEdges = new THREE.EdgesGeometry(markerGeo)
-            const markerMesh = new THREE.LineSegments(markerEdges,
-                new THREE.LineBasicMaterial({color: 0x00ff00, depthTest: false}))
+            // ── Point marker (inverted pyramid at hovered grid vertex) ───────
+            // Tip at origin (terrain point), square base above at z = h
+            const MARKER_S = TILE * 0.12
+            const MARKER_H = TILE * 0.3
+            const markerGeo = new THREE.BufferGeometry()
+            // 8 edges = 16 vertices (each edge is a pair for LineSegments)
+            // prettier-ignore
+            markerGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+                // 4 edges from tip to base corners
+                0, 0, 0,  -MARKER_S, -MARKER_S, MARKER_H,
+                0, 0, 0,   MARKER_S, -MARKER_S, MARKER_H,
+                0, 0, 0,   MARKER_S,  MARKER_S, MARKER_H,
+                0, 0, 0,  -MARKER_S,  MARKER_S, MARKER_H,
+                // 4 base edges
+                -MARKER_S, -MARKER_S, MARKER_H,   MARKER_S, -MARKER_S, MARKER_H,
+                 MARKER_S, -MARKER_S, MARKER_H,   MARKER_S,  MARKER_S, MARKER_H,
+                 MARKER_S,  MARKER_S, MARKER_H,  -MARKER_S,  MARKER_S, MARKER_H,
+                -MARKER_S,  MARKER_S, MARKER_H,  -MARKER_S, -MARKER_S, MARKER_H,
+            ], 3))
+            const markerMesh = new THREE.LineSegments(markerGeo,
+                new THREE.LineBasicMaterial({color: 0x00ff00, depthTest: false, depthWrite: false, transparent: true}))
             markerMesh.renderOrder = 999
             markerMesh.visible = false
             scene.add(markerMesh)
