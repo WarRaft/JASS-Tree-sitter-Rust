@@ -23,6 +23,7 @@
  * @property {DoodadsSlkResult|null} doodadsSlk - Doodad catalog
  * @property {UnitsSlkResult|null} unitsSlk - Unit catalog (merged from SLK + TXT)
  * @property {DestructablesSlkResult|null} destructablesSlk - Destructable catalog
+ * @property {CliffTypesSlkResult|null} cliffTypesSlk - Cliff type catalog
  */
 
 // ─── GameString ──────────────────────────────────────────────────────────────
@@ -328,6 +329,24 @@
  * @typedef {Object} DestructablesSlkResult
  * @property {string} source
  * @property {Object<string, Destructable>} destructables - Keyed by rawcode u32
+ */
+
+// ─── Cliff Types ─────────────────────────────────────────────────────────────
+
+/**
+ * @typedef {Object} CliffTypeInfo
+ * @property {string} cliffId - Rawcode, e.g. "CLdi"
+ * @property {string} cliffModelDir - Cliff wall model directory (e.g. "Cliffs")
+ * @property {string} rampModelDir - Ramp/slope transition model directory (e.g. "CliffTrans")
+ * @property {string} cliffClass - Cliff class (e.g. "c1", "c2")
+ * @property {string} texDir - Texture directory (e.g. "ReplaceableTextures\\Cliff")
+ * @property {string} texFile - Texture file name (e.g. "Cliff0")
+ */
+
+/**
+ * @typedef {Object} CliffTypesSlkResult
+ * @property {string} source
+ * @property {Object<string, CliffTypeInfo>} cliffTypes - Keyed by cliffID rawcode string
  */
 
 

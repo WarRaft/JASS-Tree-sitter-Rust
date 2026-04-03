@@ -1,5 +1,5 @@
 use crate::lng::w3e::parse::W3eData;
-use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk};
+use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk};
 use crate::lng::w3e::textures::load_tile_textures;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
@@ -141,12 +141,13 @@ async fn _send(
             let dood_slk = load_doodads_slk(ap2.as_deref());
             let unit_slk = load_units_slk(ap2.as_deref());
             let dest_slk = load_destructables_slk(ap2.as_deref());
-            (slk, tex, dood_slk, unit_slk, dest_slk)
+            let cliff_types_slk = load_cliff_types_slk(ap2.as_deref());
+            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk)
         })
         .await
         .ok();
 
-        if let Some((slk, tex, dood_slk, unit_slk, dest_slk)) = slk_and_tex {
+        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk)) = slk_and_tex {
             if let Some(slk_data) = slk {
                 val["_terrainSlk"] = to_value(slk_data)?;
             }
@@ -159,6 +160,9 @@ async fn _send(
             }
             if let Some(dest_data) = dest_slk {
                 val["_destructablesSlk"] = to_value(dest_data)?;
+            }
+            if let Some(ct_data) = cliff_types_slk {
+                val["_cliffTypesSlk"] = to_value(ct_data)?;
             }
         }
 
@@ -181,12 +185,13 @@ async fn _send(
             let dood_slk = load_doodads_slk(None);
             let unit_slk = load_units_slk(None);
             let dest_slk = load_destructables_slk(None);
-            (slk, tex, dood_slk, unit_slk, dest_slk)
+            let cliff_types_slk = load_cliff_types_slk(None);
+            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk)
         })
         .await
         .ok();
 
-        if let Some((slk, tex, dood_slk, unit_slk, dest_slk)) = slk_and_tex {
+        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk)) = slk_and_tex {
             if let Some(slk_data) = slk {
                 val["_terrainSlk"] = to_value(slk_data)?;
             }
@@ -199,6 +204,9 @@ async fn _send(
             }
             if let Some(dest_data) = dest_slk {
                 val["_destructablesSlk"] = to_value(dest_data)?;
+            }
+            if let Some(ct_data) = cliff_types_slk {
+                val["_cliffTypesSlk"] = to_value(ct_data)?;
             }
         }
 

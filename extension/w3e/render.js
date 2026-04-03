@@ -201,6 +201,14 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         if (u.file) unitFileMap[rawId] = u.file
     }
 
+    // Build cliff type rawcode → model dirs map
+    const cliffTypesMap = (terrainData && terrainData._cliffTypesSlk && terrainData._cliffTypesSlk.cliffTypes) || {}
+    const cliffTypeMap = {}
+    for (const [id, ct] of Object.entries(cliffTypesMap)) {
+        cliffTypeMap[id] = {cliffModelDir: ct.cliffModelDir || '', rampModelDir: ct.rampModelDir || '', texDir: ct.texDir || '', texFile: ct.texFile || '', groundTile: ct.groundTile || ''}
+    }
+    const hasCliffTypesSlk = !!(terrainData && terrainData._cliffTypesSlk)
+
     // Extract full DOO items for placed-object categorization (doodad vs destructable)
     const doodadDooItems = mapInfo.doodadDooData && mapInfo.doodadDooData.items
         ? mapInfo.doodadDooData.items.map((it, i) => ({
@@ -466,6 +474,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             <label class="menu-cb"><input type="checkbox" id="cbWireframe" checked /> Wireframe</label>
             <label class="menu-cb"><input type="checkbox" id="cbTextures" checked /> Textures</label>
             <label class="menu-cb"><input type="checkbox" id="cbDeformation" checked /> Deformation</label>
+            <label class="menu-cb"><input type="checkbox" id="cbSlopes" checked /> Slopes</label>
+            <label class="menu-cb"><input type="checkbox" id="cbCliffs" checked /> Cliffs</label>
             <label class="menu-cb"><input type="checkbox" id="cbObjects" checked /> Objects</label>
         </div>
     </float-window>
@@ -543,7 +553,10 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         unitDooItems: ${JSON.stringify(unitDooItems)},
         initialDoodadsSlk: ${hasDoodadsSlk ? JSON.stringify(terrainData._doodadsSlk) : 'null'},
         initialDestructablesSlk: ${hasDestructablesSlk ? JSON.stringify(terrainData._destructablesSlk) : 'null'},
-        initialUnitsSlk: ${hasUnitsSlk ? JSON.stringify(terrainData._unitsSlk) : 'null'}
+        initialUnitsSlk: ${hasUnitsSlk ? JSON.stringify(terrainData._unitsSlk) : 'null'},
+        cliffTypeMap: ${JSON.stringify(cliffTypeMap)},
+        initialCliffTypesSlk: ${hasCliffTypesSlk ? JSON.stringify(terrainData._cliffTypesSlk) : 'null'},
+        tileset: ${hasTerrain ? JSON.stringify(terrainData.tileset) : 'null'}
     };
     </script>
     <script nonce="${nonce}" src="${terrainSrc}"></script>

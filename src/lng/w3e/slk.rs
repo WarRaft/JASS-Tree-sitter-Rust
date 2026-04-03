@@ -329,6 +329,70 @@ pub fn load_terrain_slk(archive_path: Option<&str>) -> Option<TerrainSlkResult> 
     })
 }
 
+// ─── Cliff types ─────────────────────────────────────────────────────────────
+
+/// A single cliff type entry extracted from `TerrainArt\CliffTypes.slk`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliffTypeInfo {
+    pub cliff_id: String,
+    /// Directory name for cliff wall models (e.g. `"Cliffs"`, `"CityCliffs"`).
+    pub cliff_model_dir: String,
+    /// Directory name for ramp / slope transition models (e.g. `"CliffTrans"`).
+    pub ramp_model_dir: String,
+    /// Cliff class identifier (e.g. `"c1"`, `"c2"`).
+    pub cliff_class: String,
+    /// Texture directory (e.g. `"ReplaceableTextures\\Cliff"`).
+    pub tex_dir: String,
+    /// Texture file name (e.g. `"Cliff0"`).
+    pub tex_file: String,
+    /// Ground tile rawcode override near cliffs (e.g. `"Ldrt"`).
+    pub ground_tile: String,
+}
+
+/// Result of loading `TerrainArt\CliffTypes.slk`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliffTypesSlkResult {
+    /// Where the file was found.
+    pub source: String,
+    /// Cliff types keyed by `cliffID` rawcode string (e.g. `"CLdi"`).
+    pub cliff_types: HashMap<String, CliffTypeInfo>,
+}
+
+/// Try to load and parse `TerrainArt\CliffTypes.slk` via the cascading lookup.
+pub fn load_cliff_types_slk(archive_path: Option<&str>) -> Option<CliffTypesSlkResult> {
+    let (buf, source) = super::file_lookup::lookup_file(
+        "TerrainArt\\CliffTypes.slk",
+        archive_path,
+    )?;
+
+    let rows = parse_slk(&buf);
+
+    let mut cliff_types = HashMap::new();
+    for row in rows {
+        let cliff_id = match row.get("cliffID") {
+            Some(id) if !id.is_empty() => id.clone(),
+            _ => continue,
+        };
+
+        cliff_types.insert(cliff_id.clone(), CliffTypeInfo {
+            cliff_id,
+            cliff_model_dir: row.get("cliffModelDir").cloned().unwrap_or_default(),
+            ramp_model_dir: row.get("rampModelDir").cloned().unwrap_or_default(),
+            cliff_class: row.get("cliffClass").cloned().unwrap_or_default(),
+            tex_dir: row.get("texDir").cloned().unwrap_or_default(),
+            tex_file: row.get("texFile").cloned().unwrap_or_default(),
+            ground_tile: row.get("groundTile").cloned().unwrap_or_default(),
+        });
+    }
+
+    Some(CliffTypesSlkResult {
+        source: source.to_string(),
+        cliff_types,
+    })
+}
+
 // ─── Doodad ──────────────────────────────────────────────────────────────────
 
 /// Helper: parse an SLK field as `u8`, defaulting to `def`.
@@ -1236,6 +1300,28 @@ mod tests {
             first.get("file").map(|s| s.as_str()),
             Some("Lords_Dirt")
         );
+    }
+
+    #[test]
+    fn parse_cliff_types_slk_fixture() {
+        let data = include_bytes!("../../lng/slk/fixtures/TerrainArt/CliffTypes.slk");
+        let rows = parse_slk(data);
+        assert!(!rows.is_empty(), "should parse some cliff type rows");
+
+        // First entry: CLdi
+        let first = &rows[0];
+        assert_eq!(first.get("cliffID").map(|s| s.as_str()), Some("CLdi"));
+        assert_eq!(first.get("cliffModelDir").map(|s| s.as_str()), Some("Cliffs"));
+        assert_eq!(first.get("rampModelDir").map(|s| s.as_str()), Some("CliffTrans"));
+        assert_eq!(first.get("cliffClass").map(|s| s.as_str()), Some("c2"));
+        assert_eq!(first.get("groundTile").map(|s| s.as_str()), Some("Ldrt"));
+
+        // CityCliffs entry: CYsq
+        let city_cliff = rows.iter().find(|r| r.get("cliffID").map(|s| s.as_str()) == Some("CYsq"));
+        assert!(city_cliff.is_some(), "should find CYsq cliff type");
+        let cy = city_cliff.unwrap();
+        assert_eq!(cy.get("cliffModelDir").map(|s| s.as_str()), Some("CityCliffs"));
+        assert_eq!(cy.get("rampModelDir").map(|s| s.as_str()), Some("CityCliffTrans"));
     }
 
     #[test]

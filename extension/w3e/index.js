@@ -486,7 +486,12 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
 
                         if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
                             const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
-                            const replTex = msg.texId && msg.texFile ? {[msg.texId]: msg.texFile} : null
+                            let replTex = null
+                            if (msg.cliffTex0) {
+                                replTex = {_cliffTex0: msg.cliffTex0, _cliffTex1: msg.cliffTex1 || msg.cliffTex0}
+                            } else if (msg.texId && msg.texFile) {
+                                replTex = {[msg.texId]: msg.texFile}
+                            }
                             webviewPanel.webview.postMessage({
                                 command: 'modelData',
                                 name: fname,

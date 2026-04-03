@@ -3632,8 +3632,14 @@ window.W3E = (function () {
                     if (!tex) return;
                     // Determine actual texture path: use replaceable override if available
                     var actualPath = null;
-                    if (tex.replaceable_id && replaceableTextures && replaceableTextures[tex.replaceable_id]) {
-                        actualPath = replaceableTextures[tex.replaceable_id];
+                    if (tex.replaceable_id && replaceableTextures) {
+                        if (replaceableTextures._cliffTex0 !== undefined) {
+                            actualPath = (tex.replaceable_id % 2 === 0)
+                                ? replaceableTextures._cliffTex0
+                                : replaceableTextures._cliffTex1;
+                        } else if (replaceableTextures[tex.replaceable_id]) {
+                            actualPath = replaceableTextures[tex.replaceable_id];
+                        }
                     } else if (tex.file_name && !tex.replaceable_id) {
                         actualPath = tex.file_name;
                     }
@@ -4033,7 +4039,7 @@ window.W3E = (function () {
         window.addEventListener('message', e => {
             const msg = e.data;
             if (msg && msg.command === 'gamePathChanged') {
-                _applyGamePathChanged(msg.status, msg.snapshot);
+                try { _applyGamePathChanged(msg.status, msg.snapshot); } catch (_) {}
                 setLoading(false);
             }
             if (msg && msg.command === 'loadingDone') {

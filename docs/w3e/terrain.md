@@ -278,11 +278,31 @@ subtile = pool[groundVariation % pool.length]
 
 Each tilepoint has a boolean `blight` flag. When set, the blight texture replaces the ground texture. Blight draws on top of all ground textures but below cliff textures.
 
-### Cliff textures
+### Cliff ground tiles
 
-When a tilepoint has a cliff in its [Moore neighborhood](https://en.wikipedia.org/wiki/Moore_neighborhood) (the 8 surrounding tilepoints), the cliff's associated ground texture is used instead.
+When a tilepoint is a corner of at least one cliff cell (where corner `layerHeight` values differ), the cliff type's `groundTile` from `TerrainArt\CliffTypes.slk` replaces its normal ground texture for rendering. Only the four corner points of the cliff cell itself are affected — adjacent points that belong exclusively to flat cells keep their original texture.
 
-**Draw priority:** cliff texture → blight → groundTexture.
+```
+ ── flat cell ──┬── cliff cell ──
+ │              │               │
+ TL ─────────── TR/TL ──────── TR     ← TR/TL is shared between cells
+ │              │               │
+ │   flat       │    cliff      │
+ │              │               │
+ BL ─────────── BR/BL ──────── BR
+ │              │               │
+ ── flat cell ──┴── cliff cell ──
+
+TR/TL and BR/BL are corners of the cliff cell,
+so their ground texture is replaced with groundTile.
+TL and BL of the flat cell are NOT cliff corners,
+so they keep their original texture.
+The flat cell renders a transition between the two.
+```
+
+See [Ground tile replacement](#ground-tile-replacement-groundtile) for details.
+
+**Draw priority:** cliff `groundTile` → blight → groundTexture.
 
 ## Packed flags (webview transport)
 
@@ -299,27 +319,100 @@ The Rust server packs per-point boolean flags into a single byte for efficient t
 
 Cliffs are `.mdx` models selected based on `layerHeight` differences between the 4 corners of a tile.
 
+### `TerrainArt\CliffTypes.slk`
+
+Each cliff tile rawcode listed in the w3e header maps to a row in `TerrainArt\CliffTypes.slk`. The SLK columns define everything needed to render a cliff type:
+
+| Column | Example | Description |
+|--------|---------|-------------|
+| `cliffID` | `CLdi` | 4-char rawcode (matches the w3e cliff tile list) |
+| `cliffModelDir` | `Cliffs` | Subdirectory under `Doodads\Terrain\` for cliff wall models |
+| `rampModelDir` | `CliffTrans` | Subdirectory for ramp / slope transition models |
+| `cliffClass` | `c1`, `c2` | Cliff class identifier |
+| `texDir` | `ReplaceableTextures\Cliff` | Directory for cliff wall textures |
+| `texFile` | `Cliff0` | Cliff wall texture filename (without extension) |
+| `groundTile` | `Ldrt` | Ground tile rawcode that replaces the terrain near cliffs |
+| `upperTile` | `_` | Upper tile override (usually `_` = none) |
+
+Each tileset typically has **two** cliff types that form a pair — one with `cliffClass = "c1"` (using `Cliff1` texture) and one with `cliffClass = "c2"` (using `Cliff0` texture). Some tilesets have a `CityCliffs` variant alongside the regular `Cliffs`.
+
+### `cliffTexture` index
+
+The tilepoint field `cliffTexture` (byte 6, bits 4–7) is a 4-bit index into the cliff tile list from the w3e header (analogous to how `groundTexture` indexes the ground tile list). The value `15` is reserved (no cliff). The index determines which `CliffTypes.slk` row to use, and thus which model directory, textures, and ground tile override apply to that cliff cell.
+
+### Cliff detection
+
+A tile (cell) is a cliff when its 4 corner `layerHeight` values are not all equal:
+
+```js
+const base = Math.min(lBL, lBR, lTL, lTR)
+const peak = Math.max(lBL, lBR, lTL, lTR)
+if (base !== peak) { /* this cell is a cliff */ }
+```
+
+The `cliffTexture` index is read from the **bottom-left** corner of the cell.
+
 ### Filename derivation
+
+The model filename is built from the `cliffModelDir` of the matched `CliffTypes.slk` row and the `layerHeight` differences:
 
 ```
 base = min(bottomLeft, bottomRight, topLeft, topRight)
 
-filename = "Cliffs"
+filename = cliffModelDir               // e.g. "Cliffs" or "CityCliffs"
          + char('A' + topLeft     − base)
          + char('A' + topRight    − base)
          + char('A' + bottomRight − base)
          + char('A' + bottomLeft  − base)
-         + cliffVariation           // 0, 1, or 2
+         + (cliffVariation % 3)          // 0, 1, or 2
          + ".mdx"
 ```
 
-Example: layer heights `[TL=13, TR=12, BR=12, BL=12]` → differences `[1, 0, 0, 0]` → `"CliffsBAAAx.mdx"`.
+Full path: `Doodads\Terrain\{cliffModelDir}\{filename}`
 
-A tilepoint is a cliff when its top, top-right, or right neighbour has a different `layerHeight`.
+Example: layer heights `[TL=13, TR=12, BR=12, BL=12]`, `cliffModelDir = "Cliffs"` → differences `[1, 0, 0, 0]` → `Doodads\Terrain\Cliffs\CliffsBAAAx.mdx`.
+
+Height differences greater than 2 (letter `C`) are skipped — models with `D` or higher do not exist. Cells where all differences are 0 (`AAAA`) are also skipped.
 
 ### CityCliffs
 
-Same naming pattern, folder `Doodads/Terrain/CityCliffs`, prefix `"CityCliffs"`. Cliff type is in `TerrainArt\CliffTypes.slk`.
+Same naming pattern but with `cliffModelDir = "CityCliffs"` and `rampModelDir = "CityCliffTrans"`. The cliff type is determined by the `cliffTexture` index → `CliffTypes.slk` row, so both regular and city cliff types coexist in the same SLK.
+
+### Ground tile replacement (`groundTile`)
+
+Each `CliffTypes.slk` entry has a `groundTile` field — a rawcode (e.g. `"Ldrt"`) referencing `TerrainArt\Terrain.slk`. When a tilepoint is a corner of a cliff cell (i.e. a quad whose 4 corners have different `layerHeight` values), the engine replaces that point's displayed ground texture with the cliff type's `groundTile` texture. Only the four corners of the cliff cell are overridden — points that belong exclusively to adjacent flat cells keep their original texture.
+
+Because each tilepoint can be a corner of up to 4 cells, a single tilepoint may participate in both cliff and flat cells. The override is per-point: if the point is a corner of **any** cliff cell, its texture is replaced.
+
+```
+        flat cell          cliff cell
+   ┌───────────────┬───────────────┐
+   │               │               │
+   │ grass  grass  │ DIRT    DIRT  │    ← tilepoint textures
+   │               │               │
+   │ grass  grass  │ DIRT    DIRT  │    DIRT = groundTile override
+   │               │               │
+   └───────────────┴───────────────┘
+
+The flat cell's right-side corners are shared with the cliff cell,
+so they become DIRT. The left-side corners stay grass.
+→ The flat cell renders a grass-to-dirt transition.
+```
+
+**Draw priority:** cliff `groundTile` → blight → normal `groundTexture`.
+
+**Example:** On a Lordaeron Summer map with cliff type `CLdi` (`groundTile = "Ldrt"`), the tilepoints that are corners of cliff cells render as Lordaeron Dirt, even if the mapper painted them as grass. Adjacent flat cells that share those corner points will show a smooth transition from their original texture to dirt.
+
+### Cliff wall textures
+
+Cliff wall models use **replaceable textures**. The `texDir` and `texFile` fields from `CliffTypes.slk` determine the wall texture path:
+
+```
+{texDir}\{tileset}_{texFile}.blp        (tileset-specific, e.g. L_Cliff0.blp)
+{texDir}\{texFile}.blp                  (fallback, e.g. Cliff0.blp)
+```
+
+Cliff models typically have two replaceable texture slots. Even-numbered IDs map to `Cliff0`, odd-numbered to `Cliff1`.
 
 ### Cliff deformation
 
@@ -346,6 +439,51 @@ slope_char = 'H' + 4 ^ difference_to_base
 ```
 
 The editor and game do **not** load models containing `X` or `C`.
+
+### Slope rendering (terrain mesh)
+
+When a cell's four corner tilepoints **all** have the `ramp` flag set **and** their `layerHeight` values differ, the terrain mesh creates a smooth slope instead of a vertical cliff step.
+
+**Algorithm:**
+
+1. For each cell, read the `ramp` flag and `layerHeight` from its 4 corners (BL, BR, TL, TR).
+2. Skip cells where any corner lacks the ramp flag, or all corners share the same `layerHeight`.
+3. Compute `minLayer = min(BL, BR, TL, TR)`.
+4. Any corner whose `layerHeight > minLayer` is lowered to `minLayer` for rendering purposes.
+5. A tilepoint may belong to up to 4 cells; take the minimum adjusted value across all of them.
+
+```
+Before (cliff step):            After (slope):
+
+ H ─── H                        H ─── L(adj)
+ │     │                        │     │
+ H ─── L                        H ─── L
+
+ where H > L                    ramp cell corners lowered → smooth slope
+```
+
+The slope emerges in the adjacent cell: the cliff cell's high corners are pulled down to the low level, making the neighbouring cell (which was flat at the high level) transition smoothly from high to low.
+
+```js
+// Pseudocode — compute ramp-adjusted layer heights
+const adjusted = new Uint8Array(layerHeight)
+for (let cy = 0; cy < H - 1; cy++) {
+    for (let cx = 0; cx < W - 1; cx++) {
+        const iBL = cy * W + cx,      iBR = cy * W + cx + 1
+        const iTL = (cy+1) * W + cx,  iTR = (cy+1) * W + cx + 1
+
+        if (!(ramp[iBL] && ramp[iBR] && ramp[iTL] && ramp[iTR])) continue
+
+        const minL = Math.min(layerHeight[iBL], layerHeight[iBR],
+                              layerHeight[iTL], layerHeight[iTR])
+        if (minL === Math.max(…)) continue  // no cliff
+
+        for (const i of [iBL, iBR, iTL, iTR])
+            if (layerHeight[i] > minL) adjusted[i] = Math.min(adjusted[i], minL)
+    }
+}
+// Use adjusted[] instead of layerHeight[] in the height formula
+```
 
 ## Water
 

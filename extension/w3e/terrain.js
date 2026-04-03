@@ -32,10 +32,13 @@
         camera.position.set(0, -5000, 3500)
         camera.lookAt(0, 0, 0)
 
-        scene.add(new THREE.AmbientLight(0xffffff, 0.4))
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8)
+        scene.add(new THREE.AmbientLight(0xffffff, 0.7))
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0)
         dirLight.position.set(1, 2, 1.5).normalize()
         scene.add(dirLight)
+        const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.3)
+        dirLight2.position.set(-1, -1, 0.5).normalize()
+        scene.add(dirLight2)
 
         let maxDim = 10000
         let mesh = null
@@ -183,6 +186,8 @@
 
             let showWater = false, showBoundary = false, showBlight = false, showRamp = false
             let showDeformation = true
+            let showSlopes = true
+            let showCliffs = true
 
             // ── Geometry ─────────────────────────────────────────
             // PlaneGeometry(worldW, worldH, W-1, H-1) creates exactly
@@ -197,17 +202,59 @@
             // Mapping: idx = (H - 1 - gj) * W + gi
             const geo = new THREE.PlaneGeometry(worldW, worldH, W - 1, H - 1)
 
+            // ── Ramp / slope height adjustment ─────────────────
+            // When all 4 corners of a cell have the ramp flag AND
+            // different layerHeight values, the higher corners are
+            // lowered to the cell's minimum layerHeight. This turns
+            // the vertical cliff step into a smooth slope.
+            //
+            // A point may be a corner of up to 4 cells; we take the
+            // minimum adjusted value across all of them.
+            function computeRampLayerHeight() {
+                const adjusted = new Uint8Array(D.layerHeight)
+                for (let cy = 0; cy < H - 1; cy++) {
+                    for (let cx = 0; cx < W - 1; cx++) {
+                        const iBL = cy * W + cx
+                        const iBR = cy * W + cx + 1
+                        const iTL = (cy + 1) * W + cx
+                        const iTR = (cy + 1) * W + cx + 1
+
+                        // All 4 corners must have the ramp flag (bit 3)
+                        if (!((D.flags[iBL] & 8) && (D.flags[iBR] & 8) &&
+                              (D.flags[iTL] & 8) && (D.flags[iTR] & 8))) continue
+
+                        const lBL = D.layerHeight[iBL]
+                        const lBR = D.layerHeight[iBR]
+                        const lTL = D.layerHeight[iTL]
+                        const lTR = D.layerHeight[iTR]
+
+                        const minL = Math.min(lBL, lBR, lTL, lTR)
+                        const maxL = Math.max(lBL, lBR, lTL, lTR)
+                        if (minL === maxL) continue // no cliff in this cell
+
+                        // Lower any corner above the minimum
+                        if (lBL > minL) adjusted[iBL] = Math.min(adjusted[iBL], minL)
+                        if (lBR > minL) adjusted[iBR] = Math.min(adjusted[iBR], minL)
+                        if (lTL > minL) adjusted[iTL] = Math.min(adjusted[iTL], minL)
+                        if (lTR > minL) adjusted[iTR] = Math.min(adjusted[iTR], minL)
+                    }
+                }
+                return adjusted
+            }
+
             // ── Height formula ──────────────────────────────────
             // Base height:   (layerHeight - 2) * TILE
             // Deformation:   (groundHeight - 8192) / 4
             // Final Z:       base + deformation (if enabled)
+            // Slopes:        ramp-adjusted layerHeight (if enabled)
             function applyHeights() {
                 const pos = geo.attributes.position
+                const layer = showSlopes ? computeRampLayerHeight() : D.layerHeight
                 for (let gj = 0; gj < H; gj++) {
                     for (let gi = 0; gi < W; gi++) {
                         const vi = gj * W + gi
                         const idx = (H - 1 - gj) * W + gi
-                        let h = (D.layerHeight[idx] - 2) * TILE
+                        let h = (layer[idx] - 2) * TILE
                         if (showDeformation) {
                             h += (D.groundHeight[idx] - H_ZERO) / H_SCALE
                         }
@@ -219,6 +266,71 @@
             }
 
             applyHeights()
+
+            // ── Cliff ground-tile override ────────────────────────
+            // A tilepoint that is a corner of at least one cliff cell
+            // has its ground texture replaced by the cliff type's
+            // groundTile rawcode. Only the points that directly belong
+            // to a cliff quad are affected — neighbouring flat-only
+            // points keep their original texture.
+            let _cliffGroundOverride = null // Int8Array, -1 = no override
+
+            function computeCliffGroundOverride() {
+                const arr = new Int8Array(W * H).fill(-1)
+                const cliffCodes = DATA.cliffTileCodes || []
+                const groundCodes = DATA.groundTileCodes || []
+                const ctMap = DATA.cliffTypeMap || {}
+
+                if (cliffCodes.length === 0 || groundCodes.length === 0 || Object.keys(ctMap).length === 0) return arr
+
+                // Build groundTile rawcode → ground tile index
+                const groundCodeIndex = {}
+                for (let i = 0; i < groundCodes.length; i++) {
+                    const c = typeof groundCodes[i] === 'string' ? groundCodes[i] : groundCodes[i].text || ''
+                    if (c) groundCodeIndex[c] = i
+                }
+
+                for (let cy = 0; cy < H - 1; cy++) {
+                    for (let cx = 0; cx < W - 1; cx++) {
+                        const iBL = cy * W + cx
+                        const iBR = cy * W + cx + 1
+                        const iTL = (cy + 1) * W + cx
+                        const iTR = (cy + 1) * W + cx + 1
+
+                        const lBL = D.layerHeight[iBL]
+                        const lBR = D.layerHeight[iBR]
+                        const lTL = D.layerHeight[iTL]
+                        const lTR = D.layerHeight[iTR]
+
+                        if (lBL === lBR && lBR === lTL && lTL === lTR) continue // flat, no cliff
+
+                        // Cliff texture index from bottom-left corner
+                        const ctIdx = D.cliffTexture[iBL]
+                        if (ctIdx >= 15 || ctIdx >= cliffCodes.length) continue
+
+                        const rawcode = typeof cliffCodes[ctIdx] === 'string'
+                            ? cliffCodes[ctIdx]
+                            : cliffCodes[ctIdx].text || cliffCodes[ctIdx].raw || ''
+                        if (!rawcode) continue
+
+                        const ct = ctMap[rawcode]
+                        if (!ct || !ct.groundTile) continue
+
+                        const gtIdx = groundCodeIndex[ct.groundTile]
+                        if (gtIdx === undefined) continue
+
+                        // Mark only the 4 corners of this cliff cell
+                        arr[iBL] = gtIdx
+                        arr[iBR] = gtIdx
+                        arr[iTL] = gtIdx
+                        arr[iTR] = gtIdx
+                    }
+                }
+
+                return arr
+            }
+
+            _cliffGroundOverride = computeCliffGroundOverride()
 
             // ── Colour fallback texture ──────────────────────────
             // (W-1)×(H-1) cells rendered with the same transition
@@ -279,10 +391,19 @@
                         const iTL = (cy + 1) * W + cx
                         const iTR = (cy + 1) * W + cx + 1
 
-                        const bl = D.groundTexture[iBL]
-                        const br = D.groundTexture[iBR]
-                        const tl = D.groundTexture[iTL]
-                        const tr = D.groundTexture[iTR]
+                        // Skip cliff cells when cliffs are shown
+                        if (showCliffs) {
+                            const lBL = D.layerHeight[iBL], lBR = D.layerHeight[iBR]
+                            const lTL = D.layerHeight[iTL], lTR = D.layerHeight[iTR]
+                            if (!(lBL === lBR && lBR === lTL && lTL === lTR)) continue
+                        }
+
+                        // Read ground texture, applying cliff groundTile override
+                        const ov = showCliffs ? _cliffGroundOverride : null
+                        const bl = ov && ov[iBL] >= 0 ? ov[iBL] : D.groundTexture[iBL]
+                        const br = ov && ov[iBR] >= 0 ? ov[iBR] : D.groundTexture[iBR]
+                        const tl = ov && ov[iTL] >= 0 ? ov[iTL] : D.groundTexture[iTL]
+                        const tr = ov && ov[iTR] >= 0 ? ov[iTR] : D.groundTexture[iTR]
 
                         const unique = [...new Set([bl, br, tl, tr])].sort((a, b) => a - b)
 
@@ -360,13 +481,14 @@
                 }
             })
 
-            const mat = new THREE.MeshLambertMaterial({map: colorTex, side: THREE.DoubleSide})
+            const mat = new THREE.MeshLambertMaterial({map: colorTex, side: THREE.DoubleSide, transparent: showCliffs, alphaTest: showCliffs ? 0.01 : 0})
             mesh = new THREE.Mesh(geo, mat)
             scene.add(mesh)
 
             const TILE_TEXTURES = D.tileTextures || []
             let canvasTex = null
             let useTextures = true
+            let _lastTileImages = null
 
             // ── Reusable sub-tile coordinate helper ──────────────
             const FILL_SQUARE = [1, 16]
@@ -395,6 +517,7 @@
 
             // ── Build composited canvas from loaded tile images ──
             function buildComposited(tileImages) {
+                _lastTileImages = tileImages
                 // If no images loaded at all, fall back to palette mode
                 const hasAnyImage = tileImages.some(function (img) { return img != null })
                 if (!hasAnyImage) {
@@ -417,10 +540,19 @@
                         const iTL = (cy + 1) * W + cx
                         const iTR = (cy + 1) * W + cx + 1
 
-                        const bl = D.groundTexture[iBL]
-                        const br = D.groundTexture[iBR]
-                        const tl = D.groundTexture[iTL]
-                        const tr = D.groundTexture[iTR]
+                        // Skip cliff cells when cliffs are shown
+                        if (showCliffs) {
+                            const lBL = D.layerHeight[iBL], lBR = D.layerHeight[iBR]
+                            const lTL = D.layerHeight[iTL], lTR = D.layerHeight[iTR]
+                            if (!(lBL === lBR && lBR === lTL && lTL === lTR)) continue
+                        }
+
+                        // Read ground texture, applying cliff groundTile override
+                        const ov = showCliffs ? _cliffGroundOverride : null
+                        const bl = ov && ov[iBL] >= 0 ? ov[iBL] : D.groundTexture[iBL]
+                        const br = ov && ov[iBR] >= 0 ? ov[iBR] : D.groundTexture[iBR]
+                        const tl = ov && ov[iTL] >= 0 ? ov[iTL] : D.groundTexture[iTL]
+                        const tr = ov && ov[iTR] >= 0 ? ov[iTR] : D.groundTexture[iTR]
 
                         const unique = [...new Set([bl, br, tl, tr])].sort((a, b) => a - b)
 
@@ -651,7 +783,7 @@
                 if (!vscode) return
                 const st = vscode.getState() || {}
                 const checks = {};
-                ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation', 'cbObjects'].forEach(id => {
+                ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation', 'cbSlopes', 'cbCliffs', 'cbObjects'].forEach(id => {
                     const el = document.getElementById(id)
                     if (el) checks[id] = el.checked
                 })
@@ -659,7 +791,7 @@
                 vscode.setState(st)
             }
 
-            ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation', 'cbObjects'].forEach(id => {
+            ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation', 'cbSlopes', 'cbCliffs', 'cbObjects'].forEach(id => {
                 const el = document.getElementById(id)
                 if (el && cbState[id] != null) el.checked = cbState[id]
             })
@@ -671,6 +803,7 @@
             const cbWireframeEl = document.getElementById('cbWireframe')
             const cbTexturesEl = document.getElementById('cbTextures')
             const cbDeformationEl = document.getElementById('cbDeformation')
+            const cbSlopesEl = document.getElementById('cbSlopes')
 
             if (cbWaterEl && cbWaterEl.checked) showWater = true
             if (cbBoundaryEl && cbBoundaryEl.checked) showBoundary = true
@@ -690,6 +823,11 @@
             }
             if (cbDeformationEl && !cbDeformationEl.checked) {
                 showDeformation = false
+                applyHeights()
+                rebuildWireframe()
+            }
+            if (cbSlopesEl && !cbSlopesEl.checked) {
+                showSlopes = false
                 applyHeights()
                 rebuildWireframe()
             }
@@ -736,6 +874,12 @@
             })
             cb('cbDeformation', e => {
                 showDeformation = e.target.checked
+                applyHeights()
+                rebuildWireframe()
+                saveCbState()
+            })
+            cb('cbSlopes', e => {
+                showSlopes = e.target.checked
                 applyHeights()
                 rebuildWireframe()
                 saveCbState()
@@ -827,7 +971,7 @@
                 var dx = e.clientX - _clickStartX, dy = e.clientY - _clickStartY
                 if (dx * dx + dy * dy > 9) return
                 if (e.target.closest('float-window') || e.target.closest('.menubar')) return
-                if (!objectGroup.visible) return
+
                 var rect = canvas.getBoundingClientRect()
                 var ndc = new THREE.Vector2(
                     ((e.clientX - rect.left) / rect.width) * 2 - 1,
@@ -835,6 +979,30 @@
                 )
                 var rc = new THREE.Raycaster()
                 rc.setFromCamera(ndc, camera)
+
+                // Check cliff models first (if visible)
+                if (cliffGroup.visible) {
+                    var cliffHits = rc.intersectObjects(cliffGroup.children, false)
+                    if (cliffHits.length > 0) {
+                        var cliffHit = cliffHits[0]
+                        var cliffObj = cliffHit.object
+                        if (cliffObj.userData && cliffObj.userData._items && cliffHit.instanceId != null) {
+                            var cliffItem = cliffObj.userData._items[cliffHit.instanceId]
+                            if (cliffItem && cliffItem.path && vscode) {
+                                var cmd = {command: 'openModel', path: cliffItem.path}
+                                if (cliffItem.cliffTex0) {
+                                    cmd.cliffTex0 = cliffItem.cliffTex0
+                                    cmd.cliffTex1 = cliffItem.cliffTex1
+                                }
+                                vscode.postMessage(cmd)
+                            }
+                        }
+                        return
+                    }
+                }
+
+                // Check placed objects (doodads/units)
+                if (!objectGroup.visible) return
                 var hits = rc.intersectObjects(objectGroup.children, false)
                 if (hits.length > 0) {
                     var hit = hits[0]
@@ -852,9 +1020,14 @@
             const objectGroup = new THREE.Group()
             scene.add(objectGroup)
 
+            // ── Cliff models group ────────────────────────────
+            const cliffGroup = new THREE.Group()
+            scene.add(cliffGroup)
+
             let _doodFileMap = DATA.doodadFileMap || {}
             let _destFileMap = DATA.destructableFileMap || {}
             let _unitFileMap = DATA.unitFileMap || {}
+            let _cliffTypeMap = DATA.cliffTypeMap || {}
             const _doodItems = DATA.doodadPlacements || []
             const _unitItems = DATA.unitPlacements || []
 
@@ -928,8 +1101,16 @@
                                 const tex = textures[texId]
                                 // Determine texture path: use replaceable texture override if available
                                 var texPath = null
-                                if (tex && tex.replaceable_id && replaceableTextures && replaceableTextures[tex.replaceable_id]) {
-                                    texPath = replaceableTextures[tex.replaceable_id]
+                                if (tex && tex.replaceable_id && replaceableTextures) {
+                                    if (replaceableTextures._cliffTex0 !== undefined) {
+                                        // Cliff model: map replaceable_id to cliff textures
+                                        // Even IDs or first → Cliff0, odd or second → Cliff1
+                                        texPath = (tex.replaceable_id % 2 === 0)
+                                            ? replaceableTextures._cliffTex0
+                                            : replaceableTextures._cliffTex1
+                                    } else if (replaceableTextures[tex.replaceable_id]) {
+                                        texPath = replaceableTextures[tex.replaceable_id]
+                                    }
                                 } else if (tex && tex.file_name && !tex.replaceable_id) {
                                     texPath = tex.file_name
                                 }
@@ -967,8 +1148,9 @@
                 return entries
             }
 
-            function _placeInstances(items, entries) {
+            function _placeInstances(items, entries, group) {
                 if (entries.length === 0 || items.length === 0) return
+                const targetGroup = group || objectGroup
                 const mat4 = new THREE.Matrix4()
                 const pos = new THREE.Vector3()
                 const quat = new THREE.Quaternion()
@@ -985,14 +1167,14 @@
                             it.p[1] - D.offsetY - halfGridH,
                             it.p[2]
                         )
-                        euler.set(0, 0, it.a || 0)
+                        euler.set(it.rx || 0, it.ry || 0, it.a || 0)
                         quat.setFromEuler(euler)
                         scl.set(it.s[0] || 1, it.s[1] || 1, it.s[2] || 1)
                         mat4.compose(pos, quat, scl)
                         instMesh.setMatrixAt(i, mat4)
                     }
                     instMesh.instanceMatrix.needsUpdate = true
-                    objectGroup.add(instMesh)
+                    targetGroup.add(instMesh)
                 }
             }
 
@@ -1010,12 +1192,133 @@
 
             const _rawModelData = {} // modelPath → raw msg data (shared across texture variants)
 
+            // ── Cliff model collection ────────────────────────
+            // For each cell where corners have different layerHeight,
+            // derive the cliff/ramp model filename and collect placement items.
+            //
+            // Cliff replaceable textures (IDs 1, 11, 31, 100, 200, etc.)
+            // resolve to ReplaceableTextures\Cliff\{tileset}_Cliff{N}.blp
+            // with fallback to ReplaceableTextures\Cliff\Cliff{N}.blp.
+            const _tileset = DATA.tileset || ''
+
+            function _cliffTexPath(n) {
+                // Try tileset-specific first, then default
+                if (_tileset) return 'ReplaceableTextures\\Cliff\\' + _tileset + '_Cliff' + n + '.blp'
+                return 'ReplaceableTextures\\Cliff\\Cliff' + n + '.blp'
+            }
+            const _cliffTexFallback0 = 'ReplaceableTextures\\Cliff\\Cliff0.blp'
+            const _cliffTexFallback1 = 'ReplaceableTextures\\Cliff\\Cliff1.blp'
+
+            function _collectCliffItems() {
+                const items = [] // {path, p:[x,y,z], s:[1,1,1], a:0, cliffTex}
+                const cliffCodes = DATA.cliffTileCodes || []
+                if (cliffCodes.length === 0 || Object.keys(_cliffTypeMap).length === 0) return items
+
+                for (let cy = 0; cy < H - 1; cy++) {
+                    for (let cx = 0; cx < W - 1; cx++) {
+                        const iBL = cy * W + cx
+                        const iBR = cy * W + cx + 1
+                        const iTL = (cy + 1) * W + cx
+                        const iTR = (cy + 1) * W + cx + 1
+
+                        const lBL = D.layerHeight[iBL]
+                        const lBR = D.layerHeight[iBR]
+                        const lTL = D.layerHeight[iTL]
+                        const lTR = D.layerHeight[iTR]
+
+                        const base = Math.min(lBL, lBR, lTL, lTR)
+                        const peak = Math.max(lBL, lBR, lTL, lTR)
+                        if (base === peak) continue // no cliff
+
+                        // Cliff texture index from bottom-left corner
+                        const ctIdx = D.cliffTexture[iBL]
+                        if (ctIdx >= 15 || ctIdx >= cliffCodes.length) continue
+
+                        const rawcode = typeof cliffCodes[ctIdx] === 'string'
+                            ? cliffCodes[ctIdx]
+                            : cliffCodes[ctIdx].text || cliffCodes[ctIdx].raw || ''
+                        if (!rawcode) continue
+
+                        const ct = _cliffTypeMap[rawcode]
+                        if (!ct) continue
+
+                        // Determine if this cell is a ramp (all 4 corners have ramp flag)
+                        const isRamp = (D.flags[iBL] & 8) && (D.flags[iBR] & 8) &&
+                                       (D.flags[iTL] & 8) && (D.flags[iTR] & 8)
+                        const modelDir = isRamp ? ct.rampModelDir : ct.cliffModelDir
+                        if (!modelDir) continue
+
+                        // Derive corner letters: 'A' + (layerHeight - base)
+                        const dTL = lTL - base
+                        const dTR = lTR - base
+                        const dBR = lBR - base
+                        const dBL = lBL - base
+
+                        // Skip models with difference > 2 ('D' or higher) — they don't exist
+                        if (dTL > 2 || dTR > 2 || dBR > 2 || dBL > 2) continue
+
+                        const cTL = String.fromCharCode(65 + dTL) // A, B, C
+                        const cTR = String.fromCharCode(65 + dTR)
+                        const cBR = String.fromCharCode(65 + dBR)
+                        const cBL = String.fromCharCode(65 + dBL)
+
+                        // Skip 'AAAA' — not a valid cliff
+                        if (dTL === 0 && dTR === 0 && dBR === 0 && dBL === 0) continue
+
+                        const variation = D.cliffVariation[iBL] % 3 // models have 0, 1, 2
+
+                        const modelPath = 'Doodads\\Terrain\\' + modelDir + '\\' + modelDir +
+                            cTL + cTR + cBR + cBL + variation + '.mdx'
+
+                        // Cliff texture: tileset-specific, fallback to default
+                        const cliffTex0 = _cliffTexPath(0)
+                        const cliffTex1 = _cliffTexPath(1)
+
+                        // Position: bottom-left corner of cell, at base layer height
+                        const wx = cx * TILE + D.offsetX
+                        const wy = cy * TILE + D.offsetY
+                        const wz = (base - 2) * TILE
+
+                        items.push({
+                            path: modelPath,
+                            p: [wx, wy, wz],
+                            s: [1, 1, 1],
+                            a: 0,
+                            cliffTex0,
+                            cliffTex1,
+                        })
+                    }
+                }
+                return items
+            }
+
+            // Build replaceable texture map for a cache entry
+            function _buildReplTex(info) {
+                if (info._cliff) {
+                    const tex0 = info._cliffTex0 || _cliffTexFallback0
+                    const tex1 = info._cliffTex1 || _cliffTexFallback1
+                    return {_cliffTex0: tex0, _cliffTex1: tex1}
+                }
+                if (info.texId && info.texFile) return {[info.texId]: info.texFile}
+                return null
+            }
+
             function _collectAndLoad() {
                 // Clear existing objects
                 while (objectGroup.children.length > 0) {
                     const c = objectGroup.children[0]
                     objectGroup.remove(c)
                     // Don't dispose shared fallback geometry/material
+                    if (c.geometry && c.geometry !== _fallbackGeo) c.geometry.dispose()
+                    if (c.material && c.material !== _fallbackMat) {
+                        if (c.material.map) c.material.map.dispose()
+                        c.material.dispose()
+                    }
+                }
+                // Clear cliff models
+                while (cliffGroup.children.length > 0) {
+                    const c = cliffGroup.children[0]
+                    cliffGroup.remove(c)
                     if (c.geometry && c.geometry !== _fallbackGeo) c.geometry.dispose()
                     if (c.material && c.material !== _fallbackMat) {
                         if (c.material.map) c.material.map.dispose()
@@ -1048,6 +1351,23 @@
                     pathsNeeded[file] = true
                 }
 
+                // Collect cliff/ramp models from terrain data
+                const cliffItems = _collectCliffItems()
+                for (const item of cliffItems) {
+                    // Cache key includes texture paths so different tilesets get separate entries
+                    const texKey = item.cliffTex0 || ''
+                    const cacheKey = texKey ? (item.path + '|' + texKey) : item.path
+                    if (!byCacheKey[cacheKey]) byCacheKey[cacheKey] = {
+                        path: item.path, items: [],
+                        _cliff: true,
+                        _cliffTex0: item.cliffTex0,
+                        _cliffTex1: item.cliffTex1,
+                    }
+                    byCacheKey[cacheKey].items.push(item)
+                    pathsNeeded[item.path] = true
+                }
+
+
                 // Place red cubes for items with no rawcode→file mapping
                 if (_unmappedItems.length > 0) {
                     _placeInstances(_unmappedItems, _fallbackEntries)
@@ -1056,14 +1376,15 @@
                 // Place already-cached models; collect uncached for loading
                 const toLoad = []
                 for (const [cacheKey, info] of Object.entries(byCacheKey)) {
+                    const grp = info._cliff ? cliffGroup : undefined
                     if (_modelCache[cacheKey]) {
-                        _placeInstances(info.items, _modelCache[cacheKey])
+                        _placeInstances(info.items, _modelCache[cacheKey], grp)
                     } else if (_rawModelData[info.path]) {
                         // Model data already loaded but not yet built for this texture variant
-                        const replTex = info.texId && info.texFile ? {[info.texId]: info.texFile} : null
+                        const replTex = _buildReplTex(info)
                         const entries = _buildModel(_rawModelData[info.path], replTex)
                         _modelCache[cacheKey] = entries
-                        _placeInstances(info.items, entries)
+                        _placeInstances(info.items, entries, grp)
                     } else {
                         _pendingItems[cacheKey] = info
                         if (!toLoad.includes(info.path)) toLoad.push(info.path)
@@ -1083,21 +1404,27 @@
                     // Build entries for each pending cache key that references this model path
                     for (const [cacheKey, info] of Object.entries(_pendingItems)) {
                         if (info.path !== msg.path) continue
-                        const replTex = info.texId && info.texFile ? {[info.texId]: info.texFile} : null
+                        const replTex = _buildReplTex(info)
                         const entries = _buildModel(msg, replTex)
                         _modelCache[cacheKey] = entries
-                        if (info.items && objectGroup.visible) {
-                            _placeInstances(info.items, entries)
+                        const grp = info._cliff ? cliffGroup : objectGroup
+                        if (info.items && grp.visible) {
+                            _placeInstances(info.items, entries, info._cliff ? cliffGroup : undefined)
                         }
                         delete _pendingItems[cacheKey]
                     }
                 } else if (msg && msg.command === 'mapObjectModelNotFound') {
-                    // Model file could not be loaded — place red cubes
+                    // Model file could not be loaded — skip for cliffs, red cubes for others
                     for (const [cacheKey, info] of Object.entries(_pendingItems)) {
                         if (info.path !== msg.path) continue
-                        _modelCache[cacheKey] = _fallbackEntries
-                        if (info.items && objectGroup.visible) {
-                            _placeInstances(info.items, _fallbackEntries)
+                        if (info._cliff) {
+                            // Cliff model not found — just skip (no red cubes for missing cliffs)
+                            _modelCache[cacheKey] = []
+                        } else {
+                            _modelCache[cacheKey] = _fallbackEntries
+                            if (info.items && objectGroup.visible) {
+                                _placeInstances(info.items, _fallbackEntries)
+                            }
                         }
                         delete _pendingItems[cacheKey]
                     }
@@ -1105,9 +1432,13 @@
                     // After all loading finishes, place red cubes for any remaining pending items
                     for (const [cacheKey, info] of Object.entries(_pendingItems)) {
                         if (!_modelCache[cacheKey]) {
-                            _modelCache[cacheKey] = _fallbackEntries
-                            if (objectGroup.visible) {
-                                _placeInstances(info.items, _fallbackEntries)
+                            if (info._cliff) {
+                                _modelCache[cacheKey] = []
+                            } else {
+                                _modelCache[cacheKey] = _fallbackEntries
+                                if (objectGroup.visible) {
+                                    _placeInstances(info.items, _fallbackEntries)
+                                }
                             }
                         }
                     }
@@ -1126,9 +1457,28 @@
                 saveCbState()
             })
 
+            // Checkbox: toggle cliff model visibility
+            const cbCliffsEl = document.getElementById('cbCliffs')
+            if (cbCliffsEl && cbState.cbCliffs != null) cbCliffsEl.checked = cbState.cbCliffs
+            if (cbCliffsEl && !cbCliffsEl.checked) {
+                cliffGroup.visible = false
+                showCliffs = false
+            }
+
+            cb('cbCliffs', e => {
+                showCliffs = e.target.checked
+                cliffGroup.visible = e.target.checked
+                mat.transparent = showCliffs
+                mat.alphaTest = showCliffs ? 0.01 : 0
+                mat.needsUpdate = true
+                applyColors()
+                if (canvasTex) buildComposited(_lastTileImages || [])
+                saveCbState()
+            })
+
             // Initial load if SLK maps have data
-            const _hasMaps = Object.keys(_doodFileMap).length > 0 || Object.keys(_destFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
-            if (_hasMaps && (_doodItems.length > 0 || _unitItems.length > 0)) {
+            const _hasMaps = Object.keys(_doodFileMap).length > 0 || Object.keys(_destFileMap).length > 0 || Object.keys(_unitFileMap).length > 0 || Object.keys(_cliffTypeMap).length > 0
+            if (_hasMaps && (_doodItems.length > 0 || _unitItems.length > 0 || Object.keys(_cliffTypeMap).length > 0)) {
                 _collectAndLoad()
             }
 
@@ -1152,8 +1502,19 @@
                         if (u.file) _unitFileMap[rawId] = u.file
                     }
                 }
-                const hasData = Object.keys(_doodFileMap).length > 0 || Object.keys(_destFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
-                if (hasData && (_doodItems.length > 0 || _unitItems.length > 0)) {
+                if (snapshot.cliffTypesSlk && snapshot.cliffTypesSlk.cliffTypes) {
+                    _cliffTypeMap = {}
+                    for (const [id, ct] of Object.entries(snapshot.cliffTypesSlk.cliffTypes)) {
+                        _cliffTypeMap[id] = {cliffModelDir: ct.cliffModelDir || '', rampModelDir: ct.rampModelDir || '', texDir: ct.texDir || '', texFile: ct.texFile || '', groundTile: ct.groundTile || ''}
+                    }
+                    // Update cliff ground-tile override and redraw terrain
+                    DATA.cliffTypeMap = _cliffTypeMap
+                    _cliffGroundOverride = computeCliffGroundOverride()
+                    applyColors()
+                    if (canvasTex) buildComposited(_lastTileImages || [])
+                }
+                const hasData = Object.keys(_doodFileMap).length > 0 || Object.keys(_destFileMap).length > 0 || Object.keys(_unitFileMap).length > 0 || Object.keys(_cliffTypeMap).length > 0
+                if (hasData && (_doodItems.length > 0 || _unitItems.length > 0 || Object.keys(_cliffTypeMap).length > 0)) {
                     _collectAndLoad()
                 }
             })

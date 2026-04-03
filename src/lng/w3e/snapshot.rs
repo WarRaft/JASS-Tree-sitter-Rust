@@ -14,6 +14,7 @@ use std::sync::Mutex;
 
 use super::slk::{
     DoodadsSlkResult, DestructablesSlkResult, TerrainSlkResult, UnitsSlkResult,
+    CliffTypesSlkResult,
 };
 
 // ─── Snapshot struct ─────────────────────────────────────────────────────────
@@ -32,6 +33,8 @@ pub struct GameSnapshot {
     pub units_slk: Option<UnitsSlkResult>,
     /// Destructable catalog from `Units\DestructableData.slk`.
     pub destructables_slk: Option<DestructablesSlkResult>,
+    /// Cliff type catalog from `TerrainArt\CliffTypes.slk`.
+    pub cliff_types_slk: Option<CliffTypesSlkResult>,
 }
 
 // ─── Global cache ────────────────────────────────────────────────────────────
@@ -50,7 +53,7 @@ static SNAPSHOT: Mutex<Option<CachedSnapshot>> = Mutex::new(None);
 /// Called when the game path is set or changed.  Reads all SLK / INI files
 /// synchronously (should be called from `spawn_blocking`).
 pub fn build_snapshot(archive_path: Option<&str>) {
-    use super::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk};
+    use super::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk};
 
     // 1. Ensure westrings are loaded first (all SLK loaders depend on them).
     super::westrings::ensure_loaded(archive_path);
@@ -61,6 +64,7 @@ pub fn build_snapshot(archive_path: Option<&str>) {
     let doodads_slk = load_doodads_slk(archive_path);
     let units_slk = load_units_slk(archive_path);
     let destructables_slk = load_destructables_slk(archive_path);
+    let cliff_types_slk = load_cliff_types_slk(archive_path);
 
     let snapshot = GameSnapshot {
         westrings,
@@ -68,19 +72,21 @@ pub fn build_snapshot(archive_path: Option<&str>) {
         doodads_slk,
         units_slk,
         destructables_slk,
+        cliff_types_slk,
     };
 
     // 3. Pre-serialise to JSON once.
     let json = serde_json::to_vec(&snapshot).unwrap_or_default();
 
     log::info!(
-        "Game snapshot built: {} bytes ({} westrings, terrain={}, doodads={}, units={}, destructables={})",
+        "Game snapshot built: {} bytes ({} westrings, terrain={}, doodads={}, units={}, destructables={}, cliffTypes={})",
         json.len(),
         snapshot.westrings.len(),
         snapshot.terrain_slk.is_some(),
         snapshot.doodads_slk.is_some(),
         snapshot.units_slk.is_some(),
         snapshot.destructables_slk.is_some(),
+        snapshot.cliff_types_slk.is_some(),
     );
 
     let mut guard = match SNAPSHOT.lock() {
