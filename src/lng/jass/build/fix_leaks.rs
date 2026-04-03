@@ -627,10 +627,10 @@ pub(super) fn fix_leaks(ir: &mut BuildIR) {
     }
 
     // 3. Create one temp global per needed type.
-    //    Name: `_lr_<type>`, with numeric suffix for uniqueness.
+    //    Name: `lr_<type>`, with numeric suffix for uniqueness.
     let mut temp_globals: HashMap<String, String> = HashMap::new();
     for type_name in &needed_types {
-        let base = format!("_lr_{}", type_name);
+        let base = format!("lr_{}", type_name);
         let mut candidate = base.clone();
         let mut suffix = 1u32;
         while all_names.contains(&candidate) {

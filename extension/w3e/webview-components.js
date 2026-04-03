@@ -894,6 +894,282 @@ class UnitItem extends HTMLElement {
 customElements.define('unit-item', UnitItem);
 
 
+// ── CanvasList — Virtual-scroll canvas-based list ───────────────────
+// Replaces heavy DOM lists (hundreds of shadow-DOM custom elements)
+// with a single <canvas>. Only visible rows are drawn.
+// Handles wheel-scroll, hover, click.
+
+function _clRoundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+}
+
+function _clTruncText(ctx, text, x, y, maxW) {
+    if (!text) return;
+    if (ctx.measureText(text).width <= maxW) { ctx.fillText(text, x, y); return; }
+    var ew = ctx.measureText('\u2026').width;
+    var t = text;
+    while (t.length > 0 && ctx.measureText(t).width + ew > maxW) t = t.slice(0, -1);
+    ctx.fillText(t + '\u2026', x, y);
+}
+
+function _clDrawBadge(ctx, ch, x, rowY, rowH, c, isAll) {
+    var bw = 16, bh = 16, by = rowY + (rowH - bh) / 2;
+    ctx.fillStyle = isAll ? c.badgeAllBg : c.badgeBg;
+    _clRoundRect(ctx, x, by, bw, bh, 3);
+    ctx.fill();
+    ctx.font = '600 10px ' + c.mono;
+    ctx.fillStyle = isAll ? c.badgeAllFg : c.desc;
+    ctx.textAlign = 'center';
+    ctx.fillText(ch, x + bw / 2, rowY + rowH / 2);
+    ctx.textAlign = 'left';
+}
+
+class CanvasList {
+    constructor(container, options) {
+        this._container = container;
+        this._rh = options.rowHeight || 26;
+        this._renderRow = options.renderRow;
+        this._onClick = options.onClick || null;
+        this._items = [];
+        this._scrollY = 0;
+        this._hover = -1;
+        this._w = 0;
+        this._h = 0;
+        this._disposed = false;
+        this._raf = 0;
+        this._scrollDragging = false;
+        this._scrollDragStartY = 0;
+        this._scrollDragStartScrollY = 0;
+        this._highlight = -1;
+        this._highlightTimeout = 0;
+
+        var cs = getComputedStyle(document.documentElement);
+        var cv = function (n, fb) { return cs.getPropertyValue(n).trim() || fb; };
+        this.C = {
+            bg: cv('--vscode-editor-background', '#1e1e1e'),
+            fg: cv('--vscode-editor-foreground', '#ccc'),
+            hover: cv('--vscode-list-hoverBackground', 'rgba(255,255,255,0.06)'),
+            border: cv('--vscode-editorWidget-border', '#333'),
+            link: cv('--vscode-textLink-foreground', '#3794ff'),
+            desc: cv('--vscode-descriptionForeground', '#999'),
+            font: cv('--vscode-font-family', 'sans-serif'),
+            mono: cv('--vscode-editor-font-family', 'monospace'),
+            badgeBg: 'rgba(255,255,255,0.08)',
+            badgeAllBg: 'rgba(78,154,241,0.25)',
+            badgeAllFg: cv('--vscode-textLink-foreground', '#3794ff'),
+        };
+
+        this._canvas = document.createElement('canvas');
+        this._canvas.style.cssText = 'display:block;width:100%;height:100%;cursor:default;';
+        this._ctx = this._canvas.getContext('2d');
+
+        container.style.overflow = 'hidden';
+        container.innerHTML = '';
+        container.appendChild(this._canvas);
+
+        var self = this;
+        this._handlers = {
+            wheel: function (e) { self._onWheel(e); },
+            move: function (e) { self._onMove(e); },
+            leave: function () { self._onLeave(); },
+            click: function (e) { self._onClickEvt(e); },
+            down: function (e) { self._onPointerDown(e); },
+            pmove: function (e) { self._onPointerMove(e); },
+            up: function (e) { self._onPointerUp(e); },
+        };
+        this._canvas.addEventListener('wheel', this._handlers.wheel, {passive: false});
+        this._canvas.addEventListener('mousemove', this._handlers.move);
+        this._canvas.addEventListener('mouseleave', this._handlers.leave);
+        this._canvas.addEventListener('click', this._handlers.click);
+        this._canvas.addEventListener('pointerdown', this._handlers.down);
+        this._canvas.addEventListener('pointermove', this._handlers.pmove);
+        this._canvas.addEventListener('pointerup', this._handlers.up);
+
+        this._ro = new ResizeObserver(function () { self._resize(); });
+        this._ro.observe(container);
+        this._resize();
+    }
+
+    setData(items) {
+        this._items = items || [];
+        this._clamp();
+        this._schedule();
+    }
+
+    _resize() {
+        var dpr = window.devicePixelRatio || 1;
+        var w = this._container.clientWidth;
+        var h = this._container.clientHeight;
+        if (w <= 0 || h <= 0) return;
+        this._canvas.width = w * dpr;
+        this._canvas.height = h * dpr;
+        this._ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        this._w = w;
+        this._h = h;
+        this._clamp();
+        this._draw();
+    }
+
+    _clamp() {
+        var max = Math.max(0, this._items.length * this._rh - this._h);
+        if (this._scrollY > max) this._scrollY = max;
+        if (this._scrollY < 0) this._scrollY = 0;
+    }
+
+    _schedule() {
+        if (this._raf) return;
+        var self = this;
+        this._raf = requestAnimationFrame(function () { self._raf = 0; self._draw(); });
+    }
+
+    _scrollbarMetrics() {
+        var total = this._items.length * this._rh;
+        if (total <= this._h) return null;
+        var thumbH = Math.max(20, this._h * this._h / total);
+        var thumbY = (this._scrollY / total) * this._h;
+        return {thumbH: thumbH, thumbY: thumbY, trackX: this._w - 10, trackW: 8};
+    }
+
+    _draw() {
+        if (this._disposed) return;
+        var ctx = this._ctx, w = this._w, h = this._h;
+        if (!w || !h) return;
+        ctx.clearRect(0, 0, w, h);
+
+        var rh = this._rh;
+        var first = Math.floor(this._scrollY / rh);
+        var last = Math.min(this._items.length - 1, Math.ceil((this._scrollY + h) / rh));
+
+        for (var i = first; i <= last; i++) {
+            var y = i * rh - this._scrollY;
+            if (i === this._highlight) {
+                ctx.fillStyle = 'rgba(55, 148, 255, 0.2)';
+                ctx.fillRect(0, y, w, rh);
+            } else if (i === this._hover) {
+                ctx.fillStyle = this.C.hover;
+                ctx.fillRect(0, y, w, rh);
+            }
+            ctx.fillStyle = this.C.border;
+            ctx.fillRect(0, y + rh - 1, w, 1);
+            this._renderRow(ctx, this._items[i], 6, y, w - 20, rh, this.C);
+        }
+
+        var sb = this._scrollbarMetrics();
+        if (sb) {
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            _clRoundRect(ctx, sb.trackX, sb.thumbY, sb.trackW, sb.thumbH, 3);
+            ctx.fill();
+        }
+    }
+
+    _idx(clientY) {
+        var rect = this._canvas.getBoundingClientRect();
+        var y = clientY - rect.top;
+        var i = Math.floor((y + this._scrollY) / this._rh);
+        return i >= 0 && i < this._items.length ? i : -1;
+    }
+
+    _onWheel(e) {
+        e.preventDefault();
+        this._scrollY += e.deltaY;
+        this._clamp();
+        this._hover = this._idx(e.clientY);
+        this._schedule();
+    }
+
+    _onMove(e) {
+        var i = this._idx(e.clientY);
+        if (i !== this._hover) { this._hover = i; this._schedule(); }
+    }
+
+    _onLeave() {
+        if (this._hover !== -1) { this._hover = -1; this._schedule(); }
+    }
+
+    _onClickEvt(e) {
+        if (this._scrollDragging) return;
+        var i = this._idx(e.clientY);
+        if (i >= 0 && this._onClick) this._onClick(this._items[i], i);
+    }
+
+    _onPointerDown(e) {
+        var sb = this._scrollbarMetrics();
+        if (!sb) return;
+        var rect = this._canvas.getBoundingClientRect();
+        var mx = e.clientX - rect.left;
+        var my = e.clientY - rect.top;
+        if (mx >= sb.trackX && mx <= sb.trackX + sb.trackW && my >= sb.thumbY && my <= sb.thumbY + sb.thumbH) {
+            this._scrollDragging = true;
+            this._scrollDragStartY = my;
+            this._scrollDragStartScrollY = this._scrollY;
+            this._canvas.setPointerCapture(e.pointerId);
+            e.preventDefault();
+        }
+    }
+
+    _onPointerMove(e) {
+        if (!this._scrollDragging) return;
+        var rect = this._canvas.getBoundingClientRect();
+        var my = e.clientY - rect.top;
+        var dy = my - this._scrollDragStartY;
+        var total = this._items.length * this._rh;
+        this._scrollY = this._scrollDragStartScrollY + dy * total / this._h;
+        this._clamp();
+        this._schedule();
+    }
+
+    _onPointerUp(e) {
+        if (this._scrollDragging) {
+            this._scrollDragging = false;
+            try { this._canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+        }
+    }
+
+    scrollToIndex(idx) {
+        if (idx < 0 || idx >= this._items.length) return;
+        var y = idx * this._rh;
+        if (y < this._scrollY || y + this._rh > this._scrollY + this._h) {
+            this._scrollY = Math.max(0, y - this._h / 2 + this._rh / 2);
+            this._clamp();
+        }
+        this._highlight = idx;
+        this._schedule();
+        var self = this;
+        clearTimeout(this._highlightTimeout);
+        this._highlightTimeout = setTimeout(function () {
+            self._highlight = -1;
+            self._schedule();
+        }, 2000);
+    }
+
+    dispose() {
+        this._disposed = true;
+        clearTimeout(this._highlightTimeout);
+        if (this._raf) { cancelAnimationFrame(this._raf); this._raf = 0; }
+        this._ro.disconnect();
+        this._canvas.removeEventListener('wheel', this._handlers.wheel);
+        this._canvas.removeEventListener('mousemove', this._handlers.move);
+        this._canvas.removeEventListener('mouseleave', this._handlers.leave);
+        this._canvas.removeEventListener('click', this._handlers.click);
+        this._canvas.removeEventListener('pointerdown', this._handlers.down);
+        this._canvas.removeEventListener('pointermove', this._handlers.pmove);
+        this._canvas.removeEventListener('pointerup', this._handlers.up);
+        if (this._canvas.parentNode) this._canvas.parentNode.removeChild(this._canvas);
+        this._items = [];
+    }
+}
+
+
 // ── W3E application logic ────────────────────────────────────────────
 window.W3E = (function () {
     let _vscode = null;
@@ -1022,6 +1298,336 @@ window.W3E = (function () {
         else if (hue < 300) { r = xx; g = 0; b = cc; }
         else { r = cc; g = 0; b = xx; }
         return [Math.round((r + mm) * 255), Math.round((g + mm) * 255), Math.round((b + mm) * 255)];
+    }
+
+    // ── Canvas list row renderers ──────────────────────────────────
+    function _renderDoodadRow(ctx, d, x, y, w, h, c) {
+        var mid = y + h / 2;
+        ctx.textBaseline = 'middle';
+        // ID
+        ctx.font = '11px ' + c.mono;
+        ctx.fillStyle = c.link;
+        ctx.fillText(d.doodId || '', x, mid);
+        // Category (right side)
+        var catText = (typeof DOODAD_CATEGORIES !== 'undefined' && DOODAD_CATEGORIES[d.category]) || d.category || '';
+        ctx.font = '11px ' + c.font;
+        ctx.fillStyle = c.desc;
+        ctx.textAlign = 'right';
+        ctx.fillText(catText, x + w, mid);
+        var catW = catText ? ctx.measureText(catText).width + 8 : 0;
+        ctx.textAlign = 'left';
+        // Tileset badges
+        var bx = x + w - catW;
+        var ts = d.tilesets || '';
+        if (ts) {
+            var chars = ts === '*' ? ['*'] : ts.split(',').filter(Boolean);
+            for (var bi = chars.length - 1; bi >= 0; bi--) {
+                bx -= 18;
+                _clDrawBadge(ctx, chars[bi], bx, y, h, c, chars[bi] === '*');
+            }
+            bx -= 4;
+        }
+        // Name
+        var nameX = x + 46;
+        var nameW = bx - nameX;
+        if (nameW > 10) {
+            ctx.font = '12px ' + c.font;
+            ctx.fillStyle = c.fg;
+            _clTruncText(ctx, _gsValue(d.name) || '', nameX, mid, nameW);
+        }
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    function _renderDestructableRow(ctx, d, x, y, w, h, c) {
+        var mid = y + h / 2;
+        ctx.textBaseline = 'middle';
+        // ID
+        ctx.font = '11px ' + c.mono;
+        ctx.fillStyle = c.link;
+        ctx.fillText(d.destructableId || '', x, mid);
+        // Category (right side)
+        var catText = (typeof DESTRUCTABLE_CATEGORIES !== 'undefined' && DESTRUCTABLE_CATEGORIES[d.category]) || d.category || '';
+        ctx.font = '11px ' + c.font;
+        ctx.fillStyle = c.desc;
+        ctx.textAlign = 'right';
+        ctx.fillText(catText, x + w, mid);
+        var catW = catText ? ctx.measureText(catText).width + 8 : 0;
+        ctx.textAlign = 'left';
+        // Tileset badges
+        var bx = x + w - catW;
+        var ts = d.tilesets || '';
+        if (ts) {
+            var chars = ts === '*' ? ['*'] : ts.split(',').filter(Boolean);
+            for (var bi = chars.length - 1; bi >= 0; bi--) {
+                bx -= 18;
+                _clDrawBadge(ctx, chars[bi], bx, y, h, c, chars[bi] === '*');
+            }
+            bx -= 4;
+        }
+        // Name
+        var nameX = x + 46;
+        var nameW = bx - nameX;
+        if (nameW > 10) {
+            ctx.font = '12px ' + c.font;
+            ctx.fillStyle = c.fg;
+            var rn = _gsValue(d.name) || '';
+            var rs = _gsValue(d.editorSuffix);
+            _clTruncText(ctx, rn + (rs ? ' ' + rs : ''), nameX, mid, nameW);
+        }
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    function _renderUnitRow(ctx, u, x, y, w, h, c) {
+        var mid = y + h / 2;
+        ctx.textBaseline = 'middle';
+        var colFile = 150, colPts = 40, colMove = 40, colRace = 50, colId = 46;
+        // ID
+        ctx.font = '11px ' + c.mono;
+        ctx.fillStyle = c.link;
+        ctx.fillText(u.unitId || '', x, mid);
+        // File (right edge)
+        var file = u.file || '';
+        if (file) {
+            var shortFile = file.replace(/\\/g, '/').split('/').pop() || '';
+            ctx.font = '10px ' + c.mono;
+            ctx.fillStyle = c.link;
+            ctx.globalAlpha = 0.7;
+            _clTruncText(ctx, shortFile, x + w - colFile, mid, colFile);
+            ctx.globalAlpha = 1;
+        }
+        // Points
+        var pts = u.points && u.points !== '0' && u.points !== 0 ? u.points + 'pt' : '';
+        if (pts) {
+            ctx.font = '11px ' + c.mono;
+            ctx.fillStyle = c.desc;
+            ctx.textAlign = 'right';
+            ctx.fillText(pts, x + w - colFile - 4, mid);
+            ctx.textAlign = 'left';
+        }
+        // Move type
+        ctx.font = '11px ' + c.font;
+        ctx.fillStyle = c.desc;
+        ctx.fillText(u.moveTp || '', x + w - colFile - colPts - colMove, mid);
+        // Race
+        ctx.fillText(u.race || '', x + w - colFile - colPts - colMove - colRace, mid);
+        // Comment
+        var nameEnd = x + w - colFile - colPts - colMove - colRace - 4;
+        var nameW = nameEnd - (x + colId);
+        if (nameW > 10) {
+            ctx.font = '12px ' + c.font;
+            ctx.fillStyle = c.fg;
+            _clTruncText(ctx, u.comment || '', x + colId, mid, nameW);
+        }
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    // ── Canvas list row renderers — placed DOO items ────────────
+    function _renderPlacedDoodadRow(ctx, item, x, y, w, h, c) {
+        var mid = y + h / 2;
+        ctx.textBaseline = 'middle';
+        // # index (right-aligned)
+        ctx.font = '10px ' + c.mono;
+        ctx.fillStyle = c.desc;
+        ctx.textAlign = 'right';
+        ctx.fillText(String(item.index + 1), x + 28, mid);
+        ctx.textAlign = 'left';
+        // Rawcode
+        ctx.font = '11px ' + c.mono;
+        ctx.fillStyle = item._error ? '#f44' : c.link;
+        ctx.fillText(item.text || '', x + 34, mid);
+        // Right side: angle
+        ctx.font = '10px ' + c.mono;
+        ctx.fillStyle = c.desc;
+        ctx.textAlign = 'right';
+        var angleDeg = item.angle != null ? (item.angle * 180 / Math.PI).toFixed(0) + '\u00b0' : '';
+        ctx.fillText(angleDeg, x + w, mid);
+        // Position
+        var posText = _fmtPlacedF(item.position.x) + ', ' + _fmtPlacedF(item.position.y);
+        ctx.fillText(posText, x + w - 42, mid);
+        var posW = ctx.measureText(posText).width;
+        ctx.textAlign = 'left';
+        // Name
+        var nameX = x + 78;
+        var nameEnd = x + w - 42 - posW - 12;
+        var nameW = nameEnd - nameX;
+        if (nameW > 10) {
+            ctx.font = '12px ' + c.font;
+            ctx.fillStyle = c.fg;
+            _clTruncText(ctx, item._name || '', nameX, mid, nameW);
+        }
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    function _renderPlacedUnitRow(ctx, item, x, y, w, h, c) {
+        var mid = y + h / 2;
+        ctx.textBaseline = 'middle';
+        // # index (right-aligned)
+        ctx.font = '10px ' + c.mono;
+        ctx.fillStyle = c.desc;
+        ctx.textAlign = 'right';
+        ctx.fillText(String(item.index + 1), x + 28, mid);
+        ctx.textAlign = 'left';
+        // Rawcode
+        ctx.font = '11px ' + c.mono;
+        ctx.fillStyle = c.link;
+        ctx.fillText(item.text || '', x + 34, mid);
+        // Right: player
+        ctx.font = '10px ' + c.mono;
+        ctx.fillStyle = c.desc;
+        ctx.textAlign = 'right';
+        if (item.player != null) {
+            ctx.fillText('P' + item.player, x + w, mid);
+        }
+        // Angle
+        var angleDeg = item.angle != null ? (item.angle * 180 / Math.PI).toFixed(0) + '\u00b0' : '';
+        ctx.fillText(angleDeg, x + w - 28, mid);
+        // Position
+        var posText = _fmtPlacedF(item.position.x) + ', ' + _fmtPlacedF(item.position.y);
+        ctx.fillText(posText, x + w - 68, mid);
+        var posW = ctx.measureText(posText).width;
+        ctx.textAlign = 'left';
+        // Name/comment
+        var nameX = x + 78;
+        var nameEnd = x + w - 68 - posW - 12;
+        var nameW = nameEnd - nameX;
+        if (nameW > 10) {
+            ctx.font = '12px ' + c.font;
+            ctx.fillStyle = c.fg;
+            _clTruncText(ctx, item._name || '', nameX, mid, nameW);
+        }
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    // ── Canvas list instances & cached filtered data ─────────────
+    var _doodadCanvasList = null;
+    var _filteredDoodads = [];
+    var _destCanvasList = null;
+    var _filteredDestructables = [];
+    var _unitCanvasList = null;
+    var _unitSlkItems = [];
+
+    function _ensureDoodadCanvasList() {
+        if (_doodadCanvasList) return;
+        var el = document.getElementById('dsDoodadList');
+        if (!el) return;
+        _doodadCanvasList = new CanvasList(el, {
+            rowHeight: 26,
+            renderRow: _renderDoodadRow,
+            onClick: function (item) {
+                if (item._rawKey) showDoodadDetail(item._rawKey);
+            }
+        });
+        if (_filteredDoodads.length) _doodadCanvasList.setData(_filteredDoodads);
+    }
+    function _disposeDoodadCanvasList() {
+        if (_doodadCanvasList) { _doodadCanvasList.dispose(); _doodadCanvasList = null; }
+    }
+
+    function _ensureDestCanvasList() {
+        if (_destCanvasList) return;
+        var el = document.getElementById('dtDestList');
+        if (!el) return;
+        _destCanvasList = new CanvasList(el, {
+            rowHeight: 26,
+            renderRow: _renderDestructableRow,
+            onClick: function (item) {
+                if (item._rawKey) showDestructableDetail(item._rawKey);
+            }
+        });
+        if (_filteredDestructables.length) _destCanvasList.setData(_filteredDestructables);
+    }
+    function _disposeDestCanvasList() {
+        if (_destCanvasList) { _destCanvasList.dispose(); _destCanvasList = null; }
+    }
+
+    function _ensureUnitCanvasList() {
+        if (_unitCanvasList) return;
+        var el = document.getElementById('usUnitList');
+        if (!el) return;
+        _unitCanvasList = new CanvasList(el, {
+            rowHeight: 26,
+            renderRow: _renderUnitRow,
+            onClick: function (item) {
+                if (_vscode && item.file) {
+                    _vscode.postMessage({command: 'openModel', path: item.file});
+                }
+            }
+        });
+        if (_unitSlkItems.length) _unitCanvasList.setData(_unitSlkItems);
+    }
+    function _disposeUnitCanvasList() {
+        if (_unitCanvasList) { _unitCanvasList.dispose(); _unitCanvasList = null; }
+    }
+
+    // ── Placed DOO canvas list instances ─────────────────────────
+    var _unitDooItems = [];
+    var _destDooItems = [];
+    var _unitDooCanvasList = null;
+    var _doodadDooCanvasList = null;
+    var _destDooCanvasList = null;
+
+    function _ensureUnitDooCanvasList() {
+        if (_unitDooCanvasList) return;
+        var el = document.getElementById('unitDooList');
+        if (!el) return;
+        _unitDooCanvasList = new CanvasList(el, {
+            rowHeight: 26,
+            renderRow: _renderPlacedUnitRow,
+            onClick: function (item) {
+                if (_vscode && item.text) {
+                    var file = _unitDataMap[item.text] && _unitDataMap[item.text].file;
+                    if (file) _vscode.postMessage({command: 'openModel', path: file});
+                }
+            }
+        });
+        if (_unitDooItems.length) _unitDooCanvasList.setData(_unitDooItems);
+    }
+    function _disposeUnitDooCanvasList() {
+        if (_unitDooCanvasList) { _unitDooCanvasList.dispose(); _unitDooCanvasList = null; }
+    }
+
+    function _ensureDoodadDooCanvasList() {
+        if (_doodadDooCanvasList) return;
+        var el = document.getElementById('doodadDooList');
+        if (!el) return;
+        _doodadDooCanvasList = new CanvasList(el, {
+            rowHeight: 26,
+            renderRow: _renderPlacedDoodadRow,
+            onClick: function (item) {
+                var rawKey = String(item.raw);
+                if (_doodadDataMap[rawKey]) {
+                    showDoodadDetail(rawKey);
+                } else if (_destructableDataMap[rawKey]) {
+                    showDestructableDetail(rawKey);
+                }
+            }
+        });
+        if (_doodadDooItems.length) _doodadDooCanvasList.setData(_doodadDooItems);
+    }
+    function _disposeDoodadDooCanvasList() {
+        if (_doodadDooCanvasList) { _doodadDooCanvasList.dispose(); _doodadDooCanvasList = null; }
+    }
+
+    function _ensureDestDooCanvasList() {
+        if (_destDooCanvasList) return;
+        var el = document.getElementById('destructableDooList');
+        if (!el) return;
+        _destDooCanvasList = new CanvasList(el, {
+            rowHeight: 26,
+            renderRow: _renderPlacedDoodadRow,
+            onClick: function (item) {
+                var rawKey = String(item.raw);
+                if (_destructableDataMap[rawKey]) {
+                    showDestructableDetail(rawKey);
+                } else if (_doodadDataMap[rawKey]) {
+                    showDoodadDetail(rawKey);
+                }
+            }
+        });
+        if (_destDooItems.length) _destDooCanvasList.setData(_destDooItems);
+    }
+    function _disposeDestDooCanvasList() {
+        if (_destDooCanvasList) { _destDooCanvasList.dispose(); _destDooCanvasList = null; }
     }
 
     /**
@@ -1278,19 +1884,9 @@ window.W3E = (function () {
             });
         }
 
-        const listEl = document.getElementById('dsDoodadList');
-        if (listEl) {
-            listEl.innerHTML = '';
-            for (const d of filtered) {
-                const el = document.createElement('doodad-item');
-                el.setAttribute('data-raw-id', d._rawKey || '');
-                el.setAttribute('dood-id', d.doodId || '');
-                el.setAttribute('dood-name', _gsValue(d.name));
-                el.setAttribute('comment', d.comment || '');
-                el.setAttribute('category', d.category || '');
-                el.setAttribute('tilesets', d.tilesets || '');
-                listEl.appendChild(el);
-            }
+        _filteredDoodads = filtered;
+        if (_doodadCanvasList) {
+            _doodadCanvasList.setData(filtered);
         }
 
         const cntEl = document.getElementById('dsDoodadCount');
@@ -1691,20 +2287,9 @@ window.W3E = (function () {
         const cntEl = document.getElementById('usUnitCount');
         if (cntEl) cntEl.textContent = String(units.length);
 
-        const listEl = document.getElementById('usUnitList');
-        if (listEl) {
-            listEl.innerHTML = '';
-            for (const u of units) {
-                const el = document.createElement('unit-item');
-                el.setAttribute('unit-id', u.unitId || '');
-                el.setAttribute('comment', u.comment || '');
-                el.setAttribute('race', u.race || '');
-                el.setAttribute('move-tp', u.moveTp || '');
-                el.setAttribute('threat', String(u.threat || 0));
-                el.setAttribute('points', String(u.points || 0));
-                el.setAttribute('file', u.file || '');
-                listEl.appendChild(el);
-            }
+        _unitSlkItems = units;
+        if (_unitCanvasList) {
+            _unitCanvasList.setData(units);
         }
     }
 
@@ -1828,23 +2413,9 @@ window.W3E = (function () {
             });
         }
 
-        const listEl = document.getElementById('dtDestList');
-        if (listEl) {
-            listEl.innerHTML = '';
-            for (const d of filtered) {
-                const el = document.createElement('destructable-item');
-                el.setAttribute('data-raw-id', d._rawKey || '');
-                el.setAttribute('dest-id', d.destructableId || '');
-                const resolvedName = _gsValue(d.name);
-                const resolvedSuffix = _gsValue(d.editorSuffix);
-                el.setAttribute('dest-name', (resolvedName || '') + (resolvedSuffix ? ' ' + resolvedSuffix : ''));
-                el.setAttribute('comment', _gsValue(d.comment) || '');
-                el.setAttribute('category', d.category || '');
-                el.setAttribute('tilesets', d.tilesets || '');
-                el.setAttribute('hp', String(d.hp || 0));
-                el.setAttribute('armor', d.armor || '');
-                listEl.appendChild(el);
-            }
+        _filteredDestructables = filtered;
+        if (_destCanvasList) {
+            _destCanvasList.setData(filtered);
         }
 
         const cntEl = document.getElementById('dtDestCount');
@@ -2191,98 +2762,45 @@ window.W3E = (function () {
         return v != null ? Number(v).toFixed(1) : '—';
     }
 
-    /** Build an HTML table row for a placed DOO item. */
-    function _placedRow(it, obj, isError) {
-        var rawText = esc(it.text);
-        var name = '';
-        if (obj && obj.name) {
-            name = _gsValue(obj.name);
-        }
-        var pos = _fmtPlacedF(it.position.x) + ', ' + _fmtPlacedF(it.position.y) + ', ' + _fmtPlacedF(it.position.z);
-        var angle = it.angle != null ? _fmtPlacedF(it.angle * 180 / Math.PI) : '—';
-        var scale = _fmtPlacedF(it.scale.x) + ', ' + _fmtPlacedF(it.scale.y) + ', ' + _fmtPlacedF(it.scale.z);
-        var cls = isError ? ' class="doo-error-row"' : '';
-        var linkCls = 'doo-id-link';
-        return '<tr' + cls + ' data-doo-idx="' + it.index + '">'
-            + '<td class="num">' + (it.index + 1) + '</td>'
-            + '<td class="code"><span class="' + linkCls + '" data-dood-id="' + it.raw + '">' + rawText + '</span></td>'
-            + '<td>' + esc(name) + '</td>'
-            + '<td class="num">' + it.variation + '</td>'
-            + '<td class="mono">' + pos + '</td>'
-            + '<td class="num">' + angle + '</td>'
-            + '<td class="mono">' + scale + '</td>'
-            + '<td>' + (it.health != null ? it.health : '—') + '</td>'
-            + '</tr>';
-    }
-
-    /** Categorize DOO items into doodad/destructable/error and populate both placed windows. */
+    /** Categorize DOO items: resolve names and populate destructable canvas list. */
     function _categorizePlacedItems() {
-        var doodadRows = [];
-        var destructableRows = [];
-        var errorItems = [];
+        var destItems = [];
 
         for (var i = 0; i < _doodadDooItems.length; i++) {
             var it = _doodadDooItems[i];
             var rawKey = String(it.raw);
             if (_doodadDataMap[rawKey]) {
-                doodadRows.push(_placedRow(it, _doodadDataMap[rawKey], false));
+                it._name = _gsValue(_doodadDataMap[rawKey].name);
+                it._error = false;
             } else if (_destructableDataMap[rawKey]) {
-                destructableRows.push(_placedRow(it, _destructableDataMap[rawKey], false));
+                var dObj = _destructableDataMap[rawKey];
+                var rn = _gsValue(dObj.name);
+                var rs = _gsValue(dObj.editorSuffix);
+                it._name = rn + (rs ? ' ' + rs : '');
+                it._error = false;
+                destItems.push(it);
             } else {
-                errorItems.push(it);
+                it._name = '';
+                it._error = true;
+                destItems.push(it);
             }
         }
 
-        // Build error rows HTML (shown in both lists)
-        var errorHtml = '';
-        if (errorItems.length > 0) {
-            for (var j = 0; j < errorItems.length; j++) {
-                errorHtml += _placedRow(errorItems[j], null, true);
-            }
+        _destDooItems = destItems;
+
+        // Update title
+        var titleEl = document.getElementById('destDooTitle');
+        if (titleEl) {
+            titleEl.textContent = '\ud83c\udfda Placed Destructables (' + destItems.length + ')';
         }
 
-        var theadHtml = '<thead><tr><th>#</th><th>Rawcode</th><th>Name</th><th>Var</th><th>Position</th><th>Angle\u00b0</th><th>Scale</th><th>HP</th></tr></thead>';
-
-        // Populate placed doodads
-        var doodPlacedEl = document.getElementById('doodadDooPlaced');
-        if (doodPlacedEl) {
-            if (doodadRows.length > 0 || errorItems.length > 0) {
-                doodPlacedEl.innerHTML =
-                    '<div class="tw-section-title">\ud83c\udf33 Placed Doodads (' + doodadRows.length + (errorItems.length ? ' + ' + errorItems.length + ' unknown' : '') + ')</div>'
-                    + '<div class="table-wrap"><table>' + theadHtml + '<tbody>'
-                    + errorHtml + doodadRows.join('') + '</tbody></table></div>';
-            } else {
-                doodPlacedEl.innerHTML = '';
-            }
+        // Update canvas lists
+        if (_doodadDooCanvasList) {
+            _doodadDooCanvasList.setData(_doodadDooItems);
         }
-
-        // Populate placed destructables
-        var destPlacedEl = document.getElementById('destructableDooPlaced');
-        if (destPlacedEl) {
-            if (destructableRows.length > 0 || errorItems.length > 0) {
-                destPlacedEl.innerHTML =
-                    '<div class="tw-section-title">\ud83c\udfda Placed Destructables (' + destructableRows.length + (errorItems.length ? ' + ' + errorItems.length + ' unknown' : '') + ')</div>'
-                    + '<div class="table-wrap"><table>' + theadHtml + '<tbody>'
-                    + errorHtml + destructableRows.join('') + '</tbody></table></div>';
-            } else {
-                destPlacedEl.innerHTML = '';
-            }
+        if (_destDooCanvasList) {
+            _destDooCanvasList.setData(destItems);
         }
-
-        // Bind click handlers on newly created .doo-id-link elements in placed lists
-        document.querySelectorAll('#doodadDooPlaced .doo-id-link, #destructableDooPlaced .doo-id-link').forEach(function (link) {
-            if (link._placedBound) return;
-            link._placedBound = true;
-            link.addEventListener('click', function () {
-                var id = link.getAttribute('data-dood-id') || '';
-                if (!id) return;
-                if (_doodadDataMap[id]) {
-                    showDoodadDetail(id);
-                } else if (_destructableDataMap[id]) {
-                    showDestructableDetail(id);
-                }
-            });
-        });
     }
 
     /** Categorize DOO items and populate placed-doodad / placed-destructable windows. */
@@ -2292,41 +2810,15 @@ window.W3E = (function () {
             _categorizePlacedItems();
         }
 
-        // Also resolve names in the raw DOO table (existing .doo-id-link elements from panels.js)
-        document.querySelectorAll('.doo-content .doo-id-link').forEach(function (link) {
-            var rawId = link.getAttribute('data-dood-id');
-            if (!rawId) return;
-            var obj = _doodadDataMap[rawId] || _destructableDataMap[rawId];
-            var nameSpan = link.querySelector('.doo-resolved-name');
-            if (obj && obj.name) {
-                if (!nameSpan) {
-                    nameSpan = document.createElement('span');
-                    nameSpan.className = 'doo-resolved-name';
-                    link.parentNode.appendChild(nameSpan);
-                }
-                nameSpan.textContent = ' \u2014 ' + _gsValue(obj.name);
-            } else if (nameSpan) {
-                nameSpan.remove();
-            }
-        });
-
-        // Resolve placed unit names
-        document.querySelectorAll('.doo-unit-link').forEach(function (link) {
-            var unitId = link.getAttribute('data-unit-id');
-            if (!unitId) return;
-            var obj = _unitDataMap[unitId];
-            var nameSpan = link.querySelector('.doo-resolved-name');
-            if (obj && obj.comment) {
-                if (!nameSpan) {
-                    nameSpan = document.createElement('span');
-                    nameSpan.className = 'doo-resolved-name';
-                    link.parentNode.appendChild(nameSpan);
-                }
-                nameSpan.textContent = ' \u2014 ' + obj.comment;
-            } else if (nameSpan) {
-                nameSpan.remove();
-            }
-        });
+        // Resolve unit names from SLK data
+        for (var j = 0; j < _unitDooItems.length; j++) {
+            var u = _unitDooItems[j];
+            var uObj = _unitDataMap[u.text];
+            u._name = uObj ? (uObj.comment || '') : '';
+        }
+        if (_unitDooCanvasList) {
+            _unitDooCanvasList.setData(_unitDooItems);
+        }
     }
 
     // ── Shared orbit controls (used by terrain & model viewer) ──
@@ -2947,6 +3439,9 @@ window.W3E = (function () {
         if (config.doodadDooItems) {
             _doodadDooItems = config.doodadDooItems;
         }
+        if (config.unitDooItems) {
+            _unitDooItems = config.unitDooItems;
+        }
         if (config.initialDoodadsSlk && config.initialDoodadsSlk.doodads) {
             _doodadsSlkLoaded = true;
             _doodadDataMap = config.initialDoodadsSlk.doodads;
@@ -3085,63 +3580,41 @@ window.W3E = (function () {
             rebuildUnits(unitsSlk);
         });
 
-        // ── Doodad item click → show detail window ──────────────
-        {
-            const dsList = document.getElementById('dsDoodadList');
-            if (dsList) {
-                dsList.addEventListener('click', function (e) {
-                    const item = e.target.closest('doodad-item');
-                    if (!item) return;
-                    const id = item.getAttribute('data-raw-id') || '';
-                    if (!id) return;
-                    showDoodadDetail(id);
-                });
+        // ── Canvas list lifecycle: create on show, destroy on hide ─
+        document.addEventListener('float-toggled', function (evt) {
+            var id = evt.detail && evt.detail.id;
+            var win = id ? document.getElementById(id) : null;
+            if (!win) return;
+            if (id === 'doodadsSlkWindow') {
+                if (win.open) { _ensureDoodadCanvasList(); _filterAndRenderDoodads(false); }
+                else _disposeDoodadCanvasList();
+            } else if (id === 'destructablesSlkWindow') {
+                if (win.open) { _ensureDestCanvasList(); _filterAndRenderDestructables(false); }
+                else _disposeDestCanvasList();
+            } else if (id === 'unitsSlkWindow') {
+                if (win.open) { _ensureUnitCanvasList(); if (_unitSlkItems.length) _unitCanvasList.setData(_unitSlkItems); }
+                else _disposeUnitCanvasList();
+            } else if (id === 'unitDooWindow') {
+                if (win.open) { _ensureUnitDooCanvasList(); }
+                else _disposeUnitDooCanvasList();
+            } else if (id === 'doodadDooWindow') {
+                if (win.open) { _ensureDoodadDooCanvasList(); }
+                else _disposeDoodadDooCanvasList();
+            } else if (id === 'destructableDooWindow') {
+                if (win.open) { _ensureDestDooCanvasList(); }
+                else _disposeDestDooCanvasList();
             }
-        }
-
-        // ── Destructable item click → show detail window ─────────
-        {
-            const dtList = document.getElementById('dtDestList');
-            if (dtList) {
-                dtList.addEventListener('click', function (e) {
-                    const item = e.target.closest('destructable-item');
-                    if (!item) return;
-                    const id = item.getAttribute('data-raw-id') || '';
-                    if (!id) return;
-                    showDestructableDetail(id);
-                });
-            }
-        }
-
-        // ── Placed doodad/destructable rawcode click → show detail window ────
-        document.querySelectorAll('.doo-content .doo-id-link').forEach(function (link) {
-            link.addEventListener('click', function () {
-                var id = link.getAttribute('data-dood-id') || '';
-                if (!id) return;
-                if (_doodadDataMap[id]) {
-                    showDoodadDetail(id);
-                } else if (_destructableDataMap[id]) {
-                    showDestructableDetail(id);
-                } else {
-                    // Try doodad first as fallback
-                    showDoodadDetail(id);
-                }
-            });
         });
 
-        if (vscode) {
-            // ── Unit item click → open model ─────────────────────
-            const usList = document.getElementById('usUnitList');
-            if (usList) {
-                usList.addEventListener('click', function (e) {
-                    const item = e.target.closest('unit-item');
-                    if (!item) return;
-                    const file = item.getAttribute('file') || '';
-                    if (!file) return;
-                    vscode.postMessage({command: 'openModel', path: file});
-                });
-            }
-        }
+        // ── Create canvas lists for placed windows that are already open ────
+        var _unitDooWin = document.getElementById('unitDooWindow');
+        if (_unitDooWin && _unitDooWin.open) _ensureUnitDooCanvasList();
+        var _doodadDooWin = document.getElementById('doodadDooWindow');
+        if (_doodadDooWin && _doodadDooWin.open) _ensureDoodadDooCanvasList();
+        var _destDooWin = document.getElementById('destructableDooWindow');
+        if (_destDooWin && _destDooWin.open) _ensureDestDooCanvasList();
+
+        // (Unit list click is handled by _unitCanvasList onClick callback)
 
         // ── Model viewer (embedded float-window) ─────────────
         const _modelViewer = _initModelViewer();
@@ -3418,28 +3891,22 @@ window.W3E = (function () {
 
     // ── Highlight a placed doodad/destructable by DOO index ──────────────
     function highlightPlacedDoodad(dooIndex) {
-        // Search categorized placed lists first, then fall back to raw DOO table
-        var row = document.querySelector('#doodadDooPlaced tr[data-doo-idx="' + dooIndex + '"]');
-        var winId = 'doodadDooWindow';
-        if (!row) {
-            row = document.querySelector('#destructableDooPlaced tr[data-doo-idx="' + dooIndex + '"]');
-            winId = 'destructableDooWindow';
+        // Find the item in doodadDooItems by its index
+        var foundIdx = -1;
+        for (var i = 0; i < _doodadDooItems.length; i++) {
+            if (_doodadDooItems[i].index === dooIndex) { foundIdx = i; break; }
         }
-        if (!row) {
-            // Fall back to raw DOO table
-            row = document.querySelector('#doodadDooWindow .doo-content tr[data-doo-idx="' + dooIndex + '"]');
-            winId = 'doodadDooWindow';
-        }
-        if (!row) return;
-        var win = document.getElementById(winId);
+        if (foundIdx < 0) return;
+
+        // Show doodadDooWindow and scroll to the item in canvas
+        var win = document.getElementById('doodadDooWindow');
         if (!win) return;
         win.show();
-        // Clear highlights in both windows
-        document.querySelectorAll('#doodadDooWindow .doo-highlight, #destructableDooWindow .doo-highlight').forEach(function (el) {
-            el.classList.remove('doo-highlight');
-        });
-        row.classList.add('doo-highlight');
-        row.scrollIntoView({behavior: 'smooth', block: 'center'});
+        // Ensure canvas list is created (show() triggers float-toggled → _ensureDoodadDooCanvasList)
+        _ensureDoodadDooCanvasList();
+        if (_doodadDooCanvasList) {
+            _doodadDooCanvasList.scrollToIndex(foundIdx);
+        }
     }
 
     return {init, onGamePathChanged, graph: _graph, indexToRgb, syncMenuActive, makeOrbitControls, highlightPlacedDoodad};

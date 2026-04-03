@@ -2,13 +2,6 @@ const {esc, indexToRgb, TILESET_NAMES, DOODAD_CATEGORIES, DESTRUCTABLE_CATEGORIE
 const {renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent} = require('./panels.js')
 const {editorStyles} = require('./styles.js')
 
-/** Extract display text from a GameString (string or {value, original, source}). */
-function gsText(gs) {
-    if (!gs) return ''
-    if (typeof gs === 'object' && gs.value !== undefined) return gs.value
-    return String(gs)
-}
-
 function renderMeta(meta) {
     if (!meta) return ''
     if (meta.remaining === 0) {
@@ -100,7 +93,6 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     // Build doodads SLK data
     let doodadsSlkSource = ''
-    let doodadsSlkItems = ''
     const doodadCategoriesSet = new Set()
     const doodadTilesetsSet = new Set()
     const doodadsMap = (terrainData && terrainData._doodadsSlk && terrainData._doodadsSlk.doodads) || {}
@@ -115,9 +107,6 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 }
             }
         }
-        doodadsSlkItems = Object.entries(doodadsMap).map(([rawId, d]) => {
-            return `<doodad-item data-raw-id="${rawId}" dood-id="${esc(d.doodId)}" dood-name="${esc(gsText(d.name))}" comment="${esc(d.comment)}" category="${esc(d.category)}" tilesets="${esc(d.tilesets)}"></doodad-item>`
-        }).join('\n')
     }
     const hasDoodadsSlk = !!(terrainData && terrainData._doodadsSlk)
 
@@ -135,20 +124,13 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     // Build units SLK data
     let unitsSlkSource = ''
-    let unitsSlkItems = ''
     if (terrainData && terrainData._unitsSlk) {
         unitsSlkSource = terrainData._unitsSlk.source || ''
-        if (terrainData._unitsSlk.units && terrainData._unitsSlk.units.length > 0) {
-            unitsSlkItems = terrainData._unitsSlk.units.map(u => {
-                return `<unit-item unit-id="${esc(u.unitId)}" comment="${esc(u.comment)}" race="${esc(u.race)}" move-tp="${esc(u.moveTp)}" threat="${u.threat}" points="${u.points}" file="${esc(u.file || '')}"></unit-item>`
-            }).join('\n')
-        }
     }
     const hasUnitsSlk = !!(terrainData && terrainData._unitsSlk)
 
     // Build destructables SLK data
     let destructablesSlkSource = ''
-    let destructablesSlkItems = ''
     const destructableCategoriesSet = new Set()
     const destructableTilesetsSet = new Set()
     const destructablesMap = (terrainData && terrainData._destructablesSlk && terrainData._destructablesSlk.destructables) || {}
@@ -163,12 +145,6 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 }
             }
         }
-        destructablesSlkItems = Object.entries(destructablesMap).map(([rawId, d]) => {
-            const dn = gsText(d.name)
-            const ds = gsText(d.editorSuffix)
-            const dc = gsText(d.comment)
-            return `<destructable-item data-raw-id="${rawId}" dest-id="${esc(d.destructableId)}" dest-name="${esc((dn || '') + (ds ? ' ' + ds : ''))}" comment="${esc(dc)}" category="${esc(d.category)}" tilesets="${esc(d.tilesets)}" hp="${d.hp || 0}" armor="${esc(d.armor || '')}"></destructable-item>`
-        }).join('\n')
     }
     const hasDestructablesSlk = !!(terrainData && terrainData._destructablesSlk)
 
@@ -233,6 +209,20 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             p: [it.position.x, it.position.y, it.position.z],
             a: it.angle,
             s: [it.scale.x, it.scale.y, it.scale.z]
+        })) : []
+
+    // Extract full unit DOO items for placed-object canvas rendering
+    const unitDooItems = mapInfo.unitDooData && mapInfo.unitDooData.items
+        ? mapInfo.unitDooData.items.map((it, i) => ({
+            text: it.rawcode.text,
+            variation: it.variation,
+            index: i,
+            position: it.position,
+            angle: it.angle,
+            scale: it.scale,
+            skin: it.skin != null ? it.skin : null,
+            flag: it.flag,
+            player: it.unit ? it.unit.player : null,
         })) : []
 
     const nonce = mapInfo.nonce || ''
@@ -321,20 +311,26 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         ${hasUnitDoo ? unitDooContent : '<div class="fi-empty">\u26a0 war3mapUnits.doo not found</div>'}
     </float-window>
 
-    <float-window id="unitsSlkWindow" title-text="\ud83d\udde1 Units" hidden style="left:140px;top:16px;width:600px;height:70vh;">
+    <float-window id="unitsSlkWindow" title-text="\ud83d\udde1 Units" no-padding hidden style="left:140px;top:16px;width:600px;height:70vh;">
         <reload-button slot="actions"></reload-button>
-        <div id="usSlkSource" class="${unitsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${unitsSlkSource ? 'UnitData.slk: <span class="code">' + esc(unitsSlkSource) + '</span>' : 'UnitData.slk not found \u2014 set Game Path'}</div>
-        <div class="tw-section-title">Units (<span id="usUnitCount">${hasUnitsSlk && terrainData._unitsSlk.units ? terrainData._unitsSlk.units.length : 0}</span>)</div>
-        <div class="legend" id="usUnitList">${unitsSlkItems}</div>
+        <div style="display:flex;flex-direction:column;height:100%;overflow:hidden;">
+            <div style="padding:6px 10px 0;">
+                <div id="usSlkSource" class="${unitsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${unitsSlkSource ? 'UnitData.slk: <span class="code">' + esc(unitsSlkSource) + '</span>' : 'UnitData.slk not found \u2014 set Game Path'}</div>
+                <div class="tw-section-title">Units (<span id="usUnitCount">${hasUnitsSlk && terrainData._unitsSlk.units ? terrainData._unitsSlk.units.length : 0}</span>)</div>
+            </div>
+            <div class="legend" id="usUnitList" style="overflow:hidden;flex:1;min-height:0;"></div>
+        </div>
     </float-window>
 
     <float-window id="doodadDooWindow" title-text="\ud83d\udccd Placed Doodads" no-padding ${isDoo && !mapInfo.isDooUnit ? '' : 'hidden'} style="left:140px;top:16px;width:800px;height:70vh;">
         ${hasDoodadDoo ? doodadDooContent : '<div class="fi-empty">\u26a0 war3map.doo not found</div>'}
-        <div id="doodadDooPlaced"></div>
     </float-window>
 
     <float-window id="destructableDooWindow" title-text="\ud83d\udccd Placed Destructables" no-padding hidden style="left:140px;top:16px;width:800px;height:70vh;">
-        <div id="destructableDooPlaced"></div>
+        <div style="display:flex;flex-direction:column;height:100%;overflow:hidden;">
+            <div id="destDooTitle" class="tw-section-title" style="padding:8px 10px 4px;flex-shrink:0;">\ud83c\udfda Placed Destructables</div>
+            <div class="legend" id="destructableDooList" style="flex:1;min-height:0;overflow:hidden;"></div>
+        </div>
     </float-window>
 
     <float-window id="doodadsSlkWindow" title-text="\ud83c\udf33 Doodads" no-padding hidden style="left:140px;top:16px;width:750px;height:70vh;">
@@ -359,7 +355,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                     <span class="ds-sort-col ds-sort-cat" data-sort="category">Category</span>
                     <span class="ds-sort-info">(<span id="dsDoodadCount">${doodadsValues.length}</span> / <span id="dsDoodadTotal">${doodadsValues.length}</span>)</span>
                 </div>
-                <div class="legend" id="dsDoodadList" style="overflow-y:auto;flex:1;min-height:0;">${doodadsSlkItems}</div>
+                <div class="legend" id="dsDoodadList" style="overflow:hidden;flex:1;min-height:0;"></div>
             </div>
         </div>
     </float-window>
@@ -390,7 +386,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                     <span class="ds-sort-col dt-sort-col ds-sort-cat" data-sort="category">Category</span>
                     <span class="ds-sort-info">(<span id="dtDestCount">${destructablesValues.length}</span> / <span id="dtDestTotal">${destructablesValues.length}</span>)</span>
                 </div>
-                <div class="legend" id="dtDestList" style="overflow-y:auto;flex:1;min-height:0;">${destructablesSlkItems}</div>
+                <div class="legend" id="dtDestList" style="overflow:hidden;flex:1;min-height:0;"></div>
             </div>
         </div>
     </float-window>
@@ -502,6 +498,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         doodadPlacements: ${JSON.stringify(doodadPlacements)},
         unitPlacements: ${JSON.stringify(unitPlacements)},
         doodadDooItems: ${JSON.stringify(doodadDooItems)},
+        unitDooItems: ${JSON.stringify(unitDooItems)},
         initialDoodadsSlk: ${hasDoodadsSlk ? JSON.stringify(terrainData._doodadsSlk) : 'null'},
         initialDestructablesSlk: ${hasDestructablesSlk ? JSON.stringify(terrainData._destructablesSlk) : 'null'}
     };

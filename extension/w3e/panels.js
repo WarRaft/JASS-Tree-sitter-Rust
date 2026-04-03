@@ -470,54 +470,14 @@ function renderDooContent(data, isUnit) {
         `<tr><td class="key">${k}</td><td>${v}</td></tr>`
     ).join('')
 
-    // ── Items table
-    let itemsHtml = ''
-    if (data.items && data.items.length > 0) {
-        const cols = isUnit
-            ? ['#', 'Rawcode', 'Skin', 'Var', 'Position', 'Angle°', 'Scale', 'Flag', 'Player']
-            : ['#', 'Rawcode', 'Skin', 'Var', 'Position', 'Angle°', 'Scale', 'Flag', 'HP', 'Num']
+    // ── Canvas container for items (replaces heavy DOM table)
+    const itemCount = data.items ? data.items.length : 0
+    const listId = isUnit ? 'unitDooList' : 'doodadDooList'
+    const itemsHtml = `
+        <div class="tw-section-title">${isUnit ? '🗡 Units' : '🌳 Items'} (${itemCount})</div>
+        <div class="legend" id="${listId}" style="flex:1;min-height:0;overflow:hidden;"></div>`
 
-        const thead = cols.map(c => `<th>${c}</th>`).join('')
-
-        const tbody = data.items.map((it, i) => {
-            const pos = `${fmtF(it.position.x)}, ${fmtF(it.position.y)}, ${fmtF(it.position.z)}`
-            const angle = fmtF(it.angle != null ? it.angle * 180 / Math.PI : null)
-            const scale = `${fmtF(it.scale.x)}, ${fmtF(it.scale.y)}, ${fmtF(it.scale.z)}`
-            const skin = it.skin != null ? esc(String(it.skin)) : '—'
-            const flag = it.flag != null ? esc(JSON.stringify(it.flag)) : '—'
-
-            let extra = ''
-            if (isUnit && it.unit) {
-                extra = `<td>${it.unit.player}</td>`
-            } else if (!isUnit && it.doodad) {
-                extra = `<td>${it.doodad.health}</td><td>${it.doodad.num}</td>`
-            } else {
-                extra = isUnit ? '<td>—</td>' : '<td>—</td><td>—</td>'
-            }
-
-            const rawcodeHtml = isUnit
-                ? `<td class="code"><span class="doo-unit-link" data-unit-id="${esc(it.rawcode.text)}">${esc(it.rawcode.text)}</span></td>`
-                : `<td class="code"><span class="doo-id-link" data-dood-id="${it.rawcode.raw}">${esc(it.rawcode.text)}</span></td>`
-
-            return `<tr data-doo-idx="${i}">
-                <td class="num">${i + 1}</td>
-                ${rawcodeHtml}
-                <td class="code">${skin}</td>
-                <td class="num">${it.variation}</td>
-                <td class="mono">${pos}</td>
-                <td class="num">${angle}</td>
-                <td class="mono">${scale}</td>
-                <td>${flag}</td>
-                ${extra}
-            </tr>`
-        }).join('')
-
-        itemsHtml = `
-        <div class="tw-section-title">${isUnit ? '🗡 Units' : '🌳 Doodads'} (${data.items.length})</div>
-        <div class="table-wrap"><table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>`
-    }
-
-    // ── Cliffs table
+    // ── Cliffs (collapse-group, doodad DOO only, usually small)
     let cliffsHtml = ''
     if (data.cliffs && data.cliffs.length > 0) {
         const chead = ['#', 'Rawcode', 'Variation', 'X', 'Y'].map(c => `<th>${c}</th>`).join('')
@@ -530,16 +490,17 @@ function renderDooContent(data, isUnit) {
         </tr>`).join('')
 
         cliffsHtml = `
-        <div class="tw-section-title">🏔 Cliffs (${data.cliffs.length})</div>
-        <div class="table-wrap"><table><thead><tr>${chead}</tr></thead><tbody>${cbody}</tbody></table></div>`
+        <collapse-group group-title="🏔 Cliffs (${data.cliffs.length})" style="flex-shrink:0;">
+            <div class="table-wrap" style="max-height:200px;overflow:auto;"><table><thead><tr>${chead}</tr></thead><tbody>${cbody}</tbody></table></div>
+        </collapse-group>`
     }
 
     return `<div class="doo-content">
     ${metaHtml}
     ${errorHtml}
     <table class="info">${headerHtml}</table>
-    ${itemsHtml}
     ${cliffsHtml}
+    ${itemsHtml}
     </div>`
 }
 
