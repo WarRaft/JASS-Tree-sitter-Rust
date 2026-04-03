@@ -1380,43 +1380,26 @@ window.W3E = (function () {
     function _renderUnitRow(ctx, u, x, y, w, h, c) {
         var mid = y + h / 2;
         ctx.textBaseline = 'middle';
-        var colFile = 150, colPts = 40, colMove = 40, colRace = 50, colId = 46;
         // ID
         ctx.font = '11px ' + c.mono;
         ctx.fillStyle = c.link;
         ctx.fillText(u.unitId || '', x, mid);
-        // File (right edge)
-        var file = u.file || '';
-        if (file) {
-            var shortFile = file.replace(/\\/g, '/').split('/').pop() || '';
-            ctx.font = '10px ' + c.mono;
-            ctx.fillStyle = c.link;
-            ctx.globalAlpha = 0.7;
-            _clTruncText(ctx, shortFile, x + w - colFile, mid, colFile);
-            ctx.globalAlpha = 1;
-        }
-        // Points
-        var pts = u.points && u.points !== '0' && u.points !== 0 ? u.points + 'pt' : '';
-        if (pts) {
-            ctx.font = '11px ' + c.mono;
-            ctx.fillStyle = c.desc;
-            ctx.textAlign = 'right';
-            ctx.fillText(pts, x + w - colFile - 4, mid);
-            ctx.textAlign = 'left';
-        }
-        // Move type
+        // Race (right side)
+        var raceText = u.race || '';
         ctx.font = '11px ' + c.font;
         ctx.fillStyle = c.desc;
-        ctx.fillText(u.moveTp || '', x + w - colFile - colPts - colMove, mid);
-        // Race
-        ctx.fillText(u.race || '', x + w - colFile - colPts - colMove - colRace, mid);
-        // Comment
-        var nameEnd = x + w - colFile - colPts - colMove - colRace - 4;
-        var nameW = nameEnd - (x + colId);
+        ctx.textAlign = 'right';
+        ctx.fillText(raceText, x + w, mid);
+        var raceW = raceText ? ctx.measureText(raceText).width + 8 : 0;
+        ctx.textAlign = 'left';
+        // Name
+        var nameX = x + 46;
+        var nameEnd = x + w - raceW;
+        var nameW = nameEnd - nameX;
         if (nameW > 10) {
             ctx.font = '12px ' + c.font;
             ctx.fillStyle = c.fg;
-            _clTruncText(ctx, u.comment || '', x + colId, mid, nameW);
+            _clTruncText(ctx, _gsValue(u.name) || u.comment || '', nameX, mid, nameW);
         }
         ctx.textBaseline = 'alphabetic';
     }
@@ -1504,7 +1487,8 @@ window.W3E = (function () {
     var _destCanvasList = null;
     var _filteredDestructables = [];
     var _unitCanvasList = null;
-    var _unitSlkItems = [];
+    var _allUnits = [];
+    var _filteredUnits = [];
 
     function _ensureDoodadCanvasList() {
         if (_doodadCanvasList) return;
@@ -1548,12 +1532,10 @@ window.W3E = (function () {
             rowHeight: 26,
             renderRow: _renderUnitRow,
             onClick: function (item) {
-                if (_vscode && item.file) {
-                    _vscode.postMessage({command: 'openModel', path: item.file});
-                }
+                if (item._rawKey) showUnitDetail(item._rawKey);
             }
         });
-        if (_unitSlkItems.length) _unitCanvasList.setData(_unitSlkItems);
+        if (_filteredUnits.length) _unitCanvasList.setData(_filteredUnits);
     }
     function _disposeUnitCanvasList() {
         if (_unitCanvasList) { _unitCanvasList.dispose(); _unitCanvasList = null; }
@@ -1574,9 +1556,9 @@ window.W3E = (function () {
             rowHeight: 26,
             renderRow: _renderPlacedUnitRow,
             onClick: function (item) {
-                if (_vscode && item.text) {
-                    var file = _unitDataMap[item.text] && _unitDataMap[item.text].file;
-                    if (file) _vscode.postMessage({command: 'openModel', path: file});
+                var rawKey = String(item.raw);
+                if (_unitDataMap[rawKey]) {
+                    showUnitDetail(rawKey);
                 }
             }
         });
@@ -2261,36 +2243,451 @@ window.W3E = (function () {
     // ── Units SLK rebuilder ──────────────────────────────────
     let _unitDataMap = {};
 
-    function rebuildUnits(slkData) {
-        let source = '';
-        let units = [];
-        _unitDataMap = {};
-        if (slkData && slkData.units) {
-            source = slkData.source || '';
-            units = slkData.units;
-            for (var ui = 0; ui < units.length; ui++) {
-                if (units[ui].unitId) _unitDataMap[units[ui].unitId] = units[ui];
+    // Sort state for units
+    let _unitSort = {field: null, dir: 'asc'};
+
+    function _saveUnitSort() {
+        _patchWvState({_unitSort: {field: _unitSort.field, dir: _unitSort.dir}});
+    }
+
+    function _saveUnitFilters() {
+        const uncheckedRaces = [];
+        document.querySelectorAll('.us-race-cb').forEach(cb => {
+            if (!cb.checked) uncheckedRaces.push(cb.getAttribute('data-race'));
+        });
+        _patchWvState({_unitUncheckedRaces: uncheckedRaces});
+    }
+
+    function _restoreUnitFilters() {
+        const s = _getWvState();
+        const uncheckedRaces = s._unitUncheckedRaces || [];
+        if (uncheckedRaces.length) {
+            document.querySelectorAll('.us-race-cb').forEach(cb => {
+                if (uncheckedRaces.includes(cb.getAttribute('data-race'))) cb.checked = false;
+            });
+        }
+    }
+
+    function _restoreUnitSort() {
+        const s = _getWvState();
+        if (s._unitSort && s._unitSort.field) {
+            _unitSort = {field: s._unitSort.field, dir: s._unitSort.dir || 'asc'};
+        }
+    }
+
+    function _cycleUnitSort(field) {
+        if (_unitSort.field !== field) {
+            _unitSort = {field, dir: 'asc'};
+        } else if (_unitSort.dir === 'asc') {
+            _unitSort.dir = 'desc';
+        } else {
+            _unitSort = {field: null, dir: 'asc'};
+        }
+        _saveUnitSort();
+        _updateUnitSortButtons();
+        _filterAndRenderUnits();
+    }
+
+    function _updateUnitSortButtons() {
+        document.querySelectorAll('.us-sort-col').forEach(btn => {
+            const f = btn.getAttribute('data-sort');
+            btn.classList.remove('ds-sort-active', 'ds-sort-asc', 'ds-sort-desc');
+            if (f === _unitSort.field) {
+                btn.classList.add('ds-sort-active', _unitSort.dir === 'asc' ? 'ds-sort-asc' : 'ds-sort-desc');
             }
+        });
+    }
+
+    function _filterAndRenderUnits(saveState) {
+        const enabledRaces = new Set();
+        document.querySelectorAll('.us-race-cb').forEach(cb => {
+            if (cb.checked) enabledRaces.add(cb.getAttribute('data-race'));
+        });
+
+        if (saveState !== false) _saveUnitFilters();
+
+        const searchEl = document.getElementById('usSearchInput');
+        const q = searchEl ? searchEl.value.toLowerCase().trim() : '';
+
+        const filtered = _allUnits.filter(u => {
+            if (q) {
+                const name = (_gsValue(u.name) || '').toLowerCase();
+                const id = (u.unitId || '').toLowerCase();
+                const comment = (u.comment || '').toLowerCase();
+                if (!name.includes(q) && !id.includes(q) && !comment.includes(q)) return false;
+            }
+            if (u.race && !enabledRaces.has(u.race)) return false;
+            return true;
+        });
+
+        if (_unitSort.field) {
+            const f = _unitSort.field;
+            const mul = _unitSort.dir === 'desc' ? -1 : 1;
+            filtered.sort((a, b) => {
+                var va, vb;
+                if (f === 'name') {
+                    va = (_gsValue(a.name) || '').toLowerCase();
+                    vb = (_gsValue(b.name) || '').toLowerCase();
+                } else {
+                    va = (a[f] || '').toString().toLowerCase();
+                    vb = (b[f] || '').toString().toLowerCase();
+                }
+                return va < vb ? -1 * mul : va > vb ? 1 * mul : 0;
+            });
         }
 
-        const srcEl = document.getElementById('usSlkSource');
-        if (srcEl) {
-            if (source) {
-                srcEl.className = 'ts-source';
-                srcEl.innerHTML = 'UnitData.slk: <span class="code">' + esc(source) + '</span>';
-            } else {
-                srcEl.className = 'ts-source ts-no-slk';
-                srcEl.textContent = 'UnitData.slk not found \u2014 set Game Path';
-            }
+        _filteredUnits = filtered;
+        if (_unitCanvasList) {
+            _unitCanvasList.setData(filtered);
         }
 
         const cntEl = document.getElementById('usUnitCount');
-        if (cntEl) cntEl.textContent = String(units.length);
+        if (cntEl) cntEl.textContent = String(filtered.length);
+    }
 
-        _unitSlkItems = units;
-        if (_unitCanvasList) {
-            _unitCanvasList.setData(units);
+    function _rebuildUnitSidebarCheckboxes() {
+        const raceSet = new Set();
+        for (const u of _allUnits) {
+            if (u.race) raceSet.add(u.race);
         }
+
+        const UNIT_RACE_NAMES = {
+            human: 'Human', orc: 'Orc', undead: 'Undead', nightelf: 'Night Elf',
+            creeps: 'Creeps', commoner: 'Commoner', other: 'Other', demon: 'Demon',
+            critters: 'Critters', naga: 'Naga',
+        };
+
+        const raceChecks = document.getElementById('usRaceChecks');
+        if (raceChecks) {
+            raceChecks.innerHTML = '';
+            for (const code of Array.from(raceSet).sort()) {
+                const label = UNIT_RACE_NAMES[code] || code;
+                const lbl = document.createElement('label');
+                lbl.className = 'menu-cb';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'us-race-cb';
+                cb.setAttribute('data-race', code);
+                cb.checked = true;
+                cb.addEventListener('change', _filterAndRenderUnits);
+                lbl.appendChild(cb);
+                lbl.appendChild(document.createTextNode(' ' + label));
+                raceChecks.appendChild(lbl);
+            }
+        }
+        _restoreUnitFilters();
+    }
+
+    function rebuildUnits(slkData) {
+        let source = '';
+        _allUnits = [];
+        _unitDataMap = {};
+        let sources = [];
+        if (slkData && slkData.units) {
+            source = slkData.source || '';
+            sources = slkData.sources || [];
+            _unitDataMap = slkData.units;
+            _allUnits = Object.entries(slkData.units).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
+        }
+
+        const srcEl = document.getElementById('usSlkSources');
+        if (srcEl) {
+            if (sources.length > 0) {
+                srcEl.setAttribute('group-title', 'SLK Sources (' + sources.length + ')');
+                srcEl.innerHTML = sources.map(function (s) {
+                    return '<div class="ts-source" style="margin:1px 0;font-size:11px;">' + esc(s.name) + ': <span class="code">' + esc(s.source) + '</span> <span style="opacity:0.5;">(' + s.rows + ')</span></div>';
+                }).join('');
+            } else {
+                srcEl.setAttribute('group-title', 'SLK Sources (0)');
+                srcEl.innerHTML = '<div class="ts-source ts-no-slk">UnitData.slk not found \u2014 set Game Path</div>';
+            }
+        }
+
+        const totalEl = document.getElementById('usUnitTotal');
+        if (totalEl) totalEl.textContent = String(_allUnits.length);
+
+        _rebuildUnitSidebarCheckboxes();
+        _restoreUnitSort();
+        _updateUnitSortButtons();
+        _filterAndRenderUnits(false);
+
+        const searchEl = document.getElementById('usSearchInput');
+        if (searchEl && !searchEl._usBound) {
+            searchEl._usBound = true;
+            searchEl.addEventListener('input', _filterAndRenderUnits);
+        }
+
+        document.querySelectorAll('.us-sort-col').forEach(btn => {
+            if (btn._usSortBound) return;
+            btn._usSortBound = true;
+            btn.addEventListener('click', () => _cycleUnitSort(btn.getAttribute('data-sort')));
+        });
+    }
+
+    // ── Unit detail window populator ──────────────────────────
+
+    const _UNIT_GROUPS = [
+        {
+            title: '\ud83c\udff7 Identity', fields: [
+                ['unitID', 'unitId'],
+                ['Name', 'name'],
+                ['comment', 'comment'],
+                ['sort', 'sort'],
+                ['race', 'race'],
+                ['tilesets', 'tilesets'],
+                ['level', 'level'],
+                ['type', 'unitType'],
+                ['isBldg', 'isBldg'],
+            ]
+        },
+        {
+            title: '\ud83c\udfa8 Model', modelFiles: true, fields: [
+                ['modelScale', 'modelScale'],
+                ['scale', 'scale'],
+                ['scaleBull', 'scaleBull'],
+                ['unitShadow', 'unitShadow'],
+                ['buildingShadow', 'buildingShadow'],
+                ['shadowOnWater', 'shadowOnWater'],
+                ['special', 'special'],
+                ['unitSound', 'unitSound'],
+                ['unitClass', 'unitClass'],
+            ],
+            color: {key: '_tint', label: 'Tint Color'},
+        },
+        {
+            title: '\u2764 Health & Mana', fields: [
+                ['HP', 'hp'],
+                ['realHP', 'realHp'],
+                ['regenHP', 'regenHp'],
+                ['regenType', 'regenType'],
+                ['mana0', 'mana0'],
+                ['manaN', 'manaN'],
+                ['realM', 'realM'],
+                ['regenMana', 'regenMana'],
+            ]
+        },
+        {
+            title: '\ud83d\udee1 Defence', fields: [
+                ['def', 'def'],
+                ['defType', 'defType'],
+                ['defUp', 'defUp'],
+                ['realdef', 'realDef'],
+                ['targType', 'targType'],
+                ['collision', 'collision'],
+            ]
+        },
+        {
+            title: '\u2694 Weapon 1', fields: [
+                ['weapTp1', 'weapTp1'],
+                ['weapType1', 'weapType1'],
+                ['atkType1', 'atkType1'],
+                ['dmgplus1', 'dmgplus1'],
+                ['dice1', 'dice1'],
+                ['sides1', 'sides1'],
+                ['cool1', 'cool1'],
+                ['rangeN1', 'rangeN1'],
+                ['dmgPt1', 'dmgPt1'],
+                ['backSw1', 'backSw1'],
+                ['targs1', 'targs1'],
+                ['splashTargs1', 'splashTargs1'],
+                ['showUI1', 'showUi1'],
+                ['minRange', 'minRange'],
+                ['acquire', 'acquire'],
+            ]
+        },
+        {
+            title: '\u2694 Weapon 2', fields: [
+                ['weapTp2', 'weapTp2'],
+                ['weapType2', 'weapType2'],
+                ['atkType2', 'atkType2'],
+                ['dmgplus2', 'dmgplus2'],
+                ['dice2', 'dice2'],
+                ['sides2', 'sides2'],
+                ['cool2', 'cool2'],
+                ['rangeN2', 'rangeN2'],
+                ['dmgPt2', 'dmgPt2'],
+                ['backSw2', 'backSw2'],
+                ['targs2', 'targs2'],
+                ['splashTargs2', 'splashTargs2'],
+                ['showUI2', 'showUi2'],
+            ]
+        },
+        {
+            title: '\ud83d\udcaa Stats', fields: [
+                ['Primary', 'primary'],
+                ['STR', 'str'],
+                ['STR+', 'strPlus'],
+                ['AGI', 'agi'],
+                ['AGI+', 'agiPlus'],
+                ['INT', 'int'],
+                ['INT+', 'intPlus'],
+            ]
+        },
+        {
+            title: '\ud83d\udeb6 Movement', fields: [
+                ['moveTp', 'moveTp'],
+                ['spd', 'spd'],
+                ['minSpd', 'minSpd'],
+                ['maxSpd', 'maxSpd'],
+                ['moveHeight', 'moveHeight'],
+                ['moveFloor', 'moveFloor'],
+                ['turnRate', 'turnRate'],
+                ['propWin', 'propWin'],
+            ]
+        },
+        {
+            title: '\ud83d\udc41 Vision & Placement', fields: [
+                ['sight', 'sight'],
+                ['nsight', 'nsight'],
+                ['pathTex', 'pathTex'],
+                ['occH', 'occH'],
+                ['selZ', 'selZ'],
+                ['fogRad', 'fogRad'],
+                ['uberSplat', 'uberSplat'],
+                ['selCircOnWater', 'selCircOnWater'],
+                ['maxPitch', 'maxPitch'],
+                ['maxRoll', 'maxRoll'],
+                ['elevPts', 'elevPts'],
+                ['elevRad', 'elevRad'],
+                ['fatLOS', 'fatLos'],
+                ['inEditor', 'inEditor'],
+                ['hiddenInEditor', 'hiddenInEditor'],
+            ]
+        },
+        {
+            title: '\ud83d\udee0 Economy', fields: [
+                ['goldcost', 'goldCost'],
+                ['lumbercost', 'lumberCost'],
+                ['bldtm', 'bldTm'],
+                ['reptm', 'repTm'],
+                ['goldRep', 'goldRep'],
+                ['lumberRep', 'lumberRep'],
+                ['fmade', 'fmade'],
+                ['fused', 'fused'],
+                ['bountyDice', 'bountyDice'],
+                ['bountySides', 'bountySides'],
+                ['bountyPlus', 'bountyPlus'],
+                ['points', 'points'],
+            ]
+        },
+        {
+            title: '\u2139 Meta', fields: [
+                ['InBeta', 'inBeta'],
+                ['version', 'version'],
+            ]
+        },
+    ];
+
+    function _getUnitCollapseState() {
+        const s = _getWvState();
+        return s._unitCollapse || {};
+    }
+
+    function _setUnitCollapseState(state) {
+        _patchWvState({_unitCollapse: state});
+    }
+
+    function showUnitDetail(unitId) {
+        const u = _unitDataMap[unitId];
+        if (!u) {
+            const win = document.getElementById('unitDetailWindow');
+            const body = document.getElementById('unitDetailBody');
+            if (win && body) {
+                body.innerHTML = '<div style="padding:1rem;color:var(--vscode-errorForeground,#f44);">'
+                    + '<b>' + esc(String(unitId)) + '</b> not found in UnitData.slk<br>'
+                    + '<small style="opacity:0.7;">Loaded units: ' + Object.keys(_unitDataMap).length + '</small>'
+                    + '</div>';
+                win.setAttribute('title-text', '\ud83d\udde1 ' + esc(String(unitId)));
+                win.show();
+            }
+            return;
+        }
+
+        const win = document.getElementById('unitDetailWindow');
+        if (!win) return;
+
+        const body = document.getElementById('unitDetailBody');
+        if (!body) return;
+
+        // Build tint color virtual property
+        u._tint = {r: u.red || 255, g: u.green || 255, b: u.blue || 255};
+
+        let html = '';
+        const collapseState = _getUnitCollapseState();
+
+        for (const group of _UNIT_GROUPS) {
+            let rows = '';
+
+            if (group.modelFiles) {
+                const filePath = u.file;
+                if (filePath) {
+                    const link = '<a href="#" class="dd-model-link" data-path="' + esc(filePath) + '">' + esc(filePath) + '</a>';
+                    rows += '<tr><td class="key">file</td><td>' + link + '</td></tr>';
+                }
+                if (group.fields) {
+                    for (const [label, key] of group.fields) {
+                        const val = u[key];
+                        if (val === undefined || val === '' || val === null) continue;
+                        rows += '<tr><td class="key">' + esc(label) + '</td><td>' + esc(String(val)) + '</td></tr>';
+                    }
+                }
+                if (group.color) {
+                    const c = u[group.color.key];
+                    if (c) {
+                        rows += '<tr><td class="key">' + esc(group.color.label) + '</td><td>'
+                            + c.r + ',' + c.g + ',' + c.b + ' '
+                            + _colorBadge(c.r, c.g, c.b) + '</td></tr>';
+                    }
+                }
+            } else {
+                if (group.fields) {
+                    for (const [label, key] of group.fields) {
+                        const val = u[key];
+                        if (val === undefined || val === '' || val === null) continue;
+                        let display;
+                        if (key === 'name') {
+                            display = _gsHtml(val);
+                        } else if (key === 'pathTex') {
+                            display = '<a href="#" class="dd-pathtex-link" data-pathtex="' + esc(String(val)) + '">' + esc(String(val)) + '</a>';
+                        } else {
+                            display = esc(String(val));
+                        }
+                        rows += '<tr><td class="key">' + esc(label) + '</td><td>' + display + '</td></tr>';
+                    }
+                }
+            }
+
+            if (!rows) continue;
+
+            const isOpen = collapseState.hasOwnProperty(group.title) ? collapseState[group.title] : true;
+            html += '<collapse-group group-title="' + esc(group.title) + '"' + (isOpen ? ' open' : '') + '>'
+                + '<table class="info">' + rows + '</table>'
+                + '</collapse-group>';
+        }
+
+        body.innerHTML = html;
+        win.setAttribute('title-text', '\ud83d\udde1 ' + (_gsValue(u.name) || u.unitId));
+        win.show();
+
+        body.addEventListener('collapse-toggle', function (e) {
+            const state = _getUnitCollapseState();
+            state[e.detail.title] = e.detail.open;
+            _setUnitCollapseState(state);
+        });
+
+        body.addEventListener('click', function (e) {
+            var link = e.target.closest('.dd-model-link');
+            if (link) {
+                e.preventDefault();
+                if (_vscode) _vscode.postMessage({command: 'openModel', path: link.getAttribute('data-path')});
+                return;
+            }
+            var ptLink = e.target.closest('.dd-pathtex-link');
+            if (ptLink) {
+                e.preventDefault();
+                showPathTex(ptLink.getAttribute('data-pathtex'));
+            }
+        });
     }
 
     // ── Destructables SLK rebuilder ────────────────────────────
@@ -2813,8 +3210,9 @@ window.W3E = (function () {
         // Resolve unit names from SLK data
         for (var j = 0; j < _unitDooItems.length; j++) {
             var u = _unitDooItems[j];
-            var uObj = _unitDataMap[u.text];
-            u._name = uObj ? (uObj.comment || '') : '';
+            var rawKey = String(u.raw);
+            var uObj = _unitDataMap[rawKey];
+            u._name = uObj ? (_gsValue(uObj.name) || uObj.comment || '') : '';
         }
         if (_unitDooCanvasList) {
             _unitDooCanvasList.setData(_unitDooItems);
@@ -3500,6 +3898,29 @@ window.W3E = (function () {
             _filterAndRenderDestructables(false);
         }
 
+        // ── Populate initial unit data map for detail window ──
+        if (config.initialUnitsSlk && config.initialUnitsSlk.units) {
+            _unitDataMap = config.initialUnitsSlk.units;
+            _allUnits = Object.entries(config.initialUnitsSlk.units).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
+            _restoreUnitFilters();
+            document.querySelectorAll('.us-race-cb').forEach(cb => {
+                cb.addEventListener('change', _filterAndRenderUnits);
+            });
+            document.querySelectorAll('.us-sort-col').forEach(btn => {
+                if (btn._usSortBound) return;
+                btn._usSortBound = true;
+                btn.addEventListener('click', () => _cycleUnitSort(btn.getAttribute('data-sort')));
+            });
+            const usSearchEl = document.getElementById('usSearchInput');
+            if (usSearchEl && !usSearchEl._usBound) {
+                usSearchEl._usBound = true;
+                usSearchEl.addEventListener('input', _filterAndRenderUnits);
+            }
+            _restoreUnitSort();
+            _updateUnitSortButtons();
+            _filterAndRenderUnits(false);
+        }
+
         // ── Resolve placed object names from initial SLK data ──
         _updatePlacedNames();
 
@@ -3578,6 +3999,7 @@ window.W3E = (function () {
         // ── Units ────────────────────────────────────────────
         _graph.subscribe('unitsSlk', function (unitsSlk) {
             rebuildUnits(unitsSlk);
+            _updatePlacedNames();
         });
 
         // ── Canvas list lifecycle: create on show, destroy on hide ─
@@ -3592,7 +4014,7 @@ window.W3E = (function () {
                 if (win.open) { _ensureDestCanvasList(); _filterAndRenderDestructables(false); }
                 else _disposeDestCanvasList();
             } else if (id === 'unitsSlkWindow') {
-                if (win.open) { _ensureUnitCanvasList(); if (_unitSlkItems.length) _unitCanvasList.setData(_unitSlkItems); }
+                if (win.open) { _ensureUnitCanvasList(); _filterAndRenderUnits(false); }
                 else _disposeUnitCanvasList();
             } else if (id === 'unitDooWindow') {
                 if (win.open) { _ensureUnitDooCanvasList(); }

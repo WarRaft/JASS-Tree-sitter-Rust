@@ -123,11 +123,38 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     }).join('\n')
 
     // Build units SLK data
+    const unitsMap = (terrainData && terrainData._unitsSlk && terrainData._unitsSlk.units) || {}
     let unitsSlkSource = ''
+    const unitSlkSources = (terrainData && terrainData._unitsSlk && terrainData._unitsSlk.sources) || []
+    const unitRacesSet = new Set()
+    const unitsValues = Object.values(unitsMap)
     if (terrainData && terrainData._unitsSlk) {
         unitsSlkSource = terrainData._unitsSlk.source || ''
+        for (const u of unitsValues) {
+            if (u.race) unitRacesSet.add(u.race)
+        }
     }
     const hasUnitsSlk = !!(terrainData && terrainData._unitsSlk)
+
+    // Build sources HTML for the sidebar
+    let unitSourcesHtml = ''
+    if (unitSlkSources.length > 0) {
+        unitSourcesHtml = unitSlkSources.map(s =>
+            `<div class="ts-source" style="margin:1px 0;font-size:11px;">${esc(s.name)}: <span class="code">${esc(s.source)}</span> <span style="opacity:0.5;">(${s.rows})</span></div>`
+        ).join('')
+    } else if (!hasUnitsSlk) {
+        unitSourcesHtml = '<div class="ts-source ts-no-slk">UnitData.slk not found \u2014 set Game Path</div>'
+    }
+
+    const UNIT_RACE_NAMES = {
+        human: 'Human', orc: 'Orc', undead: 'Undead', nightelf: 'Night Elf',
+        creeps: 'Creeps', commoner: 'Commoner', other: 'Other', demon: 'Demon',
+        critters: 'Critters', naga: 'Naga',
+    }
+    const unitRaceCheckboxes = Array.from(unitRacesSet).sort().map(code => {
+        const label = UNIT_RACE_NAMES[code] || code
+        return `<label class="menu-cb"><input type="checkbox" class="us-race-cb" data-race="${esc(code)}" checked /> ${esc(label)}</label>`
+    }).join('\n')
 
     // Build destructables SLK data
     let destructablesSlkSource = ''
@@ -170,10 +197,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         if (d.file) destructableFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || ''}
     }
     const unitFileMap = {}
-    if (terrainData && terrainData._unitsSlk && terrainData._unitsSlk.units) {
-        for (const u of terrainData._unitsSlk.units) {
-            if (u.unitId && u.file) unitFileMap[u.unitId] = u.file
-        }
+    for (const [rawId, u] of Object.entries(unitsMap)) {
+        if (u.file) unitFileMap[rawId] = u.file
     }
 
     // Extract full DOO items for placed-object categorization (doodad vs destructable)
@@ -205,7 +230,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         })) : []
     const unitPlacements = mapInfo.unitDooData && mapInfo.unitDooData.items
         ? mapInfo.unitDooData.items.map(it => ({
-            r: it.rawcode.text,
+            r: it.rawcode.raw,
             p: [it.position.x, it.position.y, it.position.z],
             a: it.angle,
             s: [it.scale.x, it.scale.y, it.scale.z]
@@ -214,6 +239,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     // Extract full unit DOO items for placed-object canvas rendering
     const unitDooItems = mapInfo.unitDooData && mapInfo.unitDooData.items
         ? mapInfo.unitDooData.items.map((it, i) => ({
+            raw: it.rawcode.raw,
             text: it.rawcode.text,
             variation: it.variation,
             index: i,
@@ -311,15 +337,33 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         ${hasUnitDoo ? unitDooContent : '<div class="fi-empty">\u26a0 war3mapUnits.doo not found</div>'}
     </float-window>
 
-    <float-window id="unitsSlkWindow" title-text="\ud83d\udde1 Units" no-padding hidden style="left:140px;top:16px;width:600px;height:70vh;">
+    <float-window id="unitsSlkWindow" title-text="\ud83d\udde1 Units" no-padding hidden style="left:140px;top:16px;width:750px;height:70vh;">
         <reload-button slot="actions"></reload-button>
-        <div style="display:flex;flex-direction:column;height:100%;overflow:hidden;">
-            <div style="padding:6px 10px 0;">
-                <div id="usSlkSource" class="${unitsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${unitsSlkSource ? 'UnitData.slk: <span class="code">' + esc(unitsSlkSource) + '</span>' : 'UnitData.slk not found \u2014 set Game Path'}</div>
-                <div class="tw-section-title">Units (<span id="usUnitCount">${hasUnitsSlk && terrainData._unitsSlk.units ? terrainData._unitsSlk.units.length : 0}</span>)</div>
+        <div style="display:flex;height:100%;overflow:hidden;">
+            <div class="ds-sidebar" id="usSidebar">
+                <collapse-group group-title="SLK Sources (${unitSlkSources.length})" id="usSlkSources">
+                    ${unitSourcesHtml}
+                </collapse-group>
+                <div class="ds-filter-group">
+                    <div class="ds-filter-title">Races</div>
+                    <div class="terrain-checks" id="usRaceChecks">${unitRaceCheckboxes}</div>
+                </div>
             </div>
-            <div class="legend" id="usUnitList" style="overflow:hidden;flex:1;min-height:0;"></div>
+            <div style="flex:1;display:flex;flex-direction:column;min-width:0;">
+                <input type="text" id="usSearchInput" placeholder="Search by name or ID\u2026" class="ds-search" />
+                <div class="ds-sort-bar">
+                    <span class="ds-sort-col us-sort-col" data-sort="unitId">ID</span>
+                    <span class="ds-sort-col us-sort-col ds-sort-name" data-sort="name">Name</span>
+                    <span class="ds-sort-col us-sort-col ds-sort-cat" data-sort="race">Race</span>
+                    <span class="ds-sort-info">(<span id="usUnitCount">${unitsValues.length}</span> / <span id="usUnitTotal">${unitsValues.length}</span>)</span>
+                </div>
+                <div class="legend" id="usUnitList" style="overflow:hidden;flex:1;min-height:0;"></div>
+            </div>
         </div>
+    </float-window>
+
+    <float-window id="unitDetailWindow" title-text="\ud83d\udde1 Unit" hidden style="left:200px;top:60px;width:560px;">
+        <div id="unitDetailBody"></div>
     </float-window>
 
     <float-window id="doodadDooWindow" title-text="\ud83d\udccd Placed Doodads" no-padding ${isDoo && !mapInfo.isDooUnit ? '' : 'hidden'} style="left:140px;top:16px;width:800px;height:70vh;">
@@ -500,7 +544,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         doodadDooItems: ${JSON.stringify(doodadDooItems)},
         unitDooItems: ${JSON.stringify(unitDooItems)},
         initialDoodadsSlk: ${hasDoodadsSlk ? JSON.stringify(terrainData._doodadsSlk) : 'null'},
-        initialDestructablesSlk: ${hasDestructablesSlk ? JSON.stringify(terrainData._destructablesSlk) : 'null'}
+        initialDestructablesSlk: ${hasDestructablesSlk ? JSON.stringify(terrainData._destructablesSlk) : 'null'},
+        initialUnitsSlk: ${hasUnitsSlk ? JSON.stringify(terrainData._unitsSlk) : 'null'}
     };
     </script>
     <script nonce="${nonce}" src="${terrainSrc}"></script>

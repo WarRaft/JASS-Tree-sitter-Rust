@@ -13,7 +13,9 @@
         isArchive: DATA.isArchive,
         initialDoodadsSlk: DATA.initialDoodadsSlk,
         initialDestructablesSlk: DATA.initialDestructablesSlk,
-        doodadDooItems: DATA.doodadDooItems || []
+        initialUnitsSlk: DATA.initialUnitsSlk,
+        doodadDooItems: DATA.doodadDooItems || [],
+        unitDooItems: DATA.unitDooItems || []
     })
 
     // ── Three.js setup ──────────────────────────────────────────
@@ -1146,8 +1148,8 @@
                 }
                 if (data.unitsSlk && data.unitsSlk.units) {
                     _unitFileMap = {}
-                    for (const u of data.unitsSlk.units) {
-                        if (u.unitId && u.file) _unitFileMap[u.unitId] = u.file
+                    for (const [rawId, u] of Object.entries(data.unitsSlk.units)) {
+                        if (u.file) _unitFileMap[rawId] = u.file
                     }
                 }
                 const hasData = Object.keys(_doodFileMap).length > 0 || Object.keys(_destFileMap).length > 0 || Object.keys(_unitFileMap).length > 0
