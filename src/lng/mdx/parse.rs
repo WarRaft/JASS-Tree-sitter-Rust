@@ -8,6 +8,9 @@ pub struct MdxModel {
     pub sequences: Vec<MdxSequence>,
     pub textures: Vec<MdxTexture>,
     pub materials: Vec<MdxMaterial>,
+    pub bones: Vec<MdxBone>,
+    pub helpers: Vec<MdxHelper>,
+    pub pivot_points: Vec<[f32; 3]>,
 }
 
 pub struct MdxSequence {
@@ -31,6 +34,26 @@ pub struct MdxMaterial {
     pub priority_plane: u32,
     pub flags: u32,
     pub layers: Vec<MdxMaterialLayer>,
+}
+
+/// A bone node parsed from the BONE chunk.
+pub struct MdxBone {
+    pub name: String,
+    pub object_id: u32,
+    pub parent_id: u32,   // 0xFFFFFFFF = no parent
+    pub flags: u32,
+    #[allow(dead_code)]
+    pub geoset_id: u32,
+    #[allow(dead_code)]
+    pub geoset_anim_id: u32,
+}
+
+/// A helper node parsed from the HELP chunk.
+pub struct MdxHelper {
+    pub name: String,
+    pub object_id: u32,
+    pub parent_id: u32,   // 0xFFFFFFFF = no parent
+    pub flags: u32,
 }
 
 pub struct MdxGeoset {
@@ -226,6 +249,9 @@ pub fn parse(buf: &[u8]) -> Result<MdxModel, Box<dyn Error + Send + Sync>> {
         sequences: Vec::new(),
         textures: Vec::new(),
         materials: Vec::new(),
+        bones: Vec::new(),
+        helpers: Vec::new(),
+        pivot_points: Vec::new(),
     };
 
     while offset < buf.len() {
@@ -339,6 +365,87 @@ pub fn parse(buf: &[u8]) -> Result<MdxModel, Box<dyn Error + Send + Sync>> {
                     Err(_) => {}
                 }
                 geo_offset = geo_end;
+            }
+        } else if tag_eq(&chunk_tag, b"BONE") {
+            // Each bone = OBJ node (inclusive size) + GeosetID(u32) + GeosetAnimID(u32)
+            let mut bone_offset = offset;
+            while bone_offset + 4 < chunk_end {
+                let node_inclusive = u32::from_le_bytes(
+                    buf[bone_offset..bone_offset + 4].try_into().unwrap_or_default()
+                ) as usize;
+                // OBJ minimum: 4(size) + 80(name) + 4(objId) + 4(parentId) + 4(flags) = 96
+                if node_inclusive < 96 { break; }
+                let node_end = (bone_offset + node_inclusive).min(chunk_end);
+                bone_offset += 4; // skip inclusive size
+
+                // Name (80 bytes), ObjectID, ParentID, Flags
+                if bone_offset + 92 <= buf.len() {
+                    let name = read_null_string(buf, bone_offset, 80);
+                    bone_offset += 80;
+                    let object_id = read_u32(buf, &mut bone_offset).unwrap_or(0);
+                    let parent_id = read_u32(buf, &mut bone_offset).unwrap_or(0xFFFFFFFF);
+                    let flags = read_u32(buf, &mut bone_offset).unwrap_or(0);
+
+                    // Skip animated tracks (KGTR, KGRT, KGSC) — advance to node_end
+                    bone_offset = node_end;
+
+                    // After node: GeosetID, GeosetAnimID
+                    let geoset_id = if bone_offset + 4 <= buf.len() {
+                        read_u32(buf, &mut bone_offset).unwrap_or(0)
+                    } else { 0 };
+                    let geoset_anim_id = if bone_offset + 4 <= buf.len() {
+                        read_u32(buf, &mut bone_offset).unwrap_or(0)
+                    } else { 0 };
+
+                    model.bones.push(MdxBone {
+                        name,
+                        object_id,
+                        parent_id,
+                        flags,
+                        geoset_id,
+                        geoset_anim_id,
+                    });
+                } else {
+                    bone_offset = node_end + 8; // skip GeosetID + GeosetAnimID
+                }
+            }
+        } else if tag_eq(&chunk_tag, b"HELP") {
+            // Each helper = OBJ node only (inclusive size covers the whole thing)
+            let mut help_offset = offset;
+            while help_offset + 4 < chunk_end {
+                let node_inclusive = u32::from_le_bytes(
+                    buf[help_offset..help_offset + 4].try_into().unwrap_or_default()
+                ) as usize;
+                if node_inclusive < 96 { break; }
+                let node_end = (help_offset + node_inclusive).min(chunk_end);
+                help_offset += 4;
+
+                if help_offset + 92 <= buf.len() {
+                    let name = read_null_string(buf, help_offset, 80);
+                    help_offset += 80;
+                    let object_id = read_u32(buf, &mut help_offset).unwrap_or(0);
+                    let parent_id = read_u32(buf, &mut help_offset).unwrap_or(0xFFFFFFFF);
+                    let flags = read_u32(buf, &mut help_offset).unwrap_or(0);
+
+                    model.helpers.push(MdxHelper {
+                        name,
+                        object_id,
+                        parent_id,
+                        flags,
+                    });
+                }
+                help_offset = node_end;
+            }
+        } else if tag_eq(&chunk_tag, b"PIVT") {
+            // Pivot points: simple array of [x, y, z] floats
+            let num_pivots = chunk_size / 12;
+            let mut pivt_offset = offset;
+            for _ in 0..num_pivots {
+                if pivt_offset + 12 > buf.len() { break; }
+                let x = read_f32(buf, &mut pivt_offset).unwrap_or(0.0);
+                let y = read_f32(buf, &mut pivt_offset).unwrap_or(0.0);
+                let z = read_f32(buf, &mut pivt_offset).unwrap_or(0.0);
+                model.pivot_points.push([x, y, z]);
             }
         }
         // Skip any other chunk

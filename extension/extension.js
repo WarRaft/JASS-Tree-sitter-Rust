@@ -17,7 +17,6 @@ const {showTypeGraph} = require('./typeGraphPanel.js')
 const {DebugSidebarProvider, pushEntry} = require('./debugSidebarProvider.js')
 const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
 const {resolveSlkEditor} = require('./resolveSlkEditor.js')
-const {resolveMdxEditor} = require('./resolveMdxEditor.js')
 
 const path = require('path')
 const fs = require('fs')
@@ -495,7 +494,6 @@ module.exports = {
             binaryEditor('doo.preview', resolveW3eEditor),
             binaryEditor('w3i.preview', resolveW3eEditor),
             binaryEditor('w3e.preview', resolveW3eEditor),
-            binaryEditor('mdx.preview', resolveMdxEditor),
 
             // SLK table editor (text-based — uses CustomTextEditorProvider for undo/redo)
             window.registerCustomEditorProvider(

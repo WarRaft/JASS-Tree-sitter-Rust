@@ -1,4 +1,4 @@
-use crate::lng::mdx::parse::{MdxGeoset, MdxMaterial, MdxMaterialLayer, MdxModel, MdxSequence, MdxTexture};
+use crate::lng::mdx::parse::{MdxBone, MdxGeoset, MdxHelper, MdxMaterial, MdxMaterialLayer, MdxModel, MdxSequence, MdxTexture};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::Serialize;
@@ -15,6 +15,9 @@ pub struct MdxResponse<'a> {
     pub sequences: Vec<MdxSequenceResponse>,
     pub textures: Vec<MdxTextureResponse>,
     pub materials: Vec<MdxMaterialResponse>,
+    pub bones: Vec<MdxNodeResponse>,
+    pub helpers: Vec<MdxNodeResponse>,
+    pub pivot_points: Vec<[f32; 3]>,
     pub total_vertices: u32,
     pub total_faces: u32,
 }
@@ -65,6 +68,15 @@ pub struct MdxMaterialResponse {
     pub priority_plane: u32,
     pub flags: u32,
     pub layers: Vec<MdxMaterialLayerResponse>,
+}
+
+/// Bone or helper node — shared response structure.
+#[derive(Serialize)]
+pub struct MdxNodeResponse {
+    pub name: String,
+    pub object_id: u32,
+    pub parent_id: u32,
+    pub flags: u32,
 }
 
 // ── zero-copy byte cast ─────────────────────────────────────────────────────
@@ -180,6 +192,28 @@ impl From<&MdxMaterial> for MdxMaterialResponse {
     }
 }
 
+impl From<&MdxBone> for MdxNodeResponse {
+    fn from(b: &MdxBone) -> Self {
+        Self {
+            name: b.name.clone(),
+            object_id: b.object_id,
+            parent_id: b.parent_id,
+            flags: b.flags,
+        }
+    }
+}
+
+impl From<&MdxHelper> for MdxNodeResponse {
+    fn from(h: &MdxHelper) -> Self {
+        Self {
+            name: h.name.clone(),
+            object_id: h.object_id,
+            parent_id: h.parent_id,
+            flags: h.flags,
+        }
+    }
+}
+
 impl<'a> MdxResponse<'a> {
     pub fn from_model(uri: &'a Url, model: &MdxModel, file_size: usize) -> Self {
         let total_vertices: u32 = model.geosets.iter().map(|g| g.vertex_count).sum();
@@ -194,6 +228,9 @@ impl<'a> MdxResponse<'a> {
             sequences: model.sequences.iter().map(MdxSequenceResponse::from).collect(),
             textures: model.textures.iter().map(MdxTextureResponse::from).collect(),
             materials: model.materials.iter().map(MdxMaterialResponse::from).collect(),
+            bones: model.bones.iter().map(MdxNodeResponse::from).collect(),
+            helpers: model.helpers.iter().map(MdxNodeResponse::from).collect(),
+            pivot_points: model.pivot_points.clone(),
             total_vertices,
             total_faces,
         }

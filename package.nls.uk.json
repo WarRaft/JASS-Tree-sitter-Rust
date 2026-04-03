@@ -17,7 +17,6 @@
   "customEditor.w3i.displayName": "Перегляд W3I-інформації карти",
   "customEditor.w3e.displayName": "Редактор карти",
   "customEditor.slk.displayName": "Табличний редактор SLK",
-  "customEditor.mdx.displayName": "Перегляд MDX-моделей",
   "command.slk.openTable": "Відкрити як таблицю",
   "command.slk.openText": "Відкрити як текст",
   "command.debug.showPanel": "Показати панель налагодження"

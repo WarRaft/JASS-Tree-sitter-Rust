@@ -260,9 +260,49 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         Uri.joinPath(extensionUri, 'extension', 'vendor', 'three.min.js')
     )
 
-    // ── Components URI ───────────────────────────────────────────
-    const componentsUri = webviewPanel.webview.asWebviewUri(
-        Uri.joinPath(extensionUri, 'extension', 'w3e', 'webview-components.js')
+    // ── Components URIs ─────────────────────────────────────────
+    const wvDir = Uri.joinPath(extensionUri, 'extension', 'w3e', 'webview')
+    const elementsUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'elements.js')
+    )
+    const canvasListUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'canvas-list.js')
+    )
+    const utilsUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'utils.js')
+    )
+    const stateUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'state.js')
+    )
+    const tilesetUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'tileset.js')
+    )
+    const doodadsUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'doodads.js')
+    )
+    const destructablesUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'destructables.js')
+    )
+    const unitsUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'units.js')
+    )
+    const placedUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'placed.js')
+    )
+    const gamePathUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'game-path.js')
+    )
+    const pathTexUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'path-tex.js')
+    )
+    const modelViewerUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'model-viewer.js')
+    )
+    const orbitUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'orbit.js')
+    )
+    const appUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'app.js')
     )
 
     // ── Terrain script URI ──────────────────────────────────────
@@ -316,7 +356,20 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         mpqStatus: gamePathStatus.mpqStatus,
         nonce,
         cspSource,
-        componentsSrc: componentsUri.toString(),
+        elementsSrc: elementsUri.toString(),
+        canvasListSrc: canvasListUri.toString(),
+        utilsSrc: utilsUri.toString(),
+        stateSrc: stateUri.toString(),
+        tilesetSrc: tilesetUri.toString(),
+        doodadsSrc: doodadsUri.toString(),
+        destructablesSrc: destructablesUri.toString(),
+        unitsSrc: unitsUri.toString(),
+        placedSrc: placedUri.toString(),
+        gamePathSrc: gamePathUri.toString(),
+        pathTexSrc: pathTexUri.toString(),
+        modelViewerSrc: modelViewerUri.toString(),
+        orbitSrc: orbitUri.toString(),
+        appSrc: appUri.toString(),
         terrainSrc: terrainUri.toString(),
         binaryServer,
         terrainUri: document.uri.toString(),
@@ -385,7 +438,6 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
             const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
             const ext = (msg.name.split('.').pop() || '').toLowerCase()
             const viewTypeMap = {
-                mdx: 'mdx.preview',
                 blp: 'blp.preview',
                 doo: 'doo.preview',
                 w3i: 'w3i.preview',
@@ -499,6 +551,9 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                                 textures: renderResult.textures || [],
                                 materials: renderResult.materials || [],
                                 sequences: renderResult.sequences || [],
+                                bones: renderResult.bones || [],
+                                helpers: renderResult.helpers || [],
+                                pivot_points: renderResult.pivot_points || [],
                                 total_vertices: renderResult.total_vertices,
                                 total_faces: renderResult.total_faces,
                                 binaryServer: bs ? {port: bs.port, token: bs.token} : null,

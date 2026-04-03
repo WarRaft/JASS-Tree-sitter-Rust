@@ -16,7 +16,7 @@ function renderMeta(meta) {
  * @param {Object|null} terrainData  — parsed w3e data, or null if unavailable
  * @param {string}      fname       — display file name
  * @param {string}      threeSrc    — webview URI to three.min.js
- * @param {Object}      mapInfo     — { mapName, binaries, currentFile, isArchive, isMap, archiveFiles, componentsSrc }
+ * @param {Object}      mapInfo     — { mapName, binaries, currentFile, isArchive, isMap, archiveFiles, elementsSrc, canvasListSrc, appSrc }
  */
 function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const hasTerrain = !!terrainData
@@ -261,7 +261,20 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     const nonce = mapInfo.nonce || ''
     const cspSource = mapInfo.cspSource || ''
-    const componentsSrc = mapInfo.componentsSrc || ''
+    const elementsSrc = mapInfo.elementsSrc || ''
+    const canvasListSrc = mapInfo.canvasListSrc || ''
+    const utilsSrc = mapInfo.utilsSrc || ''
+    const stateSrc = mapInfo.stateSrc || ''
+    const tilesetSrc = mapInfo.tilesetSrc || ''
+    const doodadsSrc = mapInfo.doodadsSrc || ''
+    const destructablesSrc = mapInfo.destructablesSrc || ''
+    const unitsSrc = mapInfo.unitsSrc || ''
+    const placedSrc = mapInfo.placedSrc || ''
+    const gamePathSrc = mapInfo.gamePathSrc || ''
+    const pathTexSrc = mapInfo.pathTexSrc || ''
+    const modelViewerSrc = mapInfo.modelViewerSrc || ''
+    const orbitSrc = mapInfo.orbitSrc || ''
+    const appSrc = mapInfo.appSrc || ''
     const terrainSrc = mapInfo.terrainSrc || ''
 
     const connectSrc = mapInfo.binaryServer ? `connect-src http://127.0.0.1:${mapInfo.binaryServer.port};` : ''
@@ -509,6 +522,9 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 <button class="mv-sb-item" id="mvResetCamera" title="Reset camera">\ud83c\udfaf Reset</button>
                 <button class="mv-sb-item" id="mvGeosetBtn" title="Geoset visibility">\ud83e\udde9 Geosets</button>
                 <button class="mv-sb-item" id="mvMaterialBtn" title="Materials & textures">\ud83c\udfa8 Material</button>
+                <button class="mv-sb-item" id="mvBonesBtn" title="Bones & helpers">\ud83e\uddb4 Bones</button>
+                <div class="mv-sb-sep"></div>
+                <button class="mv-sb-item" id="mvSkeletonBtn" title="Toggle skeleton visibility">\u2620 Skeleton</button>
             </div>
             <div style="display:flex;flex-direction:column;flex:1;min-width:0;">
                 <div class="mv-toolbar" id="mvToolbar">
@@ -527,13 +543,31 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                         <div class="mv-mat-title">Materials</div>
                         <div class="mv-mat-list" id="mvMaterialList"></div>
                     </div>
+                    <div class="mv-materials-panel" id="mvBonesPanel" hidden>
+                        <div class="mv-panel-resize-handle" data-resize-panel="mvBonesPanel"></div>
+                        <div class="mv-mat-title">Bones & Helpers</div>
+                        <div class="mv-mat-list" id="mvBonesList"></div>
+                    </div>
                 </div>
             </div>
         </div>
     </float-window>
 
-    <script nonce="${nonce}" src="${componentsSrc}"></script>
+    <script nonce="${nonce}" src="${elementsSrc}"></script>
+    <script nonce="${nonce}" src="${canvasListSrc}"></script>
+    <script nonce="${nonce}" src="${utilsSrc}"></script>
+    <script nonce="${nonce}" src="${stateSrc}"></script>
+    <script nonce="${nonce}" src="${tilesetSrc}"></script>
+    <script nonce="${nonce}" src="${doodadsSrc}"></script>
+    <script nonce="${nonce}" src="${destructablesSrc}"></script>
+    <script nonce="${nonce}" src="${unitsSrc}"></script>
+    <script nonce="${nonce}" src="${gamePathSrc}"></script>
+    <script nonce="${nonce}" src="${pathTexSrc}"></script>
+    <script nonce="${nonce}" src="${placedSrc}"></script>
     <script nonce="${nonce}" src="${threeSrc}"></script>
+    <script nonce="${nonce}" src="${orbitSrc}"></script>
+    <script nonce="${nonce}" src="${modelViewerSrc}"></script>
+    <script nonce="${nonce}" src="${appSrc}"></script>
     <script nonce="${nonce}">
     window.__W3E_DATA__ = {
         hasTerrain: ${hasTerrain},

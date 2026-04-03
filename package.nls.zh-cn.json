@@ -17,7 +17,6 @@
   "customEditor.w3i.displayName": "W3I 地图信息查看器",
   "customEditor.w3e.displayName": "地图编辑器",
   "customEditor.slk.displayName": "SLK 表格编辑器",
-  "customEditor.mdx.displayName": "MDX 模型查看器",
   "command.slk.openTable": "以表格打开",
   "command.slk.openText": "以文本打开",
   "command.debug.showPanel": "显示调试面板"
