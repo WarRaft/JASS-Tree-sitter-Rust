@@ -4,5 +4,6 @@ pub(crate) mod mdx_texture;
 pub(crate) mod path_tex;
 pub(crate) mod server;
 pub(crate) mod slk;
+pub(crate) mod snapshot;
 pub(crate) mod terrain;
 

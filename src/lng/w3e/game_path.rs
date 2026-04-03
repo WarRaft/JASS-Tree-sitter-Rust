@@ -83,6 +83,8 @@ pub fn set_game_path(path: &str) {
     save_to_db(path);
     // Invalidate cached WorldEditStrings so they are reloaded from the new path.
     super::westrings::invalidate();
+    // Invalidate the old snapshot so the next request triggers a rebuild.
+    super::snapshot::invalidate();
 }
 
 /// Read the current game path (lazy-loads from disk on first call).

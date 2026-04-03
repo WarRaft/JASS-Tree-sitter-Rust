@@ -253,7 +253,6 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     const nonce = mapInfo.nonce || ''
     const cspSource = mapInfo.cspSource || ''
-    const reactiveGraphSrc = mapInfo.reactiveGraphSrc || ''
     const componentsSrc = mapInfo.componentsSrc || ''
     const terrainSrc = mapInfo.terrainSrc || ''
 
@@ -523,7 +522,6 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         </div>
     </float-window>
 
-    <script nonce="${nonce}" src="${reactiveGraphSrc}"></script>
     <script nonce="${nonce}" src="${componentsSrc}"></script>
     <script nonce="${nonce}" src="${threeSrc}"></script>
     <script nonce="${nonce}">

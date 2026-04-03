@@ -1174,28 +1174,48 @@ class CanvasList {
 window.W3E = (function () {
     let _vscode = null;
 
-    // ── Reactive dependency graph ────────────────────────────────
-    // Source nodes are fed from 'gamePathChanged' messages.
-    // Computed / subscriber nodes react to data changes.
-    //
-    //   status (game path)
-    //     └→ westrings
-    //          ├→ terrainSlk
-    //          ├→ doodadsSlk ─────────┐
-    //          ├→ destructablesSlk ───┼→ placed (name resolution)
-    //          └→ unitsSlk ──────────┘
-    //
-    // Tile textures are fetched directly by terrain.js (status subscriber).
-    // All source nodes also feed → _gamePathData (backward compat).
-    var _graph = new ReactiveGraph();
+    // ── Current snapshot & status ─────────────────────────────────
+    // The extension host sends the full GameSnapshot in one message.
+    // We store it here and call rebuild functions directly.
+    var _snapshot = null;
+    var _status = null;
+    var _statusListeners = [];
+    var _snapshotListeners = [];
 
-    // Source nodes (values arrive from extension host messages)
-    _graph.define('status');
-    _graph.define('westrings');
-    _graph.define('terrainSlk');
-    _graph.define('doodadsSlk');
-    _graph.define('unitsSlk');
-    _graph.define('destructablesSlk');
+    /** Register a callback for status (game path) changes. */
+    function onStatusChanged(fn) { _statusListeners.push(fn); }
+
+    /** Register a callback for snapshot changes (full data reload). */
+    function onSnapshotChanged(fn) { _snapshotListeners.push(fn); }
+
+    /** Apply a new snapshot + status from the extension host. */
+    function _applyGamePathChanged(status, snapshot) {
+        _status = status;
+        _snapshot = snapshot;
+
+        // Notify status listeners (e.g. terrain.js)
+        for (var i = 0; i < _statusListeners.length; i++) {
+            try { _statusListeners[i](status); } catch (_) {}
+        }
+
+        if (!snapshot) return;
+
+        // Apply westrings
+        _westringsMap = (snapshot.westrings && typeof snapshot.westrings === 'object')
+            ? snapshot.westrings : {};
+
+        // Rebuild all UI
+        rebuildTileset(snapshot.terrainSlk, _groundTileCodes, _cliffTileCodes);
+        rebuildDoodads(snapshot.doodadsSlk);
+        rebuildDestructables(snapshot.destructablesSlk);
+        rebuildUnits(snapshot.unitsSlk);
+        _updatePlacedNames();
+
+        // Notify snapshot listeners (e.g. terrain.js map objects)
+        for (var j = 0; j < _snapshotListeners.length; j++) {
+            try { _snapshotListeners[j](snapshot); } catch (_) {}
+        }
+    }
 
     // ── WESTRING resolution map ─────────────────────────────────
     var _westringsMap = {};
@@ -1213,9 +1233,6 @@ window.W3E = (function () {
     }
 
     // ── GameString helpers ────────────────────────────────────────
-    // A GameString from the server is either:
-    //   - a plain string (no WESTRING resolution occurred)
-    //   - an object { value, original, source }
 
     /** Extract the display text from a GameString (string or object). */
     function _gsValue(gs) {
@@ -1264,18 +1281,6 @@ window.W3E = (function () {
         _showGameStringInfo(value, original, source);
     });
 
-    // Placed objects — depends on all SLK catalogs for name resolution
-    _graph.define('placed',
-        ['doodadsSlk', 'destructablesSlk', 'unitsSlk'],
-        function () { _updatePlacedNames(); return true; }
-    );
-
-    // Combined node for backward compatibility — depends on all sources.
-    // Its value is the aggregated object {status, westrings, terrainSlk, …}.
-    _graph.define('_gamePathData',
-        ['status', 'westrings', 'terrainSlk', 'doodadsSlk', 'unitsSlk', 'destructablesSlk'],
-        function (deps) { return deps; }
-    );
 
     function esc(s) {
         return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -1612,12 +1617,6 @@ window.W3E = (function () {
         if (_destDooCanvasList) { _destDooCanvasList.dispose(); _destDooCanvasList = null; }
     }
 
-    /**
-     * Backward-compatible API: register a handler that fires when
-     * any game-path-related data changes.  The handler receives the
-     * combined data object {status, terrainSlk, doodadsSlk, …}.
-     */
-    function onGamePathChanged(fn) { _graph.subscribe('_gamePathData', fn); }
 
     function syncMenuActive() {
         document.querySelectorAll('[data-action="toggleWindow"]').forEach(btn => {
@@ -2568,6 +2567,19 @@ window.W3E = (function () {
                 ['bountySides', 'bountySides'],
                 ['bountyPlus', 'bountyPlus'],
                 ['points', 'points'],
+            ]
+        },
+        {
+            title: '\ud83d\udcdd Strings', fields: [
+                ['Tip', 'tip'],
+                ['Ubertip', 'ubertip'],
+                ['Hotkey', 'hotkey'],
+                ['Propernames', 'propernames'],
+                ['Revivetip', 'revivetip'],
+                ['Awakentip', 'awakentip'],
+                ['EditorSuffix', 'editorSuffix'],
+                ['CasterUpgradeName', 'casterUpgradeName'],
+                ['CasterUpgradeTip', 'casterUpgradeTip'],
             ]
         },
         {
@@ -3826,11 +3838,14 @@ window.W3E = (function () {
     }
 
     // ── init() — main entry point ────────────────────────────
+    var _groundTileCodes = [];
+    var _cliffTileCodes = [];
+
     function init(config) {
         const vscode = config.vscode;
         _vscode = vscode;
-        const groundTileCodes = config.groundTileCodes || [];
-        const cliffTileCodes = config.cliffTileCodes || [];
+        _groundTileCodes = config.groundTileCodes || [];
+        _cliffTileCodes = config.cliffTileCodes || [];
         const isArchive = !!config.isArchive;
 
         // ── Populate initial doodad data map for detail window ──
@@ -3965,10 +3980,8 @@ window.W3E = (function () {
 
         bindGpButtons();
 
-        // ── Direct graph subscriptions (granular reactivity) ──────
-        // Each subscriber fires only when its specific data source changes.
-
-        _graph.subscribe('status', function (status) {
+        // ── Status change handler (game path window update) ──────
+        onStatusChanged(function (status) {
             if (!status) return;
             var gpBody = document.getElementById('gpBody');
             if (!gpBody) return;
@@ -3976,31 +3989,6 @@ window.W3E = (function () {
             bindGpButtons();
         });
 
-        // ── Tileset ──────────────────────────────────────────
-        _graph.subscribe('terrainSlk', function (terrainSlk) {
-            rebuildTileset(terrainSlk, groundTileCodes, cliffTileCodes);
-        });
-
-        // ── Westrings ──────────────────────────────────────────
-        _graph.subscribe('westrings', function (westrings) {
-            _westringsMap = (westrings && typeof westrings === 'object') ? westrings : {};
-        });
-
-        // ── Doodads ──────────────────────────────────────────
-        _graph.subscribe('doodadsSlk', function (doodadsSlk) {
-            rebuildDoodads(doodadsSlk);
-        });
-
-        // ── Destructables ──────────────────────────────────────
-        _graph.subscribe('destructablesSlk', function (destructablesSlk) {
-            rebuildDestructables(destructablesSlk);
-        });
-
-        // ── Units ────────────────────────────────────────────
-        _graph.subscribe('unitsSlk', function (unitsSlk) {
-            rebuildUnits(unitsSlk);
-            _updatePlacedNames();
-        });
 
         // ── Canvas list lifecycle: create on show, destroy on hide ─
         document.addEventListener('float-toggled', function (evt) {
@@ -4045,23 +4033,8 @@ window.W3E = (function () {
         window.addEventListener('message', e => {
             const msg = e.data;
             if (msg && msg.command === 'gamePathChanged') {
-                // Feed each data source into the reactive graph.
-                // setMany runs a single propagation pass → _gamePathData
-                // fires once with the combined values, subscribers run
-                // in topological order.
-                var entries = [];
-                if (msg.status !== undefined) entries.push(['status', msg.status]);
-                if (msg.westrings !== undefined) entries.push(['westrings', msg.westrings]);
-                if (msg.terrainSlk !== undefined) entries.push(['terrainSlk', msg.terrainSlk]);
-                if (msg.doodadsSlk !== undefined) entries.push(['doodadsSlk', msg.doodadsSlk]);
-                if (msg.unitsSlk !== undefined) entries.push(['unitsSlk', msg.unitsSlk]);
-                if (msg.destructablesSlk !== undefined) entries.push(['destructablesSlk', msg.destructablesSlk]);
-                _graph.setMany(entries).then(function () {
-                    setLoading(false);
-                }).catch(function (err) {
-                    console.error('[W3E MSG] setMany ERROR:', err)
-                    setLoading(false);
-                });
+                _applyGamePathChanged(msg.status, msg.snapshot);
+                setLoading(false);
             }
             if (msg && msg.command === 'loadingDone') {
                 setLoading(false);
@@ -4331,6 +4304,6 @@ window.W3E = (function () {
         }
     }
 
-    return {init, onGamePathChanged, graph: _graph, indexToRgb, syncMenuActive, makeOrbitControls, highlightPlacedDoodad};
+    return {init, onStatusChanged, onSnapshotChanged, indexToRgb, syncMenuActive, makeOrbitControls, highlightPlacedDoodad};
 })();
 

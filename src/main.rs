@@ -176,6 +176,15 @@ async fn main() {
     // ── Start binary HTTP server for editor data ─────────────────
     let http_port = crate::http::server::start_server().await.ok();
 
+    // ── Eagerly build snapshot if game path already configured ──
+    tokio::task::spawn_blocking(|| {
+        let gp = crate::lng::w3e::game_path::get_game_path();
+        if !gp.is_empty() {
+            log::info!("Game path found on startup, building snapshot…");
+            crate::lng::w3e::snapshot::build_snapshot(None);
+        }
+    });
+
     loop {
         let msg = match read(&mut reader).await {
             Some(msg) => msg,

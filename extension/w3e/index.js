@@ -7,7 +7,6 @@ const {MpqFileSystemProvider} = require('../mpqFileSystemProvider.js')
 const {SUPPORTED_BINARIES, findMapRoot, scanMapBinaries} = require('./mapRoot.js')
 const {errorHtml} = require('./utils.js')
 const {renderMapEditor} = require('./render.js')
-const {ReactiveGraph} = require('./reactiveGraph.js')
 
 /**
  * @param {import('vscode').CustomDocument} document
@@ -261,11 +260,6 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         Uri.joinPath(extensionUri, 'extension', 'vendor', 'three.min.js')
     )
 
-    // ── ReactiveGraph URI ────────────────────────────────────────
-    const reactiveGraphUri = webviewPanel.webview.asWebviewUri(
-        Uri.joinPath(extensionUri, 'extension', 'w3e', 'reactiveGraph.js')
-    )
-
     // ── Components URI ───────────────────────────────────────────
     const componentsUri = webviewPanel.webview.asWebviewUri(
         Uri.joinPath(extensionUri, 'extension', 'w3e', 'webview-components.js')
@@ -322,7 +316,6 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         mpqStatus: gamePathStatus.mpqStatus,
         nonce,
         cspSource,
-        reactiveGraphSrc: reactiveGraphUri.toString(),
         componentsSrc: componentsUri.toString(),
         terrainSrc: terrainUri.toString(),
         binaryServer,
@@ -330,74 +323,33 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         archivePath: isArchive ? filePath : undefined,
     })
 
-    // ── Reactive dependency graph ────────────────────────────────
-    // Hierarchy:
-    //   status (game path)
-    //     └→ westrings
-    //          ├→ terrainSlk
-    //          ├→ doodadsSlk ─────────┐
-    //          ├→ destructablesSlk ───┼→ placed (name resolution, webview-side)
-    //          └→ unitsSlk ──────────┘
+    // ── Snapshot-based data flow ───────────────────────────────────
+    // When the game path changes:
+    //   1. POST /w3e/gamePath/set → Rust builds snapshot
+    //   2. GET  /w3e/snapshot     → full GameSnapshot JSON
+    //   3. postMessage('gamePathChanged', {status, snapshot})
     //
-    // Tile textures are fetched directly by terrain.js (status subscriber).
-    // Changing 'status' cascades to everything.
-    // Changing 'westrings' alone cascades to all SLK nodes → placed.
-
-    const graph = new ReactiveGraph()
-
-    // ── Source node ──────────────────────────────────────────────
-    graph.define('status')
-
-    // ── Computed: WESTRINGS ─────────────────────────────────────
-    graph.define('westrings', ['status'], async () => {
-        try { return await fetchSlk('westrings') } catch (_) { return null }
-    })
-
-    // ── Computed: terrain SLK (depends on westrings for name resolution) ──
-    graph.define('terrainSlk', ['status', 'westrings'], async () => {
-        try { return await fetchSlk('terrainSlk') } catch (_) { return null }
-    })
-
-    // ── Computed: doodads SLK ───────────────────────────────────
-    graph.define('doodadsSlk', ['status', 'westrings'], async () => {
-        try { return await fetchSlk('doodadsSlk') } catch (_) { return null }
-    })
-
-    // ── Computed: units SLK ─────────────────────────────────────
-    graph.define('unitsSlk', ['status', 'westrings'], async () => {
-        try { return await fetchSlk('unitsSlk') } catch (_) { return null }
-    })
-
-    // ── Computed: destructables SLK ─────────────────────────────
-    graph.define('destructablesSlk', ['status', 'westrings'], async () => {
-        try { return await fetchSlk('destructablesSlk') } catch (_) { return null }
-    })
-
-    // NOTE: tileTextures is NOT in the extension graph.
-    // The webview fetches textures directly from HTTP (terrain.js)
-    // to avoid bloating the postMessage payload with megabytes of
-    // base64 PNG data.
+    // The webview receives the complete snapshot in one message.
 
     /**
-     * Set 'status' and cascade to all dependents, then broadcast
-     * the collected values to the webview.
+     * Fetch the snapshot and send it to the webview along with status.
      */
     async function emitGamePathChanged(status) {
-        await graph.set('status', status)
-        const payload = graph.getAll()
+        const snapshot = await fetchSnapshot()
         webviewPanel.webview.postMessage({
             command: 'gamePathChanged',
-            ...payload
+            status,
+            snapshot,
         })
     }
 
-    // ── Helper: fetch JSON from the binary HTTP server ─────────
-    async function fetchSlk(endpoint) {
+    // ── Helper: fetch the full snapshot from the binary HTTP server ──
+    async function fetchSnapshot() {
         const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
         if (!bs) return null
         const params = new URLSearchParams({token: bs.token})
         if (isArchive) params.set('archive', filePath)
-        const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/${endpoint}?${params}`)
+        const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/snapshot?${params}`)
         if (!resp.ok) return null
         return await resp.json()
     }
@@ -418,6 +370,11 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
             if (resp.ok) return await resp.json()
         } catch (_) {}
         return null
+    }
+
+    // ── Push initial snapshot if game path is already set ─────────
+    if (gamePathStatus.allPresent) {
+        emitGamePathChanged(gamePathStatus).catch(() => {})
     }
 
 

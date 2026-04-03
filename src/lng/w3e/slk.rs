@@ -7,6 +7,8 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use super::westrings::GameString;
+use tree_sitter::Parser;
+use crate::lng::bni::kind::Kind;
 
 
 // ─── Color ───────────────────────────────────────────────────────────────────
@@ -128,6 +130,121 @@ pub fn parse_slk(data: &[u8]) -> Vec<HashMap<String, String>> {
         }
 
         // All other records (ID, F, E, …) are ignored.
+    }
+
+    result
+}
+
+// ─── INI-style UnitStrings parser ─────────────────────────────────────────────
+
+/// Parse an INI-format UnitStrings.txt file into a map of section rawcodes to
+/// field key/value maps.
+///
+/// Format:
+/// ```text
+/// [Hamg]
+/// Name=Archmage
+/// Tip=Summon |cffffcc00A|rrchmage
+/// Ubertip="Mystical Hero, adept at ranged assaults..."
+/// ```
+///
+/// Returns `HashMap<"Hamg", {"Name": "Archmage", "Tip": "Summon ...", ...}>`.
+pub fn parse_unit_strings(data: &[u8]) -> HashMap<String, HashMap<String, String>> {
+    let text = String::from_utf8_lossy(data);
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
+
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_bni::LANGUAGE.into())
+        .expect("Failed to set BNI language");
+
+    let Some(tree) = parser.parse(text.as_bytes(), None) else {
+        return HashMap::new();
+    };
+
+    let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
+    let root = tree.root_node();
+    let mut current_section: Option<String> = None;
+
+    let mut cursor = root.walk();
+    for node in root.children(&mut cursor) {
+        let Ok(kind) = Kind::try_from(node.grammar_id()) else {
+            continue;
+        };
+        match kind {
+            Kind::Section => {
+                // Extract section name from children
+                let mut sc = node.walk();
+                for child in node.children(&mut sc) {
+                    if Kind::try_from(child.grammar_id()) == Ok(Kind::SectionName) {
+                        if let Ok(name) = child.utf8_text(text.as_bytes()) {
+                            current_section = Some(name.to_string());
+                            result.entry(name.to_string()).or_default();
+                        }
+                        break;
+                    }
+                }
+            }
+            Kind::Item => {
+                let Some(ref section) = current_section else { continue };
+
+                let mut key: Option<&str> = None;
+                let mut value = String::new();
+
+                let mut child_cursor = node.walk();
+                for child in node.children(&mut child_cursor) {
+                    let Ok(ck) = Kind::try_from(child.grammar_id()) else {
+                        continue;
+                    };
+                    match ck {
+                        Kind::Key => {
+                            key = child.utf8_text(text.as_bytes()).ok();
+                        }
+                        Kind::ValueList => {
+                            let mut val_cursor = child.walk();
+                            for val_child in child.children(&mut val_cursor) {
+                                let Ok(vk) = Kind::try_from(val_child.grammar_id()) else {
+                                    continue;
+                                };
+                                match vk {
+                                    Kind::QuotedString => {
+                                        let mut qs_cursor = val_child.walk();
+                                        for qs_child in val_child.children(&mut qs_cursor) {
+                                            if Kind::try_from(qs_child.grammar_id())
+                                                == Ok(Kind::StringContent)
+                                            {
+                                                value = qs_child
+                                                    .utf8_text(text.as_bytes())
+                                                    .unwrap_or_default()
+                                                    .to_string();
+                                                break;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                    Kind::UnquotedString | Kind::Int | Kind::Float => {
+                                        value = val_child
+                                            .utf8_text(text.as_bytes())
+                                            .unwrap_or_default()
+                                            .to_string();
+                                        break;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(k) = key {
+                    if !k.is_empty() {
+                        result.get_mut(section).unwrap().insert(k.to_string(), value);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     result
@@ -549,6 +666,26 @@ pub struct UnitInfo {
     // ── Meta ─────────────────────────────────────────────────────
     pub in_beta: bool,
     pub version: u32,
+
+    // ── Strings (from *UnitStrings.txt) ──────────────────────────
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ubertip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hotkey: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub propernames: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revivetip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awakentip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_suffix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caster_upgrade_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caster_upgrade_tip: Option<String>,
 }
 
 /// Per-SLK source info.
@@ -807,7 +944,70 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
             // Meta
             in_beta: slk_bool(&row, "InBeta"),
             version: slk_u32(&row, "version", 0),
+
+            // Strings (populated later from UnitStrings.txt)
+            tip: None,
+            ubertip: None,
+            hotkey: None,
+            propernames: None,
+            revivetip: None,
+            awakentip: None,
+            editor_suffix: None,
+            caster_upgrade_name: None,
+            caster_upgrade_tip: None,
         });
+    }
+
+    // ── Load UnitStrings.txt files ────────────────────────────────
+    const UNIT_STRING_FILES: &[&str] = &[
+        "Units\\HumanUnitStrings.txt",
+        "Units\\OrcUnitStrings.txt",
+        "Units\\NightElfUnitStrings.txt",
+        "Units\\UndeadUnitStrings.txt",
+        "Units\\NeutralUnitStrings.txt",
+    ];
+
+    for &file_path in UNIT_STRING_FILES {
+        if let Some((buf, src)) = super::file_lookup::lookup_file(file_path, archive_path) {
+            let sections = parse_unit_strings(&buf);
+            let file_name = file_path
+                .rsplit('\\')
+                .next()
+                .unwrap_or(file_path)
+                .to_string();
+
+            sources.push(SlkSource {
+                name: file_name,
+                source: src,
+                rows: sections.len(),
+            });
+
+            for (rawcode, fields) in sections {
+                let key = unit_id_to_u32(&rawcode);
+                if let Some(unit) = units.get_mut(&key) {
+                    // Override name if present in UnitStrings
+                    if let Some(name_val) = fields.get("Name") {
+                        if !name_val.is_empty() {
+                            unit.name = super::westrings::resolve_game_string(name_val);
+                        }
+                    }
+
+                    fn opt(fields: &HashMap<String, String>, key: &str) -> Option<String> {
+                        fields.get(key).filter(|v| !v.is_empty()).cloned()
+                    }
+
+                    if unit.tip.is_none() { unit.tip = opt(&fields, "Tip"); }
+                    if unit.ubertip.is_none() { unit.ubertip = opt(&fields, "Ubertip"); }
+                    if unit.hotkey.is_none() { unit.hotkey = opt(&fields, "Hotkey"); }
+                    if unit.propernames.is_none() { unit.propernames = opt(&fields, "Propernames"); }
+                    if unit.revivetip.is_none() { unit.revivetip = opt(&fields, "Revivetip"); }
+                    if unit.awakentip.is_none() { unit.awakentip = opt(&fields, "Awakentip"); }
+                    if unit.editor_suffix.is_none() { unit.editor_suffix = opt(&fields, "EditorSuffix"); }
+                    if unit.caster_upgrade_name.is_none() { unit.caster_upgrade_name = opt(&fields, "Casterupgradename"); }
+                    if unit.caster_upgrade_tip.is_none() { unit.caster_upgrade_tip = opt(&fields, "Casterupgradetip"); }
+                }
+            }
+        }
     }
 
     Some(UnitsSlkResult {
@@ -1405,6 +1605,50 @@ mod tests {
         for f in &fields {
             println!("  {}", f);
         }
+    }
+
+    #[test]
+    fn parse_unit_strings_fixture() {
+        let data = include_bytes!("../../lng/bni/fixtures/Units/UndeadUnitStrings.txt");
+        let sections = parse_unit_strings(data);
+        assert!(!sections.is_empty(), "should parse some sections");
+
+        // Check a hero entry
+        let ucrl = sections.get("Ucrl").expect("should have [Ucrl] section");
+        assert_eq!(ucrl.get("Name").map(|s| s.as_str()), Some("Crypt Lord"));
+        assert_eq!(ucrl.get("Hotkey").map(|s| s.as_str()), Some("C"));
+        assert!(ucrl.get("Propernames").is_some());
+        assert!(ucrl.get("Ubertip").is_some());
+        assert!(ucrl.get("Revivetip").is_some());
+        assert!(ucrl.get("Awakentip").is_some());
+
+        // Check a regular unit entry
+        let ugho = sections.get("ugho").expect("should have [ugho] section");
+        assert_eq!(ugho.get("Name").map(|s| s.as_str()), Some("Ghoul"));
+        assert_eq!(ugho.get("Hotkey").map(|s| s.as_str()), Some("G"));
+
+        // Check a building entry
+        let unpl = sections.get("unpl").expect("should have [unpl] section");
+        assert_eq!(unpl.get("Name").map(|s| s.as_str()), Some("Necropolis"));
+        assert_eq!(unpl.get("Hotkey").map(|s| s.as_str()), Some("N"));
+
+        // Check an entry with Casterupgradename
+        let uban = sections.get("uban").expect("should have [uban] section");
+        assert_eq!(uban.get("Name").map(|s| s.as_str()), Some("Banshee"));
+        assert!(uban.get("Casterupgradename").is_some());
+        assert!(uban.get("Casterupgradetip").is_some());
+    }
+
+    #[test]
+    fn parse_human_unit_strings_fixture() {
+        let data = include_bytes!("../../lng/bni/fixtures/Units/HumanUnitStrings.txt");
+        let sections = parse_unit_strings(data);
+        assert!(!sections.is_empty(), "should parse some sections");
+
+        let hamg = sections.get("Hamg").expect("should have [Hamg] section");
+        assert_eq!(hamg.get("Name").map(|s| s.as_str()), Some("Archmage"));
+        assert_eq!(hamg.get("Hotkey").map(|s| s.as_str()), Some("A"));
+        assert!(hamg.get("Propernames").is_some());
     }
 }
 

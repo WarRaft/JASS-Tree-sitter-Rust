@@ -550,7 +550,7 @@
             // Reload textures when game path changes — subscribe directly
             // to the 'status' source node for immediate reaction.
             // Fetches tile textures via HTTP (avoids large IPC payloads).
-            W3E.graph.subscribe('status', function (status) {
+            W3E.onStatusChanged(function (status) {
                 const bs = DATA.binaryServer
                 const codes = DATA.groundTileCodes
 
@@ -1132,23 +1132,23 @@
                 _collectAndLoad()
             }
 
-            // Reload when game path changes (SLK data updated)
-            W3E.onGamePathChanged(function (data) {
-                if (data.doodadsSlk && data.doodadsSlk.doodads) {
+            // Reload when game path changes (snapshot updated)
+            W3E.onSnapshotChanged(function (snapshot) {
+                if (snapshot.doodadsSlk && snapshot.doodadsSlk.doodads) {
                     _doodFileMap = {}
-                    for (const [rawId, d] of Object.entries(data.doodadsSlk.doodads)) {
+                    for (const [rawId, d] of Object.entries(snapshot.doodadsSlk.doodads)) {
                         if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1}
                     }
                 }
-                if (data.destructablesSlk && data.destructablesSlk.destructables) {
+                if (snapshot.destructablesSlk && snapshot.destructablesSlk.destructables) {
                     _destFileMap = {}
-                    for (const [rawId, d] of Object.entries(data.destructablesSlk.destructables)) {
+                    for (const [rawId, d] of Object.entries(snapshot.destructablesSlk.destructables)) {
                         if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || ''}
                     }
                 }
-                if (data.unitsSlk && data.unitsSlk.units) {
+                if (snapshot.unitsSlk && snapshot.unitsSlk.units) {
                     _unitFileMap = {}
-                    for (const [rawId, u] of Object.entries(data.unitsSlk.units)) {
+                    for (const [rawId, u] of Object.entries(snapshot.unitsSlk.units)) {
                         if (u.file) _unitFileMap[rawId] = u.file
                     }
                 }
