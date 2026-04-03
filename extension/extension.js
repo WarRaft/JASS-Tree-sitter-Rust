@@ -8,8 +8,8 @@ const {
 } = require('vscode')
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
-const {resolveBlpEditor} = require('./resolveBlpEditor.js')
-const {resolveW3eEditor} = require('./w3e/index.js')
+const {resolveBlpEditor} = require('./mapEditor/resolveBlpEditor.js')
+const {resolveW3eEditor} = require('./mapEditor/index.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')

@@ -1,3 +1,4 @@
+pub(crate) mod blp_render;
 pub(crate) mod file_lookup;
 pub(crate) mod game_path;
 pub(crate) mod mdx_texture;

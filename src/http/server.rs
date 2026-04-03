@@ -3,6 +3,7 @@
 //! Runs alongside the LSP on `127.0.0.1:{random_port}`.
 //! Webviews `fetch()` binary terrain/model data directly — zero JSON/base64 overhead.
 
+use crate::http::blp_render::blp_render_handler;
 use crate::http::file_lookup::file_lookup_handler;
 use crate::http::game_path::{game_path_set_handler, game_path_status_handler};
 use crate::http::mdx_texture::mdx_texture_handler;
@@ -74,7 +75,8 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/w3e/gamePath/status", get(game_path_status_handler))
         .route("/w3e/gamePath/set", post(game_path_set_handler))
         .route("/w3e/pathTex", get(path_tex_handler))
-        .route("/mdx/texture", get(mdx_texture_handler));
+        .route("/mdx/texture", get(mdx_texture_handler))
+        .route("/blp/render", get(blp_render_handler));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr: SocketAddr = listener.local_addr()?;

@@ -2,7 +2,7 @@
 
 > Based on [HiveWE wiki](https://github.com/stijnherfst/HiveWE/wiki/war3map.w3e-Terrain)
 >
-> ImHex pattern: [`w3e.hexpat`](../../src/lng/w3e/w3e.hexpat) — Rust parser: [`parse.rs`](../../src/lng/w3e/parse.rs) — renderer: [`terrain.js`](../../extension/w3e/terrain.js)
+> ImHex pattern: [`w3e.hexpat`](../../src/lng/w3e/w3e.hexpat) — Rust parser: [`parse.rs`](../../src/lng/w3e/parse.rs) — renderer: [`terrain.js`](../../extension/mapEditor/terrain.js)
 
 All multi-byte integers are **little-endian**.
 
