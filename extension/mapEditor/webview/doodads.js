@@ -214,7 +214,7 @@ window._W3E_DOODADS = (function () {
         if (srcEl) {
             if (source) {
                 srcEl.className = 'ts-source';
-                srcEl.innerHTML = 'Doodads.slk: <span class="code">' + U.esc(source) + '</span>';
+                srcEl.textContent = source;
             } else {
                 srcEl.className = 'ts-source ts-no-slk';
                 srcEl.textContent = 'Doodads.slk not found \u2014 set Game Path';

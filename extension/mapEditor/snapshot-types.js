@@ -24,6 +24,7 @@
  * @property {UnitsSlkResult|null} unitsSlk - Unit catalog (merged from SLK + TXT)
  * @property {DestructablesSlkResult|null} destructablesSlk - Destructable catalog
  * @property {CliffTypesSlkResult|null} cliffTypesSlk - Cliff type catalog
+ * @property {CliffVariationsResult|null} cliffVariations - Max variation per cliff pattern
  */
 
 // ─── GameString ──────────────────────────────────────────────────────────────
@@ -347,6 +348,16 @@
  * @typedef {Object} CliffTypesSlkResult
  * @property {string} source
  * @property {Object<string, CliffTypeInfo>} cliffTypes - Keyed by cliffID rawcode string
+ */
+
+// ─── Cliff Variations ────────────────────────────────────────────────────────
+
+/**
+ * Max variation index per cliff letter-pattern (e.g. "CBAA" → 0).
+ * Parsed from embedded Cliffs.slk / CityCliffs.slk.
+ * @typedef {Object} CliffVariationsResult
+ * @property {Object<string, number>} cliffs - Pattern → max variation for "Cliffs" dir
+ * @property {Object<string, number>} cityCliffs - Pattern → max variation for "CityCliffs" dir
  */
 
 

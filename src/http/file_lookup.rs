@@ -18,6 +18,8 @@ pub struct FileLookupParams {
     pub path: String,
     /// Optional archive path (for looking up inside the map archive first).
     pub archive: Option<String>,
+    /// Optional tileset letter (e.g. `"L"`) — enables lookup in `{tileset}.mpq`.
+    pub tileset: Option<String>,
 }
 
 pub async fn file_lookup_handler(
@@ -27,9 +29,10 @@ pub async fn file_lookup_handler(
 
     let path = params.path.clone();
     let archive = params.archive.clone();
+    let tileset = params.tileset.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        crate::lng::w3e::file_lookup::lookup_file_resolved(&path, archive.as_deref())
+        crate::lng::w3e::file_lookup::lookup_file_resolved_ext(&path, archive.as_deref(), tileset.as_deref())
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?;

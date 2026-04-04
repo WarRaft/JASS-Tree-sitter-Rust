@@ -422,10 +422,8 @@ window._W3E_MODEL_VIEWER = (function () {
                     if (!tex) return;
                     var actualPath = null;
                     if (tex.replaceable_id && replaceableTextures) {
-                        if (replaceableTextures._cliffTex0 !== undefined) {
-                            actualPath = (tex.replaceable_id % 2 === 0)
-                                ? replaceableTextures._cliffTex0
-                                : replaceableTextures._cliffTex1;
+                        if (replaceableTextures._cliffTex !== undefined) {
+                            actualPath = replaceableTextures._cliffTex;
                         } else if (replaceableTextures[tex.replaceable_id]) {
                             actualPath = replaceableTextures[tex.replaceable_id];
                         }

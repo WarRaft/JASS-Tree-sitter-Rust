@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use super::slk::{
     DoodadsSlkResult, DestructablesSlkResult, TerrainSlkResult, UnitsSlkResult,
-    CliffTypesSlkResult,
+    CliffTypesSlkResult, CliffVariationsResult,
 };
 
 // ─── Snapshot struct ─────────────────────────────────────────────────────────
@@ -35,6 +35,8 @@ pub struct GameSnapshot {
     pub destructables_slk: Option<DestructablesSlkResult>,
     /// Cliff type catalog from `TerrainArt\CliffTypes.slk`.
     pub cliff_types_slk: Option<CliffTypesSlkResult>,
+    /// Max variation per cliff letter-pattern (from embedded Cliffs.slk / CityCliffs.slk).
+    pub cliff_variations: Option<CliffVariationsResult>,
 }
 
 // ─── Global cache ────────────────────────────────────────────────────────────
@@ -53,7 +55,10 @@ static SNAPSHOT: Mutex<Option<CachedSnapshot>> = Mutex::new(None);
 /// Called when the game path is set or changed.  Reads all SLK / INI files
 /// synchronously (should be called from `spawn_blocking`).
 pub fn build_snapshot(archive_path: Option<&str>) {
-    use super::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk};
+    use super::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations};
+
+    // 0. Discover tileset MPQs (loose files + inside War3*.mpq archives).
+    super::game_path::discover_tileset_mpqs();
 
     // 1. Ensure westrings are loaded first (all SLK loaders depend on them).
     super::westrings::ensure_loaded(archive_path);
@@ -64,7 +69,8 @@ pub fn build_snapshot(archive_path: Option<&str>) {
     let doodads_slk = load_doodads_slk(archive_path);
     let units_slk = load_units_slk(archive_path);
     let destructables_slk = load_destructables_slk(archive_path);
-    let cliff_types_slk = load_cliff_types_slk(archive_path);
+    let cliff_types_slk = load_cliff_types_slk(archive_path, None);
+    let cliff_variations = Some(load_cliff_variations());
 
     let snapshot = GameSnapshot {
         westrings,
@@ -73,20 +79,24 @@ pub fn build_snapshot(archive_path: Option<&str>) {
         units_slk,
         destructables_slk,
         cliff_types_slk,
+        cliff_variations,
     };
 
     // 3. Pre-serialise to JSON once.
     let json = serde_json::to_vec(&snapshot).unwrap_or_default();
 
     log::info!(
-        "Game snapshot built: {} bytes ({} westrings, terrain={}, doodads={}, units={}, destructables={}, cliffTypes={})",
+        "Game snapshot built: {} bytes ({} westrings, terrain={} (source: {}), doodads={}, units={}, destructables={}, cliffTypes={} (source: {}), cliffVariations={})",
         json.len(),
         snapshot.westrings.len(),
         snapshot.terrain_slk.is_some(),
+        snapshot.terrain_slk.as_ref().map(|s| s.source.as_str()).unwrap_or("N/A"),
         snapshot.doodads_slk.is_some(),
         snapshot.units_slk.is_some(),
         snapshot.destructables_slk.is_some(),
         snapshot.cliff_types_slk.is_some(),
+        snapshot.cliff_types_slk.as_ref().map(|s| s.source.as_str()).unwrap_or("N/A"),
+        snapshot.cliff_variations.is_some(),
     );
 
     let mut guard = match SNAPSHOT.lock() {

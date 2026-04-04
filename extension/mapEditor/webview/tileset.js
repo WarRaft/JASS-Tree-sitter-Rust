@@ -4,8 +4,23 @@
 
 window._W3E_TILESET = (function () {
     var U = window._W3E_UTILS;
+    var S = window._W3E_STATE;
 
-    function rebuildTileset(slkData, groundTileCodes, cliffTileCodes) {
+    function _makeSlkLink(slkPath, source) {
+        var link = document.createElement('a');
+        link.className = 'ts-slk-link';
+        link.href = '#';
+        link.textContent = source || slkPath;
+        link.title = 'Open in side tab';
+        link.addEventListener('click', function (e) {
+            e.preventDefault();
+            var vscode = S.getVscode();
+            if (vscode) vscode.postMessage({command: 'openSlk', path: slkPath});
+        });
+        return link;
+    }
+
+    function rebuildTileset(slkData, groundTileCodes) {
         const slkMap = {};
         let source = '';
         if (slkData && slkData.tiles) {
@@ -15,12 +30,13 @@ window._W3E_TILESET = (function () {
 
         const srcEl = document.getElementById('tsSlkSource');
         if (srcEl) {
+            srcEl.innerHTML = '';
             if (source) {
                 srcEl.className = 'ts-source';
-                srcEl.innerHTML = 'Terrain.slk: <span class="code">' + U.esc(source) + '</span>';
+                srcEl.appendChild(_makeSlkLink('TerrainArt\\Terrain.slk', source));
             } else {
                 srcEl.className = 'ts-source ts-no-slk';
-                srcEl.textContent = 'Terrain.slk not found \u2014 set Game Path';
+                srcEl.textContent = 'TerrainArt\\Terrain.slk \u2014 not found, set Game Path';
             }
         }
 
@@ -47,11 +63,33 @@ window._W3E_TILESET = (function () {
                 groundEl.appendChild(el);
             }
         }
+    }
 
-        const cliffSection = document.getElementById('tsCliffSection');
+    function rebuildCliffs(cliffTypesSlk, cliffTileCodes) {
+        const srcEl = document.getElementById('ctSlkSource');
+        if (srcEl) {
+            srcEl.innerHTML = '';
+            const source = (cliffTypesSlk && cliffTypesSlk.source) || '';
+            if (source) {
+                srcEl.className = 'ts-source';
+                srcEl.appendChild(_makeSlkLink('TerrainArt\\CliffTypes.slk', source));
+            } else {
+                srcEl.className = 'ts-source ts-no-slk';
+                srcEl.textContent = 'TerrainArt\\CliffTypes.slk \u2014 not found, set Game Path';
+            }
+        }
+
+        const cliffSection = document.getElementById('ctCliffSection');
         if (cliffSection) {
             cliffSection.innerHTML = '';
             if (cliffTileCodes.length > 0) {
+                const cliffTypeMap = {};
+                if (cliffTypesSlk && cliffTypesSlk.cliffTypes) {
+                    for (const [id, ct] of Object.entries(cliffTypesSlk.cliffTypes)) {
+                        cliffTypeMap[id] = ct;
+                    }
+                }
+
                 const title = document.createElement('div');
                 title.className = 'tw-section-title';
                 title.textContent = 'Cliff Tiles (' + cliffTileCodes.length + ')';
@@ -60,9 +98,23 @@ window._W3E_TILESET = (function () {
                 const container = document.createElement('div');
                 container.className = 'legend';
                 for (let i = 0; i < cliffTileCodes.length; i++) {
+                    const code = cliffTileCodes[i];
                     const el = document.createElement('tile-item');
                     el.setAttribute('index', String(i));
-                    el.setAttribute('code', cliffTileCodes[i]);
+                    el.setAttribute('code', code);
+                    const ct = cliffTypeMap[code];
+                    if (ct) {
+                        const parts = [];
+                        if (ct.cliffModelDir) parts.push(ct.cliffModelDir);
+                        if (ct.cliffClass) parts.push(ct.cliffClass);
+                        if (parts.length > 0) el.setAttribute('tile-name', parts.join(' \u2014 '));
+                        if (ct.texDir && ct.texFile) {
+                            el.setAttribute('tile-path', ct.texDir + '\\' + ct.texFile + '.blp');
+                        }
+                        if (ct.texSource) {
+                            el.setAttribute('tile-source', ct.texSource);
+                        }
+                    }
                     container.appendChild(el);
                 }
                 cliffSection.appendChild(container);
@@ -70,6 +122,6 @@ window._W3E_TILESET = (function () {
         }
     }
 
-    return { rebuildTileset };
+    return { rebuildTileset, rebuildCliffs };
 })();
 

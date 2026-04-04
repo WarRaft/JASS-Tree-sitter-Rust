@@ -1,5 +1,5 @@
 use crate::lng::w3e::parse::W3eData;
-use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk};
+use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations};
 use crate::lng::w3e::textures::load_tile_textures;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
@@ -127,6 +127,9 @@ async fn _send(
         .map_err(|e| format!("spawn_blocking: {e}"))??;
 
         let (data, meta) = W3eData::read(&buf)?;
+        // Store the tileset globally so all file lookups include {tileset}.mpq
+        super::game_path::set_tileset(&data.tileset);
+        let tileset_for_cliff = data.tileset.clone();
         let ground_tiles = data.ground_tiles.clone();
         let packed = pack_points(&data);
         let mut val = to_value(data)?;
@@ -141,13 +144,14 @@ async fn _send(
             let dood_slk = load_doodads_slk(ap2.as_deref());
             let unit_slk = load_units_slk(ap2.as_deref());
             let dest_slk = load_destructables_slk(ap2.as_deref());
-            let cliff_types_slk = load_cliff_types_slk(ap2.as_deref());
-            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk)
+            let cliff_types_slk = load_cliff_types_slk(ap2.as_deref(), Some(&tileset_for_cliff));
+            let cliff_variations = load_cliff_variations();
+            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations)
         })
         .await
         .ok();
 
-        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk)) = slk_and_tex {
+        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations)) = slk_and_tex {
             if let Some(slk_data) = slk {
                 val["_terrainSlk"] = to_value(slk_data)?;
             }
@@ -164,6 +168,7 @@ async fn _send(
             if let Some(ct_data) = cliff_types_slk {
                 val["_cliffTypesSlk"] = to_value(ct_data)?;
             }
+            val["_cliffVariations"] = to_value(cliff_variations)?;
         }
 
         Ok(val)
@@ -172,6 +177,9 @@ async fn _send(
         let path = uri.to_file_path().map_err(|()| "Invalid file URI")?;
         let buf = tokio::fs::read(&path).await?;
         let (data, meta) = W3eData::read(&buf)?;
+        // Store the tileset globally so all file lookups include {tileset}.mpq
+        super::game_path::set_tileset(&data.tileset);
+        let tileset_for_cliff = data.tileset.clone();
         let ground_tiles = data.ground_tiles.clone();
         let packed = pack_points(&data);
         let mut val = to_value(data)?;
@@ -185,13 +193,14 @@ async fn _send(
             let dood_slk = load_doodads_slk(None);
             let unit_slk = load_units_slk(None);
             let dest_slk = load_destructables_slk(None);
-            let cliff_types_slk = load_cliff_types_slk(None);
-            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk)
+            let cliff_types_slk = load_cliff_types_slk(None, Some(&tileset_for_cliff));
+            let cliff_variations = load_cliff_variations();
+            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations)
         })
         .await
         .ok();
 
-        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk)) = slk_and_tex {
+        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations)) = slk_and_tex {
             if let Some(slk_data) = slk {
                 val["_terrainSlk"] = to_value(slk_data)?;
             }
@@ -208,6 +217,7 @@ async fn _send(
             if let Some(ct_data) = cliff_types_slk {
                 val["_cliffTypesSlk"] = to_value(ct_data)?;
             }
+            val["_cliffVariations"] = to_value(cliff_variations)?;
         }
 
         Ok(val)

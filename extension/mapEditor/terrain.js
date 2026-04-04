@@ -14,6 +14,7 @@
         initialDoodadsSlk: DATA.initialDoodadsSlk,
         initialDestructablesSlk: DATA.initialDestructablesSlk,
         initialUnitsSlk: DATA.initialUnitsSlk,
+        initialCliffTypesSlk: DATA.initialCliffTypesSlk,
         doodadDooItems: DATA.doodadDooItems || [],
         unitDooItems: DATA.unitDooItems || []
     })
@@ -249,6 +250,7 @@
             // Slopes:        ramp-adjusted layerHeight (if enabled)
             function applyHeights() {
                 const pos = geo.attributes.position
+                const norm = geo.attributes.normal
                 const layer = showSlopes ? computeRampLayerHeight() : D.layerHeight
                 for (let gj = 0; gj < H; gj++) {
                     for (let gi = 0; gi < W; gi++) {
@@ -262,7 +264,43 @@
                     }
                 }
                 pos.needsUpdate = true
-                geo.computeVertexNormals()
+
+                // Compute normals from deformation-only height (matching HiveWE
+                // terrain.vert lines 49-53 & cliff.vert lines 29-33).
+                // Both terrain and cliff normals must use the same height source
+                // (ground_heights / deformation only — no layer_height) so that
+                // lighting is continuous at the terrain-cliff boundary.
+                // Using computeVertexNormals() would include layer_height steps,
+                // producing normals inconsistent with the cliff shader and causing
+                // a visible shadow seam where cliff models meet the terrain mesh.
+                for (let gj = 0; gj < H; gj++) {
+                    for (let gi = 0; gi < W; gi++) {
+                        const vi = gj * W + gi
+                        const i = gi
+                        const j = H - 1 - gj
+
+                        const iL = Math.max(i - 1, 0)
+                        const iR = Math.min(i + 1, W - 1)
+                        const jD = Math.max(j - 1, 0)
+                        const jU = Math.min(j + 1, H - 1)
+
+                        let hL = 0, hR = 0, hD = 0, hU = 0
+                        if (showDeformation) {
+                            hL = (D.groundHeight[j * W + iL] - H_ZERO) / H_SCALE
+                            hR = (D.groundHeight[j * W + iR] - H_ZERO) / H_SCALE
+                            hD = (D.groundHeight[jD * W + i] - H_ZERO) / H_SCALE
+                            hU = (D.groundHeight[jU * W + i] - H_ZERO) / H_SCALE
+                        }
+
+                        const nx = hL - hR
+                        const ny = hD - hU
+                        const nz = 2.0 * TILE
+                        const len = Math.sqrt(nx * nx + ny * ny + nz * nz)
+
+                        norm.setXYZ(vi, nx / len, ny / len, nz / len)
+                    }
+                }
+                norm.needsUpdate = true
             }
 
             applyHeights()
@@ -380,6 +418,59 @@
             colorTex.magFilter = THREE.LinearFilter
             colorTex.minFilter = THREE.LinearFilter
 
+            // ── Cliff cell geometry removal ────────────────────
+            // Instead of transparency tricks, we remove cliff cell
+            // triangles from the terrain mesh by making them degenerate
+            // (zero-area) in the index buffer — matching HiveWE's
+            // ground_exists = false approach (terrain.vert line 62).
+            // Cliff models provide the geometry for those cells.
+            // The texture atlas still has data for cliff cells (for
+            // bilinear filtering at cell boundaries).
+            const _origIdx = geo.index.array.constructor === Uint32Array
+                ? new Uint32Array(geo.index.array) : new Uint16Array(geo.index.array)
+
+            function _updateCliffCells() {
+                const indices = geo.index.array
+                // Restore original indices first
+                indices.set(_origIdx)
+                if (showCliffs) {
+                    const gridX = W - 1
+                    const gridY = H - 1
+                    for (let iy = 0; iy < gridY; iy++) {
+                        for (let ix = 0; ix < gridX; ix++) {
+                            // Map geometry cell (ix,iy) to data cell
+                            // geo iy=0 → top (data cy = H-2), iy=gridY-1 → bottom (data cy = 0)
+                            const cy = gridY - 1 - iy
+                            const cx = ix
+                            const iBL = cy * W + cx
+                            const iBR = cy * W + cx + 1
+                            const iTL = (cy + 1) * W + cx
+                            const iTR = (cy + 1) * W + cx + 1
+                            const lBL = D.layerHeight[iBL]
+                            const lBR = D.layerHeight[iBR]
+                            const lTL = D.layerHeight[iTL]
+                            const lTR = D.layerHeight[iTR]
+                            if (lBL === lBR && lBR === lTL && lTL === lTR) continue
+
+                            // Ramp entrance: all 4 corners have ramp flag AND
+                            // heights are NOT diagonally symmetric → keep terrain
+                            // visible (HiveWE terrain.ixx is_corner_ramp_entrance
+                            // + update_ground_exists line 940).
+                            const fBL = D.flags[iBL], fBR = D.flags[iBR],
+                                  fTL = D.flags[iTL], fTR = D.flags[iTR]
+                            if ((fBL & 8) && (fBR & 8) && (fTL & 8) && (fTR & 8) &&
+                                !(lBL === lTR && lTL === lBR)) continue
+
+                            // Cliff cell → make its 2 triangles degenerate (all same vertex)
+                            const off = (iy * gridX + ix) * 6
+                            const v0 = indices[off]
+                            for (let k = 0; k < 6; k++) indices[off + k] = v0
+                        }
+                    }
+                }
+                geo.index.needsUpdate = true
+            }
+
             function applyColors() {
                 const ctx = colorCanvas.getContext('2d')
                 ctx.clearRect(0, 0, colorCanvas.width, colorCanvas.height)
@@ -391,14 +482,11 @@
                         const iTL = (cy + 1) * W + cx
                         const iTR = (cy + 1) * W + cx + 1
 
-                        // Skip cliff cells when cliffs are shown
-                        if (showCliffs) {
-                            const lBL = D.layerHeight[iBL], lBR = D.layerHeight[iBR]
-                            const lTL = D.layerHeight[iTL], lTR = D.layerHeight[iTR]
-                            if (!(lBL === lBR && lBR === lTL && lTL === lTR)) continue
-                        }
-
-                        // Read ground texture, applying cliff groundTile override
+                        // Read ground texture, applying cliff groundTile override.
+                        // Cliff cells are always drawn (not skipped) so that
+                        // bilinear texture filtering at the terrain–cliff
+                        // boundary blends matching colours instead of mixing
+                        // with transparent black → eliminates the dark seam.
                         const ov = showCliffs ? _cliffGroundOverride : null
                         const bl = ov && ov[iBL] >= 0 ? ov[iBL] : D.groundTexture[iBL]
                         const br = ov && ov[iBR] >= 0 ? ov[iBR] : D.groundTexture[iBR]
@@ -471,6 +559,7 @@
             }
 
             applyColors()
+            _updateCliffCells()
 
             // ── Tile colour picker → update terrain ─────────────
             document.addEventListener('color-change', e => {
@@ -481,7 +570,7 @@
                 }
             })
 
-            const mat = new THREE.MeshLambertMaterial({map: colorTex, side: THREE.DoubleSide, transparent: showCliffs, alphaTest: showCliffs ? 0.01 : 0})
+            const mat = new THREE.MeshLambertMaterial({map: colorTex, side: THREE.DoubleSide})
             mesh = new THREE.Mesh(geo, mat)
             scene.add(mesh)
 
@@ -540,14 +629,11 @@
                         const iTL = (cy + 1) * W + cx
                         const iTR = (cy + 1) * W + cx + 1
 
-                        // Skip cliff cells when cliffs are shown
-                        if (showCliffs) {
-                            const lBL = D.layerHeight[iBL], lBR = D.layerHeight[iBR]
-                            const lTL = D.layerHeight[iTL], lTR = D.layerHeight[iTR]
-                            if (!(lBL === lBR && lBR === lTL && lTL === lTR)) continue
-                        }
-
-                        // Read ground texture, applying cliff groundTile override
+                        // Read ground texture, applying cliff groundTile override.
+                        // Cliff cells are always drawn (not skipped) so that
+                        // bilinear texture filtering at the terrain–cliff
+                        // boundary blends matching colours instead of mixing
+                        // with transparent black → eliminates the dark seam.
                         const ov = showCliffs ? _cliffGroundOverride : null
                         const bl = ov && ov[iBL] >= 0 ? ov[iBL] : D.groundTexture[iBL]
                         const br = ov && ov[iBR] >= 0 ? ov[iBR] : D.groundTexture[iBR]
@@ -997,17 +1083,45 @@
                     // Info bar — all values derived from the same snapped point
                     const gameX = D.offsetX + vx + halfGridW
                     const gameY = D.offsetY + vy + halfGridH
+
+                    // Resolve ground tile rawcode
+                    const gtIdx = D.groundTexture[idx]
+                    const groundCodes = DATA.groundTileCodes || []
+                    const gtCode = gtIdx < groundCodes.length
+                        ? (typeof groundCodes[gtIdx] === 'string' ? groundCodes[gtIdx] : groundCodes[gtIdx].text || '') : ''
+
+                    // Resolve cliff tile rawcode
+                    const ctIdx = D.cliffTexture[idx]
+                    const cliffCodes = DATA.cliffTileCodes || []
+                    const ctCode = ctIdx < 15 && ctIdx < cliffCodes.length
+                        ? (typeof cliffCodes[ctIdx] === 'string' ? cliffCodes[ctIdx] : cliffCodes[ctIdx].text || '') : ''
+
+                    // Flags
                     const fl = []
                     const cf = D.flags[idx]
-                    if (cf & 1) fl.push('water')
-                    if (cf & 2) fl.push('boundary')
-                    if (cf & 4) fl.push('blight')
-                    if (cf & 8) fl.push('ramp')
-                    infoEl.textContent = 'X: ' + gameX.toFixed(2) + '  Y: ' + gameY.toFixed(2) +
-                        '  Z: ' + vz.toFixed(2) + '  Tex: ' + D.groundTexture[idx] +
-                        '  Cliff: ' + D.cliffVariation[idx] + '/' + D.cliffTexture[idx] +
-                        '  Layer: ' + D.layerHeight[idx] +
-                        (fl.length ? ' [' + fl.join(', ') + ']' : '')
+                    if (cf & 1) fl.push('💧water')
+                    if (cf & 2) fl.push('🚧boundary')
+                    if (cf & 4) fl.push('☠blight')
+                    if (cf & 8) fl.push('📐ramp')
+
+                    // Raw ground height
+                    const rawGH = D.groundHeight[idx]
+                    const deformation = ((rawGH - H_ZERO) / H_SCALE).toFixed(1)
+
+                    const parts = []
+                    parts.push('<span class="ci-label">Point</span> ' + sx + ', ' + sy)
+                    parts.push('<span class="ci-label">World</span> ' + gameX.toFixed(0) + ', ' + gameY.toFixed(0) + ', ' + vz.toFixed(1))
+                    parts.push('<span class="ci-label">Layer</span> ' + D.layerHeight[idx])
+                    parts.push('<span class="ci-label">Deform</span> ' + deformation)
+                    parts.push('<span class="ci-label">Ground</span> ' + gtIdx + (gtCode ? ' <code>' + gtCode + '</code>' : '') +
+                        ' <span class="ci-dim">var ' + D.groundVariation[idx] + '</span>')
+                    if (ctIdx < 15) {
+                        parts.push('<span class="ci-label">Cliff</span> ' + ctIdx + (ctCode ? ' <code>' + ctCode + '</code>' : '') +
+                            ' <span class="ci-dim">var ' + D.cliffVariation[idx] + '</span>')
+                    }
+                    if (fl.length) parts.push(fl.join(' '))
+
+                    infoEl.innerHTML = parts.join('<span class="ci-sep">│</span>')
                     return
                 }
                 markerMesh.visible = false
@@ -1048,9 +1162,8 @@
                             var cliffItem = cliffObj.userData._items[cliffHit.instanceId]
                             if (cliffItem && cliffItem.path && vscode) {
                                 var cmd = {command: 'openModel', path: cliffItem.path}
-                                if (cliffItem.cliffTex0) {
-                                    cmd.cliffTex0 = cliffItem.cliffTex0
-                                    cmd.cliffTex1 = cliffItem.cliffTex1
+                                if (cliffItem.cliffTex) {
+                                    cmd.cliffTex = cliffItem.cliffTex
                                 }
                                 vscode.postMessage(cmd)
                             }
@@ -1119,7 +1232,30 @@
                 if (!bs || !texPath) return null
                 const params = new URLSearchParams({token: bs.token, path: texPath})
                 if (DATA.archivePath) params.set('archive', DATA.archivePath)
+                if (DATA.tileset) params.set('tileset', DATA.tileset)
                 return 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params
+            }
+
+            // Load cliff tile texture previews into <tile-item> elements
+            function _loadCliffTilePreviews() {
+                const items = document.querySelectorAll('#ctCliffSection tile-item')
+                if (!items.length) return
+                items.forEach(function (el) {
+                    const texPath = el.getAttribute('tile-path')
+                    if (!texPath) return
+                    const url = _texUrl(texPath)
+                    if (!url) return
+                    const img = new Image()
+                    img.crossOrigin = 'anonymous'
+                    img.onload = function () {
+                        const pc = document.createElement('canvas')
+                        pc.width = 64
+                        pc.height = 64
+                        pc.getContext('2d').drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, 64, 64)
+                        el.setAttribute('tile-preview', pc.toDataURL())
+                    }
+                    img.src = url
+                })
             }
 
             // ── Cliff per-vertex terrain height + normal shader ─────────────
@@ -1208,6 +1344,12 @@
                         side: THREE.DoubleSide,
                         flatShading: false,
                     }
+                    // Cliff models: disable specular so adjacent instances
+                    // have consistent diffuse-only lighting (no bright edge seams).
+                    if (isCliff) {
+                        matOpts.specular = 0x000000
+                        matOpts.shininess = 0
+                    }
 
                     // Look up texture via material_id → material → layer → texture
                     if (g.material_id != null && g.material_id < materials.length) {
@@ -1221,12 +1363,10 @@
                                 // Determine texture path: use replaceable texture override if available
                                 var texPath = null
                                 if (tex && tex.replaceable_id && replaceableTextures) {
-                                    if (replaceableTextures._cliffTex0 !== undefined) {
-                                        // Cliff model: map replaceable_id to cliff textures
-                                        // Even IDs or first → Cliff0, odd or second → Cliff1
-                                        texPath = (tex.replaceable_id % 2 === 0)
-                                            ? replaceableTextures._cliffTex0
-                                            : replaceableTextures._cliffTex1
+                                    if (replaceableTextures._cliffTex !== undefined) {
+                                        // Cliff model: single material with Replaceable ID 11,
+                                        // texture = texDir\texFile from CliffTypes.slk
+                                        texPath = replaceableTextures._cliffTex
                                     } else if (replaceableTextures[tex.replaceable_id]) {
                                         texPath = replaceableTextures[tex.replaceable_id]
                                     }
@@ -1312,17 +1452,24 @@
                 return base + idx + ext
             }
 
-            // Create centered items for missing cliff fallback cubes
+            // Create centered items for missing cliff fallback cubes.
+            // Normal cliff models get terrain deformation via the cliff shader,
+            // but fallback cubes use plain material — add deformation manually.
             function _cliffCenteredItems(items) {
                 const half = TILE / 2
                 return items.map(function (it) {
+                    var defZ = 0
+                    if (showDeformation) {
+                        var sx = Math.max(0, Math.min(W - 1, Math.round((it.p[0] - D.offsetX) / TILE)))
+                        var sy = Math.max(0, Math.min(H - 1, Math.round((it.p[1] - D.offsetY) / TILE)))
+                        defZ = (D.groundHeight[sy * W + sx] - H_ZERO) / H_SCALE
+                    }
                     return {
                         path: it.path,
-                        p: [it.p[0] + half, it.p[1] + half, it.p[2] + half],
+                        p: [it.p[0] + half, it.p[1] + half, it.p[2] + half + defZ],
                         s: [1, 1, 1],
                         a: 0,
-                        cliffTex0: it.cliffTex0,
-                        cliffTex1: it.cliffTex1,
+                        cliffTex: it.cliffTex,
                     }
                 })
             }
@@ -1333,20 +1480,20 @@
             // For each cell where corners have different layerHeight,
             // derive the cliff/ramp model filename and collect placement items.
             //
-            // Cliff replaceable textures (IDs 1, 11, 31, 100, 200, etc.)
-            // resolve to ReplaceableTextures\Cliff\{tileset}_Cliff{N}.blp
-            // with fallback to ReplaceableTextures\Cliff\Cliff{N}.blp.
-            const _tileset = DATA.tileset || ''
+            // Cliff models have a single material with Replaceable ID 11.
+            // The actual texture path is {texDir}\{texFile}.blp from CliffTypes.slk
+            // (HiveWE terrain.ixx lines 372-374: cliff_slk texdir + texfile).
+            // The tileset-specific MPQ (e.g. L.mpq) is searched via the cascade
+            // lookup when the `tileset` query parameter is passed to /mdx/texture.
 
-            function _cliffTexPath(n) {
-                // Try tileset-specific first, then default
-                if (_tileset) return 'ReplaceableTextures\\Cliff\\' + _tileset + '_Cliff' + n + '.blp'
-                return 'ReplaceableTextures\\Cliff\\Cliff' + n + '.blp'
-            }
-            const _cliffTexFallback0 = 'ReplaceableTextures\\Cliff\\Cliff0.blp'
-            const _cliffTexFallback1 = 'ReplaceableTextures\\Cliff\\Cliff1.blp'
+
+            // Max variation index per cliff letter-pattern (from snapshot cliffVariations).
+            // If cliff_variation > max, it is clamped (HiveWE terrain.ixx line 1080).
+            // Populated from embedded Cliffs.slk / CityCliffs.slk via the game snapshot.
 
             function _collectCliffItems() {
+                const _cliffVariations = (DATA.cliffVariations && DATA.cliffVariations.cliffs) || {}
+                const _cityCliffVariations = (DATA.cliffVariations && DATA.cliffVariations.cityCliffs) || {}
                 const items = [] // {path, p:[x,y,z], s:[1,1,1], a:0, cliffTex}
                 const cliffCodes = DATA.cliffTileCodes || []
                 if (cliffCodes.length === 0 || Object.keys(_cliffTypeMap).length === 0) return items
@@ -1382,6 +1529,12 @@
                         // Determine if this cell is a ramp (all 4 corners have ramp flag)
                         const isRamp = (D.flags[iBL] & 8) && (D.flags[iBR] & 8) &&
                                        (D.flags[iTL] & 8) && (D.flags[iTR] & 8)
+
+                        // Ramp entrance: all 4 ramp AND heights NOT diagonally
+                        // symmetric → terrain mesh stays visible, no cliff model
+                        // (HiveWE terrain.ixx is_corner_ramp_entrance line 803-815)
+                        if (isRamp && !(lBL === lTR && lTL === lBR)) continue
+
                         const modelDir = isRamp ? ct.rampModelDir : ct.cliffModelDir
                         if (!modelDir) continue
 
@@ -1402,14 +1555,21 @@
                         // Skip 'AAAA' — not a valid cliff
                         if (dTL === 0 && dTR === 0 && dBR === 0 && dBL === 0) continue
 
-                        const variation = D.cliffVariation[iBL] % 3 // models have 0, 1, 2
+                        // Clamp variation to max available for this pattern
+                        // (HiveWE terrain.ixx line 1080: std::clamp(cliff_variation, 0, cliff_variations[pattern]))
+                        const pattern = cTL + cTR + cBR + cBL
+                        const varMap = modelDir === 'CityCliffs' ? _cityCliffVariations : _cliffVariations
+                        const maxVar = varMap[pattern] !== undefined ? varMap[pattern] : 0
+                        const variation = Math.min(D.cliffVariation[iBL], maxVar)
 
                         const modelPath = 'Doodads\\Terrain\\' + modelDir + '\\' + modelDir +
-                            cTL + cTR + cBR + cBL + variation + '.mdx'
+                            pattern + variation + '.mdx'
 
-                        // Cliff texture: tileset-specific, fallback to default
-                        const cliffTex0 = _cliffTexPath(0)
-                        const cliffTex1 = _cliffTexPath(1)
+                        // Cliff texture: derived from CliffTypes.slk texDir/texFile
+                        // (HiveWE terrain.ixx lines 372-374: texdir + texfile)
+                        const cliffTex = (ct.texDir && ct.texFile)
+                            ? ct.texDir + '\\' + ct.texFile + '.blp'
+                            : null
 
                         // Position: bottom-left corner of cell, at base layer height.
                         // Per-vertex terrain height is applied in the cliff shader
@@ -1423,8 +1583,7 @@
                             p: [wx, wy, wz],
                             s: [1, 1, 1],
                             a: -Math.PI / 2,  // WC3 cliff models are rotated 90° — unrotate (HiveWE: vec3(y, -x, z))
-                            cliffTex0,
-                            cliffTex1,
+                            cliffTex,
                         })
                     }
                 }
@@ -1434,9 +1593,7 @@
             // Build replaceable texture map for a cache entry
             function _buildReplTex(info) {
                 if (info._cliff) {
-                    const tex0 = info._cliffTex0 || _cliffTexFallback0
-                    const tex1 = info._cliffTex1 || _cliffTexFallback1
-                    return {_cliffTex0: tex0, _cliffTex1: tex1}
+                    return info._cliffTex ? {_cliffTex: info._cliffTex} : null
                 }
                 if (info.texId && info.texFile) return {[info.texId]: info.texFile}
                 return null
@@ -1493,14 +1650,13 @@
                 // Collect cliff/ramp models from terrain data
                 const cliffItems = _collectCliffItems()
                 for (const item of cliffItems) {
-                    // Cache key includes texture paths so different tilesets get separate entries
-                    const texKey = item.cliffTex0 || ''
+                    // Cache key includes texture path so different cliff types get separate entries
+                    const texKey = item.cliffTex || ''
                     const cacheKey = texKey ? (item.path + '|' + texKey) : item.path
                     if (!byCacheKey[cacheKey]) byCacheKey[cacheKey] = {
                         path: item.path, items: [],
                         _cliff: true,
-                        _cliffTex0: item.cliffTex0,
-                        _cliffTex1: item.cliffTex1,
+                        _cliffTex: item.cliffTex,
                     }
                     byCacheKey[cacheKey].items.push(item)
                     pathsNeeded[item.path] = true
@@ -1605,14 +1761,13 @@
             if (cbCliffsEl && !cbCliffsEl.checked) {
                 cliffGroup.visible = false
                 showCliffs = false
+                _updateCliffCells()
             }
 
             cb('cbCliffs', e => {
                 showCliffs = e.target.checked
                 cliffGroup.visible = e.target.checked
-                mat.transparent = showCliffs
-                mat.alphaTest = showCliffs ? 0.01 : 0
-                mat.needsUpdate = true
+                _updateCliffCells()
                 applyColors()
                 if (canvasTex) buildComposited(_lastTileImages || [])
                 saveCbState()
@@ -1623,6 +1778,8 @@
             if (_hasMaps && (_doodItems.length > 0 || _unitItems.length > 0 || Object.keys(_cliffTypeMap).length > 0)) {
                 _collectAndLoad()
             }
+            // Load cliff tile texture previews
+            _loadCliffTilePreviews()
 
             // Reload when game path changes (snapshot updated)
             W3E.onSnapshotChanged(function (snapshot) {
@@ -1645,15 +1802,23 @@
                     }
                 }
                 if (snapshot.cliffTypesSlk && snapshot.cliffTypesSlk.cliffTypes) {
+                    const prevMap = _cliffTypeMap
                     _cliffTypeMap = {}
                     for (const [id, ct] of Object.entries(snapshot.cliffTypesSlk.cliffTypes)) {
-                        _cliffTypeMap[id] = {cliffModelDir: ct.cliffModelDir || '', rampModelDir: ct.rampModelDir || '', texDir: ct.texDir || '', texFile: ct.texFile || '', groundTile: ct.groundTile || ''}
+                        // Prefer per-map texSource (resolved with tileset MPQ) over snapshot's (tileset-agnostic)
+                        const prevSource = prevMap[id] && prevMap[id].texSource ? prevMap[id].texSource : ''
+                        _cliffTypeMap[id] = {cliffModelDir: ct.cliffModelDir || '', rampModelDir: ct.rampModelDir || '', texDir: ct.texDir || '', texFile: ct.texFile || '', texSource: prevSource || ct.texSource || '', groundTile: ct.groundTile || ''}
                     }
                     // Update cliff ground-tile override and redraw terrain
                     DATA.cliffTypeMap = _cliffTypeMap
                     _cliffGroundOverride = computeCliffGroundOverride()
                     applyColors()
                     if (canvasTex) buildComposited(_lastTileImages || [])
+                    // Reload cliff tile texture previews
+                    _loadCliffTilePreviews()
+                }
+                if (snapshot.cliffVariations) {
+                    DATA.cliffVariations = snapshot.cliffVariations
                 }
                 const hasData = Object.keys(_doodFileMap).length > 0 || Object.keys(_destFileMap).length > 0 || Object.keys(_unitFileMap).length > 0 || Object.keys(_cliffTypeMap).length > 0
                 if (hasData && (_doodItems.length > 0 || _unitItems.length > 0 || Object.keys(_cliffTypeMap).length > 0)) {

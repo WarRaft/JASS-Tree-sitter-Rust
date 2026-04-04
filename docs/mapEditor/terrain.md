@@ -53,6 +53,18 @@ Data index: `idx = sy * W + sx` where `sx: 0..W-1`, `sy: 0..H-1`, `sy=0` is the 
 | `J` | Dalaran Ruins | `Z` | Sunken Ruins |
 | `K` | Black Citadel | `L` | Lordaeron Summer |
 
+### Tileset MPQ archives
+
+Warcraft III ships a separate MPQ archive for each tileset, named `{tileset_code}.mpq` (e.g. `L.mpq` for Lordaeron Summer). These archives contain tileset-specific assets:
+
+- **Cliff textures** — `ReplaceableTextures\Cliff\Cliff0.blp`, `Cliff1.blp`
+- **Terrain textures** — ground tile BLPs
+- **Water textures** — animated water frames
+- **Doodad models/textures** — environment-specific props
+- **Unit textures** — tileset-specific unit skins
+
+When a map is opened and its `war3map.w3e` is parsed, the tileset letter is stored globally on the server side (`set_tileset`). From that point on, **all** file lookups (`lookup_file`) automatically include `{tileset}.mpq` in the cascade — not just cliff textures, but SLK data, models, unit textures, doodads, and everything else. The tileset MPQ is searched **first** among the MPQ chain, before `War3Patch.mpq` and other standard archives.
+
 ### Tileset IDs
 
 - **Ground** — 4-char rawcodes, e.g. `"Ldrt"` = Lordaeron Summer Dirt. Lookup in `TerrainArt\Terrain.slk`. Max 16 usable (4-bit index).
@@ -359,14 +371,18 @@ The model filename is built from the `cliffModelDir` of the matched `CliffTypes.
 ```
 base = min(bottomLeft, bottomRight, topLeft, topRight)
 
-filename = cliffModelDir               // e.g. "Cliffs" or "CityCliffs"
-         + char('A' + topLeft     − base)
+pattern  = char('A' + topLeft     − base)
          + char('A' + topRight    − base)
          + char('A' + bottomRight − base)
          + char('A' + bottomLeft  − base)
-         + (cliffVariation % 3)          // 0, 1, or 2
+
+filename = cliffModelDir               // e.g. "Cliffs" or "CityCliffs"
+         + pattern
+         + min(cliffVariation, maxVariation)  // clamped to max from Cliffs.slk / CityCliffs.slk
          + ".mdx"
 ```
+
+The `maxVariation` per pattern is stored in `data/warcraft/Cliffs.slk` (for regular `Cliffs` directory) and `data/warcraft/CityCliffs.slk` (for `CityCliffs` directory). HiveWE clamps the variation: `std::clamp(cliff_variation, 0, cliff_variations[pattern])` (terrain.ixx line 1080).
 
 Full path: `Doodads\Terrain\{cliffModelDir}\{filename}`
 
@@ -408,11 +424,34 @@ so they become DIRT. The left-side corners stay grass.
 Cliff wall models use **replaceable textures**. The `texDir` and `texFile` fields from `CliffTypes.slk` determine the wall texture path:
 
 ```
-{texDir}\{tileset}_{texFile}.blp        (tileset-specific, e.g. L_Cliff0.blp)
-{texDir}\{texFile}.blp                  (fallback, e.g. Cliff0.blp)
+{texDir}\{texFile}.blp        (e.g. ReplaceableTextures\Cliff\Cliff0.blp)
 ```
 
-Cliff models typically have two replaceable texture slots. Even-numbered IDs map to `Cliff0`, odd-numbered to `Cliff1`.
+The tileset-specific appearance comes from **which MPQ archive is searched**, not from filename prefixes. Warcraft III ships a separate MPQ per tileset (e.g. `L.mpq` for Lordaeron Summer, `A.mpq` for Ashenvale, etc.). Each tileset MPQ contains its own `ReplaceableTextures\Cliff\Cliff0.blp` and `Cliff1.blp` with unique textures for that environment.
+
+#### Lookup cascade
+
+The file lookup searches in this order (used for **all** game file lookups, not just cliffs):
+
+1. Map archive (custom map may override textures)
+2. **`{tileset}.mpq`** — automatically included when map's w3e tileset is known
+3. Game folder (loose files on disk)
+4. `War3Patch.mpq`
+5. `War3xLocal.mpq`
+6. `War3x.mpq`
+7. `War3.mpq` — base game archive (generic fallback textures)
+
+The tileset is stored globally when `war3map.w3e` is parsed, so **every** `lookup_file` call benefits — SLK loading, texture fetching, model resolution, etc.
+
+#### Replaceable texture IDs
+
+Cliff models have a single material with **Replaceable ID 11**. The actual texture is resolved from the cliff type's `texDir` and `texFile` fields in `CliffTypes.slk`:
+
+```
+{texDir}\{texFile}.blp        (e.g. ReplaceableTextures\Cliff\Cliff0.blp)
+```
+
+The tileset-specific appearance comes from searching the tileset MPQ (e.g. `L.mpq`) which contains its own versions of `Cliff0.blp` and `Cliff1.blp`.
 
 ### Cliff deformation
 

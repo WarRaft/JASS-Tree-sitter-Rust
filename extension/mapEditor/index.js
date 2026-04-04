@@ -616,8 +616,8 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                         if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
                             const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
                             let replTex = null
-                            if (msg.cliffTex0) {
-                                replTex = {_cliffTex0: msg.cliffTex0, _cliffTex1: msg.cliffTex1 || msg.cliffTex0}
+                            if (msg.cliffTex) {
+                                replTex = {_cliffTex: msg.cliffTex}
                             } else if (msg.texId && msg.texFile) {
                                 replTex = {[msg.texId]: msg.texFile}
                             }
@@ -658,6 +658,38 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             }
         } else if (msg.command === 'browse' && isArchive) {
             await commands.executeCommand('mpq.browse', document.uri)
+        } else if (msg.command === 'openSlk' && msg.path) {
+            // Resolve an SLK file via cascading file lookup, write to temp,
+            // and open in a side tab with the SLK preview.
+            try {
+                const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+                if (!bs) {
+                    window.showWarningMessage('Binary server not ready')
+                    return
+                }
+                const params = new URLSearchParams({token: bs.token, path: msg.path})
+                if (isArchive) params.set('archive', filePath)
+                const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
+                if (!resp.ok) {
+                    window.showWarningMessage(`SLK not found: ${msg.path}`)
+                    return
+                }
+                const buf = Buffer.from(await resp.arrayBuffer())
+                const fs = require('fs')
+                const os = require('os')
+                const fname = msg.path.replace(/\\/g, '/').split('/').pop() || 'file.slk'
+                const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jass-slk-'))
+                const tmpPath = path.join(tmpDir, fname)
+                fs.writeFileSync(tmpPath, buf)
+                const tmpUri = Uri.file(tmpPath)
+                await commands.executeCommand('vscode.openWith', tmpUri, 'slk.preview', {viewColumn: ViewColumn.Beside})
+                setTimeout(() => {
+                    try { fs.unlinkSync(tmpPath) } catch (_) {}
+                    try { fs.rmdirSync(tmpDir) } catch (_) {}
+                }, 5000)
+            } catch (e) {
+                window.showErrorMessage(`Failed to open SLK: ${e.message || e}`)
+            }
         } else if (msg.command === 'extractHere' && isArchive && msg.name) {
             const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
             await commands.executeCommand('mpq.extractHere', uri)
@@ -669,6 +701,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
             const fs = require('fs')
             const os = require('os')
+            const mapTileset = terrainData && terrainData.tileset ? terrainData.tileset : null
 
             for (const modelPath of msg.paths) {
                 try {
@@ -684,6 +717,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                         if (bs && !buf) {
                             const params = new URLSearchParams({token: bs.token, path: tryPath})
                             if (isArchive) params.set('archive', filePath)
+                            if (mapTileset) params.set('tileset', mapTileset)
                             try {
                                 const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
                                 if (resp.ok) {
@@ -772,6 +806,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     await client.sendRequest('w3e/gamePath/set', {gamePath: msg.value})
                 await emitGamePathChanged(status)
             } catch (_) {
+            } finally {
                 webviewPanel.webview.postMessage({command: 'loadingDone'})
             }
         } else if (msg.command === 'reloadGamePath') {
@@ -788,6 +823,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 }
                 await emitGamePathChanged(status)
             } catch (_) {
+            } finally {
                 webviewPanel.webview.postMessage({command: 'loadingDone'})
             }
         } else if (msg.command === 'browseGamePath') {
@@ -805,15 +841,15 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             try {
                 const status = await setGamePathViaHttp(selectedPath) ||
                     await client.sendRequest('w3e/gamePath/set', {gamePath: selectedPath})
-                if (!status.allPresent) {
+                if (status && !status.allPresent) {
                     const missing = Object.entries(status.mpqStatus || {}).filter(([, ok]) => !ok).map(([f]) => f)
-                    await window.showWarningMessage(
-                        `Missing MPQ files: ${missing.join(', ')}`,
-                        {modal: false}
-                    )
+                    if (missing.length > 0) {
+                        window.showWarningMessage(`Missing MPQ files: ${missing.join(', ')}`)
+                    }
                 }
                 await emitGamePathChanged(status)
             } catch (_) {
+            } finally {
                 webviewPanel.webview.postMessage({command: 'loadingDone'})
             }
         }

@@ -108,6 +108,9 @@ function editorStyles() {
             height: 1px;
             background: rgba(255, 255, 255, 0.18);
         }
+        .menu-child-cont::before {
+            bottom: 0;
+        }
         .menu-sep { height: 1px; background: rgba(255, 255, 255, 0.12); margin: 4px 0; }
         .menu-cb {
             display: flex; align-items: center; gap: 4px;
@@ -132,12 +135,34 @@ function editorStyles() {
             padding: 4px 12px;
             font-family: var(--vscode-editor-font-family, monospace);
             font-size: 12px;
-            color: var(--vscode-descriptionForeground, #888);
-            background: rgba(30, 30, 30, 0.85);
+            color: var(--vscode-editor-foreground, #ccc);
+            background: rgba(30, 30, 30, 0.9);
             border-top: 1px solid rgba(255, 255, 255, 0.08);
             backdrop-filter: blur(8px);
             min-height: 24px;
             pointer-events: none;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .cursor-info .ci-label {
+            color: var(--vscode-descriptionForeground, #888);
+            margin-right: 3px;
+        }
+        .cursor-info .ci-dim {
+            color: var(--vscode-descriptionForeground, #666);
+            font-size: 11px;
+        }
+        .cursor-info .ci-sep {
+            color: rgba(255, 255, 255, 0.15);
+            margin: 0 6px;
+        }
+        .cursor-info code {
+            background: rgba(255, 255, 255, 0.08);
+            padding: 0 3px;
+            border-radius: 2px;
+            font-size: 11px;
+            color: var(--vscode-textPreformat-foreground, #d7ba7d);
         }
 
         /* ── Floating window action buttons (slotted into Shadow DOM) ── */
@@ -247,6 +272,14 @@ function editorStyles() {
         .ts-no-slk {
             color: var(--vscode-errorForeground, #f48771);
             font-style: italic;
+        }
+        .ts-slk-link {
+            color: var(--vscode-textLink-foreground, #3794ff);
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .ts-slk-link:hover {
+            text-decoration: underline;
         }
 
         /* ── Doodads sidebar ───────────────────────────────────── */

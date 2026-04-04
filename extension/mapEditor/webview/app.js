@@ -18,6 +18,9 @@ window.W3E = (function () {
     var _snapshotListeners = [];
     var _groundTileCodes = [];
     var _cliffTileCodes = [];
+    // Per-map texSource for cliff types (resolved with tileset MPQ).
+    // Snapshot data is tileset-agnostic, so we preserve these.
+    var _cliffTexSourceMap = {};
 
     function onStatusChanged(fn) { _statusListeners.push(fn); }
     function onSnapshotChanged(fn) { _snapshotListeners.push(fn); }
@@ -29,7 +32,16 @@ window.W3E = (function () {
         if (!snapshot) return;
 
         U.setWestrings(snapshot.westrings);
-        TILESET.rebuildTileset(snapshot.terrainSlk, _groundTileCodes, _cliffTileCodes);
+        TILESET.rebuildTileset(snapshot.terrainSlk, _groundTileCodes);
+        // Merge per-map texSource into snapshot cliff types (snapshot is tileset-agnostic)
+        if (snapshot.cliffTypesSlk && snapshot.cliffTypesSlk.cliffTypes) {
+            for (const [id, ct] of Object.entries(snapshot.cliffTypesSlk.cliffTypes)) {
+                if (_cliffTexSourceMap[id]) {
+                    ct.texSource = _cliffTexSourceMap[id];
+                }
+            }
+        }
+        TILESET.rebuildCliffs(snapshot.cliffTypesSlk, _cliffTileCodes);
         DOOD.rebuild(snapshot.doodadsSlk);
         DEST.rebuild(snapshot.destructablesSlk);
         UNITS.rebuild(snapshot.unitsSlk);
@@ -79,6 +91,17 @@ window.W3E = (function () {
             UNITS.rebuild(config.initialUnitsSlk);
         }
 
+        // ── Initial cliff types SLK ─────────────────────────────
+        if (config.initialCliffTypesSlk) {
+            // Store per-map texSource (resolved with tileset MPQ)
+            if (config.initialCliffTypesSlk.cliffTypes) {
+                for (const [id, ct] of Object.entries(config.initialCliffTypesSlk.cliffTypes)) {
+                    if (ct.texSource) _cliffTexSourceMap[id] = ct.texSource;
+                }
+            }
+            TILESET.rebuildCliffs(config.initialCliffTypesSlk, _cliffTileCodes);
+        }
+
         // ── Resolve placed object names from initial SLK data ────
         PLACED.updatePlacedNames();
 
@@ -93,6 +116,12 @@ window.W3E = (function () {
             });
         });
         syncMenuActive();
+
+        // ── Open BLP from tile-item click ────────────────────────
+        document.addEventListener('open-blp', function (e) {
+            var p = e.detail && e.detail.path;
+            if (p && vscode) vscode.postMessage({command: 'openBlp', path: p});
+        });
 
         // ── Loading state ────────────────────────────────────────
         function setLoading(v) {

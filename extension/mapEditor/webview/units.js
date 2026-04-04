@@ -166,7 +166,7 @@ window._W3E_UNITS = (function () {
             if (sources.length > 0) {
                 srcEl.setAttribute('group-title', 'SLK Sources (' + sources.length + ')');
                 srcEl.innerHTML = sources.map(function (s) {
-                    return '<div class="ts-source" style="margin:1px 0;font-size:11px;">' + U.esc(s.name) + ': <span class="code">' + U.esc(s.source) + '</span> <span style="opacity:0.5;">(' + s.rows + ')</span></div>';
+                    return '<div class="ts-source" style="margin:1px 0;font-size:11px;">' + U.esc(s.source) + ' <span style="opacity:0.5;">(' + s.rows + ')</span></div>';
                 }).join('');
             } else {
                 srcEl.setAttribute('group-title', 'SLK Sources (0)');

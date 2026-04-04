@@ -472,7 +472,7 @@ customElements.define('collapse-group', CollapseGroup);
 
 class TileItem extends HTMLElement {
     static get observedAttributes() {
-        return ['index', 'code', 'tile-name', 'tile-path', 'swatch-color', 'tile-preview'];
+        return ['index', 'code', 'tile-name', 'tile-path', 'tile-source', 'swatch-color', 'tile-preview'];
     }
 
     constructor() {
@@ -533,10 +533,13 @@ class TileItem extends HTMLElement {
 .path {
     font-family: var(--vscode-editor-font-family, monospace);
     font-size: 10px;
-    color: var(--vscode-descriptionForeground, #666);
+    color: var(--vscode-textLink-foreground, #3794ff);
     word-break: break-all;
+    cursor: pointer;
+    opacity: 0.7;
 }
 .path:empty { display: none; }
+.path:hover { opacity: 1; text-decoration: underline; }
 </style>
 <div class="preview" id="preview">
     <div class="color-badge" id="badge">
@@ -551,6 +554,7 @@ class TileItem extends HTMLElement {
 
         this._colorInput = shadow.getElementById('colorInput');
         this._badge = shadow.getElementById('badge');
+        this._pathEl = shadow.getElementById('path');
 
         this._colorInput.addEventListener('input', () => {
             const hex = this._colorInput.value;
@@ -563,6 +567,17 @@ class TileItem extends HTMLElement {
                 bubbles: true,
                 detail: {index: parseInt(this.getAttribute('index') || '0', 10), color: [r / 255, g / 255, b / 255]}
             }));
+        });
+
+        this._pathEl.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const p = this.getAttribute('tile-path');
+            if (p) {
+                this.dispatchEvent(new CustomEvent('open-blp', {
+                    bubbles: true, composed: true,
+                    detail: {path: p}
+                }));
+            }
         });
     }
 
@@ -602,7 +617,7 @@ class TileItem extends HTMLElement {
 
         s.getElementById('code').textContent = idx + ': ' + code;
         s.getElementById('name').textContent = this.getAttribute('tile-name') || '';
-        s.getElementById('path').textContent = this.getAttribute('tile-path') || '';
+        s.getElementById('path').textContent = this.getAttribute('tile-source') || this.getAttribute('tile-path') || '';
     }
 }
 

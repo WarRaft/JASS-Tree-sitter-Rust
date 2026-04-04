@@ -21,6 +21,8 @@ pub struct MdxTextureParams {
     pub path: String,
     /// Optional archive path (map MPQ) for cascade lookup.
     pub archive: Option<String>,
+    /// Optional tileset letter (e.g. `"L"`) — enables lookup in `{tileset}.mpq`.
+    pub tileset: Option<String>,
 }
 
 pub async fn mdx_texture_handler(
@@ -30,9 +32,10 @@ pub async fn mdx_texture_handler(
 
     let path = params.path.clone();
     let archive = params.archive.clone();
+    let tileset = params.tileset.clone();
 
     let png_bytes = tokio::task::spawn_blocking(move || {
-        render_texture_png(&path, archive.as_deref())
+        render_texture_png(&path, archive.as_deref(), tileset.as_deref())
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?
@@ -48,7 +51,7 @@ pub async fn mdx_texture_handler(
 }
 
 /// Find a texture via the game-folder cascade, decode BLP → PNG bytes.
-fn render_texture_png(relative_path: &str, archive_path: Option<&str>) -> Result<Vec<u8>, String> {
+fn render_texture_png(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Result<Vec<u8>, String> {
     use blp::core::image::ImageBlp;
     use image::{DynamicImage, ImageFormat};
     use std::io::Cursor;
@@ -58,14 +61,14 @@ fn render_texture_png(relative_path: &str, archive_path: Option<&str>) -> Result
     let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
     if !lower[last_sep..].contains('.') {
         let tga_path = format!("{relative_path}.tga");
-        if let Ok(result) = render_texture_png(&tga_path, archive_path) {
+        if let Ok(result) = render_texture_png(&tga_path, archive_path, tileset) {
             return Ok(result);
         }
         let blp_path = format!("{relative_path}.blp");
-        return render_texture_png(&blp_path, archive_path);
+        return render_texture_png(&blp_path, archive_path, tileset);
     }
 
-    let (buf, _source) = crate::lng::w3e::file_lookup::lookup_file(relative_path, archive_path)
+    let (buf, _source) = crate::lng::w3e::file_lookup::lookup_file_ext(relative_path, archive_path, tileset)
         .ok_or_else(|| format!("Texture not found: {relative_path}"))?;
 
     // Determine format by extension

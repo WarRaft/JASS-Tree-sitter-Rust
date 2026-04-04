@@ -28,6 +28,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     let legendItems = ''
     let cliffLegendItems = ''
     let terrainSlkSource = ''
+    let cliffTypesSlkSource = ''
     let w = 0, h = 0
 
     // Build a tileID → SLK row lookup
@@ -47,7 +48,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         tilesetName = TILESET_NAMES[terrainData.tileset] || terrainData.tileset
 
         if (terrainData.ground_tiles) {
-            legendItems = terrainData.ground_tiles.map((code, i) => {
+            legendItems = terrainData.ground_tiles.map((raw, i) => {
+                const code = typeof raw === 'string' ? raw : raw.text || String(raw.raw)
                 const [r, g, b] = indexToRgb(i)
                 const info = slkMap[code]
                 const name = info ? info.comment : ''
@@ -57,9 +59,20 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             }).join('\n')
         }
 
+        // Build cliff type rawcode → data lookup (needed for cliff legend below)
+        const cliffTypesMap = (terrainData._cliffTypesSlk && terrainData._cliffTypesSlk.cliffTypes) || {}
+
         if (terrainData.cliff_tiles) {
-            cliffLegendItems = terrainData.cliff_tiles.map((code, i) => {
-                return `<tile-item index="${i}" code="${esc(code)}"></tile-item>`
+            cliffLegendItems = terrainData.cliff_tiles.map((raw, i) => {
+                const code = typeof raw === 'string' ? raw : raw.text || String(raw.raw)
+                const ct = cliffTypesMap[code]
+                const parts = []
+                if (ct && ct.cliffModelDir) parts.push(ct.cliffModelDir)
+                if (ct && ct.cliffClass) parts.push(ct.cliffClass)
+                const name = parts.length > 0 ? parts.join(' \u2014 ') : ''
+                const texPath = ct && ct.texDir && ct.texFile ? ct.texDir + '\\' + ct.texFile + '.blp' : ''
+                const texSource = ct && ct.texSource ? ct.texSource : ''
+                return `<tile-item index="${i}" code="${esc(code)}"${name ? ' tile-name="' + esc(name) + '"' : ''}${texPath ? ' tile-path="' + esc(texPath) + '"' : ''}${texSource ? ' tile-source="' + esc(texSource) + '"' : ''}></tile-item>`
             }).join('\n')
         }
 
@@ -140,7 +153,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     let unitSourcesHtml = ''
     if (unitSlkSources.length > 0) {
         unitSourcesHtml = unitSlkSources.map(s =>
-            `<div class="ts-source" style="margin:1px 0;font-size:11px;">${esc(s.name)}: <span class="code">${esc(s.source)}</span> <span style="opacity:0.5;">(${s.rows})</span></div>`
+            `<div class="ts-source" style="margin:1px 0;font-size:11px;">${esc(s.source)} <span style="opacity:0.5;">(${s.rows})</span></div>`
         ).join('')
     } else if (!hasUnitsSlk) {
         unitSourcesHtml = '<div class="ts-source ts-no-slk">UnitData.slk not found \u2014 set Game Path</div>'
@@ -205,9 +218,15 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const cliffTypesMap = (terrainData && terrainData._cliffTypesSlk && terrainData._cliffTypesSlk.cliffTypes) || {}
     const cliffTypeMap = {}
     for (const [id, ct] of Object.entries(cliffTypesMap)) {
-        cliffTypeMap[id] = {cliffModelDir: ct.cliffModelDir || '', rampModelDir: ct.rampModelDir || '', texDir: ct.texDir || '', texFile: ct.texFile || '', groundTile: ct.groundTile || ''}
+        cliffTypeMap[id] = {cliffModelDir: ct.cliffModelDir || '', rampModelDir: ct.rampModelDir || '', texDir: ct.texDir || '', texFile: ct.texFile || '', texSource: ct.texSource || '', groundTile: ct.groundTile || ''}
     }
     const hasCliffTypesSlk = !!(terrainData && terrainData._cliffTypesSlk)
+    if (hasCliffTypesSlk) {
+        cliffTypesSlkSource = terrainData._cliffTypesSlk.source || ''
+    }
+
+    // Cliff model variations (pattern → max variation index)
+    const cliffVariations = (terrainData && terrainData._cliffVariations) || null
 
     // Extract full DOO items for placed-object categorization (doodad vs destructable)
     const doodadDooItems = mapInfo.doodadDooData && mapInfo.doodadDooData.items
@@ -326,8 +345,10 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 title="Placed destructables (war3map.doo)">\ud83d\udccd Placed</button>
         <button class="menu-item${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="terrainWindow"' : ''}
                 title="${hasTerrain ? 'Terrain metadata' : 'No terrain data available'}">\ud83d\uddfa Terrain</button>
-        <button class="menu-item menu-child${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="tilesetWindow"' : ''}
+        <button class="menu-item menu-child menu-child-cont${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="tilesetWindow"' : ''}
                 title="${hasTerrain ? 'Tileset info' : 'No terrain data available'}">\ud83e\uddf1 Tileset</button>
+        <button class="menu-item menu-child${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="cliffsWindow"' : ''}
+                title="${hasTerrain ? 'Cliff types' : 'No terrain data available'}">\u26f0 Cliffs</button>
         ${mapInfo.isArchive ? '<button class="menu-item" data-action="toggleWindow" data-target="filesWindow" title="Archive file list">\ud83d\udcc2 Files</button>' : ''}
         ${mapInfo.isArchive ? `<button class="menu-item menu-child${mapInfo.isArchiveFile ? '' : ' disabled'}" ${mapInfo.isArchiveFile ? 'id="browseMpqBtn"' : ''}
                 title="${mapInfo.isArchiveFile ? 'Browse archive as folder' : 'Already a folder on disk'}">\ud83d\udcc1 Browse</button>` : ''}
@@ -402,7 +423,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         <reload-button slot="actions"></reload-button>
         <div style="display:flex;height:100%;overflow:hidden;">
             <div class="ds-sidebar" id="dsSidebar">
-                <div id="dsSlkSource" class="${doodadsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${doodadsSlkSource ? 'Doodads.slk: <span class="code">' + esc(doodadsSlkSource) + '</span>' : 'Doodads.slk not found \u2014 set Game Path'}</div>
+                <div id="dsSlkSource" class="${doodadsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${doodadsSlkSource ? esc(doodadsSlkSource) : 'Doodads.slk not found \u2014 set Game Path'}</div>
                 <div class="ds-filter-group">
                     <div class="ds-filter-title">Categories</div>
                     <div class="terrain-checks" id="dsCatChecks">${categoryCheckboxes}</div>
@@ -433,7 +454,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         <reload-button slot="actions"></reload-button>
         <div style="display:flex;height:100%;overflow:hidden;">
             <div class="ds-sidebar" id="dtSidebar">
-                <div id="dtSlkSource" class="${destructablesSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${destructablesSlkSource ? 'DestructableData.slk: <span class="code">' + esc(destructablesSlkSource) + '</span>' : 'DestructableData.slk not found \u2014 set Game Path'}</div>
+                <div id="dtSlkSource" class="${destructablesSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${destructablesSlkSource ? esc(destructablesSlkSource) : 'DestructableData.slk not found \u2014 set Game Path'}</div>
                 <div class="ds-filter-group">
                     <div class="ds-filter-title">Categories</div>
                     <div class="terrain-checks" id="dtCatChecks">${destCategoryCheckboxes}</div>
@@ -498,10 +519,17 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     ${hasTerrain ? `
     <float-window id="tilesetWindow" title-text="\ud83e\uddf1 Tileset" hidden style="left:140px;top:16px;">
         <reload-button slot="actions"></reload-button>
-        <div id="tsSlkSource" class="${terrainSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${terrainSlkSource ? 'Terrain.slk: <span class="code">' + esc(terrainSlkSource) + '</span>' : 'Terrain.slk not found \u2014 set Game Path'}</div>
+        <div id="tsSlkSource" class="${terrainSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${terrainSlkSource ? esc(terrainSlkSource) : 'TerrainArt\\Terrain.slk \u2014 not found, set Game Path'}</div>
         <div class="tw-section-title">Ground Tiles (<span id="tsGroundCount">${totalTiles}</span>)</div>
         <div class="legend" id="tsGroundTiles">${legendItems}</div>
-        <div id="tsCliffSection">${totalCliffTiles > 0 ? '<div class="tw-section-title">Cliff Tiles (' + totalCliffTiles + ')</div><div class="legend">' + cliffLegendItems + '</div>' : ''}</div>
+    </float-window>
+    ` : ''}
+
+    ${hasTerrain ? `
+    <float-window id="cliffsWindow" title-text="\u26f0 Cliffs" hidden style="left:160px;top:32px;">
+        <reload-button slot="actions"></reload-button>
+        <div id="ctSlkSource" class="${cliffTypesSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${cliffTypesSlkSource ? esc(cliffTypesSlkSource) : 'TerrainArt\\CliffTypes.slk \u2014 not found, set Game Path'}</div>
+        <div id="ctCliffSection">${totalCliffTiles > 0 ? '<div class="tw-section-title">Cliff Tiles (' + totalCliffTiles + ')</div><div class="legend">' + cliffLegendItems + '</div>' : ''}</div>
     </float-window>
     ` : ''}
 
@@ -585,8 +613,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         hasTerrain: ${hasTerrain},
         renderData: ${renderData ? JSON.stringify(renderData) : 'null'},
         binaryTerrainUrl: ${binaryTerrainUrl},
-        groundTileCodes: ${hasTerrain && terrainData.ground_tiles ? JSON.stringify(terrainData.ground_tiles) : '[]'},
-        cliffTileCodes: ${hasTerrain && terrainData.cliff_tiles ? JSON.stringify(terrainData.cliff_tiles) : '[]'},
+        groundTileCodes: ${hasTerrain && terrainData.ground_tiles ? JSON.stringify(terrainData.ground_tiles.map(c => typeof c === 'string' ? c : c.text || String(c.raw))) : '[]'},
+        cliffTileCodes: ${hasTerrain && terrainData.cliff_tiles ? JSON.stringify(terrainData.cliff_tiles.map(c => typeof c === 'string' ? c : c.text || String(c.raw))) : '[]'},
         isArchive: ${!!mapInfo.isArchive},
         binaryServer: ${mapInfo.binaryServer ? JSON.stringify({port: mapInfo.binaryServer.port, token: mapInfo.binaryServer.token}) : 'null'},
         archivePath: ${mapInfo.archivePath ? JSON.stringify(mapInfo.archivePath) : 'null'},
@@ -602,6 +630,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         initialUnitsSlk: ${hasUnitsSlk ? JSON.stringify(terrainData._unitsSlk) : 'null'},
         cliffTypeMap: ${JSON.stringify(cliffTypeMap)},
         initialCliffTypesSlk: ${hasCliffTypesSlk ? JSON.stringify(terrainData._cliffTypesSlk) : 'null'},
+        cliffVariations: ${JSON.stringify(cliffVariations)},
         tileset: ${hasTerrain ? JSON.stringify(terrainData.tileset) : 'null'}
     };
     </script>

@@ -27,16 +27,18 @@ window._W3E_ORBIT = (function () {
     var DEG15 = Math.PI / 12;
     var ROTATE_SPEED = 0.005;
     var PAN_SPEED = 1.0;
-    var ZOOM_STEP = 1.1;
     var ANIM_DURATION = 200;
 
     function makeOrbitControls(cam, domEl, maxD, opts) {
         var skipGuards = opts && opts.skipGuards;
         var zUp = !!(opts && opts.zUp);
 
+        var ZOOM_LINEAR = maxD * 0.05;     // fixed zoom step per scroll notch
+        var PAN_FIXED   = maxD / 1000;     // fixed pan factor (world units per pixel)
+
         var target   = new THREE.Vector3();
         var panOff   = new THREE.Vector3();
-        var zoomFactor = 1;
+        var zoomDelta = 0;
         var hDelta = 0, vDelta = 0;
 
         var orbiting = false, panning = false, zooming = false;
@@ -121,14 +123,11 @@ window._W3E_ORBIT = (function () {
             var dx = e.clientX - px, dy = e.clientY - py;
             px = e.clientX; py = e.clientY;
             if (orbiting) { hDelta -= dx * ROTATE_SPEED; vDelta -= dy * ROTATE_SPEED; }
-            if (zooming) { zoomFactor *= Math.pow(ZOOM_STEP, dy / 50); }
+            if (zooming) { zoomDelta += dy / 50 * ZOOM_LINEAR; }
             if (panning) {
-                var v = new THREE.Vector3(), activeCam = getActiveCam(), factor;
-                if (isPerspective) {
-                    factor = activeCam.position.distanceTo(target) * Math.tan(activeCam.fov / 2 * Math.PI / 180) * 2 / domEl.clientHeight;
-                } else { factor = (orthoCam.top - orthoCam.bottom) / domEl.clientHeight; }
-                v.setFromMatrixColumn(activeCam.matrix, 0); panOff.addScaledVector(v, -dx * factor * PAN_SPEED);
-                v.setFromMatrixColumn(activeCam.matrix, 1); panOff.addScaledVector(v,  dy * factor * PAN_SPEED);
+                var v = new THREE.Vector3(), activeCam = getActiveCam();
+                v.setFromMatrixColumn(activeCam.matrix, 0); panOff.addScaledVector(v, -dx * PAN_FIXED * PAN_SPEED);
+                v.setFromMatrixColumn(activeCam.matrix, 1); panOff.addScaledVector(v,  dy * PAN_FIXED * PAN_SPEED);
             }
         });
 
@@ -142,17 +141,14 @@ window._W3E_ORBIT = (function () {
         domEl.addEventListener('wheel', function (e) {
             if (!skipGuards && e.target.closest('float-window')) return;
             e.preventDefault();
-            if (e.deltaMode === 1) { zoomFactor *= e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP; return; }
+            if (e.deltaMode === 1) { zoomDelta += (e.deltaY > 0 ? 1 : -1) * ZOOM_LINEAR; return; }
             if (e.ctrlKey || e.metaKey) {
-                zoomFactor *= Math.pow(ZOOM_STEP, e.deltaY / 100);
+                zoomDelta += e.deltaY / 100 * ZOOM_LINEAR;
             } else if (e.shiftKey || lmbDown) {
-                var activeCam = getActiveCam(), factor;
-                if (isPerspective) {
-                    factor = activeCam.position.distanceTo(target) * Math.tan(activeCam.fov / 2 * Math.PI / 180) * 2 / domEl.clientHeight;
-                } else { factor = (orthoCam.top - orthoCam.bottom) / domEl.clientHeight; }
+                var activeCam = getActiveCam();
                 var v = new THREE.Vector3();
-                v.setFromMatrixColumn(activeCam.matrix, 0); panOff.addScaledVector(v, e.deltaX * factor * PAN_SPEED * 0.5);
-                v.setFromMatrixColumn(activeCam.matrix, 1); panOff.addScaledVector(v, -e.deltaY * factor * PAN_SPEED * 0.5);
+                v.setFromMatrixColumn(activeCam.matrix, 0); panOff.addScaledVector(v, e.deltaX * PAN_FIXED * PAN_SPEED * 0.5);
+                v.setFromMatrixColumn(activeCam.matrix, 1); panOff.addScaledVector(v, -e.deltaY * PAN_FIXED * PAN_SPEED * 0.5);
             } else {
                 hDelta += e.deltaX * ROTATE_SPEED * 0.5;
                 vDelta -= e.deltaY * ROTATE_SPEED * 0.5;
@@ -254,7 +250,7 @@ window._W3E_ORBIT = (function () {
                         _tmpQ.setFromAxisAngle(_tmpV, -vDelta);
                         _orbit.premultiply(_tmpQ);
                     }
-                    _radius *= zoomFactor;
+                    _radius += zoomDelta;
                 }
 
                 _orbit.normalize();
@@ -272,7 +268,7 @@ window._W3E_ORBIT = (function () {
 
                 hDelta = 0; vDelta = 0;
                 panOff.set(0, 0, 0);
-                zoomFactor = 1;
+                zoomDelta = 0;
 
                 if (gizmoRenderer) {
                     gizmoCamera.quaternion.copy(_orbit);
