@@ -38,7 +38,6 @@ pub async fn file_lookup_handler(
         Some((buf, source, resolved_path)) => Ok((
             [
                 (header::CONTENT_TYPE, "application/octet-stream".to_string()),
-                (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
                 (header::CACHE_CONTROL, "no-store".to_string()),
                 (HeaderName::from_static("x-source"), source),
                 (HeaderName::from_static("x-resolved-path"), resolved_path),

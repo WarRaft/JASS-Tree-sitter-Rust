@@ -15,7 +15,7 @@ const {renderMapEditor} = require('./render.js')
  * @param {import('vscode-languageclient').LanguageClient} client
  * @param {import('vscode').Uri} extensionUri
  */
-async function resolveW3eEditor(document, webviewPanel, _token, client, extensionUri, getBinaryServer) {
+async function resolveMapEditor(document, webviewPanel, _token, client, extensionUri, getBinaryServer) {
     const filePath = document.uri.fsPath
     const fname = document.uri.path.split('/').pop() || 'w3e'
     const ext = (fname.split('.').pop() || '').toLowerCase()
@@ -25,6 +25,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     const isW3e = ext === 'w3e'
     const isDoo = ext === 'doo'
     const isDooUnit = isDoo && fname.toLowerCase().includes('units')
+    const isMdx = ext === 'mdx'
 
     // Detect whether the archive path points to a real file or an extracted folder.
     let isArchiveFile = false
@@ -42,6 +43,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     let archiveInfo = null
     let mapName = null
     let binaries = []
+    let _pendingMdxData = null
 
     if (isArchive) {
         // ── 1. Get archive file list & header ───────────────────
@@ -184,6 +186,40 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
 
             // Load the other DOO file
             await _loadDooFromMapRoot(mapRoot, client)
+        }
+    } else if (isMdx) {
+        // ── .mdx file ───────────────────────────────────────────
+        // Render immediately; the model data will be sent to the
+        // webview after the HTML is built so the viewer opens it.
+        try {
+            const renderResult = await client.sendRequest('mdx/render', {
+                uri: document.uri.toString()
+            })
+            if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
+                const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+                _pendingMdxData = {
+                    command: 'modelData',
+                    name: fname,
+                    geosets: renderResult.geosets,
+                    textures: renderResult.textures || [],
+                    materials: renderResult.materials || [],
+                    sequences: renderResult.sequences || [],
+                    bones: renderResult.bones || [],
+                    helpers: renderResult.helpers || [],
+                    pivot_points: renderResult.pivot_points || [],
+                    total_vertices: renderResult.total_vertices,
+                    total_faces: renderResult.total_faces,
+                    binaryServer: bs ? {port: bs.port, token: bs.token} : null,
+                    archivePath: null,
+                    replaceableTextures: null,
+                }
+            } else {
+                webviewPanel.webview.html = errorHtml('No geosets found in model.')
+                return
+            }
+        } catch (e) {
+            webviewPanel.webview.html = errorHtml(`Failed to render MDX: ${e.message || e}`)
+            return
         }
     } else {
         // ── .w3e file ───────────────────────────────────────────
@@ -347,6 +383,7 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         isW3e,
         isDoo,
         isDooUnit,
+        isMdx,
         archiveFiles,
         archiveHeader,
         w3iData,
@@ -375,6 +412,15 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
         terrainUri: document.uri.toString(),
         archivePath: isArchive ? filePath : undefined,
     })
+
+    // If an MDX was opened directly, send the model data to the webview
+    // so the model viewer auto-opens with the rendered model.
+    if (_pendingMdxData) {
+        // Small delay to let the webview scripts initialize
+        setTimeout(() => {
+            webviewPanel.webview.postMessage(_pendingMdxData)
+        }, 300)
+    }
 
     // ── Snapshot-based data flow ───────────────────────────────────
     // When the game path changes:
@@ -527,7 +573,12 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
                 }
 
                 if (!buf) {
-                    window.showWarningMessage(`Model not found: ${msg.path}`)
+                    const missingName = msg.path.replace(/\\/g, '/').split('/').pop() || msg.path
+                    webviewPanel.webview.postMessage({
+                        command: 'modelUnsupported',
+                        name: missingName,
+                        reason: 'Model not found: ' + msg.path,
+                    })
                     return
                 }
 
@@ -769,5 +820,5 @@ async function resolveW3eEditor(document, webviewPanel, _token, client, extensio
     })
 }
 
-module.exports = {resolveW3eEditor}
+module.exports = {resolveMapEditor}
 

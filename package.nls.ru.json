@@ -12,6 +12,7 @@
   "command.mpq.extractHere": "Извлечь сюда",
   "command.mpq.extractTo": "Извлечь в…",
   "command.jass.restartServer": "Перезапустить JASS LSP сервер",
+  "customEditor.mdx.displayName": "Просмотр MDX-моделей",
   "customEditor.blp.displayName": "Просмотр BLP-изображений",
   "customEditor.doo.displayName": "Просмотр DOO-размещений",
   "customEditor.w3i.displayName": "Просмотр W3I-информации карты",

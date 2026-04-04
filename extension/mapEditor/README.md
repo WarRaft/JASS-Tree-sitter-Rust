@@ -12,7 +12,7 @@ Both variants are handled the same way: the editor loads terrain, units, doodads
 ## How binary files are opened
 
 1. The user opens a file (`.w3e`, `.w3i`, `.doo`) or an archive (`.w3x`, `.w3m`).
-2. VS Code calls `resolveCustomEditor` → `resolveW3eEditor()` from `index.js`.
+2. VS Code calls `resolveCustomEditor` → `resolveMapEditor()` from `index.js`.
 3. The file type is determined by extension; the access method (file / folder / MPQ archive) is detected automatically.
 4. Data is requested from the LSP server via `w3e/render`, `w3i/render`, and `doo/render` requests.
 5. For archives the file list comes from `mpq/info`; binary data is served by the HTTP binary server (`/w3e/file`, `/w3e/snapshot`).

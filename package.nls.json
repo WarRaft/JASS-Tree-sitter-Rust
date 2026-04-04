@@ -12,6 +12,7 @@
   "command.mpq.extractHere": "Extract Here",
   "command.mpq.extractTo": "Extract To…",
   "command.jass.restartServer": "Restart JASS LSP Server",
+  "customEditor.mdx.displayName": "MDX Model Viewer",
   "customEditor.blp.displayName": "BLP Image Viewer",
   "customEditor.doo.displayName": "DOO Placement Viewer",
   "customEditor.w3i.displayName": "W3I Map Info Viewer",

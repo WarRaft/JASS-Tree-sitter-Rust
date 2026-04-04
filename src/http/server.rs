@@ -16,6 +16,7 @@ use once_cell::sync::OnceCell;
 use serde::Deserialize;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
+use tower_http::cors::{CorsLayer, Any};
 
 /// Global binary server state: port + session token.
 pub static BINARY_SERVER: OnceCell<BinaryServerInfo> = OnceCell::new();
@@ -76,7 +77,8 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/w3e/gamePath/set", post(game_path_set_handler))
         .route("/w3e/pathTex", get(path_tex_handler))
         .route("/mdx/texture", get(mdx_texture_handler))
-        .route("/blp/render", get(blp_render_handler));
+        .route("/blp/render", get(blp_render_handler))
+        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr: SocketAddr = listener.local_addr()?;

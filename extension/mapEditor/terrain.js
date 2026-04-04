@@ -876,12 +876,14 @@
                 showDeformation = e.target.checked
                 applyHeights()
                 rebuildWireframe()
+                _updateTerrainHeightTexture()
                 saveCbState()
             })
             cb('cbSlopes', e => {
                 showSlopes = e.target.checked
                 applyHeights()
                 rebuildWireframe()
+                _updateTerrainHeightTexture()
                 saveCbState()
             })
 
@@ -894,6 +896,47 @@
             //   gameY = D.offsetY + vy + halfGridH
             const halfGridW = (W - 1) * TILE / 2
             const halfGridH = (H - 1) * TILE / 2
+
+            // ── Terrain height texture for per-vertex cliff deformation ──────
+            // Each texel stores the final terrain height at that tilepoint.
+            // Cliff vertex shaders sample this texture to conform to terrain.
+            let _terrainHeightTex = null
+
+            function _buildTerrainHeightData() {
+                // HiveWE cliff.vert binds ground_height_buffer (deformation only,
+                // no layer height) — see terrain.ixx line 578 + 885.
+                // The layer contribution is already in the instance Z offset
+                // and baked into the cliff model geometry (BAAA, ABBA, etc.).
+                const data = new Float32Array(W * H * 4) // RGBA float
+                for (let j = 0; j < H; j++) {
+                    for (let i = 0; i < W; i++) {
+                        const idx = j * W + i
+                        let h = 0
+                        if (showDeformation) {
+                            h = (D.groundHeight[idx] - H_ZERO) / H_SCALE
+                        }
+                        data[idx * 4] = h
+                    }
+                }
+                return data
+            }
+
+            function _initTerrainHeightTexture() {
+                const data = _buildTerrainHeightData()
+                _terrainHeightTex = new THREE.DataTexture(data, W, H, THREE.RGBAFormat, THREE.FloatType)
+                _terrainHeightTex.magFilter = THREE.NearestFilter
+                _terrainHeightTex.minFilter = THREE.NearestFilter
+                _terrainHeightTex.needsUpdate = true
+            }
+
+            function _updateTerrainHeightTexture() {
+                if (!_terrainHeightTex) return
+                const data = _buildTerrainHeightData()
+                _terrainHeightTex.image.data.set(data)
+                _terrainHeightTex.needsUpdate = true
+            }
+
+            _initTerrainHeightTexture()
 
             // ── Point marker (inverted pyramid at hovered grid vertex) ───────
             // Tip at origin (terrain point), square base above at z = h
@@ -924,7 +967,7 @@
                 const rect = canvas.getBoundingClientRect()
                 mouseNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
                 mouseNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
-                raycaster.setFromCamera(mouseNdc, camera)
+                raycaster.setFromCamera(mouseNdc, ctrl.camera)
                 const hits = raycaster.intersectObject(mesh)
                 if (hits.length > 0) {
                     const pt = hits[0].point
@@ -993,7 +1036,7 @@
                     -((e.clientY - rect.top) / rect.height) * 2 + 1
                 )
                 var rc = new THREE.Raycaster()
-                rc.setFromCamera(ndc, camera)
+                rc.setFromCamera(ndc, ctrl.camera)
 
                 // Check cliff models first (if visible)
                 if (cliffGroup.visible) {
@@ -1079,7 +1122,68 @@
                 return 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params
             }
 
-            function _buildModel(data, replaceableTextures) {
+            // ── Cliff per-vertex terrain height + normal shader ─────────────
+            // Injects custom vertex code that:
+            // 1. Samples terrain height at each vertex's world XY and offsets Z
+            // 2. Computes terrain normal from 4 neighbor height samples
+            // 3. Blends model normal with terrain normal
+            // Matching HiveWE cliff.vert lines 20-41.
+            function _applyCliffShader(material) {
+                material.onBeforeCompile = function (shader) {
+                    shader.uniforms.uTerrainHeight = {value: _terrainHeightTex}
+                    shader.uniforms.uTerrainSize = {value: new THREE.Vector2(W, H)}
+                    shader.uniforms.uHalfGrid = {value: new THREE.Vector2(halfGridW, halfGridH)}
+                    shader.uniforms.uTileSize = {value: TILE}
+
+                    shader.vertexShader =
+                        'uniform sampler2D uTerrainHeight;\n' +
+                        'uniform vec2 uTerrainSize;\n' +
+                        'uniform vec2 uHalfGrid;\n' +
+                        'uniform float uTileSize;\n' +
+                        shader.vertexShader
+
+                    shader.vertexShader = shader.vertexShader.replace(
+                        '#include <project_vertex>',
+                        [
+                            'vec4 mvPosition = vec4(transformed, 1.0);',
+                            '#ifdef USE_BATCHING',
+                            '  mvPosition = batchingMatrix * mvPosition;',
+                            '#endif',
+                            '#ifdef USE_INSTANCING',
+                            '  mvPosition = instanceMatrix * mvPosition;',
+                            '#endif',
+                            '',
+                            '// Per-vertex terrain height (HiveWE cliff.vert line 22-25)',
+                            'vec2 _tp = clamp((mvPosition.xy + uHalfGrid) / uTileSize, vec2(0.0), uTerrainSize - 1.0);',
+                            'vec2 _fl = floor(_tp);',
+                            'vec2 _uv = (_fl + 0.5) / uTerrainSize;',
+                            'float _h = texture2D(uTerrainHeight, _uv).r;',
+                            '',
+                            '// Terrain normal from neighbor samples (HiveWE cliff.vert lines 27-33)',
+                            'float _hL = texture2D(uTerrainHeight, (vec2(max(_fl.x - 1.0, 0.0), _fl.y) + 0.5) / uTerrainSize).r;',
+                            'float _hR = texture2D(uTerrainHeight, (vec2(min(_fl.x + 1.0, uTerrainSize.x - 1.0), _fl.y) + 0.5) / uTerrainSize).r;',
+                            'float _hD = texture2D(uTerrainHeight, (vec2(_fl.x, max(_fl.y - 1.0, 0.0)) + 0.5) / uTerrainSize).r;',
+                            'float _hU = texture2D(uTerrainHeight, (vec2(_fl.x, min(_fl.y + 1.0, uTerrainSize.y - 1.0)) + 0.5) / uTerrainSize).r;',
+                            'vec3 _terrainN = normalize(vec3(_hL - _hR, _hD - _hU, 2.0 * uTileSize));',
+                            '',
+                            '// Blend model normal with terrain normal (HiveWE cliff.vert lines 40-41)',
+                            'vec3 _instNorm = objectNormal;',
+                            '#ifdef USE_INSTANCING',
+                            '  _instNorm = mat3(instanceMatrix) * _instNorm;',
+                            '#endif',
+                            'vec3 _blendedN = normalize(vec3(_instNorm.xy + _terrainN.xy, _instNorm.z * _terrainN.z));',
+                            'vNormal = normalize(normalMatrix * _blendedN);',
+                            '',
+                            '// Apply terrain height offset',
+                            'mvPosition.z += _h;',
+                            'mvPosition = modelViewMatrix * mvPosition;',
+                            'gl_Position = projectionMatrix * mvPosition;',
+                        ].join('\n')
+                    )
+                }
+            }
+
+            function _buildModel(data, replaceableTextures, isCliff) {
                 const geosets = data.geosets || []
                 const textures = data.textures || []
                 const materials = data.materials || []
@@ -1158,7 +1262,9 @@
                         }
                     }
 
-                    entries.push({geometry: geo, material: new THREE.MeshPhongMaterial(matOpts)})
+                    const meshMat = new THREE.MeshPhongMaterial(matOpts)
+                    if (isCliff && _terrainHeightTex) _applyCliffShader(meshMat)
+                    entries.push({geometry: geo, material: meshMat})
                 }
                 return entries
             }
@@ -1174,6 +1280,7 @@
 
                 for (const entry of entries) {
                     const instMesh = new THREE.InstancedMesh(entry.geometry, entry.material, items.length)
+                    if (group) instMesh.frustumCulled = false // cliff shader moves verts
                     instMesh.userData._items = items
                     for (let i = 0; i < items.length; i++) {
                         const it = items[i]
@@ -1203,6 +1310,21 @@
                 if (numVar <= 1) return base + ext
                 var idx = (variation || 0) % numVar
                 return base + idx + ext
+            }
+
+            // Create centered items for missing cliff fallback cubes
+            function _cliffCenteredItems(items) {
+                const half = TILE / 2
+                return items.map(function (it) {
+                    return {
+                        path: it.path,
+                        p: [it.p[0] + half, it.p[1] + half, it.p[2] + half],
+                        s: [1, 1, 1],
+                        a: 0,
+                        cliffTex0: it.cliffTex0,
+                        cliffTex1: it.cliffTex1,
+                    }
+                })
             }
 
             const _rawModelData = {} // modelPath → raw msg data (shared across texture variants)
@@ -1289,7 +1411,9 @@
                         const cliffTex0 = _cliffTexPath(0)
                         const cliffTex1 = _cliffTexPath(1)
 
-                        // Position: bottom-left corner of cell, at base layer height
+                        // Position: bottom-left corner of cell, at base layer height.
+                        // Per-vertex terrain height is applied in the cliff shader
+                        // (see _applyCliffShader / HiveWE cliff.vert).
                         const wx = cx * TILE + D.offsetX
                         const wy = cy * TILE + D.offsetY
                         const wz = (base - 2) * TILE
@@ -1298,7 +1422,7 @@
                             path: modelPath,
                             p: [wx, wy, wz],
                             s: [1, 1, 1],
-                            a: 0,
+                            a: -Math.PI / 2,  // WC3 cliff models are rotated 90° — unrotate (HiveWE: vec3(y, -x, z))
                             cliffTex0,
                             cliffTex1,
                         })
@@ -1397,7 +1521,7 @@
                     } else if (_rawModelData[info.path]) {
                         // Model data already loaded but not yet built for this texture variant
                         const replTex = _buildReplTex(info)
-                        const entries = _buildModel(_rawModelData[info.path], replTex)
+                        const entries = _buildModel(_rawModelData[info.path], replTex, !!info._cliff)
                         _modelCache[cacheKey] = entries
                         _placeInstances(info.items, entries, grp)
                     } else {
@@ -1420,7 +1544,7 @@
                     for (const [cacheKey, info] of Object.entries(_pendingItems)) {
                         if (info.path !== msg.path) continue
                         const replTex = _buildReplTex(info)
-                        const entries = _buildModel(msg, replTex)
+                        const entries = _buildModel(msg, replTex, !!info._cliff)
                         _modelCache[cacheKey] = entries
                         const grp = info._cliff ? cliffGroup : objectGroup
                         if (info.items && grp.visible) {
@@ -1429,14 +1553,15 @@
                         delete _pendingItems[cacheKey]
                     }
                 } else if (msg && msg.command === 'mapObjectModelNotFound') {
-                    // Model file could not be loaded — skip for cliffs, red cubes for others
+                    // Model file could not be loaded — red cubes for all (cliffs centered)
                     for (const [cacheKey, info] of Object.entries(_pendingItems)) {
                         if (info.path !== msg.path) continue
+                        _modelCache[cacheKey] = _fallbackEntries
                         if (info._cliff) {
-                            // Cliff model not found — just skip (no red cubes for missing cliffs)
-                            _modelCache[cacheKey] = []
+                            if (info.items && cliffGroup.visible) {
+                                _placeInstances(_cliffCenteredItems(info.items), _fallbackEntries, cliffGroup)
+                            }
                         } else {
-                            _modelCache[cacheKey] = _fallbackEntries
                             if (info.items && objectGroup.visible) {
                                 _placeInstances(info.items, _fallbackEntries)
                             }
@@ -1447,10 +1572,12 @@
                     // After all loading finishes, place red cubes for any remaining pending items
                     for (const [cacheKey, info] of Object.entries(_pendingItems)) {
                         if (!_modelCache[cacheKey]) {
+                            _modelCache[cacheKey] = _fallbackEntries
                             if (info._cliff) {
-                                _modelCache[cacheKey] = []
+                                if (cliffGroup.visible) {
+                                    _placeInstances(_cliffCenteredItems(info.items), _fallbackEntries, cliffGroup)
+                                }
                             } else {
-                                _modelCache[cacheKey] = _fallbackEntries
                                 if (objectGroup.visible) {
                                     _placeInstances(info.items, _fallbackEntries)
                                 }
@@ -1536,7 +1663,7 @@
         }
 
         // ── Orbit controls ──────────────────────────────────────
-        const ctrl = W3E.makeOrbitControls(camera, canvas, maxDim)
+        const ctrl = W3E.makeOrbitControls(camera, canvas, maxDim, {zUp: true})
         ctrl.target.set(0, 0, 0)
 
         function resize() {
@@ -1552,7 +1679,7 @@
         (function animate() {
             requestAnimationFrame(animate)
             ctrl.update()
-            renderer.render(scene, camera)
+            renderer.render(scene, ctrl.camera)
         })()
     } catch (e) {
         console.error('Three.js init error:', e)

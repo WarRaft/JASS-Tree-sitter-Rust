@@ -61,7 +61,6 @@ pub async fn terrain_handler(
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::CACHE_CONTROL, "no-store"),
         ],
         binary,

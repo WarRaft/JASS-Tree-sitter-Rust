@@ -39,7 +39,6 @@ pub async fn game_path_status_handler(
     Ok((
         [
             (header::CONTENT_TYPE, "application/json"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::CACHE_CONTROL, "no-store"),
         ],
         json,
@@ -68,7 +67,6 @@ pub async fn game_path_set_handler(
     Ok((
         [
             (header::CONTENT_TYPE, "application/json"),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::CACHE_CONTROL, "no-store"),
         ],
         json,

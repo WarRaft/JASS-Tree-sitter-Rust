@@ -55,7 +55,6 @@ pub async fn path_tex_handler(
             Ok((
                 [
                     (header::CONTENT_TYPE, "application/json"),
-                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
                     (header::CACHE_CONTROL, "no-store"),
                 ],
                 json,

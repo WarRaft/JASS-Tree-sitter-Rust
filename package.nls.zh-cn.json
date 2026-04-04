@@ -12,6 +12,7 @@
   "command.mpq.extractHere": "提取到此处",
   "command.mpq.extractTo": "提取到…",
   "command.jass.restartServer": "重启 JASS LSP 服务器",
+  "customEditor.mdx.displayName": "MDX 模型查看器",
   "customEditor.blp.displayName": "BLP 图像查看器",
   "customEditor.doo.displayName": "DOO 放置查看器",
   "customEditor.w3i.displayName": "W3I 地图信息查看器",

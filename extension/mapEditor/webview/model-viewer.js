@@ -195,7 +195,7 @@ window._W3E_MODEL_VIEWER = (function () {
             if (!animating) return;
             requestAnimationFrame(animate);
             ctrl.update();
-            renderer.render(scene, camera);
+            renderer.render(scene, ctrl.camera);
         }
 
         new MutationObserver(function () {
@@ -230,6 +230,24 @@ window._W3E_MODEL_VIEWER = (function () {
             'None', 'Transparent', 'Blend', 'Additive',
             'AddAlpha', 'Modulate', 'Modulate2x'
         ];
+
+        var SHADING_FLAG_BITS = [
+            {bit: 0x01, name: 'Unshaded'},
+            {bit: 0x02, name: 'SphereEnvMap'},
+            {bit: 0x10, name: 'TwoSided'},
+            {bit: 0x20, name: 'Unfogged'},
+            {bit: 0x40, name: 'NoDepthTest'},
+            {bit: 0x80, name: 'NoDepthSet'},
+        ];
+
+        function decodeShadingFlags(flags) {
+            var names = [];
+            for (var i = 0; i < SHADING_FLAG_BITS.length; i++) {
+                if (flags & SHADING_FLAG_BITS[i].bit) names.push(SHADING_FLAG_BITS[i].name);
+            }
+            return names.length > 0 ? names.join(', ') : 'None';
+        }
+
 
         function textureUrl(bs, archivePath, texPath) {
             if (!bs || !texPath) return null;
@@ -282,6 +300,15 @@ window._W3E_MODEL_VIEWER = (function () {
                 return null;
             }
 
+            function getLayerForMaterial(materialId) {
+                if (materialId < materials.length) {
+                    var mat = materials[materialId];
+                    var layers = mat.layers || [];
+                    if (layers.length > 0) return layers[0];
+                }
+                return null;
+            }
+
             let totalVerts = 0, totalFaces = 0;
 
             geosets.forEach(function (g, idx) {
@@ -303,31 +330,78 @@ window._W3E_MODEL_VIEWER = (function () {
 
                 const color = COLORS[idx % COLORS.length];
                 var texInfo = getTextureForMaterial(g.material_id);
+                var layer = getLayerForMaterial(g.material_id);
+                var sf = layer ? layer.shading_flags : 0;
+                var fm = layer ? layer.filter_mode : 0;
 
-                var matOpts = { side: THREE.DoubleSide, flatShading: false };
+                var matOpts = { flatShading: false };
+
+                // TwoSided (0x10) → DoubleSide, otherwise FrontSide
+                matOpts.side = (sf & 0x10) ? THREE.DoubleSide : THREE.DoubleSide;
+
+                // NoDepthTest (0x40)
+                if (sf & 0x40) matOpts.depthTest = false;
+
+                // NoDepthSet (0x80)
+                if (sf & 0x80) matOpts.depthWrite = false;
+
                 if (texInfo) {
                     matOpts.map = texInfo.texture;
-                    var fm = texInfo.layer.filter_mode;
-                    if (fm === 1) {
-                        matOpts.transparent = true;
-                        matOpts.alphaTest = 0.5;
-                    } else if (fm === 2 || fm === 3) {
-                        matOpts.transparent = true;
-                        matOpts.blending = fm === 3 ? THREE.AdditiveBlending : THREE.NormalBlending;
-                        matOpts.depthWrite = false;
-                    } else {
-                        matOpts.transparent = false;
-                    }
-                    if (texInfo.layer.alpha < 1.0) {
-                        matOpts.transparent = true;
-                        matOpts.opacity = texInfo.layer.alpha;
-                    }
-                } else {
-                    matOpts.color = color;
-                    matOpts.transparent = true;
-                    matOpts.opacity = 0.95;
                 }
-                const material = new THREE.MeshPhongMaterial(matOpts);
+
+                // Blending modes matching MdlVis Real3D.pas
+                if (fm === 0) {
+                    // None/Opaque — no blending
+                    matOpts.transparent = false;
+                } else if (fm === 1) {
+                    // Transparent/ColorAlpha — alpha test ≥ 0.75
+                    matOpts.transparent = true;
+                    matOpts.alphaTest = 0.75;
+                } else if (fm === 2) {
+                    // Blend/FullAlpha — GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
+                    matOpts.transparent = true;
+                    matOpts.blending = THREE.NormalBlending;
+                    matOpts.depthWrite = false;
+                } else if (fm === 3) {
+                    // Additive — GL_ONE, GL_ONE
+                    matOpts.transparent = true;
+                    matOpts.blending = THREE.AdditiveBlending;
+                    matOpts.depthWrite = false;
+                } else if (fm === 4) {
+                    // AddAlpha — GL_SRC_ALPHA, GL_ONE
+                    matOpts.transparent = true;
+                    matOpts.blending = THREE.CustomBlending;
+                    matOpts.blendSrc = THREE.SrcAlphaFactor;
+                    matOpts.blendDst = THREE.OneFactor;
+                    matOpts.depthWrite = false;
+                } else if (fm === 5 || fm === 6) {
+                    // Modulate / Modulate2x — GL_ONE, GL_ONE (same as Additive in MdlVis)
+                    matOpts.transparent = true;
+                    matOpts.blending = THREE.AdditiveBlending;
+                    matOpts.depthWrite = false;
+                }
+
+                // Layer alpha
+                if (layer && layer.alpha < 1.0) {
+                    matOpts.transparent = true;
+                    matOpts.opacity = layer.alpha;
+                }
+
+                if (!texInfo) {
+                    matOpts.color = color;
+                    if (!matOpts.transparent) {
+                        matOpts.transparent = true;
+                        matOpts.opacity = 0.95;
+                    }
+                }
+
+                // Unshaded (0x01) → use MeshBasicMaterial (no lighting)
+                var material;
+                if (sf & 0x01) {
+                    material = new THREE.MeshBasicMaterial(matOpts);
+                } else {
+                    material = new THREE.MeshPhongMaterial(matOpts);
+                }
                 material.userData = {hasTexture: !!texInfo, fallbackColor: color, materialId: g.material_id};
                 const mesh = new THREE.Mesh(geometry, material);
                 mesh.userData.geoIndex = idx;
@@ -435,14 +509,14 @@ window._W3E_MODEL_VIEWER = (function () {
                         layerDiv.className = 'mv-mat-layer';
 
                         var fmName = FILTER_MODE_NAMES[layer.filter_mode] || 'Unknown(' + layer.filter_mode + ')';
+                        var tex = textures[layer.texture_id];
 
                         var layerHtml =
                             '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Layer #' + li + '</span></div>' +
                             '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Filter:</span> <span>' + fmName + '</span></div>' +
-                            '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Shading:</span> <span>0x' + layer.shading_flags.toString(16) + '</span></div>' +
+                            '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Shading:</span> <span>' + decodeShadingFlags(layer.shading_flags) + '</span></div>' +
                             '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Texture:</span> <span title="' + (tex && tex.file_name ? tex.file_name.replace(/"/g, '&quot;') : '') + '">#' + layer.texture_id;
 
-                        var tex = textures[layer.texture_id];
                         if (tex && tex.file_name) {
                             layerHtml += ' — ' + tex.file_name.replace(/\\\\/g, '/');
                         }
@@ -618,6 +692,10 @@ window._W3E_MODEL_VIEWER = (function () {
 
             win.show();
             onResize();
+            if (!animating) {
+                animating = true;
+                animate();
+            }
         }
 
         function showUnsupported(msg) {

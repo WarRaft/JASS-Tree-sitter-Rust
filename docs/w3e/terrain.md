@@ -416,15 +416,39 @@ Cliff models typically have two replaceable texture slots. Even-numbered IDs map
 
 ### Cliff deformation
 
-When a cliff's corners have different heights, bilinear interpolation adjusts vertex Z:
+Cliff models are **not** stretched or scaled. They are placed at the base layer height and each vertex is Z-shifted by the terrain height at its world position. HiveWE implements this in the vertex shader:
 
 ```glsl
-float bottom = mix(topRight, topLeft, -(vertex.x / 128.0));
-float top    = mix(bottomRight, bottomLeft, -(vertex.x / 128.0));
-float value  = mix(bottom, top, vertex.y / 128.0);
+// cliff.vert (HiveWE)
+// 1. Un-rotate WC3 cliff model (rotated 90° in MDX) and convert to tile coords
+vec3 rotated = vec3(vPosition.y, -vPosition.x, vPosition.z) / 128.0 + vOffset.xyz;
 
-gl_Position = MVP * vec4(vertex.xy, vertex.z + value * 128.0, 1);
+// 2. Sample terrain height at this vertex's integer tile position
+ivec2 height_pos = ivec2(rotated.xy);
+float height = cliff_levels[height_pos.y * map_size.x + height_pos.x];
+
+// 3. Compute terrain normal from 4 neighbor height samples
+float hL = cliff_levels[height_pos.y * map_size.x + max(height_pos.x - 1, 0)];
+float hR = cliff_levels[height_pos.y * map_size.x + min(height_pos.x + 1, map_size.x)];
+float hD = cliff_levels[max(height_pos.y - 1, 0) * map_size.x + height_pos.x];
+float hU = cliff_levels[min(height_pos.y + 1, map_size.y) * map_size.x + height_pos.x];
+vec3 terrain_normal = normalize(vec3(hL - hR, hD - hU, 2.0));
+
+// 4. Final Z = model Z + terrain height
+gl_Position = VP * vec4(rotated.xy, rotated.z + height, 1);
+
+// 5. Blend model normal with terrain normal for continuous lighting
+vec3 rotated_normal = vec3(vNormal.y, -vNormal.x, vNormal.z);
+Normal = normalize(vec3(rotated_normal.xy + terrain_normal.xy,
+                        rotated_normal.z * terrain_normal.z));
 ```
+
+Where:
+- `vOffset.xyz` = `(cellX, cellY, min_layer_height - 2)` — instance position in tile coords
+- `cliff_levels[]` = `ground_heights[]` = `height` (ground deformation only, in tile units; **not** `final_ground_height`). Despite the variable name in the shader, the cliff shader binds `ground_height_buffer` (terrain.ixx line 578), which stores `corners[i][j].height` = `(rawGroundHeight - 8192) / 512` without any layer contribution. The layer contribution is already in `vOffset.z` and in the cliff model geometry itself.
+- `vPosition` = original MDX vertex position (128 units = 1 tile)
+
+This means each cliff vertex independently samples the terrain height at its own XY position. The cliff model conforms to the terrain surface: if one side is on higher ground, that side of the cliff shifts up accordingly. Different height differences between corners are handled by **different models** (`BAAA`, `ABBA`, etc.), not by scaling.
 
 ## Ramps
 

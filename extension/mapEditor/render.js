@@ -513,7 +513,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     </float-window>
     ` : ''}
 
-    <float-window id="modelViewerWindow" title-text="\ud83c\udfae Model Viewer" no-padding hidden style="left:160px;top:32px;width:800px;height:650px;">
+    <float-window id="modelViewerWindow" title-text="\ud83c\udfae Model Viewer" no-padding ${mapInfo.isMdx ? '' : 'hidden'} style="left:160px;top:32px;width:800px;height:650px;">
         <div style="display:flex;height:100%;">
             <div class="mv-sidebar" id="mvSidebar">
                 <button class="mv-sb-item" id="mvWireBtn" title="Wireframe overlay">\ud83d\udd32 Wire</button>

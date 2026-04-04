@@ -9,7 +9,7 @@ const {
 
 const {LanguageClient, Trace} = require('vscode-languageclient')
 const {resolveBlpEditor} = require('./mapEditor/resolveBlpEditor.js')
-const {resolveW3eEditor} = require('./mapEditor/index.js')
+const {resolveMapEditor} = require('./mapEditor/index.js')
 const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
@@ -491,9 +491,10 @@ module.exports = {
 
         context.subscriptions.push(
             binaryEditor('blp.preview', resolveBlpEditor),
-            binaryEditor('doo.preview', resolveW3eEditor),
-            binaryEditor('w3i.preview', resolveW3eEditor),
-            binaryEditor('w3e.preview', resolveW3eEditor),
+            binaryEditor('mdx.preview', resolveMapEditor),
+            binaryEditor('doo.preview', resolveMapEditor),
+            binaryEditor('w3i.preview', resolveMapEditor),
+            binaryEditor('w3e.preview', resolveMapEditor),
 
             // SLK table editor (text-based — uses CustomTextEditorProvider for undo/redo)
             window.registerCustomEditorProvider(

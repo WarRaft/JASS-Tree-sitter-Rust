@@ -21,7 +21,7 @@ strum_macros = "0.28.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 serde_repr = "0.1.20"
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { version = "1.51.0", features = ["full"] }
 env_logger = "0.11.10"
 image = "0.25.10"
 lapce-xi-rope = "0.4.0"
@@ -35,9 +35,10 @@ dashmap = "7.0.0-rc2"
 dirs = "6.0.0"
 petgraph = "0.8.3"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "blocking", "json"] }
-redb = "3.1.1"
+redb = "4.0.0"
 sha2 = "0.11.0"
 tokio-util = "0.7.18"
+tower-http = { version = "0.6.6", features = ["cors"] }
 
 [build-dependencies]
 serde_json = "1.0.149"

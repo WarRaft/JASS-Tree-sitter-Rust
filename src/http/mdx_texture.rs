@@ -41,7 +41,6 @@ pub async fn mdx_texture_handler(
     Ok((
         [
             (header::CONTENT_TYPE, "image/png".to_string()),
-            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
             (header::CACHE_CONTROL, "max-age=300".to_string()),
         ],
         png_bytes,

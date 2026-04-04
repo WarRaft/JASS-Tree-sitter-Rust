@@ -406,6 +406,16 @@
     ],
     "customEditors": [
       {
+        "viewType": "mdx.preview",
+        "displayName": "%customEditor.mdx.displayName%",
+        "selector": [
+          {
+            "filenamePattern": "*.mdx"
+          }
+        ],
+        "priority": "default"
+      },
+      {
         "viewType": "blp.preview",
         "displayName": "%customEditor.blp.displayName%",
         "selector": [
@@ -470,6 +480,7 @@
     ],
     "activationEvents": [
       "onView:jassDebugSidebar",
+      "onCustomEditor:mdx.preview",
       "onCustomEditor:blp.preview",
       "onCustomEditor:doo.preview",
       "onCustomEditor:w3i.preview",
