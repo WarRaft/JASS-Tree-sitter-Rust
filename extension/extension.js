@@ -494,7 +494,7 @@ module.exports = {
             binaryEditor('mdx.preview', resolveMapEditor),
             binaryEditor('doo.preview', resolveMapEditor),
             binaryEditor('w3i.preview', resolveMapEditor),
-            binaryEditor('w3e.preview', resolveMapEditor),
+            binaryEditor('mapEditor', resolveMapEditor),
 
             // SLK table editor (text-based — uses CustomTextEditorProvider for undo/redo)
             window.registerCustomEditorProvider(

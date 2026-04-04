@@ -413,6 +413,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         archivePath: isArchive ? filePath : undefined,
     })
 
+
     // If an MDX was opened directly, send the model data to the webview
     // so the model viewer auto-opens with the rendered model.
     if (_pendingMdxData) {

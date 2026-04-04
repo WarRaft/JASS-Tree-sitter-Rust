@@ -446,7 +446,7 @@
         "priority": "default"
       },
       {
-        "viewType": "w3e.preview",
+        "viewType": "mapEditor",
         "displayName": "%customEditor.w3e.displayName%",
         "selector": [
           {
@@ -484,7 +484,7 @@
       "onCustomEditor:blp.preview",
       "onCustomEditor:doo.preview",
       "onCustomEditor:w3i.preview",
-      "onCustomEditor:w3e.preview",
+      "onCustomEditor:mapEditor",
       "onCustomEditor:slk.preview"
     ],
     "commands": [
