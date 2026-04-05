@@ -43,6 +43,7 @@
 
         let maxDim = 10000
         let mesh = null
+        let _onAnimateWater = null  // set inside hasTerrain block
 
         if (hasTerrain) {
             const D = DATA.renderData
@@ -68,6 +69,7 @@
 
                         const N = D.w * D.h
                         D.groundHeight = new Uint16Array(buf, off, N); off += N * 2
+                        D.waterHeight = new Uint16Array(buf, off, N); off += N * 2
                         D.groundTexture = new Uint8Array(buf, off, N); off += N
                         D.groundVariation = new Uint8Array(buf, off, N); off += N
                         D.cliffVariation = new Uint8Array(buf, off, N); off += N
@@ -101,6 +103,7 @@
                     return new Uint16Array(buf)
                 }
                 D.groundHeight = b64ToUint16(D.groundHeight)
+                D.waterHeight = b64ToUint16(D.waterHeight)
                 D.groundTexture = b64ToUint8(D.groundTexture)
                 D.groundVariation = b64ToUint8(D.groundVariation)
                 D.cliffVariation = b64ToUint8(D.cliffVariation)
@@ -185,7 +188,7 @@
             camera.lookAt(0, 0, 0)
             camera.updateProjectionMatrix()
 
-            let showWater = false, showBoundary = false, showBlight = false, showRamp = false
+            let showWater = true, showBoundary = false, showBlight = false, showRamp = false
             let showDeformation = true
             let showSlopes = true
             let showCliffs = true
@@ -930,6 +933,7 @@
             cb('cbWater', e => {
                 showWater = e.target.checked
                 applyColors()
+                _buildWaterMesh()
                 saveCbState()
             })
             cb('cbBoundary', e => {
@@ -963,6 +967,7 @@
                 applyHeights()
                 rebuildWireframe()
                 _updateTerrainHeightTexture()
+                _buildWaterMesh()
                 saveCbState()
             })
             cb('cbSlopes', e => {
@@ -970,6 +975,7 @@
                 applyHeights()
                 rebuildWireframe()
                 _updateTerrainHeightTexture()
+                _buildWaterMesh()
                 saveCbState()
             })
 
@@ -1120,6 +1126,10 @@
                             ' <span class="ci-dim">var ' + D.cliffVariation[idx] + '</span>')
                     }
                     if (fl.length) parts.push(fl.join(' '))
+                    if ((cf & 1) && D.waterHeight) {
+                        const wz = _waterZ(idx).toFixed(1)
+                        parts.push('<span class="ci-label">Water</span> ' + wz)
+                    }
 
                     infoEl.innerHTML = parts.join('<span class="ci-sep">│</span>')
                     return
@@ -1781,6 +1791,268 @@
             // Load cliff tile texture previews
             _loadCliffTilePreviews()
 
+            // ── Water mesh ────────────────────────────────────────
+            // A separate transparent mesh that sits at waterHeight,
+            // matching HiveWE water.vert / water.frag rendering.
+            //
+            // Water is rendered per-cell: a cell has water if any of
+            // its 4 corner tilepoints has the water flag set.
+            //
+            // Height formula (from terrain.md):
+            //   waterLevel = (waterHeight - H_ZERO) / H_SCALE - waterZero
+            // where waterZero = Water.slk "height" × TILE  (e.g. -0.7 × 128 = -89.6)
+            //
+            // Colour interpolation is based on depth = waterLevel - groundLevel,
+            // using shallow and deep colour ranges from Water.slk.
+
+            const waterGroup = new THREE.Group()
+            scene.add(waterGroup)
+            let _waterMesh = null
+
+            // Water SLK parameters (from Rust via __W3E_DATA__)
+            const _waterSlk = DATA.waterSlk
+            // water_offset = height * TILE  (HiveWE: water_offset = water_slk.data<float>("height", ...))
+            // In HiveWE, water_offset is added in tile units (height is already in tile units).
+            // Our waterHeight is raw u16 like groundHeight, so we use the same formula.
+            const WATER_OFFSET = _waterSlk ? _waterSlk.entry.height * TILE : -0.7 * TILE
+            // Water animation params (from Water.slk)
+            const _waterNumTex = _waterSlk ? _waterSlk.entry.numTex : 45
+            const _waterTexRate = _waterSlk ? _waterSlk.entry.texRate : 15
+            const _waterTexFile = _waterSlk ? _waterSlk.entry.texFile : 'ReplaceableTextures\\Water\\Water'
+
+            // Water texture animation state
+            const _waterTextures = []     // THREE.Texture array (loaded async)
+            let _waterTexturesReady = false
+            let _waterFrame = 0           // float, advances by _waterTexRate * dt
+            let _waterLastFrame = -1      // last integer frame applied
+
+            // Depth thresholds (in tile units, matching HiveWE water.vert)
+            const W_MIN_DEPTH = 10 / 128
+            const W_DEEP_LEVEL = 64 / 128
+            const W_MAX_DEPTH = 72 / 128
+
+            // Colour ranges from Water.slk (0-255 → 0-1)
+            function _wc(r, g, b, a) { return [r / 255, g / 255, b / 255, a / 255] }
+            const W_SMIN = _waterSlk ? _wc(_waterSlk.entry.sminR, _waterSlk.entry.sminG, _waterSlk.entry.sminB, _waterSlk.entry.sminA) : [1, 1, 1, 10/255]
+            const W_SMAX = _waterSlk ? _wc(_waterSlk.entry.smaxR, _waterSlk.entry.smaxG, _waterSlk.entry.smaxB, _waterSlk.entry.smaxA) : [117/255, 117/255, 200/255, 219/255]
+            const W_DMIN = _waterSlk ? _wc(_waterSlk.entry.dminR, _waterSlk.entry.dminG, _waterSlk.entry.dminB, _waterSlk.entry.dminA) : [117/255, 117/255, 200/255, 219/255]
+            const W_DMAX = _waterSlk ? _wc(_waterSlk.entry.dmaxR, _waterSlk.entry.dmaxG, _waterSlk.entry.dmaxB, _waterSlk.entry.dmaxA) : [96/255, 96/255, 192/255, 250/255]
+
+            function _waterColor(depthWorld) {
+                // Convert depth from world units to tile units for threshold comparison
+                // (HiveWE shader thresholds are in tile units: 10/128, 64/128, 72/128)
+                const depth = depthWorld / TILE
+                // Replicate HiveWE water.vert depth→colour interpolation
+                let value = Math.max(0, Math.min(1, depth))
+                let r, g, b, a
+                if (value <= W_DEEP_LEVEL) {
+                    const t = Math.max(0, value - W_MIN_DEPTH) / (W_DEEP_LEVEL - W_MIN_DEPTH)
+                    r = W_SMIN[0] * (1 - t) + W_SMAX[0] * t
+                    g = W_SMIN[1] * (1 - t) + W_SMAX[1] * t
+                    b = W_SMIN[2] * (1 - t) + W_SMAX[2] * t
+                    a = W_SMIN[3] * (1 - t) + W_SMAX[3] * t
+                } else {
+                    const t = Math.min(value - W_DEEP_LEVEL, W_MAX_DEPTH - W_DEEP_LEVEL) / (W_MAX_DEPTH - W_DEEP_LEVEL)
+                    r = W_DMIN[0] * (1 - t) + W_DMAX[0] * t
+                    g = W_DMIN[1] * (1 - t) + W_DMAX[1] * t
+                    b = W_DMIN[2] * (1 - t) + W_DMAX[2] * t
+                    a = W_DMIN[3] * (1 - t) + W_DMAX[3] * t
+                }
+                return [r, g, b, a]
+            }
+
+            // Compute final water height for a tilepoint (in world units)
+            function _waterZ(idx) {
+                return (D.waterHeight[idx] - H_ZERO) / H_SCALE + WATER_OFFSET
+            }
+
+            // Compute final ground height for a tilepoint (used for depth calc).
+            // Uses ramp-adjusted layer height + deformation (matches terrain mesh).
+            function _groundZ(idx, layer) {
+                let h = (layer[idx] - 2) * TILE
+                if (showDeformation) {
+                    h += (D.groundHeight[idx] - H_ZERO) / H_SCALE
+                }
+                return h
+            }
+
+            // Load water textures asynchronously from the HTTP server
+            // Path format: {texFile}{i:02}.blp (e.g. "ReplaceableTextures\Water\Water00.blp")
+            function _loadWaterTextures() {
+                const bs = DATA.binaryServer
+                if (!bs || !_waterTexFile || _waterNumTex <= 0) return
+                let loaded = 0
+                for (let i = 0; i < _waterNumTex; i++) {
+                    const texPath = _waterTexFile + String(i).padStart(2, '0') + '.blp'
+                    const params = new URLSearchParams({token: bs.token, path: texPath})
+                    if (DATA.archivePath) params.set('archive', DATA.archivePath)
+                    if (DATA.tileset) params.set('tileset', DATA.tileset)
+                    const url = 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params
+                    const tex = _textureLoader.load(url, function () {
+                        loaded++
+                        if (loaded >= _waterNumTex) {
+                            _waterTexturesReady = true
+                            // Apply first frame immediately
+                            if (_waterMesh && _waterTextures[0]) {
+                                _waterMesh.material.map = _waterTextures[0]
+                                _waterMesh.material.needsUpdate = true
+                            }
+                        }
+                    })
+                    tex.wrapS = THREE.ClampToEdgeWrapping
+                    tex.wrapT = THREE.ClampToEdgeWrapping
+                    tex.magFilter = THREE.LinearFilter
+                    tex.minFilter = THREE.LinearMipmapLinearFilter
+                    _waterTextures[i] = tex
+                }
+            }
+            _loadWaterTextures()
+
+            // Advance water animation frame. Called from the render loop.
+            function _updateWaterAnimation(dt) {
+                if (!_waterTexturesReady || !_waterMesh || _waterNumTex <= 1) return
+                _waterFrame += _waterTexRate * dt
+                if (_waterFrame >= _waterNumTex) _waterFrame -= _waterNumTex * Math.floor(_waterFrame / _waterNumTex)
+                const frame = Math.floor(_waterFrame) % _waterNumTex
+                if (frame !== _waterLastFrame) {
+                    _waterLastFrame = frame
+                    const tex = _waterTextures[frame]
+                    if (tex) {
+                        _waterMesh.material.map = tex
+                        _waterMesh.material.needsUpdate = true
+                    }
+                }
+            }
+
+            function _buildWaterMesh() {
+                // Remove old water mesh
+                if (_waterMesh) {
+                    waterGroup.remove(_waterMesh)
+                    _waterMesh.geometry.dispose()
+                    _waterMesh.material.dispose()
+                    _waterMesh = null
+                }
+
+                if (!showWater) return
+
+                const layer = showSlopes ? computeRampLayerHeight() : D.layerHeight
+
+                // Count water cells (cell has water if ANY of its 4 corners has water flag)
+                const waterCells = []
+                for (let cy = 0; cy < cellsY; cy++) {
+                    for (let cx = 0; cx < cellsX; cx++) {
+                        const iBL = cy * W + cx
+                        const iBR = cy * W + cx + 1
+                        const iTL = (cy + 1) * W + cx
+                        const iTR = (cy + 1) * W + cx + 1
+
+                        const hasWater = (D.flags[iBL] & 1) || (D.flags[iBR] & 1) ||
+                                          (D.flags[iTL] & 1) || (D.flags[iTR] & 1)
+                        if (hasWater) waterCells.push({cx, cy, iBL, iBR, iTL, iTR})
+                    }
+                }
+
+                if (waterCells.length === 0) return
+
+                // Build geometry: 2 triangles per water cell (TL→BR diagonal)
+                const vertCount = waterCells.length * 4
+                const faceCount = waterCells.length * 2
+                const positions = new Float32Array(vertCount * 3)
+                const colors = new Float32Array(vertCount * 4)
+                const uvs = new Float32Array(vertCount * 2)
+                const indices = new Uint32Array(faceCount * 3)
+
+                let vi = 0, fi = 0
+                for (const cell of waterCells) {
+                    const {cx, cy, iBL, iBR, iTL, iTR} = cell
+
+                    // Water heights at the 4 corners
+                    const wBL = _waterZ(iBL)
+                    const wBR = _waterZ(iBR)
+                    const wTL = _waterZ(iTL)
+                    const wTR = _waterZ(iTR)
+
+                    // Ground heights at the 4 corners (for depth calculation)
+                    const gBL = _groundZ(iBL, layer)
+                    const gBR = _groundZ(iBR, layer)
+                    const gTL = _groundZ(iTL, layer)
+                    const gTR = _groundZ(iTR, layer)
+
+                    // World XY positions of the 4 corners
+                    // BL = (cx, cy), BR = (cx+1, cy), TL = (cx, cy+1), TR = (cx+1, cy+1)
+                    // Convert to centered geometry coords:
+                    const x0 = cx * TILE - halfGridW
+                    const x1 = (cx + 1) * TILE - halfGridW
+                    const y0 = cy * TILE - halfGridH
+                    const y1 = (cy + 1) * TILE - halfGridH
+
+                    // UV per vertex (matching HiveWE water.vert):
+                    // BL → (0, 1), BR → (1, 1), TL → (0, 0), TR → (1, 0)
+                    const base = vi
+                    // BL
+                    positions[vi * 3] = x0; positions[vi * 3 + 1] = y0; positions[vi * 3 + 2] = wBL
+                    const cBL = _waterColor(wBL - gBL)
+                    colors[vi * 4] = cBL[0]; colors[vi * 4 + 1] = cBL[1]; colors[vi * 4 + 2] = cBL[2]; colors[vi * 4 + 3] = cBL[3]
+                    uvs[vi * 2] = 0; uvs[vi * 2 + 1] = 1
+                    vi++
+                    // BR
+                    positions[vi * 3] = x1; positions[vi * 3 + 1] = y0; positions[vi * 3 + 2] = wBR
+                    const cBR = _waterColor(wBR - gBR)
+                    colors[vi * 4] = cBR[0]; colors[vi * 4 + 1] = cBR[1]; colors[vi * 4 + 2] = cBR[2]; colors[vi * 4 + 3] = cBR[3]
+                    uvs[vi * 2] = 1; uvs[vi * 2 + 1] = 1
+                    vi++
+                    // TL
+                    positions[vi * 3] = x0; positions[vi * 3 + 1] = y1; positions[vi * 3 + 2] = wTL
+                    const cTL = _waterColor(wTL - gTL)
+                    colors[vi * 4] = cTL[0]; colors[vi * 4 + 1] = cTL[1]; colors[vi * 4 + 2] = cTL[2]; colors[vi * 4 + 3] = cTL[3]
+                    uvs[vi * 2] = 0; uvs[vi * 2 + 1] = 0
+                    vi++
+                    // TR
+                    positions[vi * 3] = x1; positions[vi * 3 + 1] = y1; positions[vi * 3 + 2] = wTR
+                    const cTR = _waterColor(wTR - gTR)
+                    colors[vi * 4] = cTR[0]; colors[vi * 4 + 1] = cTR[1]; colors[vi * 4 + 2] = cTR[2]; colors[vi * 4 + 3] = cTR[3]
+                    uvs[vi * 2] = 1; uvs[vi * 2 + 1] = 0
+                    vi++
+
+                    // Two triangles: TL-BL-BR diagonal (matching WC3 editor)
+                    // Tri 1: TL, BL, BR
+                    indices[fi * 3] = base + 2; indices[fi * 3 + 1] = base; indices[fi * 3 + 2] = base + 1
+                    fi++
+                    // Tri 2: TL, BR, TR
+                    indices[fi * 3] = base + 2; indices[fi * 3 + 1] = base + 1; indices[fi * 3 + 2] = base + 3
+                    fi++
+                }
+
+                const waterGeo = new THREE.BufferGeometry()
+                waterGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+                waterGeo.setAttribute('color', new THREE.BufferAttribute(colors, 4))
+                waterGeo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+                waterGeo.setIndex(new THREE.BufferAttribute(indices, 1))
+                waterGeo.computeVertexNormals()
+
+                const waterMat = new THREE.MeshBasicMaterial({
+                    vertexColors: true,
+                    transparent: true,
+                    side: THREE.DoubleSide,
+                    depthWrite: false,
+                    opacity: 1.0,
+                    map: (_waterTexturesReady && _waterTextures[0]) ? _waterTextures[0] : null,
+                })
+
+                _waterMesh = new THREE.Mesh(waterGeo, waterMat)
+                _waterMesh.renderOrder = 10  // render after terrain
+                waterGroup.add(_waterMesh)
+
+                // Reset animation state
+                _waterLastFrame = -1
+            }
+
+            // Initial water build
+            _buildWaterMesh()
+
+            // Expose water animation to the render loop
+            _onAnimateWater = _updateWaterAnimation
+
             // Reload when game path changes (snapshot updated)
             W3E.onSnapshotChanged(function (snapshot) {
                 if (snapshot.doodadsSlk && snapshot.doodadsSlk.doodads) {
@@ -1841,9 +2113,13 @@
         resize()
         window.addEventListener('resize', resize);
 
+        const _clock = new THREE.Clock();
+
         (function animate() {
             requestAnimationFrame(animate)
+            const dt = _clock.getDelta()
             ctrl.update()
+            if (_onAnimateWater) _onAnimateWater(dt)
             renderer.render(scene, ctrl.camera)
         })()
     } catch (e) {

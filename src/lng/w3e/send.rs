@@ -1,5 +1,5 @@
 use crate::lng::w3e::parse::W3eData;
-use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations};
+use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk};
 use crate::lng::w3e::textures::load_tile_textures;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
@@ -28,6 +28,7 @@ fn pack_points(data: &W3eData) -> serde_json::Value {
     let n = data.points.len();
 
     let mut ground_height: Vec<u16> = Vec::with_capacity(n);
+    let mut water_height: Vec<u16> = Vec::with_capacity(n);
     let mut ground_texture: Vec<u8> = Vec::with_capacity(n);
     let mut ground_variation: Vec<u8> = Vec::with_capacity(n);
     let mut cliff_variation: Vec<u8> = Vec::with_capacity(n);
@@ -38,6 +39,7 @@ fn pack_points(data: &W3eData) -> serde_json::Value {
 
     for p in &data.points {
         ground_height.push(p.ground_height);
+        water_height.push(p.water_height);
         ground_texture.push(p.ground_texture);
         ground_variation.push(p.ground_variation);
         cliff_variation.push(p.cliff_variation);
@@ -54,6 +56,7 @@ fn pack_points(data: &W3eData) -> serde_json::Value {
 
     json!({
         "groundHeight": BASE64.encode(as_u8_slice_u16(&ground_height)),
+        "waterHeight": BASE64.encode(as_u8_slice_u16(&water_height)),
         "groundTexture": BASE64.encode(&ground_texture),
         "groundVariation": BASE64.encode(&ground_variation),
         "cliffVariation": BASE64.encode(&cliff_variation),
@@ -130,6 +133,7 @@ async fn _send(
         // Store the tileset globally so all file lookups include {tileset}.mpq
         super::game_path::set_tileset(&data.tileset);
         let tileset_for_cliff = data.tileset.clone();
+        let tileset_for_water = data.tileset.clone();
         let ground_tiles = data.ground_tiles.clone();
         let packed = pack_points(&data);
         let mut val = to_value(data)?;
@@ -146,12 +150,13 @@ async fn _send(
             let dest_slk = load_destructables_slk(ap2.as_deref());
             let cliff_types_slk = load_cliff_types_slk(ap2.as_deref(), Some(&tileset_for_cliff));
             let cliff_variations = load_cliff_variations();
-            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations)
+            let water_slk = load_water_slk(ap2.as_deref(), &tileset_for_water);
+            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations, water_slk)
         })
         .await
         .ok();
 
-        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations)) = slk_and_tex {
+        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations, water_slk)) = slk_and_tex {
             if let Some(slk_data) = slk {
                 val["_terrainSlk"] = to_value(slk_data)?;
             }
@@ -169,6 +174,9 @@ async fn _send(
                 val["_cliffTypesSlk"] = to_value(ct_data)?;
             }
             val["_cliffVariations"] = to_value(cliff_variations)?;
+            if let Some(ws_data) = water_slk {
+                val["_waterSlk"] = to_value(ws_data)?;
+            }
         }
 
         Ok(val)
@@ -180,6 +188,7 @@ async fn _send(
         // Store the tileset globally so all file lookups include {tileset}.mpq
         super::game_path::set_tileset(&data.tileset);
         let tileset_for_cliff = data.tileset.clone();
+        let tileset_for_water2 = data.tileset.clone();
         let ground_tiles = data.ground_tiles.clone();
         let packed = pack_points(&data);
         let mut val = to_value(data)?;
@@ -195,12 +204,13 @@ async fn _send(
             let dest_slk = load_destructables_slk(None);
             let cliff_types_slk = load_cliff_types_slk(None, Some(&tileset_for_cliff));
             let cliff_variations = load_cliff_variations();
-            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations)
+            let water_slk = load_water_slk(None, &tileset_for_water2);
+            (slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations, water_slk)
         })
         .await
         .ok();
 
-        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations)) = slk_and_tex {
+        if let Some((slk, tex, dood_slk, unit_slk, dest_slk, cliff_types_slk, cliff_variations, water_slk)) = slk_and_tex {
             if let Some(slk_data) = slk {
                 val["_terrainSlk"] = to_value(slk_data)?;
             }
@@ -218,6 +228,9 @@ async fn _send(
                 val["_cliffTypesSlk"] = to_value(ct_data)?;
             }
             val["_cliffVariations"] = to_value(cliff_variations)?;
+            if let Some(ws_data) = water_slk {
+                val["_waterSlk"] = to_value(ws_data)?;
+            }
         }
 
         Ok(val)

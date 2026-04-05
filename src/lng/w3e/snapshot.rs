@@ -14,7 +14,7 @@ use std::sync::Mutex;
 
 use super::slk::{
     DoodadsSlkResult, DestructablesSlkResult, TerrainSlkResult, UnitsSlkResult,
-    CliffTypesSlkResult, CliffVariationsResult,
+    CliffTypesSlkResult, CliffVariationsResult, WaterSlkResult,
 };
 
 // ─── Snapshot struct ─────────────────────────────────────────────────────────
@@ -37,6 +37,8 @@ pub struct GameSnapshot {
     pub cliff_types_slk: Option<CliffTypesSlkResult>,
     /// Max variation per cliff letter-pattern (from embedded Cliffs.slk / CityCliffs.slk).
     pub cliff_variations: Option<CliffVariationsResult>,
+    /// Water parameters from `TerrainArt\Water.slk` for the current tileset.
+    pub water_slk: Option<WaterSlkResult>,
 }
 
 // ─── Global cache ────────────────────────────────────────────────────────────
@@ -55,7 +57,7 @@ static SNAPSHOT: Mutex<Option<CachedSnapshot>> = Mutex::new(None);
 /// Called when the game path is set or changed.  Reads all SLK / INI files
 /// synchronously (should be called from `spawn_blocking`).
 pub fn build_snapshot(archive_path: Option<&str>) {
-    use super::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations};
+    use super::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk};
 
     // 0. Discover tileset MPQs (loose files + inside War3*.mpq archives).
     super::game_path::discover_tileset_mpqs();
@@ -72,6 +74,10 @@ pub fn build_snapshot(archive_path: Option<&str>) {
     let cliff_types_slk = load_cliff_types_slk(archive_path, None);
     let cliff_variations = Some(load_cliff_variations());
 
+    // Water SLK needs the tileset letter (set when w3e is parsed).
+    let water_slk = super::game_path::get_tileset()
+        .and_then(|ts| load_water_slk(archive_path, &ts));
+
     let snapshot = GameSnapshot {
         westrings,
         terrain_slk,
@@ -80,6 +86,7 @@ pub fn build_snapshot(archive_path: Option<&str>) {
         destructables_slk,
         cliff_types_slk,
         cliff_variations,
+        water_slk,
     };
 
     // 3. Pre-serialise to JSON once.

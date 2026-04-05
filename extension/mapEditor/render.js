@@ -83,6 +83,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             tileTextures: terrainData._tileTextures || [],
             // base64-encoded TypedArrays (packed by Rust)
             groundHeight: terrainData._packed.groundHeight,
+            waterHeight: terrainData._packed.waterHeight,
             groundTexture: terrainData._packed.groundTexture,
             groundVariation: terrainData._packed.groundVariation,
             cliffVariation: terrainData._packed.cliffVariation,
@@ -502,7 +503,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         </table>
         <div class="tw-section-title">Layers</div>
         <div class="terrain-checks">
-            <label class="menu-cb"><input type="checkbox" id="cbWater" /> Water</label>
+            <label class="menu-cb"><input type="checkbox" id="cbWater" checked /> Water</label>
             <label class="menu-cb"><input type="checkbox" id="cbBoundary" /> Boundary</label>
             <label class="menu-cb"><input type="checkbox" id="cbBlight" /> Blight</label>
             <label class="menu-cb"><input type="checkbox" id="cbRamp" /> Ramp</label>
@@ -631,7 +632,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         cliffTypeMap: ${JSON.stringify(cliffTypeMap)},
         initialCliffTypesSlk: ${hasCliffTypesSlk ? JSON.stringify(terrainData._cliffTypesSlk) : 'null'},
         cliffVariations: ${JSON.stringify(cliffVariations)},
-        tileset: ${hasTerrain ? JSON.stringify(terrainData.tileset) : 'null'}
+        tileset: ${hasTerrain ? JSON.stringify(terrainData.tileset) : 'null'},
+        waterSlk: ${hasTerrain && terrainData._waterSlk ? JSON.stringify(terrainData._waterSlk) : 'null'}
     };
     </script>
     <script nonce="${nonce}" src="${terrainSrc}"></script>

@@ -14,12 +14,13 @@
 //! 12      f32         offsetY
 //! 16      u32         totalTiles (ground tile count)
 //! 20      Uint16[N]   groundHeight    (N = W * H, 2N bytes)
-//! 20+2N   Uint8[N]    groundTexture
-//! 20+3N   Uint8[N]    groundVariation
-//! 20+4N   Uint8[N]    cliffVariation
-//! 20+5N   Uint8[N]    cliffTexture
-//! 20+6N   Uint8[N]    layerHeight
-//! 20+7N   Uint8[N]    flags (bit0=water, bit1=boundary, bit2=blight, bit3=ramp)
+//! 20+2N   Uint16[N]   waterHeight     (2N bytes)
+//! 20+4N   Uint8[N]    groundTexture
+//! 20+5N   Uint8[N]    groundVariation
+//! 20+6N   Uint8[N]    cliffVariation
+//! 20+7N   Uint8[N]    cliffTexture
+//! 20+8N   Uint8[N]    layerHeight
+//! 20+9N   Uint8[N]    flags (bit0=water, bit1=boundary, bit2=blight, bit3=ramp)
 //! ```
 
 use crate::http::server::{TokenParam, check_token};
@@ -124,8 +125,8 @@ fn pack_terrain_binary(data: &W3eData) -> Vec<u8> {
     let total_tiles = data.ground_tiles.len() as u32;
 
     // Header: 5 × 4 = 20 bytes
-    // Body:   2N + 6N = 8N bytes
-    let capacity = 20 + 8 * n;
+    // Body:   2N (groundHeight) + 2N (waterHeight) + 6N = 10N bytes
+    let capacity = 20 + 10 * n;
     let mut buf = Vec::with_capacity(capacity);
 
     // Header
@@ -138,6 +139,10 @@ fn pack_terrain_binary(data: &W3eData) -> Vec<u8> {
     // groundHeight: Uint16Array
     for p in &data.points {
         buf.extend_from_slice(&p.ground_height.to_le_bytes());
+    }
+    // waterHeight: Uint16Array
+    for p in &data.points {
+        buf.extend_from_slice(&p.water_height.to_le_bytes());
     }
     // groundTexture: Uint8Array
     for p in &data.points {
