@@ -5,10 +5,7 @@ pub(crate) mod util;
 pub(crate) mod lng;
 
 use serde_json::json;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::io::{self, BufReader, Stdout};
-use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 
 use crate::lng::blp::send::send as blp_send;
 use crate::lng::doo::send::send as doo_send;
@@ -23,28 +20,18 @@ use crate::lsp::code_action::send::send as code_action_send;
 use crate::lsp::code_lens::send::send as code_lens_send;
 use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::completion::send::send as completion_send;
-use crate::lsp::document_link::lsp::DocumentLinkOptions;
-use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
-use crate::lsp::folding::lsp::FoldingRangeOptions;
 use crate::lsp::formatting::lsp::DocumentFormattingOptions;
 use crate::lsp::formatting::send::send_formatting;
 use crate::lsp::highlight::send::send as highlight_send;
 use crate::lsp::hover::send::send as hover_send;
-use crate::lsp::inlay_hint::send::send as inlay_hint_send;
 use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
-use crate::lsp::read::read;
 use crate::lsp::rename::handle::compute_rename_edits;
 use crate::lsp::rename::identifier::{compute_identifier_rename, prepare_rename};
 use crate::lsp::rename::lsp::{
     FileOperationFilter, FileOperationOptions, FileOperationPattern,
     FileOperationRegistrationOptions, WorkspaceServerCapabilities,
 };
-use crate::lsp::semantic::lsp::{
-    Kind, Mod, SemanticTokensFullOptions, SemanticTokensFullOptionsObject, SemanticTokensLegend,
-    SemanticTokensOptions, SemanticTokensRangeProviderCapability, ToCamelVec,
-};
-use crate::lsp::semantic::send::send as semantic_send;
 use crate::lsp::send::send;
 use crate::lsp::send::send_cancelled;
 use crate::lsp::signature_help::send::send as signature_help_send;
@@ -52,7 +39,7 @@ use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
 use crate::util::debug_log::{send_debug_log, DebugStatus, DEBUG_LOG_ENABLED};
 use crate::util::file_store::{
     cancel_uri_requests, mark_parse_pending, mark_parse_done,
-    uri_request_token, wait_for_parse_cancellable, FILE_STORE, LSP_WRITER,
+    uri_request_token, FILE_STORE,
 };
 use crate::util::uri_map::LNG_URI_MAP;
 use log::{error, info};
@@ -73,18 +60,11 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::DidOpen(_) => "textDocument/didOpen",
         MethodCall::DidChange(_) => "textDocument/didChange",
         MethodCall::DidChangeWatchedFiles(_) => "workspace/didChangeWatchedFiles",
-        MethodCall::SemanticFull(_) => "textDocument/semanticTokens/full",
-        MethodCall::SemanticRange(_) => "textDocument/semanticTokens/range",
-        MethodCall::Diagnostic(_) => "textDocument/diagnostic",
-        MethodCall::DocumentSymbol(_) => "textDocument/documentSymbol",
-        MethodCall::Folding(_) => "textDocument/foldingRange",
         MethodCall::Completion(_) => "textDocument/completion",
         MethodCall::Hover(_) => "textDocument/hover",
         MethodCall::DocumentHighlight(_) => "textDocument/documentHighlight",
         MethodCall::Definition(_) => "textDocument/definition",
         MethodCall::References(_) => "textDocument/references",
-        MethodCall::InlayHint(_) => "textDocument/inlayHint",
-        MethodCall::DocumentLink(_) => "textDocument/documentLink",
         MethodCall::Formatting(_) => "textDocument/formatting",
         MethodCall::PrepareRename(_) => "textDocument/prepareRename",
         MethodCall::Rename(_) => "textDocument/rename",
@@ -96,7 +76,6 @@ fn method_name(call: &MethodCall) -> &'static str {
         MethodCall::BuildHooks(_) => "build/hooks",
         MethodCall::RescanExecute(_) => "rescan/execute",
         MethodCall::UjapiDownload(_) => "ujapi/download",
-        MethodCall::DocumentColor(_) => "textDocument/documentColor",
         MethodCall::ColorPresentation(_) => "textDocument/colorPresentation",
         MethodCall::CodeAction(_) => "textDocument/codeAction",
         MethodCall::SignatureHelp(_) => "textDocument/signatureHelp",
@@ -136,28 +115,20 @@ fn method_name(call: &MethodCall) -> &'static str {
 /// payload is moved into the spawned handler.
 fn extract_uri(call: &MethodCall) -> Option<&Url> {
     match call {
-        MethodCall::SemanticFull(p) => Some(&p.text_document.uri),
-        MethodCall::SemanticRange(p) => Some(&p.text_document.uri),
-        MethodCall::DocumentSymbol(p) => Some(&p.text_document.uri),
-        MethodCall::Folding(p) => Some(&p.text_document.uri),
         MethodCall::Completion(p) => Some(&p.text_document.uri),
         MethodCall::Hover(p) => Some(&p.text_document.uri),
         MethodCall::DocumentHighlight(p) => Some(&p.text_document.uri),
         MethodCall::Definition(p) => Some(&p.text_document.uri),
         MethodCall::References(p) => Some(&p.text_document.uri),
-        MethodCall::InlayHint(p) => Some(&p.text_document.uri),
-        MethodCall::DocumentLink(p) => Some(&p.text_document.uri),
         MethodCall::Formatting(p) => Some(&p.text_document.uri),
         MethodCall::PrepareRename(p) => Some(&p.text_document.uri),
         MethodCall::Rename(p) => Some(&p.text_document.uri),
-        MethodCall::DocumentColor(p) => Some(&p.text_document.uri),
         MethodCall::ColorPresentation(p) => Some(&p.text_document.uri),
         MethodCall::CodeAction(p) => Some(&p.text_document.uri),
         MethodCall::SignatureHelp(p) => Some(&p.text_document.uri),
         MethodCall::CodeLens(p) => Some(&p.text_document.uri),
         MethodCall::PrepareCallHierarchy(p) => Some(&p.text_document.uri),
         MethodCall::PrepareTypeHierarchy(p) => Some(&p.text_document.uri),
-        MethodCall::Diagnostic(p) => Some(&p.text_document.uri),
         _ => None,
     }
 }
@@ -166,15 +137,20 @@ fn extract_uri(call: &MethodCall) -> Option<&Url> {
 async fn main() {
     env_logger::init();
 
-    let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut reader = BufReader::new(stdin);
-    let writer = Arc::new(Mutex::new(stdout));
-    // Set the global writer for background push notifications.
-    let _ = LSP_WRITER.set(writer.clone());
-
-    // ── Start binary HTTP server for editor data ─────────────────
+    // ── Start HTTP + WebSocket server ────────────────────────────
     let http_port = crate::http::server::start_server().await.ok();
+
+    // ── Print port + token to stdout so the extension can connect ─
+    if let (Some(port), Some(info)) = (http_port, crate::http::server::BINARY_SERVER.get()) {
+        let startup = json!({
+            "port": port,
+            "token": &info.token,
+        });
+        println!("{}", startup);
+        // Flush to ensure the extension reads it immediately.
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+    }
 
     // ── Eagerly build snapshot if game path already configured ──
     tokio::task::spawn_blocking(|| {
@@ -185,8 +161,29 @@ async fn main() {
         }
     });
 
+    // ── Create channel for incoming WebSocket messages ───────────
+    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<String>();
+    let _ = crate::http::ws::MSG_TX.set(msg_tx);
+
+    // ── Stdin watcher: when extension dies stdin closes → we exit ─
+    tokio::spawn(async {
+        use tokio::io::AsyncReadExt;
+        let mut stdin = tokio::io::stdin();
+        let mut buf = [0u8; 64];
+        loop {
+            match stdin.read(&mut buf).await {
+                Ok(0) | Err(_) => {
+                    log::info!("stdin closed, shutting down");
+                    std::process::exit(0);
+                }
+                Ok(_) => {} // ignore any data
+            }
+        }
+    });
+
+    // ── Main dispatch loop — reads from WebSocket channel ────────
     loop {
-        let msg = match read(&mut reader).await {
+        let msg = match msg_rx.recv().await {
             Some(msg) => msg,
             None => break,
         };
@@ -199,7 +196,6 @@ async fn main() {
             }
         };
 
-        let writer: Arc<Mutex<Stdout>> = writer.clone();
 
         match parsed {
             LspMessage::Call(call) => {
@@ -223,22 +219,6 @@ async fn main() {
                                 open_close: Some(true),
                                 change: Some(TextDocumentSyncKind::Incremental),
                             }),
-                            semantic_tokens_provider: Some(SemanticTokensOptions {
-                                legend: SemanticTokensLegend {
-                                    token_types: <Kind as ToCamelVec>::get_vec(),
-                                    token_modifiers: <Mod as ToCamelVec>::get_vec(),
-                                },
-                                range: Some(SemanticTokensRangeProviderCapability::Simple(
-                                    true,
-                                )),
-                                full: Some(SemanticTokensFullOptions::Options(
-                                    SemanticTokensFullOptionsObject { delta: Some(false) },
-                                )),
-                            }),
-                            document_symbol_provider: Some(DocumentSymbolOptions {
-                                label: None,
-                            }),
-                            folding_range_provider: Some(FoldingRangeOptions {}),
                             completion_provider: Some(CompletionOptions {
                                 trigger_characters: Some(vec![
                                     "/".into(),
@@ -254,14 +234,10 @@ async fn main() {
                                     prepare_provider: Some(true),
                                 },
                             ),
-                            document_link_provider: Some(DocumentLinkOptions {
-                                resolve_provider: Some(false),
-                            }),
                             code_action_provider: Some(true),
                             document_formatting_provider: Some(
                                 DocumentFormattingOptions {},
                             ),
-                            color_provider: Some(true),
                             workspace: Some(WorkspaceServerCapabilities {
                                 file_operations: Some(FileOperationOptions {
                                     will_rename: Some(FileOperationRegistrationOptions {
@@ -294,12 +270,6 @@ async fn main() {
                             type_hierarchy_provider: Some(
                                 crate::lsp::type_hierarchy::lsp::TypeHierarchyOptions {},
                             ),
-                            diagnostic_provider: Some(
-                                crate::lsp::diagnostic::lsp::DiagnosticOptions {
-                                    inter_file_dependencies: Some(true),
-                                    workspace_diagnostics: Some(false),
-                                },
-                            ),
                             ..Default::default()
                         },
                     };
@@ -310,7 +280,6 @@ async fn main() {
                     }
 
                     send(
-                        &writer,
                         &ResponseMessage {
                             jsonrpc: "2.0".into(),
                             id: call.id,
@@ -323,7 +292,6 @@ async fn main() {
 
                 MethodCall::Shutdown() | MethodCall::Exit() => {
                     send(
-                        &writer,
                         &ResponseMessage {
                             jsonrpc: "2.0".into(),
                             id: call.id,
@@ -351,20 +319,24 @@ async fn main() {
 
                     let evicted = crate::util::file_store::evict_closed_file(&uri);
 
-                    // Send empty diagnostics for every evicted URI so the editor
-                    // clears stale markers.
+                    // Send empty parseResult for every evicted URI so the
+                    // extension clears stale markers, hints, etc.
                     if !evicted.is_empty() {
-                        let writer = Arc::clone(&writer);
                         tokio::spawn(async move {
                             for evicted_uri in &evicted {
                                 crate::lsp::send::send(
-                                    &writer,
                                     &json!({
                                         "jsonrpc": "2.0",
-                                        "method": "textDocument/publishDiagnostics",
+                                        "method": "custom/parseResult",
                                         "params": {
                                             "uri": evicted_uri.to_string(),
-                                            "diagnostics": []
+                                            "semanticTokens": [],
+                                            "diagnostics": [],
+                                            "inlayHints": [],
+                                            "folding": [],
+                                            "symbols": [],
+                                            "documentLinks": [],
+                                            "colors": []
                                         }
                                     }),
                                 ).await;
@@ -600,41 +572,40 @@ async fn main() {
                         // ── Early cancellation check ──────────────────────
                         if let Some(ref ct) = ct {
                             if ct.is_cancelled() || call.id.was_cancelled().await {
-                                send_cancelled(&writer, call.id).await;
+                                send_cancelled(call.id).await;
                                 return;
                             }
                         }
 
                         match other {
                             MethodCall::BlpRender(param) => {
-                                blp_send(&writer, call.id, &param.uri).await;
+                                blp_send(call.id, &param.uri).await;
                             }
 
                             MethodCall::MdxRender(param) => {
-                                mdx_send(&writer, call.id, &param.uri).await;
+                                mdx_send(call.id, &param.uri).await;
                             }
 
                             MethodCall::DooRender(param) => {
-                                doo_send(&writer, call.id, &param.uri, param.is_unit, param.archive_path.as_deref()).await;
+                                doo_send(call.id, &param.uri, param.is_unit, param.archive_path.as_deref()).await;
                             }
 
                             MethodCall::W3iRender(param) => {
-                                w3i_send(&writer, call.id, &param.uri, param.archive_path.as_deref()).await;
+                                w3i_send(call.id, &param.uri, param.archive_path.as_deref()).await;
                             }
 
                             MethodCall::W3eRender(param) => {
-                                w3e_send(&writer, call.id, &param.uri, param.archive_path.as_deref()).await;
+                                w3e_send(call.id, &param.uri, param.archive_path.as_deref()).await;
                             }
 
                             MethodCall::W3ObjRender(param) => {
-                                w3obj_send(&writer, call.id, &param.uri, param.level_data, param.archive_path.as_deref()).await;
+                                w3obj_send(call.id, &param.uri, param.level_data, param.archive_path.as_deref()).await;
                             }
 
                             MethodCall::W3eGamePathSet(param) => {
                                 crate::lng::w3e::game_path::set_game_path(&param.game_path);
                                 let status = crate::lng::w3e::game_path::build_status();
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -647,7 +618,6 @@ async fn main() {
                             MethodCall::W3eGamePathStatus(_) => {
                                 let status = crate::lng::w3e::game_path::build_status();
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -670,7 +640,6 @@ async fn main() {
                                     None => serde_json::json!(null),
                                 };
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -693,7 +662,6 @@ async fn main() {
                                     None => serde_json::json!(null),
                                 };
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -716,7 +684,6 @@ async fn main() {
                                     None => serde_json::json!(null),
                                 };
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -739,7 +706,6 @@ async fn main() {
                                     None => serde_json::json!(null),
                                 };
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -770,7 +736,6 @@ async fn main() {
                                     None => serde_json::json!(null),
                                 };
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -781,13 +746,12 @@ async fn main() {
                             }
 
                             MethodCall::SlkRender(param) => {
-                                slk_send(&writer, call.id, &param.uri).await;
+                                slk_send(call.id, &param.uri).await;
                             }
 
                             MethodCall::SlkEdit(param) => {
                                 let result = crate::lng::slk::edit::apply_cell_edit(&param);
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -803,7 +767,6 @@ async fn main() {
                                 if let Some(port) = http_port {
                                     if let Some(info) = crate::http::server::BINARY_SERVER.get() {
                                         send(
-                                            &writer,
                                             &json!({
                                                 "jsonrpc": "2.0",
                                                 "method": "custom/binaryServerReady",
@@ -911,7 +874,6 @@ async fn main() {
                                     let token = "jass-rescan";
 
                                     send(
-                                        &writer,
                                         &json!({
                                             "jsonrpc": "2.0",
                                             "id": 99999,
@@ -921,7 +883,6 @@ async fn main() {
                                     ).await;
 
                                     send(
-                                        &writer,
                                         &json!({
                                             "jsonrpc": "2.0",
                                             "method": "$/progress",
@@ -942,7 +903,6 @@ async fn main() {
                                         let path_str = uri.path();
                                         let fname = path_str.rsplit('/').next().unwrap_or("");
                                         send(
-                                            &writer,
                                             &json!({
                                                 "jsonrpc": "2.0",
                                                 "method": "$/progress",
@@ -967,7 +927,6 @@ async fn main() {
                                     }
 
                                     send(
-                                        &writer,
                                         &json!({
                                             "jsonrpc": "2.0",
                                             "method": "$/progress",
@@ -992,7 +951,6 @@ async fn main() {
                                     static REG_ID: AtomicI64 = AtomicI64::new(-1000);
                                     let id = REG_ID.fetch_sub(1, Ordering::Relaxed);
                                     send(
-                                        &writer,
                                         &json!({
                                             "jsonrpc": "2.0",
                                             "id": id,
@@ -1015,155 +973,36 @@ async fn main() {
                                 }
                             }
 
-                            MethodCall::SemanticFull(params) => {
-                                let uri = &params.text_document.uri;
-                                let ct = ct.as_ref().unwrap();
-                                if ct.is_cancelled() || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                if !wait_for_parse_cancellable(uri, Duration::from_secs(5), ct).await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                if ct.is_cancelled() || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                semantic_send(&writer, call.id, uri, None).await
-                            }
-
-                            MethodCall::Diagnostic(params) => {
-                                let uri = &params.text_document.uri;
-                                let ct = ct.as_ref().unwrap();
-                                if ct.is_cancelled() || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                if !wait_for_parse_cancellable(uri, Duration::from_secs(5), ct).await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                if ct.is_cancelled() || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                let items = FILE_STORE
-                                    .get(uri)
-                                    .map(|s| s.diagnostics.clone())
-                                    .unwrap_or_default();
-                                send(
-                                    &writer,
-                                    &ResponseMessage {
-                                        jsonrpc: "2.0".into(),
-                                        id: call.id,
-                                        result: Some(json!({
-                                            "kind": "full",
-                                            "items": items
-                                        })),
-                                        error: None,
-                                    },
-                                )
-                                .await;
-                            }
-
-                            MethodCall::SemanticRange(params) => {
-                                let uri = &params.text_document.uri;
-                                let ct = ct.as_ref().unwrap();
-                                if ct.is_cancelled() || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                if !wait_for_parse_cancellable(uri, Duration::from_secs(5), ct).await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                if ct.is_cancelled() || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                semantic_send(&writer, call.id, uri, Some(params.range)).await
-                            }
-
-
-                            MethodCall::DocumentSymbol(params) => {
-                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-
-                                let uri = &params.text_document.uri;
-                                let snapshot = FILE_STORE.get(uri);
-                                let result: Option<&Vec<_>> =
-                                    snapshot.as_ref().map(|s| &s.value().symbols);
-
-                                send(
-                                    &writer,
-                                    &ResponseMessage {
-                                        jsonrpc: "2.0".into(),
-                                        id: call.id,
-                                        result,
-                                        error: None,
-                                    },
-                                )
-                                .await;
-                            }
-
-                            MethodCall::Folding(params) => {
-                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                let uri = &params.text_document.uri;
-
-                                let snapshot = FILE_STORE.get(uri);
-                                let empty_vec = vec![];
-                                let result: &Vec<_> = snapshot
-                                    .as_ref()
-                                    .map(|s| &s.value().folding)
-                                    .unwrap_or(&empty_vec);
-
-                                send(
-                                    &writer,
-                                    &ResponseMessage {
-                                        jsonrpc: "2.0".into(),
-                                        id: call.id,
-                                        result: Some(result),
-                                        error: None,
-                                    },
-                                )
-                                .await;
-                            }
 
                             MethodCall::Completion(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                completion_send(&writer, call.id, uri, &params.position).await;
+                                completion_send(call.id, uri, &params.position).await;
                             }
 
                             MethodCall::Hover(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                hover_send(&writer, call.id, uri, &params.position).await;
+                                hover_send(call.id, uri, &params.position).await;
                             }
 
                             MethodCall::DocumentHighlight(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
-                                highlight_send(&writer, call.id, &params).await;
+                                highlight_send(call.id, &params).await;
                             }
 
                             MethodCall::Definition(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
@@ -1208,7 +1047,6 @@ async fn main() {
                                 };
 
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1221,7 +1059,7 @@ async fn main() {
 
                             MethodCall::References(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
@@ -1248,7 +1086,6 @@ async fn main() {
                                 };
 
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1259,59 +1096,23 @@ async fn main() {
                                 .await;
                             }
 
-                            MethodCall::InlayHint(params) => {
-                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                inlay_hint_send(&writer, call.id, &params).await;
-                            }
-
-                            MethodCall::DocumentLink(params) => {
-                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                let uri = &params.text_document.uri;
-
-                                let snapshot = FILE_STORE.get(uri);
-                                let empty_vec = vec![];
-                                let result: &Vec<crate::lsp::document_link::lsp::DocumentLink> =
-                                    snapshot
-                                        .as_ref()
-                                        .map(|s| &s.value().links)
-                                        .unwrap_or(&empty_vec);
-
-                                send(
-                                    &writer,
-                                    &ResponseMessage {
-                                        jsonrpc: "2.0".into(),
-                                        id: call.id,
-                                        result: Some(result),
-                                        error: None,
-                                    },
-                                )
-                                .await;
-                            }
-
                             MethodCall::Formatting(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
-                                send_formatting(&writer, call.id, &params).await;
+                                send_formatting(call.id, &params).await;
                             }
 
                             MethodCall::PrepareRename(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
 
                                 let result = prepare_rename(uri, &params.position);
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1328,7 +1129,7 @@ async fn main() {
 
                             MethodCall::Rename(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
@@ -1339,7 +1140,6 @@ async fn main() {
                                     &params.new_name,
                                 );
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1353,7 +1153,6 @@ async fn main() {
                             MethodCall::WillRenameFiles(params) => {
                                 let edit = compute_rename_edits(&params.files);
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1364,23 +1163,14 @@ async fn main() {
                                 .await;
                             }
 
-                            MethodCall::DocumentColor(params) => {
-                                if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
-                                    return;
-                                }
-                                crate::lsp::color::send::document_color_send(
-                                    &writer, call.id, &params,
-                                ).await;
-                            }
 
                             MethodCall::ColorPresentation(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 crate::lsp::color::send::color_presentation_send(
-                                    &writer, call.id, &params,
+                                    call.id, &params,
                                 ).await;
                             }
 
@@ -1390,7 +1180,6 @@ async fn main() {
                                     crate::util::import_graph::IMPORT_GRAPH
                                         .subgraph_for(uri);
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1410,7 +1199,6 @@ async fn main() {
                                 let result =
                                     crate::util::call_graph::build_call_graph(uri);
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1426,7 +1214,6 @@ async fn main() {
                                 let result =
                                     crate::util::type_graph::build_type_graph(uri);
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1449,7 +1236,6 @@ async fn main() {
 
                                 if tree_uris.is_empty() {
                                     send(
-                                        &writer,
                                         &ResponseMessage {
                                             jsonrpc: "2.0".into(),
                                             id: call.id,
@@ -1483,7 +1269,6 @@ async fn main() {
                                 let token = "jass-rescan-tree";
 
                                 send(
-                                    &writer,
                                     &json!({
                                         "jsonrpc": "2.0",
                                         "id": 99998,
@@ -1493,7 +1278,6 @@ async fn main() {
                                 ).await;
 
                                 send(
-                                    &writer,
                                     &json!({
                                         "jsonrpc": "2.0",
                                         "method": "$/progress",
@@ -1518,7 +1302,6 @@ async fn main() {
                                     info!("rescan {}/{} {}", i + 1, total, fname);
 
                                     send(
-                                        &writer,
                                         &json!({
                                             "jsonrpc": "2.0",
                                             "method": "$/progress",
@@ -1562,7 +1345,6 @@ async fn main() {
                                 }
 
                                 send(
-                                    &writer,
                                     &json!({
                                         "jsonrpc": "2.0",
                                         "method": "$/progress",
@@ -1594,7 +1376,6 @@ async fn main() {
                                 info!("rescan: {}", msg);
 
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1637,7 +1418,6 @@ async fn main() {
                                 };
 
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1653,7 +1433,6 @@ async fn main() {
                                 let (before_cmd, after_cmd, cwd) =
                                     crate::lng::jass::build::resolve_hooks(uri);
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1669,70 +1448,70 @@ async fn main() {
                             }
 
                             MethodCall::CodeAction(params) => {
-                                code_action_send(&writer, call.id, &params).await;
+                                code_action_send(call.id, &params).await;
                             }
 
                             MethodCall::SignatureHelp(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                signature_help_send(&writer, call.id, uri, &params.position).await;
+                                signature_help_send(call.id, uri, &params.position).await;
                             }
 
                             MethodCall::CodeLens(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
-                                code_lens_send(&writer, call.id, uri).await;
+                                code_lens_send(call.id, uri).await;
                             }
 
                             MethodCall::PrepareCallHierarchy(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
                                 crate::lsp::call_hierarchy::send::send_prepare(
-                                    &writer, call.id, uri, &params.position,
+                                    call.id, uri, &params.position,
                                 ).await;
                             }
 
                             MethodCall::IncomingCalls(params) => {
                                 crate::lsp::call_hierarchy::send::send_incoming(
-                                    &writer, call.id, &params.item,
+                                    call.id, &params.item,
                                 ).await;
                             }
 
                             MethodCall::OutgoingCalls(params) => {
                                 crate::lsp::call_hierarchy::send::send_outgoing(
-                                    &writer, call.id, &params.item,
+                                    call.id, &params.item,
                                 ).await;
                             }
 
                             MethodCall::PrepareTypeHierarchy(params) => {
                                 if ct.as_ref().map_or(false, |t| t.is_cancelled()) || call.id.was_cancelled().await {
-                                    send_cancelled(&writer, call.id).await;
+                                    send_cancelled(call.id).await;
                                     return;
                                 }
                                 let uri = &params.text_document.uri;
                                 crate::lsp::type_hierarchy::send::send_prepare(
-                                    &writer, call.id, uri, &params.position,
+                                    call.id, uri, &params.position,
                                 ).await;
                             }
 
                             MethodCall::Supertypes(params) => {
                                 crate::lsp::type_hierarchy::send::send_supertypes(
-                                    &writer, call.id, &params.item,
+                                    call.id, &params.item,
                                 ).await;
                             }
 
                             MethodCall::Subtypes(params) => {
                                 crate::lsp::type_hierarchy::send::send_subtypes(
-                                    &writer, call.id, &params.item,
+                                    call.id, &params.item,
                                 ).await;
                             }
 
@@ -1786,7 +1565,6 @@ async fn main() {
                                 }
 
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1797,20 +1575,19 @@ async fn main() {
                             }
 
                             MethodCall::MpqInfo(params) => {
-                                mpq_info_send(&writer, call.id, &params.archive_path).await;
+                                mpq_info_send(call.id, &params.archive_path).await;
                             }
 
                             MethodCall::MpqList(params) => {
-                                mpq_list_send(&writer, call.id, &params.archive_path).await;
+                                mpq_list_send(call.id, &params.archive_path).await;
                             }
 
                             MethodCall::MpqRead(params) => {
-                                mpq_read_send(&writer, call.id, &params.archive_path, &params.file_path).await;
+                                mpq_read_send(call.id, &params.archive_path, &params.file_path).await;
                             }
 
                             MethodCall::DebugInit(_) => {
                                 send(
-                                    &writer,
                                     &ResponseMessage {
                                         jsonrpc: "2.0".into(),
                                         id: call.id,
@@ -1835,7 +1612,6 @@ async fn main() {
                 match msg.method.as_str() {
                     "shutdown" | "exit" => {
                         send(
-                            &writer,
                             &json!({
                                 "jsonrpc": "2.0",
                                 "id": msg.id,

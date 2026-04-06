@@ -1,7 +1,6 @@
 *
 **
 !package.nls*.json
-!node_modules/**
 !extension/**
 !bin/**
 !dist/**

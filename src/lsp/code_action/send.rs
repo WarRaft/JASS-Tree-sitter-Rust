@@ -14,21 +14,16 @@ use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use tree_sitter::Point;
 
 /// Handle `textDocument/codeAction`.
 pub async fn send(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     params: &CodeActionParams,
 ) {
     let actions = compute(params);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,

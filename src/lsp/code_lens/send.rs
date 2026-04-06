@@ -5,20 +5,15 @@ use crate::lsp::send::send as lsp_send;
 use crate::util::file_store::FILE_STORE;
 use crate::util::uri_map::LNG_URI_MAP;
 use serde_json::{json, Value};
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use url::Url;
 
 pub async fn send(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     uri: &Url,
 ) {
     let result = compute(uri);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,

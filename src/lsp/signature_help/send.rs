@@ -12,13 +12,9 @@ use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
 use crate::util::uri_map::LNG_URI_MAP;
 use serde_json::Value;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use url::Url;
 
 pub async fn send(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     uri: &Url,
     position: &Position,
@@ -26,7 +22,6 @@ pub async fn send(
     let result = compute(uri, position);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,

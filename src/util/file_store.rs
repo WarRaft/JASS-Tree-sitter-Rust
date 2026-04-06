@@ -20,8 +20,7 @@ use std::time::Duration;
 use dashmap::{DashMap, DashSet};
 use log::info;
 use once_cell::sync::Lazy;
-use tokio::io::Stdout;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -173,10 +172,6 @@ impl Drop for CascadeGuard {
     }
 }
 
-/// Shared writer for pushing notifications (set once from `main()`).
-pub static LSP_WRITER: once_cell::sync::OnceCell<Arc<Mutex<Stdout>>> =
-    once_cell::sync::OnceCell::new();
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Cancel any in-flight parse for `uri` and return a fresh token.
@@ -189,103 +184,97 @@ pub fn new_cancel_token(uri: &Url) -> CancellationToken {
     token
 }
 
-/// Ask the client to re-request semantic tokens for all open files,
-/// and **push** diagnostics and inlay hints for every known file.
-///
-/// Diagnostics and inlay hints use the push model so they are visible
-/// immediately without a round-trip pull request.
+/// Push a unified `custom/parseResult` notification for **every** file in
+/// `FILE_STORE`.
 pub async fn send_refresh_all() {
-    let writer = match LSP_WRITER.get() {
-        Some(w) => w,
-        None => return,
-    };
-    crate::lsp::send::send_request(writer, "workspace/semanticTokens/refresh").await;
-
-    push_diagnostics(writer).await;
-    push_inlay_hints(writer).await;
+    push_parse_results().await;
 }
 
-/// Send `textDocument/publishDiagnostics` for closed files in `FILE_STORE`.
-///
-/// Open files (present in `ROPE_MAP`) use the pull model — the client
-/// requests diagnostics via `textDocument/diagnostic`.  We send
-/// `workspace/diagnostic/refresh` so the client re-pulls for open files.
+/// Push a unified `custom/parseResult` for a single URI.
+pub async fn push_parse_result_for_uri(uri: &Url) {
+    let data = match build_parse_result(uri) {
+        Some(d) => d,
+        None => return,
+    };
+
+    crate::lsp::send::send(&data).await;
+}
+
+/// Build the JSON notification payload for one URI.
+fn build_parse_result(uri: &Url) -> Option<serde_json::Value> {
+    use crate::lsp::inlay_hint::send::compute_all;
+    use serde_json::json;
+
+    let snapshot = FILE_STORE.get(uri)?;
+    let snap = snapshot.value();
+
+    let semantic_data = snap.semantic.read().unwrap().data(None);
+    let diagnostics = &snap.diagnostics;
+    let hints = compute_all(uri);
+    let folding = &snap.folding;
+    let symbols = &snap.symbols;
+    let links = &snap.links;
+    let colors = &snap.colors;
+
+    Some(json!({
+        "jsonrpc": "2.0",
+        "method": "custom/parseResult",
+        "params": {
+            "uri": uri.to_string(),
+            "semanticTokens": semantic_data,
+            "diagnostics": diagnostics,
+            "inlayHints": hints,
+            "folding": folding,
+            "symbols": symbols,
+            "documentLinks": links,
+            "colors": colors
+        }
+    }))
+}
+
+/// Push `custom/parseResult` for every file in `FILE_STORE`.
 ///
 /// **Important**: we snapshot the data first and drop the DashMap guards
 /// *before* awaiting any IO.  Holding a DashMap read-lock across `.await`
 /// would deadlock with concurrent `insert()` calls from parse tasks.
-async fn push_diagnostics(writer: &Arc<Mutex<Stdout>>) {
-    use crate::util::roper::uri_map::ROPE_MAP;
-    use serde_json::json;
-
-    let mut has_open = false;
-    let file_diags: Vec<(String, Vec<Diagnostic>)> = FILE_STORE
-        .iter()
-        .filter_map(|entry| {
-            if ROPE_MAP.contains_key(entry.key()) {
-                // Open file → pull model; skip push.
-                has_open = true;
-                None
-            } else {
-                Some((entry.key().to_string(), entry.value().diagnostics.clone()))
-            }
-        })
-        .collect();
-    // DashMap guards dropped here.
-
-    for (uri, diagnostics) in &file_diags {
-        crate::lsp::send::send(
-            writer,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/publishDiagnostics",
-                "params": {
-                    "uri": uri,
-                    "diagnostics": diagnostics
-                }
-            }),
-        )
-        .await;
-    }
-
-    // Ask the client to re-pull diagnostics for open files.
-    if has_open {
-        crate::lsp::send::send_request(writer, "workspace/diagnostic/refresh").await;
-    }
-}
-
-/// Push `custom/publishInlayHints` for every file in `FILE_STORE`.
-///
-/// Uses the same push model as diagnostics so that the client can update
-/// hints atomically without the visual "jump" caused by the pull/refresh
-/// round-trip.
-async fn push_inlay_hints(writer: &Arc<Mutex<Stdout>>) {
+async fn push_parse_results() {
     use crate::lsp::inlay_hint::send::compute_all;
     use serde_json::json;
 
-    let file_hints: Vec<(String, Vec<crate::lsp::inlay_hint::lsp::InlayHint>)> = FILE_STORE
+    let payloads: Vec<serde_json::Value> = FILE_STORE
         .iter()
-        .map(|entry| {
-            let uri = entry.key().clone();
-            let hints = compute_all(&uri);
-            (uri.to_string(), hints)
+        .filter_map(|entry| {
+            let uri = entry.key();
+            let snap = entry.value();
+
+            let semantic_data = snap.semantic.read().unwrap().data(None);
+            let diagnostics = snap.diagnostics.clone();
+            let hints = compute_all(uri);
+            let folding = snap.folding.clone();
+            let symbols = snap.symbols.clone();
+            let links = snap.links.clone();
+            let colors = snap.colors.clone();
+
+            Some(json!({
+                "jsonrpc": "2.0",
+                "method": "custom/parseResult",
+                "params": {
+                    "uri": uri.to_string(),
+                    "semanticTokens": semantic_data,
+                    "diagnostics": diagnostics,
+                    "inlayHints": hints,
+                    "folding": folding,
+                    "symbols": symbols,
+                    "documentLinks": links,
+                    "colors": colors
+                }
+            }))
         })
         .collect();
     // DashMap guards dropped here.
 
-    for (uri, hints) in &file_hints {
-        crate::lsp::send::send(
-            writer,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "custom/publishInlayHints",
-                "params": {
-                    "uri": uri,
-                    "hints": hints
-                }
-            }),
-        )
-        .await;
+    for payload in &payloads {
+        crate::lsp::send::send(payload).await;
     }
 }
 

@@ -118,7 +118,6 @@ fn snap_to_tree_and_push(
     hints: &mut Vec<InlayHint>,
     tree: &tree_sitter::Tree,
 ) {
-    use crate::util::file_store::LSP_WRITER;
 
     // ── approximate adjustment via deltas ────────────────────────────────
     for delta in deltas {
@@ -157,28 +156,10 @@ fn snap_to_tree_and_push(
         }
     });
 
-    // ── push ────────────────────────────────────────────────────────────
-    let writer = match LSP_WRITER.get() {
-        Some(w) => w.clone(),
-        None => return,
-    };
-
-    let uri_str = uri.to_string();
-    let json_hints = serde_json::to_value(&*hints).unwrap_or_default();
-
+    // ── push full parseResult ──────────────────────────────────────────
+    let uri_clone = uri.clone();
     tokio::spawn(async move {
-        crate::lsp::send::send(
-            &writer,
-            &serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "custom/publishInlayHints",
-                "params": {
-                    "uri": uri_str,
-                    "hints": json_hints
-                }
-            }),
-        )
-        .await;
+        crate::util::file_store::push_parse_result_for_uri(&uri_clone).await;
     });
 }
 

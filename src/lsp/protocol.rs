@@ -5,20 +5,14 @@ use crate::lsp::call_hierarchy::lsp::{
 use crate::lsp::cancel::{CancelId, CancelParams};
 use crate::lsp::code_action::lsp::{CodeActionParams, UjapiDownloadParams};
 use crate::lsp::code_lens::lsp::CodeLensParams;
-use crate::lsp::color::lsp::{ColorPresentationParams, DocumentColorParams};
+use crate::lsp::color::lsp::ColorPresentationParams;
 use crate::lsp::completion::lsp::CompletionParams;
-use crate::lsp::diagnostic::lsp::DocumentDiagnosticParams;
-use crate::lsp::document_link::lsp::DocumentLinkParams;
-use crate::lsp::document_symbol::lsp::DocumentSymbolParams;
-use crate::lsp::folding::lsp::FoldingRangeParams;
 use crate::lsp::formatting::lsp::DocumentFormattingParams;
 use crate::lsp::highlight::lsp::{DefinitionParams, DocumentHighlightParams, ReferenceParams};
 use crate::lsp::hover::lsp::HoverParams;
-use crate::lsp::inlay_hint::lsp::InlayHintParams;
 use crate::lsp::initialize::InitializeParams;
 use crate::lsp::initialized::InitializedParams;
 use crate::lsp::rename::lsp::{PrepareRenameParams, RenameFilesParams, RenameParams};
-use crate::lsp::semantic::lsp::{SemanticTokensParams, SemanticTokensRangeParams};
 use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::signature_help::lsp::SignatureHelpParams;
 use crate::lsp::text_document::{
@@ -118,20 +112,9 @@ pub enum MethodCall {
     #[serde(rename = "workspace/didChangeWatchedFiles")]
     DidChangeWatchedFiles(DidChangeWatchedFilesParams),
 
-    #[serde(rename = "textDocument/semanticTokens/full")]
-    SemanticFull(SemanticTokensParams),
-
-    #[serde(rename = "textDocument/semanticTokens/range")]
-    SemanticRange(SemanticTokensRangeParams),
-
-    #[serde(rename = "textDocument/diagnostic")]
-    Diagnostic(DocumentDiagnosticParams),
-
-    #[serde(rename = "textDocument/documentSymbol")]
-    DocumentSymbol(DocumentSymbolParams),
-
-    #[serde(rename = "textDocument/foldingRange")]
-    Folding(FoldingRangeParams),
+    // NOTE: SemanticFull, SemanticRange, Diagnostic, DocumentSymbol, Folding,
+    // InlayHint, DocumentLink, DocumentColor have been removed.
+    // These are now pushed via `custom/parseResult` notifications.
 
     #[serde(rename = "textDocument/completion")]
     Completion(CompletionParams),
@@ -148,11 +131,9 @@ pub enum MethodCall {
     #[serde(rename = "textDocument/references")]
     References(ReferenceParams),
 
-    #[serde(rename = "textDocument/inlayHint")]
-    InlayHint(InlayHintParams),
+    // InlayHint removed — pushed via custom/parseResult
 
-    #[serde(rename = "textDocument/documentLink")]
-    DocumentLink(DocumentLinkParams),
+    // DocumentLink removed — pushed via custom/parseResult
 
     #[serde(rename = "textDocument/formatting")]
     Formatting(DocumentFormattingParams),
@@ -187,8 +168,7 @@ pub enum MethodCall {
     #[serde(rename = "ujapi/download")]
     UjapiDownload(UjapiDownloadParams),
 
-    #[serde(rename = "textDocument/documentColor")]
-    DocumentColor(DocumentColorParams),
+    // DocumentColor removed — pushed via custom/parseResult
 
     #[serde(rename = "textDocument/colorPresentation")]
     ColorPresentation(ColorPresentationParams),

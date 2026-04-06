@@ -5,12 +5,8 @@ use crate::lsp::color::lsp::*;
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send;
 use crate::util::file_store::FILE_STORE;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 
 pub async fn document_color_send(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     params: &DocumentColorParams,
 ) {
@@ -21,7 +17,6 @@ pub async fn document_color_send(
         .unwrap_or_default();
 
     send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id,
@@ -33,7 +28,6 @@ pub async fn document_color_send(
 }
 
 pub async fn color_presentation_send(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     params: &ColorPresentationParams,
 ) {
@@ -76,7 +70,6 @@ pub async fn color_presentation_send(
     };
 
     send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id,

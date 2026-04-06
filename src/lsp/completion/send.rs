@@ -7,9 +7,6 @@ use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
 use crate::util::roper::uri_map::ROPE_MAP;
 use std::path::Path;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use url::Url;
 
 use crate::lng::jass::kind::{Field, Kind};
@@ -21,7 +18,6 @@ use crate::util::uri_map::LNG_URI_MAP;
 
 /// Handle `textDocument/completion`.
 pub async fn send(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     uri: &Url,
     position: &Position,
@@ -29,7 +25,6 @@ pub async fn send(
     let items = compute(uri, position);
 
     lsp_send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id,

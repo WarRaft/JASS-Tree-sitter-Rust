@@ -19,7 +19,7 @@ pub struct DocumentSymbolParams {
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentSymbol
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentSymbol {
     pub name: String,
@@ -75,7 +75,7 @@ pub enum SymbolKind {
     TypeParameter = 26,
 }
 
-#[derive(Debug, Serialize_repr, Deserialize_repr)]
+#[derive(Debug, Clone, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
 pub enum SymbolTag {
     Deprecated = 1,

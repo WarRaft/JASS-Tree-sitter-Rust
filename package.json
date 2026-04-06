@@ -31,10 +31,7 @@
   "scripts": {
     "publish": "vsce publish patch"
   },
-  "dependencies": {
-    "canvas-datagrid": "^0.4.7",
-    "vscode-languageclient": "^9.0.1"
-  },
+  "dependencies": {},
   "devDependencies": {
     "@types/vscode": "^1.110.0",
     "@vscode/vsce": "^3.7.1"

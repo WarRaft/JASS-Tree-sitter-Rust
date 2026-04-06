@@ -7,4 +7,5 @@ pub(crate) mod server;
 pub(crate) mod slk;
 pub(crate) mod snapshot;
 pub(crate) mod terrain;
+pub(crate) mod ws;
 

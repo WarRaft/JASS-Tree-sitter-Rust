@@ -2,15 +2,20 @@
 // noinspection NpmUsedModulesInstalled
 const {
     window,
-    Uri, ExtensionMode, commands, ProgressLocation, workspace,
+    Uri, commands, ProgressLocation, workspace,
     languages, InlayHint, InlayHintKind, Position, Range, Location, EventEmitter,
-    ShellExecution, Task, TaskScope, tasks
+    ShellExecution, Task, TaskScope, tasks,
+    DocumentSymbol: VscDocumentSymbol, SymbolKind,
+    FoldingRange, FoldingRangeKind,
+    Diagnostic: VscDiagnostic, DiagnosticSeverity, DiagnosticTag,
+    SemanticTokensLegend,
+    DocumentLink: VscDocumentLink,
+    ColorInformation, Color, ColorPresentation: VscColorPresentation, TextEdit,
 } = require('vscode')
 
-const {LanguageClient, Trace} = require('vscode-languageclient')
+const {ServerClient} = require('./serverClient.js')
 const {resolveBlpEditor} = require('./mapEditor/resolveBlpEditor.js')
 const {resolveMapEditor} = require('./mapEditor/index.js')
-const {onDidChangeStateMessage} = require('./onDidChangeStateMessage.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
 const {showTypeGraph} = require('./typeGraphPanel.js')
@@ -114,7 +119,6 @@ async function _collectFiles(mpqProvider, archivePath, dirPath, result) {
 
 /**
  * @typedef {import('vscode').Uri} Uri
- * @typedef {import('vscode-languageclient').LanguageClientOptions}
  */
 
 /**
@@ -156,7 +160,55 @@ function _runHookTask(label, cmd, cwd) {
     })
 }
 
-/** @type {LanguageClient} */ let client
+/** @type {ServerClient} */ let client
+/** @type {import('vscode').Disposable[]} */
+const fileWatcherDisposables = []
+
+/** Map LSP DiagnosticSeverity (1-4) to VS Code DiagnosticSeverity */
+function _mapSeverity(sev) {
+    switch (sev) {
+        case 1: return DiagnosticSeverity.Error
+        case 2: return DiagnosticSeverity.Warning
+        case 3: return DiagnosticSeverity.Information
+        case 4: return DiagnosticSeverity.Hint
+        default: return DiagnosticSeverity.Information
+    }
+}
+
+/** Map LSP SymbolKind (1-26) to VS Code SymbolKind */
+function _mapSymbolKind(kind) {
+    // LSP SymbolKind values map 1:1 to VS Code SymbolKind
+    return kind || SymbolKind.Object
+}
+
+/** Recursively map a server DocumentSymbol to a VS Code DocumentSymbol */
+function _mapSymbol(s) {
+    const range = new Range(
+        s.range.start.line, s.range.start.character,
+        s.range.end.line, s.range.end.character
+    )
+    const selRange = new Range(
+        s.selectionRange.start.line, s.selectionRange.start.character,
+        s.selectionRange.end.line, s.selectionRange.end.character
+    )
+    const sym = new VscDocumentSymbol(
+        s.name,
+        s.detail || '',
+        _mapSymbolKind(s.kind),
+        range,
+        selRange
+    )
+    if (s.tags) {
+        sym.tags = s.tags
+    }
+    if (s.deprecated) {
+        sym.tags = [1] // SymbolTag.Deprecated = 1
+    }
+    if (s.children && s.children.length > 0) {
+        sym.children = s.children.map(c => _mapSymbol(c))
+    }
+    return sym
+}
 
 module.exports = {
 
@@ -180,96 +232,99 @@ module.exports = {
         }
 
         const binPath = path.join(context.extensionPath, 'bin', binName)
-        const binUri = Uri.file(binPath)
 
-        const options = context.extensionMode === ExtensionMode.Production || true ? {
-            command: binUri.fsPath.toString(),
-        } : {
-            command: process.execPath, // node
-            args: [path.join(context.extensionPath, 'lsp-proxy.js')],
-            options: {
-                env: {
-                    ...process.env,
-                    REAL_LSP_PATH: binPath,
-                    RUST_LOG: 'debug'
-                }
-            }
-        }
+        client = new ServerClient(binPath)
 
-        client = new LanguageClient(
-            'JassTreeSitterRustLsp',
-            'JassTreeSitterRustLspClient',
-            options,
-            {
-                progressOnInitialization: true,
-                initializationOptions: {},
-                documentSelector: [
-                    {scheme: 'file', language: 'bni'},
-                    {scheme: 'file', language: 'jass'},
-                    {scheme: 'file', language: 'angelscript'},
-                    {scheme: 'file', language: 'wts'},
-                    {scheme: 'file', language: 'slk'},
-                    {scheme: 'mpq', language: 'jass'},
-                    {scheme: 'mpq', language: 'angelscript'},
-                    {scheme: 'mpq', language: 'wts'},
-                    {scheme: 'mpq', language: 'slk'},
-                ],
-                outputChannelName: 'JASS-Tree-Sitter-Rust Logs',
-                traceOutputChannel: window.createOutputChannel('JASS-Tree-Sitter-Rust Trace'),
-                trace: Trace.Verbose,
-                middleware: {
-                    provideCodeLenses(document, token, next) {
-                        return Promise.resolve(next(document, token)).then(lenses => {
-                            if (!lenses) return lenses
-                            for (const lens of lenses) {
-                                if (lens.command && lens.command.command === 'editor.action.showReferences' && lens.command.arguments) {
-                                    const args = lens.command.arguments
-                                    // arg[0]: uri string → vscode.Uri
-                                    if (typeof args[0] === 'string') args[0] = Uri.parse(args[0])
-                                    // arg[1]: {line, character} → vscode.Position
-                                    if (args[1] && !(args[1] instanceof Position)) {
-                                        args[1] = new Position(args[1].line, args[1].character)
-                                    }
-                                    // arg[2]: array of {uri, range} → vscode.Location[]
-                                    if (Array.isArray(args[2])) {
-                                        args[2] = args[2].map(loc => new Location(
-                                            typeof loc.uri === 'string' ? Uri.parse(loc.uri) : loc.uri,
-                                            new Range(
-                                                loc.range.start.line, loc.range.start.character,
-                                                loc.range.end.line, loc.range.end.character
-                                            )
-                                        ))
-                                    }
-                                }
-                            }
-                            return lenses
-                        })
-                    }
-                }
-            }
-        )
+        // ── Supported languages for document sync ─────────────────────
+        const SUPPORTED_LANGUAGES = new Set(['bni', 'jass', 'angelscript', 'wts', 'slk'])
 
-        client.onNotification('window/logMessage', params => {
-            console.log(`${params.message}`)
-        })
+        // ── Diagnostics collection ────────────────────────────────────
+        const diagnosticCollection = languages.createDiagnosticCollection('jass')
 
-        client.onDidChangeState(({oldState, newState}) => {
-            const message = onDidChangeStateMessage(oldState, newState)
-            if (message) {
-                window.showWarningMessage(message)
-            }
-        })
-
-        // ── Inlay hints (push model) ─────────────────────────────────
-        // Server pushes `custom/publishInlayHints` notifications instead
-        // of relying on the pull/refresh round-trip, which caused hints
-        // to visually "jump" after edits.
+        // ── Caches for pushed data ────────────────────────────────────
         /** @type {Map<string, import('vscode').InlayHint[]>} */
         const inlayHintsCache = new Map()
         const inlayHintsChanged = new EventEmitter()
 
-        client.onNotification('custom/publishInlayHints', ({uri, hints}) => {
-            const vscHints = (hints || []).map(h => {
+        /** @type {Map<string, number[]>} uri → raw semantic token data */
+        const semanticCache = new Map()
+        const semanticChanged = new EventEmitter()
+
+        /** @type {Map<string, import('vscode').FoldingRange[]>} */
+        const foldingCache = new Map()
+
+        /** @type {Map<string, import('vscode').DocumentSymbol[]>} */
+        const symbolsCache = new Map()
+
+        /** @type {Map<string, import('vscode').DocumentLink[]>} */
+        const linksCache = new Map()
+
+        /** @type {Map<string, import('vscode').ColorInformation[]>} */
+        const colorsCache = new Map()
+
+        // ── Semantic token legend (must match Rust Kind/Mod enums) ─────
+        const tokenTypes = [
+            'namespace', 'class', 'enum', 'interface', 'struct',
+            'typeParameter', 'type', 'parameter', 'variable', 'property',
+            'enumMember', 'decorator', 'event', 'function', 'method',
+            'macro', 'label', 'comment', 'string', 'keyword',
+            'number', 'regexp', 'operator',
+        ]
+        const tokenModifiers = [
+            'declaration', 'definition', 'readonly', 'static',
+            'deprecated', 'abstract', 'async', 'modification',
+            'documentation', 'defaultLibrary',
+        ]
+        const legend = new SemanticTokensLegend(tokenTypes, tokenModifiers)
+
+        // ── Handle unified custom/parseResult notification ────────────
+        client.onNotification('custom/parseResult', (params) => {
+            const uriStr = params.uri
+
+            // Semantic tokens
+            semanticCache.set(uriStr, params.semanticTokens || [])
+            semanticChanged.fire()
+
+            // Diagnostics
+            const diags = (params.diagnostics || []).map(d => {
+                const range = new Range(
+                    d.range.start.line, d.range.start.character,
+                    d.range.end.line, d.range.end.character
+                )
+                const diag = new VscDiagnostic(range, d.message, _mapSeverity(d.severity))
+                if (d.source) diag.source = d.source
+                if (d.code != null) {
+                    if (d.codeDescription && d.codeDescription.href) {
+                        diag.code = {value: d.code, target: Uri.parse(d.codeDescription.href)}
+                    } else {
+                        diag.code = d.code
+                    }
+                }
+                if (d.tags) {
+                    diag.tags = d.tags.map(t =>
+                        t === 1 ? DiagnosticTag.Unnecessary
+                            : t === 2 ? DiagnosticTag.Deprecated
+                                : t
+                    )
+                }
+                if (d.relatedInformation) {
+                    diag.relatedInformation = d.relatedInformation.map(ri => ({
+                        location: new Location(
+                            Uri.parse(ri.location.uri),
+                            new Range(
+                                ri.location.range.start.line, ri.location.range.start.character,
+                                ri.location.range.end.line, ri.location.range.end.character,
+                            )
+                        ),
+                        message: ri.message,
+                    }))
+                }
+                return diag
+            })
+            diagnosticCollection.set(Uri.parse(uriStr), diags)
+
+            // Inlay hints
+            const vscHints = (params.inlayHints || []).map(h => {
                 const hint = new InlayHint(
                     new Position(h.position.line, h.position.character),
                     h.label,
@@ -281,8 +336,47 @@ module.exports = {
                 if (h.paddingRight != null) hint.paddingRight = h.paddingRight
                 return hint
             })
-            inlayHintsCache.set(uri, vscHints)
+            inlayHintsCache.set(uriStr, vscHints)
             inlayHintsChanged.fire()
+
+            // Folding ranges
+            const folds = (params.folding || []).map(f => {
+                const kind = f.kind === 'comment' ? FoldingRangeKind.Comment
+                    : f.kind === 'imports' ? FoldingRangeKind.Imports
+                        : f.kind === 'region' ? FoldingRangeKind.Region
+                            : undefined
+                return new FoldingRange(f.startLine, f.endLine, kind)
+            })
+            foldingCache.set(uriStr, folds)
+
+            // Document symbols
+            const symbols = (params.symbols || []).map(s => _mapSymbol(s))
+            symbolsCache.set(uriStr, symbols)
+
+            // Document links
+            const links = (params.documentLinks || []).map(l => {
+                const range = new Range(
+                    l.range.start.line, l.range.start.character,
+                    l.range.end.line, l.range.end.character
+                )
+                const link = new VscDocumentLink(range, l.target ? Uri.parse(l.target) : undefined)
+                if (l.tooltip) link.tooltip = l.tooltip
+                return link
+            })
+            linksCache.set(uriStr, links)
+
+            // Colors
+            const colors = (params.colors || []).map(c => {
+                const range = new Range(
+                    c.range.start.line, c.range.start.character,
+                    c.range.end.line, c.range.end.character
+                )
+                return new ColorInformation(
+                    range,
+                    new Color(c.color.red, c.color.green, c.color.blue, c.color.alpha)
+                )
+            })
+            colorsCache.set(uriStr, colors)
         })
 
         // ── Debug log (push model) ─────────────────────────────────
@@ -291,17 +385,27 @@ module.exports = {
         })
 
         // ── Binary HTTP server (parallel data channel) ───────────────
-        // The Rust server starts a lightweight HTTP endpoint for binary
-        // terrain/model data.  The webview can fetch() directly from it.
-        /** @type {{port: number, token: string} | null} */
-        let binaryServer = null
-        client.onNotification('custom/binaryServerReady', (params) => {
-            binaryServer = params
-            console.log(`Binary server ready on http://127.0.0.1:${params.port}`)
-        })
+        // Server info (port + token) is available immediately after start().
         /** @returns {{port: number, token: string} | null} */
-        function getBinaryServer() { return binaryServer }
+        function getBinaryServer() { return client.getServerInfo() }
 
+        // ── Log messages ──────────────────────────────────────────────
+        client.onNotification('window/logMessage', params => {
+            console.log(`${params.message}`)
+        })
+
+        // ── Document selectors ────────────────────────────────────────
+        const allSelector = [
+            {scheme: 'file', language: 'bni'},
+            {scheme: 'file', language: 'jass'},
+            {scheme: 'file', language: 'angelscript'},
+            {scheme: 'file', language: 'wts'},
+            {scheme: 'file', language: 'slk'},
+            {scheme: 'mpq', language: 'jass'},
+            {scheme: 'mpq', language: 'angelscript'},
+            {scheme: 'mpq', language: 'wts'},
+            {scheme: 'mpq', language: 'slk'},
+        ]
 
         const inlaySelector = [
             {scheme: 'file', language: 'jass'},
@@ -309,16 +413,168 @@ module.exports = {
             {scheme: 'mpq', language: 'jass'},
             {scheme: 'mpq', language: 'angelscript'},
         ]
+
+        // ── Register cache-based providers ────────────────────────────
         const inlayHintsProvider = languages.registerInlayHintsProvider(inlaySelector, {
             onDidChangeInlayHints: inlayHintsChanged.event,
-            provideInlayHints(document, _range, _token) {
+            provideInlayHints(document) {
                 return inlayHintsCache.get(document.uri.toString()) || []
             }
         })
 
-        // Start the client early so custom editors can send requests.
+        const semanticTokensProvider = languages.registerDocumentSemanticTokensProvider(
+            allSelector,
+            {
+                onDidChangeSemanticTokens: semanticChanged.event,
+                provideDocumentSemanticTokens(document) {
+                    const data = semanticCache.get(document.uri.toString())
+                    if (!data || data.length === 0) return undefined
+                    return {data: new Uint32Array(data)}
+                },
+            },
+            legend
+        )
+
+        const foldingProvider = languages.registerFoldingRangeProvider(allSelector, {
+            provideFoldingRanges(document) {
+                return foldingCache.get(document.uri.toString()) || []
+            }
+        })
+
+        const symbolProvider = languages.registerDocumentSymbolProvider(allSelector, {
+            provideDocumentSymbols(document) {
+                return symbolsCache.get(document.uri.toString()) || []
+            }
+        })
+
+        const linkProvider = languages.registerDocumentLinkProvider(allSelector, {
+            provideDocumentLinks(document) {
+                return linksCache.get(document.uri.toString()) || []
+            }
+        })
+
+        const colorProvider = languages.registerColorProvider(allSelector, {
+            provideDocumentColors(document) {
+                return colorsCache.get(document.uri.toString()) || []
+            },
+            provideColorPresentations(color, ctx) {
+                // Delegate to server for the actual label computation
+                return client.sendRequest('textDocument/colorPresentation', {
+                    textDocument: {uri: ctx.document.uri.toString()},
+                    color: {red: color.red, green: color.green, blue: color.blue, alpha: color.alpha},
+                    range: {
+                        start: {line: ctx.range.start.line, character: ctx.range.start.character},
+                        end: {line: ctx.range.end.line, character: ctx.range.end.character},
+                    },
+                }).then(presentations => {
+                    return (presentations || []).map(p => {
+                        const cp = new VscColorPresentation(p.label)
+                        if (p.textEdit) {
+                            cp.textEdit = new TextEdit(
+                                new Range(
+                                    p.textEdit.range.start.line, p.textEdit.range.start.character,
+                                    p.textEdit.range.end.line, p.textEdit.range.end.character,
+                                ),
+                                p.textEdit.newText
+                            )
+                        }
+                        return cp
+                    })
+                }).catch(() => [])
+            }
+        })
+
+        // ── Start the client and perform document sync ────────────────
         const clientReady = client.start().catch(err => {
-            window.showErrorMessage(`❌ Failed to start LSP client:\n\n${err.message}`)
+            window.showErrorMessage(`❌ Failed to start server:\n\n${err.message}`)
+        })
+
+        // ── Manual document sync (replaces vscode-languageclient auto-sync) ──
+        /** Track documents we've sent didOpen for */
+        const openedDocs = new Set()
+
+        // Send didOpen for all already-open documents
+        clientReady.then(() => {
+            for (const doc of workspace.textDocuments) {
+                if (SUPPORTED_LANGUAGES.has(doc.languageId) && (doc.uri.scheme === 'file' || doc.uri.scheme === 'mpq')) {
+                    _sendDidOpen(doc)
+                }
+            }
+        })
+
+        function _sendDidOpen(doc) {
+            const key = doc.uri.toString()
+            if (openedDocs.has(key)) return
+            openedDocs.add(key)
+            client.sendNotification('textDocument/didOpen', {
+                textDocument: {
+                    uri: key,
+                    languageId: doc.languageId,
+                    version: doc.version,
+                    text: doc.getText(),
+                }
+            })
+        }
+
+        const docOpenDisposable = workspace.onDidOpenTextDocument(doc => {
+            if (!SUPPORTED_LANGUAGES.has(doc.languageId)) return
+            if (doc.uri.scheme !== 'file' && doc.uri.scheme !== 'mpq') return
+            _sendDidOpen(doc)
+        })
+
+        const docChangeDisposable = workspace.onDidChangeTextDocument(e => {
+            const doc = e.document
+            if (!SUPPORTED_LANGUAGES.has(doc.languageId)) return
+            if (doc.uri.scheme !== 'file' && doc.uri.scheme !== 'mpq') return
+            if (!openedDocs.has(doc.uri.toString())) {
+                _sendDidOpen(doc)
+                return
+            }
+            if (e.contentChanges.length === 0) return
+            client.sendNotification('textDocument/didChange', {
+                textDocument: {
+                    uri: doc.uri.toString(),
+                    version: doc.version,
+                },
+                contentChanges: e.contentChanges.map(c => ({
+                    range: {
+                        start: {line: c.range.start.line, character: c.range.start.character},
+                        end: {line: c.range.end.line, character: c.range.end.character},
+                    },
+                    text: c.text,
+                })),
+            })
+        })
+
+        const docCloseDisposable = workspace.onDidCloseTextDocument(doc => {
+            const key = doc.uri.toString()
+            if (!openedDocs.has(key)) return
+            openedDocs.delete(key)
+            client.sendNotification('textDocument/didClose', {
+                textDocument: {uri: key}
+            })
+        })
+
+        // ── File watchers ─────────────────────────────────────────────
+        // Handle server's client/registerCapability for file watchers
+        client.onNotification('client/registerCapability', (params) => {
+            if (!params || !params.registrations) return
+            for (const reg of params.registrations) {
+                if (reg.method !== 'workspace/didChangeWatchedFiles') continue
+                const watchers = reg.registerOptions?.watchers || []
+                for (const w of watchers) {
+                    const watcher = workspace.createFileSystemWatcher(w.globPattern)
+                    const sendEvent = (uri, type) => {
+                        client.sendNotification('workspace/didChangeWatchedFiles', {
+                            changes: [{uri: uri.toString(), type}]
+                        })
+                    }
+                    if (!w.kind || w.kind & 1) watcher.onDidCreate(uri => sendEvent(uri, 1))
+                    if (!w.kind || w.kind & 2) watcher.onDidChange(uri => sendEvent(uri, 2))
+                    if (!w.kind || w.kind & 4) watcher.onDidDelete(uri => sendEvent(uri, 3))
+                    fileWatcherDisposables.push(watcher)
+                }
+            }
         })
 
         /** Helper: open-custom-document boilerplate */
@@ -328,8 +584,18 @@ module.exports = {
         const mpqProvider = new MpqFileSystemProvider(() => client, clientReady)
 
         context.subscriptions.push(
+            diagnosticCollection,
             inlayHintsProvider,
             inlayHintsChanged,
+            semanticTokensProvider,
+            semanticChanged,
+            foldingProvider,
+            symbolProvider,
+            linkProvider,
+            colorProvider,
+            docOpenDisposable,
+            docChangeDisposable,
+            docCloseDisposable,
 
             // TaskProvider for jass-hook tasks (hooks are created programmatically)
             tasks.registerTaskProvider('jass-hook', {
@@ -644,24 +910,31 @@ module.exports = {
                 }
             }),
 
-            // Restart LSP server
+            // Restart server
             commands.registerCommand('jass.restartServer', async () => {
                 if (!client) {
-                    window.showWarningMessage('LSP client is not running.')
+                    window.showWarningMessage('Server is not running.')
                     return
                 }
                 await window.withProgress(
                     {
                         location: ProgressLocation.Notification,
-                        title: 'Restarting JASS LSP server…',
+                        title: 'Restarting JASS server…',
                         cancellable: false
                     },
                     async () => {
                         try {
                             await client.restart()
-                            window.showInformationMessage('✓ JASS LSP server restarted.')
+                            // Re-open all tracked documents
+                            openedDocs.clear()
+                            for (const doc of workspace.textDocuments) {
+                                if (SUPPORTED_LANGUAGES.has(doc.languageId) && (doc.uri.scheme === 'file' || doc.uri.scheme === 'mpq')) {
+                                    _sendDidOpen(doc)
+                                }
+                            }
+                            window.showInformationMessage('✓ JASS server restarted.')
                         } catch (e) {
-                            window.showErrorMessage(`Failed to restart LSP server: ${e.message}`)
+                            window.showErrorMessage(`Failed to restart server: ${e.message}`)
                         }
                     }
                 )
@@ -703,6 +976,7 @@ module.exports = {
 
     async deactivate() {
         if (!client) return
+        for (const d of fileWatcherDisposables) d.dispose()
         await client.stop()
         client = undefined
     }

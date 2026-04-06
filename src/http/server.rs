@@ -69,6 +69,7 @@ pub async fn start_server() -> std::io::Result<u16> {
     };
 
     let app = Router::new()
+        .route("/ws", get(crate::http::ws::ws_handler))
         .route("/w3e/terrain", get(terrain_handler))
         .route("/w3e/file", get(file_lookup_handler))
         .route("/w3e/snapshot", get(snapshot_handler))

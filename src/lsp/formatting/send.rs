@@ -7,12 +7,8 @@ use crate::lsp::send::send;
 use crate::util::file_store::FILE_STORE;
 use crate::util::uri_map::LNG_URI_MAP;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 
 pub async fn send_formatting(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     params: &DocumentFormattingParams,
 ) {
@@ -61,7 +57,6 @@ pub async fn send_formatting(
     }
 
     send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id,

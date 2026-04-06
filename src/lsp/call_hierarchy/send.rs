@@ -11,15 +11,11 @@ use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
 use serde_json::Value;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use url::Url;
 
 // ─── Prepare ─────────────────────────────────────────────────────────────────
 
 pub async fn send_prepare(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     uri: &Url,
     position: &Position,
@@ -27,7 +23,6 @@ pub async fn send_prepare(
     let result = compute_prepare(uri, position);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,
@@ -109,14 +104,12 @@ fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<CallHierarchyIt
 // ─── Incoming Calls ──────────────────────────────────────────────────────────
 
 pub async fn send_incoming(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     item: &CallHierarchyItem,
 ) {
     let result = compute_incoming(item);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,
@@ -174,14 +167,12 @@ fn compute_incoming(item: &CallHierarchyItem) -> Vec<CallHierarchyIncomingCall> 
 // ─── Outgoing Calls ──────────────────────────────────────────────────────────
 
 pub async fn send_outgoing(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     item: &CallHierarchyItem,
 ) {
     let result = compute_outgoing(item);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,

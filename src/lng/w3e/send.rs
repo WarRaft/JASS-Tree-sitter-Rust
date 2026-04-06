@@ -8,9 +8,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{json, to_value};
 use std::error::Error;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use url::Url;
 
 // ── Pack terrain points into base64-encoded TypedArrays ─────────────────────
@@ -67,7 +64,6 @@ fn pack_points(data: &W3eData) -> serde_json::Value {
 }
 
 pub async fn send(
-    writer: &Arc<Mutex<Stdout>>,
     call_id: Option<CancelId>,
     uri: &Url,
     archive_path: Option<&str>,
@@ -88,7 +84,7 @@ pub async fn send(
         error: None,
     };
 
-    let _ = lsp_send(writer, &response).await;
+    let _ = lsp_send(&response).await;
 }
 
 async fn _send(

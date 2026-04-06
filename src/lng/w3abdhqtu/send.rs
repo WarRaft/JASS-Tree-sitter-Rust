@@ -4,13 +4,9 @@ use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
 use serde_json::{json, to_value};
 use std::error::Error;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use url::Url;
 
 pub async fn send(
-    writer: &Arc<Mutex<Stdout>>,
     call_id: Option<CancelId>,
     uri: &Url,
     level_data: bool,
@@ -32,7 +28,7 @@ pub async fn send(
         error: None,
     };
 
-    let _ = lsp_send(writer, &response).await;
+    let _ = lsp_send(&response).await;
 }
 
 async fn _send(

@@ -1,14 +1,8 @@
 use crate::lsp::call_hierarchy::lsp::CallHierarchyOptions;
 use crate::lsp::code_lens::lsp::CodeLensOptions;
 use crate::lsp::completion::lsp::CompletionOptions;
-use crate::lsp::diagnostic::lsp::DiagnosticOptions;
-use crate::lsp::document_link::lsp::DocumentLinkOptions;
-use crate::lsp::document_symbol::lsp::DocumentSymbolOptions;
-use crate::lsp::folding::lsp::FoldingRangeOptions;
 use crate::lsp::formatting::lsp::DocumentFormattingOptions;
-use crate::lsp::inlay_hint::lsp::InlayHintOptions;
 use crate::lsp::rename::lsp::{RenameOptions, WorkspaceServerCapabilities};
-use crate::lsp::semantic::lsp::SemanticTokensOptions;
 use crate::lsp::signature_help::lsp::SignatureHelpOptions;
 use crate::lsp::text_document::TextDocumentSyncOptions;
 use crate::lsp::type_hierarchy::lsp::TypeHierarchyOptions;
@@ -30,15 +24,14 @@ pub struct InitializeResult {
     pub capabilities: ServerCapabilities,
 }
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#serverCapabilities
+/// Server capabilities — only interactive (request/response) features.
+/// Semantic tokens, diagnostics, folding, symbols, links, colors, and inlay
+/// hints are pushed via `custom/parseResult` notifications.
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_document_sync: Option<TextDocumentSyncOptions>,
-    pub semantic_tokens_provider: Option<SemanticTokensOptions>,
-    pub document_symbol_provider: Option<DocumentSymbolOptions>,
-    pub folding_range_provider: Option<FoldingRangeOptions>,
     pub completion_provider: Option<CompletionOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hover_provider: Option<bool>,
@@ -49,17 +42,11 @@ pub struct ServerCapabilities {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub references_provider: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub inlay_hint_provider: Option<InlayHintOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub rename_provider: Option<RenameOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code_action_provider: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub document_link_provider: Option<DocumentLinkOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub document_formatting_provider: Option<DocumentFormattingOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub color_provider: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceServerCapabilities>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -70,6 +57,4 @@ pub struct ServerCapabilities {
     pub call_hierarchy_provider: Option<CallHierarchyOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_hierarchy_provider: Option<TypeHierarchyOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub diagnostic_provider: Option<DiagnosticOptions>,
 }

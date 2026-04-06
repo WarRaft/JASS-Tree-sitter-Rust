@@ -3,13 +3,9 @@ use crate::lsp::inlay_hint::lsp::{InlayHint, InlayHintKind, InlayHintParams};
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send as lsp_send;
 use crate::util::file_store::FILE_STORE;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 
 /// Handle `textDocument/inlayHint`.
 pub async fn send(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     params: &InlayHintParams,
 ) {
@@ -17,7 +13,6 @@ pub async fn send(
     let result = compute(uri, Some(&params.range));
 
     lsp_send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id,

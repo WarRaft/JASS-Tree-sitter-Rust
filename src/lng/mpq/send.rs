@@ -5,9 +5,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use log::error;
 use serde_json::json;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 
 /// The external listfile shipped with the extension — contains properly-cased
 /// paths for well-known Warcraft III game files.
@@ -34,7 +31,6 @@ static LISTFILE_CASE_MAP: LazyLock<std::collections::HashMap<String, String>> =
 
 /// Handle `mpq/info` — return archive metadata for the custom editor page.
 pub async fn send_info(
-    writer: &Arc<Mutex<Stdout>>,
     call_id: Option<CancelId>,
     archive_path: &str,
 ) {
@@ -52,7 +48,6 @@ pub async fn send_info(
     };
 
     lsp_send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id: call_id,
@@ -65,7 +60,6 @@ pub async fn send_info(
 
 /// Handle `mpq/list` — return the flat list of files inside an MPQ archive.
 pub async fn send_list(
-    writer: &Arc<Mutex<Stdout>>,
     call_id: Option<CancelId>,
     archive_path: &str,
 ) {
@@ -83,7 +77,6 @@ pub async fn send_list(
     };
 
     lsp_send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id: call_id,
@@ -96,7 +89,6 @@ pub async fn send_list(
 
 /// Handle `mpq/read` — read a single file from an MPQ archive, return base64.
 pub async fn send_read(
-    writer: &Arc<Mutex<Stdout>>,
     call_id: Option<CancelId>,
     archive_path: &str,
     file_path: &str,
@@ -119,7 +111,6 @@ pub async fn send_read(
     };
 
     lsp_send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id: call_id,

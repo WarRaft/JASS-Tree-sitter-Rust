@@ -10,15 +10,11 @@ use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
 use serde_json::Value;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use url::Url;
 
 // ─── Prepare ─────────────────────────────────────────────────────────────────
 
 pub async fn send_prepare(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     uri: &Url,
     position: &Position,
@@ -26,7 +22,6 @@ pub async fn send_prepare(
     let result = compute_prepare(uri, position);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,
@@ -104,14 +99,12 @@ fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<TypeHierarchyIt
 // ─── Supertypes ──────────────────────────────────────────────────────────────
 
 pub async fn send_supertypes(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     item: &TypeHierarchyItem,
 ) {
     let result = compute_supertypes(item);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,
@@ -165,14 +158,12 @@ fn compute_supertypes(item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
 // ─── Subtypes ────────────────────────────────────────────────────────────────
 
 pub async fn send_subtypes(
-    writer: &Arc<Mutex<Stdout>>,
     id: Option<CancelId>,
     item: &TypeHierarchyItem,
 ) {
     let result = compute_subtypes(item);
 
     lsp_send(
-        writer,
         &ResponseMessage::<Value> {
             jsonrpc: "2.0".into(),
             id,

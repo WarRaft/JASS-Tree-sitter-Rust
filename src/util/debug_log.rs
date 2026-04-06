@@ -120,8 +120,7 @@ fn cancel_id_to_value(id: &Option<crate::lsp::cancel::CancelId>) -> Option<serde
 
 /// Send a debug log entry to the client.
 ///
-/// Does nothing if `DEBUG_LOG_ENABLED` is `false` or the global LSP writer
-/// has not been initialised yet.
+/// Does nothing if `DEBUG_LOG_ENABLED` is `false`.
 pub async fn send_debug_log(
     method: &str,
     status: DebugStatus,
@@ -133,11 +132,6 @@ pub async fn send_debug_log(
         return;
     }
 
-    let writer = match crate::util::file_store::LSP_WRITER.get() {
-        Some(w) => w,
-        None => return,
-    };
-
     let entry = DebugEntry {
         timestamp: now_iso(),
         method: method.to_string(),
@@ -148,7 +142,6 @@ pub async fn send_debug_log(
     };
 
     crate::lsp::send::send(
-        writer,
         &serde_json::json!({
             "jsonrpc": "2.0",
             "method": "custom/debugLog",

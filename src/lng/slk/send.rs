@@ -8,9 +8,6 @@ use crate::util::tree_map::TREE_MAP;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, to_value};
 use std::error::Error;
-use std::sync::Arc;
-use tokio::io::Stdout;
-use tokio::sync::Mutex;
 use url::Url;
 
 // ─── Response types ──────────────────────────────────────────────────────────
@@ -37,7 +34,7 @@ pub struct SlkTableResponse {
 
 // ─── LSP entry point ─────────────────────────────────────────────────────────
 
-pub async fn send(writer: &Arc<Mutex<Stdout>>, call_id: Option<CancelId>, uri: &Url) {
+pub async fn send(call_id: Option<CancelId>, uri: &Url) {
     let result_json = _send(uri).unwrap_or_else(|e| {
         json!({
             "error": { "message": e.to_string() }
@@ -45,7 +42,6 @@ pub async fn send(writer: &Arc<Mutex<Stdout>>, call_id: Option<CancelId>, uri: &
     });
 
     let _ = lsp_send(
-        writer,
         &ResponseMessage {
             jsonrpc: "2.0".into(),
             id: call_id,
