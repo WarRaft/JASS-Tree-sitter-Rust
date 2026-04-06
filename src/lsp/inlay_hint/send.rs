@@ -1,27 +1,6 @@
-use crate::lsp::cancel::CancelId;
-use crate::lsp::inlay_hint::lsp::{InlayHint, InlayHintKind, InlayHintParams};
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
+use crate::lsp::inlay_hint::lsp::{InlayHint, InlayHintKind};
 use crate::util::file_store::FILE_STORE;
 
-/// Handle `textDocument/inlayHint`.
-pub async fn send(
-    id: Option<CancelId>,
-    params: &InlayHintParams,
-) {
-    let uri = &params.text_document.uri;
-    let result = compute(uri, Some(&params.range));
-
-    lsp_send(
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(result),
-            error: None,
-        },
-    )
-    .await;
-}
 
 /// Compute all inlay hints for a file (no range filter).
 pub fn compute_all(uri: &url::Url) -> Vec<InlayHint> {

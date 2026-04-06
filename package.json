@@ -38,24 +38,6 @@
   },
   "configurationDefaults": {},
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "jassDebug",
-          "title": "%viewContainer.jassDebug.title%",
-          "icon": "$(debug-console)"
-        }
-      ]
-    },
-    "views": {
-      "jassDebug": [
-        {
-          "type": "webview",
-          "id": "jassDebugSidebar",
-          "name": "%view.jassDebugSidebar.name%"
-        }
-      ]
-    },
     "languages": [
       {
         "id": "bni",
@@ -476,7 +458,6 @@
       }
     ],
     "activationEvents": [
-      "onView:jassDebugSidebar",
       "onCustomEditor:mdx.preview",
       "onCustomEditor:blp.preview",
       "onCustomEditor:doo.preview",
@@ -549,11 +530,6 @@
         "command": "slk.openText",
         "title": "%command.slk.openText%",
         "icon": "$(code)"
-      },
-      {
-        "command": "debug.showPanel",
-        "title": "%command.debug.showPanel%",
-        "icon": "$(debug-console)"
       }
     ],
     "menus": {

@@ -1,21 +1,10 @@
 use crate::lsp::location::Location;
 use crate::lsp::range::Range;
-use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::collections::HashMap;
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentDiagnosticParams
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DocumentDiagnosticParams {
-    pub text_document: TextDocumentIdentifier,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub identifier: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous_result_id: Option<String>,
-}
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentDiagnosticReport
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,14 +152,3 @@ pub struct DiagnosticRelatedInformation {
     pub message: String,
 }
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#diagnosticOptions
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DiagnosticOptions {
-    /// Whether the language has inter-file dependencies.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inter_file_dependencies: Option<bool>,
-    /// Whether the server provides workspace-wide diagnostics.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_diagnostics: Option<bool>,
-}

@@ -12,7 +12,7 @@ const {renderMapEditor} = require('./render.js')
  * @param {import('vscode').CustomDocument} document
  * @param {import('vscode').WebviewPanel} webviewPanel
  * @param {import('vscode').CancellationToken} _token
- * @param {import('vscode-languageclient').LanguageClient} client
+ * @param {import('../serverClient.js').ServerClient} client
  * @param {import('vscode').Uri} extensionUri
  */
 async function resolveMapEditor(document, webviewPanel, _token, client, extensionUri, getBinaryServer) {
@@ -556,7 +556,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                         } catch (_) {}
                     }
 
-                    // Fallback to LSP
+                    // Fallback to WebSocket
                     if (!buf) {
                         try {
                             const result = await client.sendRequest('w3e/lookupFile', {
@@ -608,7 +608,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 const ext = (fname.split('.').pop() || '').toLowerCase()
 
                 if (ext === 'mdx') {
-                    // Render MDX via LSP and send result to webview
+                    // Render MDX via server and send result to webview
                     try {
                         const renderResult = await client.sendRequest('mdx/render', {
                             uri: tmpUri.toString()

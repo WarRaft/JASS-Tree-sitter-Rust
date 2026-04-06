@@ -42,8 +42,3 @@ pub struct TypeHierarchySubtypesParams {
     pub item: TypeHierarchyItem,
 }
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#typeHierarchyOptions
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TypeHierarchyOptions {}
-

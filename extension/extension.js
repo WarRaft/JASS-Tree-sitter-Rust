@@ -19,7 +19,7 @@ const {resolveMapEditor} = require('./mapEditor/index.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
 const {showTypeGraph} = require('./typeGraphPanel.js')
-const {DebugSidebarProvider, pushEntry} = require('./debugSidebarProvider.js')
+
 const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
 const {resolveSlkEditor} = require('./resolveSlkEditor.js')
 
@@ -164,7 +164,7 @@ function _runHookTask(label, cmd, cwd) {
 /** @type {import('vscode').Disposable[]} */
 const fileWatcherDisposables = []
 
-/** Map LSP DiagnosticSeverity (1-4) to VS Code DiagnosticSeverity */
+/** Map severity (1-4) to VS Code DiagnosticSeverity */
 function _mapSeverity(sev) {
     switch (sev) {
         case 1: return DiagnosticSeverity.Error
@@ -175,9 +175,9 @@ function _mapSeverity(sev) {
     }
 }
 
-/** Map LSP SymbolKind (1-26) to VS Code SymbolKind */
+/** Map SymbolKind (1-26) to VS Code SymbolKind */
 function _mapSymbolKind(kind) {
-    // LSP SymbolKind values map 1:1 to VS Code SymbolKind
+    // SymbolKind values map 1:1 to VS Code SymbolKind
     return kind || SymbolKind.Object
 }
 
@@ -379,20 +379,11 @@ module.exports = {
             colorsCache.set(uriStr, colors)
         })
 
-        // ── Debug log (push model) ─────────────────────────────────
-        client.onNotification('custom/debugLog', (entry) => {
-            pushEntry(entry)
-        })
 
         // ── Binary HTTP server (parallel data channel) ───────────────
         // Server info (port + token) is available immediately after start().
         /** @returns {{port: number, token: string} | null} */
         function getBinaryServer() { return client.getServerInfo() }
-
-        // ── Log messages ──────────────────────────────────────────────
-        client.onNotification('window/logMessage', params => {
-            console.log(`${params.message}`)
-        })
 
         // ── Document selectors ────────────────────────────────────────
         const allSelector = [
@@ -458,15 +449,15 @@ module.exports = {
                 return colorsCache.get(document.uri.toString()) || []
             },
             provideColorPresentations(color, ctx) {
-                // Delegate to server for the actual label computation
-                return client.sendRequest('textDocument/colorPresentation', {
-                    textDocument: {uri: ctx.document.uri.toString()},
+                const uri = ctx.document.uri.toString()
+                return client.sendRequest('color/presentation', {
+                    textDocument: {uri},
                     color: {red: color.red, green: color.green, blue: color.blue, alpha: color.alpha},
                     range: {
                         start: {line: ctx.range.start.line, character: ctx.range.start.character},
                         end: {line: ctx.range.end.line, character: ctx.range.end.character},
                     },
-                }).then(presentations => {
+                }, uri).then(presentations => {
                     return (presentations || []).map(p => {
                         const cp = new VscColorPresentation(p.label)
                         if (p.textEdit) {
@@ -489,7 +480,7 @@ module.exports = {
             window.showErrorMessage(`❌ Failed to start server:\n\n${err.message}`)
         })
 
-        // ── Manual document sync (replaces vscode-languageclient auto-sync) ──
+        // ── Manual document sync ──────────────────────────────────────
         /** Track documents we've sent didOpen for */
         const openedDocs = new Set()
 
@@ -506,7 +497,7 @@ module.exports = {
             const key = doc.uri.toString()
             if (openedDocs.has(key)) return
             openedDocs.add(key)
-            client.sendNotification('textDocument/didOpen', {
+            client.sendNotification('document/open', {
                 textDocument: {
                     uri: key,
                     languageId: doc.languageId,
@@ -531,7 +522,13 @@ module.exports = {
                 return
             }
             if (e.contentChanges.length === 0) return
-            client.sendNotification('textDocument/didChange', {
+
+            // Cancel all in-flight requests for this URI — they're working
+            // with stale data.  The server does the same on its side, but
+            // cancelling client-side avoids waiting for doomed responses.
+            client.cancelUri(doc.uri.toString())
+
+            client.sendNotification('document/change', {
                 textDocument: {
                     uri: doc.uri.toString(),
                     version: doc.version,
@@ -550,22 +547,22 @@ module.exports = {
             const key = doc.uri.toString()
             if (!openedDocs.has(key)) return
             openedDocs.delete(key)
-            client.sendNotification('textDocument/didClose', {
+            client.sendNotification('document/close', {
                 textDocument: {uri: key}
             })
         })
 
         // ── File watchers ─────────────────────────────────────────────
-        // Handle server's client/registerCapability for file watchers
-        client.onNotification('client/registerCapability', (params) => {
+        // Handle server's watchers/register request for file watchers
+        client.onNotification('watchers/register', (params) => {
             if (!params || !params.registrations) return
             for (const reg of params.registrations) {
-                if (reg.method !== 'workspace/didChangeWatchedFiles') continue
+                if (reg.method !== 'files/changed') continue
                 const watchers = reg.registerOptions?.watchers || []
                 for (const w of watchers) {
                     const watcher = workspace.createFileSystemWatcher(w.globPattern)
                     const sendEvent = (uri, type) => {
-                        client.sendNotification('workspace/didChangeWatchedFiles', {
+                        client.sendNotification('files/changed', {
                             changes: [{uri: uri.toString(), type}]
                         })
                     }
@@ -624,7 +621,7 @@ module.exports = {
                     return
                 }
 
-                // Wait for LSP to be ready before mounting.
+                // Wait for server to be ready before mounting.
                 await clientReady
 
                 const rootUri = MpqFileSystemProvider.makeUri(archivePath)
@@ -703,7 +700,7 @@ module.exports = {
             }),
         )
 
-        /** Helper: register a binary-file custom editor that talks to LSP */
+        /** Helper: register a binary-file custom editor that talks to the server */
         function binaryEditor(viewType, resolver) {
             return window.registerCustomEditorProvider(
                 viewType,
@@ -718,7 +715,7 @@ module.exports = {
                         }
                         await clientReady
 
-                        // For mpq:// URIs the LSP server cannot read the file
+                        // For mpq:// URIs the server cannot read the file
                         // directly (it only handles file:// paths). Extract the
                         // file content via the virtual filesystem, write it to a
                         // temp file, and pass the temp-file document to the resolver.
@@ -813,16 +810,6 @@ module.exports = {
                 showTypeGraph(client, context.extensionUri, context)
             }),
 
-            // Debug Log sidebar
-            window.registerWebviewViewProvider(
-                DebugSidebarProvider.viewType,
-                new DebugSidebarProvider(client, clientReady),
-                {webviewOptions: {retainContextWhenHidden: true}}
-            ),
-
-            commands.registerCommand('debug.showPanel', () => {
-                commands.executeCommand('jassDebugSidebar.focus')
-            }),
 
             // Rescan all files
             commands.registerCommand('rescan.execute', async () => {

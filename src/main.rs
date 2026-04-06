@@ -18,96 +18,25 @@ use crate::lng::mpq::send::{send_info as mpq_info_send, send_list as mpq_list_se
 use crate::lsp::cancel::CancelCheck;
 use crate::lsp::code_action::send::send as code_action_send;
 use crate::lsp::code_lens::send::send as code_lens_send;
-use crate::lsp::completion::lsp::CompletionOptions;
 use crate::lsp::completion::send::send as completion_send;
-use crate::lsp::formatting::lsp::DocumentFormattingOptions;
 use crate::lsp::formatting::send::send_formatting;
 use crate::lsp::highlight::send::send as highlight_send;
 use crate::lsp::hover::send::send as hover_send;
-use crate::lsp::initialize::{InitializeResult, ServerCapabilities};
 use crate::lsp::protocol::{LspMessage, MethodCall, ResponseMessage};
 use crate::lsp::rename::handle::compute_rename_edits;
 use crate::lsp::rename::identifier::{compute_identifier_rename, prepare_rename};
-use crate::lsp::rename::lsp::{
-    FileOperationFilter, FileOperationOptions, FileOperationPattern,
-    FileOperationRegistrationOptions, WorkspaceServerCapabilities,
-};
 use crate::lsp::send::send;
 use crate::lsp::send::send_cancelled;
 use crate::lsp::signature_help::send::send as signature_help_send;
-use crate::lsp::text_document::{TextDocumentSyncKind, TextDocumentSyncOptions};
-use crate::util::debug_log::{send_debug_log, DebugStatus, DEBUG_LOG_ENABLED};
 use crate::util::file_store::{
     cancel_uri_requests, mark_parse_pending, mark_parse_done,
     uri_request_token, FILE_STORE,
 };
 use crate::util::uri_map::LNG_URI_MAP;
 use log::{error, info};
-use std::sync::atomic::Ordering;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-/// Map a `MethodCall` variant to its LSP method name string.
-fn method_name(call: &MethodCall) -> &'static str {
-    match call {
-        MethodCall::Initialize(_) => "initialize",
-        MethodCall::Shutdown() => "shutdown",
-        MethodCall::Exit() => "exit",
-        MethodCall::Initialized(_) => "initialized",
-        MethodCall::SetTrace(_) => "$/setTrace",
-        MethodCall::Cancel(_) => "$/cancelRequest",
-        MethodCall::DidClose(_) => "textDocument/didClose",
-        MethodCall::DidOpen(_) => "textDocument/didOpen",
-        MethodCall::DidChange(_) => "textDocument/didChange",
-        MethodCall::DidChangeWatchedFiles(_) => "workspace/didChangeWatchedFiles",
-        MethodCall::Completion(_) => "textDocument/completion",
-        MethodCall::Hover(_) => "textDocument/hover",
-        MethodCall::DocumentHighlight(_) => "textDocument/documentHighlight",
-        MethodCall::Definition(_) => "textDocument/definition",
-        MethodCall::References(_) => "textDocument/references",
-        MethodCall::Formatting(_) => "textDocument/formatting",
-        MethodCall::PrepareRename(_) => "textDocument/prepareRename",
-        MethodCall::Rename(_) => "textDocument/rename",
-        MethodCall::WillRenameFiles(_) => "workspace/willRenameFiles",
-        MethodCall::ImportGraphSubgraph(_) => "importGraph/subgraph",
-        MethodCall::CallGraphSubgraph(_) => "callGraph/subgraph",
-        MethodCall::TypeGraphSubgraph(_) => "typeGraph/subgraph",
-        MethodCall::BuildExecute(_) => "build/execute",
-        MethodCall::BuildHooks(_) => "build/hooks",
-        MethodCall::RescanExecute(_) => "rescan/execute",
-        MethodCall::UjapiDownload(_) => "ujapi/download",
-        MethodCall::ColorPresentation(_) => "textDocument/colorPresentation",
-        MethodCall::CodeAction(_) => "textDocument/codeAction",
-        MethodCall::SignatureHelp(_) => "textDocument/signatureHelp",
-        MethodCall::CodeLens(_) => "textDocument/codeLens",
-        MethodCall::PrepareCallHierarchy(_) => "textDocument/prepareCallHierarchy",
-        MethodCall::IncomingCalls(_) => "callHierarchy/incomingCalls",
-        MethodCall::OutgoingCalls(_) => "callHierarchy/outgoingCalls",
-        MethodCall::PrepareTypeHierarchy(_) => "textDocument/prepareTypeHierarchy",
-        MethodCall::Supertypes(_) => "typeHierarchy/supertypes",
-        MethodCall::Subtypes(_) => "typeHierarchy/subtypes",
-        MethodCall::MpqInfo(_) => "mpq/info",
-        MethodCall::MpqList(_) => "mpq/list",
-        MethodCall::MpqRead(_) => "mpq/read",
-        MethodCall::SlkRender(_) => "slk/render",
-        MethodCall::SlkEdit(_) => "slk/edit",
-        MethodCall::BlpRender(_) => "blp/render",
-        MethodCall::MdxRender(_) => "mdx/render",
-        MethodCall::DooRender(_) => "doo/render",
-        MethodCall::W3iRender(_) => "w3i/render",
-        MethodCall::W3eRender(_) => "w3e/render",
-        MethodCall::W3ObjRender(_) => "w3obj/render",
-        MethodCall::W3eGamePathSet(_) => "w3e/gamePath/set",
-        MethodCall::W3eGamePathStatus(_) => "w3e/gamePath/status",
-        MethodCall::W3eTerrainSlk(_) => "w3e/terrainSlk",
-        MethodCall::W3eDoodadsSlk(_) => "w3e/doodadsSlk",
-        MethodCall::W3eUnitsSlk(_) => "w3e/unitsSlk",
-        MethodCall::W3eDestructablesSlk(_) => "w3e/destructablesSlk",
-        MethodCall::W3eLookupFile(_) => "w3e/lookupFile",
-        MethodCall::DebugLogEnable(_) => "custom/debugLogEnable",
-        MethodCall::DebugInit(_) => "custom/debugInit",
-    }
-}
 
 /// Extract the document URI from a `MethodCall` (if it has one).
 ///
@@ -199,109 +128,8 @@ async fn main() {
 
         match parsed {
             LspMessage::Call(call) => {
-                // ── Debug: log every incoming call ────────────────────
-                let m_name = method_name(&call.payload);
-                let dbg_uri_str = extract_uri(&call.payload).map(|u| u.to_string());
-                send_debug_log(m_name, DebugStatus::Created, &call.id, None, dbg_uri_str).await;
 
                 match call.payload {
-                MethodCall::Initialize(_) => {
-                    // Store the raw initialize request for debug panel
-                    if let Ok(raw) = serde_json::from_str::<serde_json::Value>(&msg) {
-                        if let Some(params) = raw.get("params").cloned() {
-                            crate::util::debug_log::store_init_request(params);
-                        }
-                    }
-
-                    let result = InitializeResult {
-                        capabilities: ServerCapabilities {
-                            text_document_sync: Some(TextDocumentSyncOptions {
-                                open_close: Some(true),
-                                change: Some(TextDocumentSyncKind::Incremental),
-                            }),
-                            completion_provider: Some(CompletionOptions {
-                                trigger_characters: Some(vec![
-                                    "/".into(),
-                                    "\\".into(),
-                                ]),
-                            }),
-                            hover_provider: Some(true),
-                            document_highlight_provider: Some(true),
-                            definition_provider: Some(true),
-                            references_provider: Some(true),
-                            rename_provider: Some(
-                                crate::lsp::rename::lsp::RenameOptions {
-                                    prepare_provider: Some(true),
-                                },
-                            ),
-                            code_action_provider: Some(true),
-                            document_formatting_provider: Some(
-                                DocumentFormattingOptions {},
-                            ),
-                            workspace: Some(WorkspaceServerCapabilities {
-                                file_operations: Some(FileOperationOptions {
-                                    will_rename: Some(FileOperationRegistrationOptions {
-                                        filters: vec![FileOperationFilter {
-                                            scheme: Some("file".into()),
-                                            pattern: FileOperationPattern {
-                                                glob: "**/*".into(),
-                                                matches: None,
-                                            },
-                                        }],
-                                    }),
-                                }),
-                            }),
-                            signature_help_provider: Some(
-                                crate::lsp::signature_help::lsp::SignatureHelpOptions {
-                                    trigger_characters: Some(vec![
-                                        "(".into(),
-                                        ",".into(),
-                                    ]),
-                                },
-                            ),
-                            code_lens_provider: Some(
-                                crate::lsp::code_lens::lsp::CodeLensOptions {
-                                    resolve_provider: Some(false),
-                                },
-                            ),
-                            call_hierarchy_provider: Some(
-                                crate::lsp::call_hierarchy::lsp::CallHierarchyOptions {},
-                            ),
-                            type_hierarchy_provider: Some(
-                                crate::lsp::type_hierarchy::lsp::TypeHierarchyOptions {},
-                            ),
-                            ..Default::default()
-                        },
-                    };
-
-                    // Store the init response for debug panel
-                    if let Ok(val) = serde_json::to_value(&result) {
-                        crate::util::debug_log::store_init_response(val);
-                    }
-
-                    send(
-                        &ResponseMessage {
-                            jsonrpc: "2.0".into(),
-                            id: call.id,
-                            result: Some(result),
-                            error: None,
-                        },
-                    )
-                    .await
-                }
-
-                MethodCall::Shutdown() | MethodCall::Exit() => {
-                    send(
-                        &ResponseMessage {
-                            jsonrpc: "2.0".into(),
-                            id: call.id,
-                            result: Some(json!(null)),
-                            error: None,
-                        },
-                    )
-                    .await;
-                    break;
-                }
 
                 // ─── Notifications processed inline to preserve ordering ─────
 
@@ -309,7 +137,6 @@ async fn main() {
                     params.id.mark_cancelled().await;
                 }
 
-                MethodCall::SetTrace(_) => {}
 
                 MethodCall::DidClose(params) => {
                     let uri = params.text_document.uri;
@@ -345,9 +172,6 @@ async fn main() {
                     }
                 }
 
-                MethodCall::DebugLogEnable(params) => {
-                    DEBUG_LOG_ENABLED.store(params.enabled, Ordering::Relaxed);
-                }
 
                 MethodCall::DidOpen(params) => {
                     if params.text_document.language_id == "bni" {
@@ -555,10 +379,6 @@ async fn main() {
                 // ─── All other methods spawned as concurrent request handlers ─
 
                 other => {
-                    let dbg_method: &'static str = m_name;
-                    let dbg_id = call.id.clone();
-                    let dbg_uri = extract_uri(&other).map(|u| u.to_string());
-
                     // Obtain the per-URI cancellation token BEFORE moving
                     // the payload into the spawned task.  When the next
                     // `didChange` for this URI arrives, the token will be
@@ -567,7 +387,6 @@ async fn main() {
                         extract_uri(&other).map(|u| uri_request_token(u));
 
                     tokio::spawn(async move {
-                        send_debug_log(dbg_method, DebugStatus::Running, &dbg_id, None, dbg_uri.clone()).await;
 
                         // ── Early cancellation check ──────────────────────
                         if let Some(ref ct) = ct {
@@ -760,217 +579,6 @@ async fn main() {
                                     },
                                 )
                                 .await;
-                            }
-
-                            MethodCall::Initialized(_) => {
-                                // ── Notify extension about binary HTTP server ─────
-                                if let Some(port) = http_port {
-                                    if let Some(info) = crate::http::server::BINARY_SERVER.get() {
-                                        send(
-                                            &json!({
-                                                "jsonrpc": "2.0",
-                                                "method": "custom/binaryServerReady",
-                                                "params": {
-                                                    "port": port,
-                                                    "token": info.token
-                                                }
-                                            }),
-                                        )
-                                        .await;
-                                    }
-                                }
-
-                                use crate::util::cache_db;
-                                use crate::util::file_cache;
-                                use crate::util::import_graph::IMPORT_GRAPH;
-                                use crate::util::scope_resolver::SCOPE_RESOLVER;
-                                use std::collections::HashSet;
-
-                                // ── 0. Initialize the shared redb database and
-                                //       check the cache version stamp. ──────────
-                                //       If the extension was updated (version
-                                //       mismatch), file_cache and scope tables
-                                //       are purged automatically.  The import
-                                //       graph is preserved so we still know
-                                //       which files belong to which tree.
-                                //       Rescanning happens lazily: each tree is
-                                //       re-parsed from disk the first time the
-                                //       user opens a file from it (via
-                                //       ensure_file_symbols → parse from disk).
-                                if cache_db::was_purged() {
-                                    info!(
-                                        "Version changed to {} — data caches purged, \
-                                         trees will be rescanned on first open",
-                                        cache_db::EXT_VERSION
-                                    );
-                                }
-
-                                // ── 0a. Force-load the scope resolver from redb ───────
-                                let _ = SCOPE_RESOLVER.file_count();
-
-                                // ── 0b. UjAPI release cache is now loaded lazily ─
-                                // (triggered only when //import-ujapi! is encountered)
-
-                                // ── 1. Load ALL cached data from unified disk cache ──
-                                let cached_entries = file_cache::load_all();
-                                let mut stale_uris: Vec<url::Url> = Vec::new();
-                                let mut fresh_count = 0usize;
-
-                                for (uri, cached) in &cached_entries {
-                                    let current_meta = file_cache::FileMeta::from_uri(uri);
-                                    if current_meta == Some(cached.meta) {
-                                        // Fresh — reconstruct partial snapshot.
-                                        let snapshot = std::sync::Arc::new(
-                                            crate::util::file_store::ParseSnapshot {
-                                                folding: Vec::new(),
-                                                symbols: Vec::new(),
-                                                semantic: std::sync::RwLock::new(Default::default()),
-                                                diagnostics: Vec::new(),
-                                                links: Vec::new(),
-                                                ref_map: crate::lsp::ref_map::RefMap {
-                                                    groups: cached.ref_map.groups.clone(),
-                                                    spans: cached.ref_map.spans.clone(),
-                                                    external_decls: cached.ref_map.external_decls.clone(),
-                                                },
-                                                file_symbols: cached.symbols.clone(),
-                                                _type_map: Default::default(),
-                                                type_hints: Vec::new(),
-                                                ujapi_hints: Vec::new(),
-                                                func_decl_keys: cached.func_decl_keys.clone(),
-                                                colors: Vec::new(),
-                                            },
-                                        );
-                                        FILE_STORE.insert(uri.clone(), snapshot);
-                                        fresh_count += 1;
-                                    } else if current_meta.is_some() {
-                                        // File exists but changed — needs re-parse.
-                                        stale_uris.push(uri.clone());
-                                    }
-                                    // If file doesn't exist anymore → skip (GC will clean).
-                                }
-
-                                info!(
-                                    "file_cache: loaded {} fresh, {} stale",
-                                    fresh_count,
-                                    stale_uris.len()
-                                );
-
-                                // ── 2. GC orphaned graph nodes + caches ─────────────
-                                let gc_removed = IMPORT_GRAPH.gc_orphans();
-                                for orphan_uri in &gc_removed {
-                                    SCOPE_RESOLVER.remove_file(orphan_uri);
-                                }
-                                let all = IMPORT_GRAPH.all_uris();
-                                let keep: HashSet<String> =
-                                    all.iter().map(|u| u.as_str().to_string()).collect();
-                                let keep_urls: HashSet<url::Url> =
-                                    all.iter().cloned().collect();
-                                file_cache::gc(&keep);
-                                SCOPE_RESOLVER.gc(&keep_urls);
-
-                                // ── 3. Re-parse stale files with progress ────────────
-                                if !stale_uris.is_empty() {
-                                    let total = stale_uris.len();
-                                    let token = "jass-rescan";
-
-                                    send(
-                                        &json!({
-                                            "jsonrpc": "2.0",
-                                            "id": 99999,
-                                            "method": "window/workDoneProgress/create",
-                                            "params": { "token": token }
-                                        }),
-                                    ).await;
-
-                                    send(
-                                        &json!({
-                                            "jsonrpc": "2.0",
-                                            "method": "$/progress",
-                                            "params": {
-                                                "token": token,
-                                                "value": {
-                                                    "kind": "begin",
-                                                    "title": "JASS: Rescanning files",
-                                                    "cancellable": false,
-                                                    "percentage": 0
-                                                }
-                                            }
-                                        }),
-                                    ).await;
-
-                                    for (i, uri) in stale_uris.iter().enumerate() {
-                                        let pct = ((i + 1) * 100 / total) as u32;
-                                        let path_str = uri.path();
-                                        let fname = path_str.rsplit('/').next().unwrap_or("");
-                                        send(
-                                            &json!({
-                                                "jsonrpc": "2.0",
-                                                "method": "$/progress",
-                                                "params": {
-                                                    "token": token,
-                                                    "value": {
-                                                        "kind": "report",
-                                                        "message": format!("{}/{} {}", i + 1, total, fname),
-                                                        "percentage": pct
-                                                    }
-                                                }
-                                            }),
-                                        ).await;
-
-                                        if let Ok(path) = uri.to_file_path() {
-                                            if let Ok(content) = std::fs::read_to_string(&path) {
-                                                if let Err(e) = crate::util::open::open_by_uri(uri, &content).await {
-                                                    error!("rescan {}: {}", uri, e);
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    send(
-                                        &json!({
-                                            "jsonrpc": "2.0",
-                                            "method": "$/progress",
-                                            "params": {
-                                                "token": token,
-                                                "value": {
-                                                    "kind": "end",
-                                                    "message": format!("Done — {} files rescanned", total)
-                                                }
-                                            }
-                                        }),
-                                    ).await;
-                                }
-
-                                // ── 4. Register file watchers ─────────────────────────
-                                // VS Code only sends textDocument/didChange for files
-                                // open in the editor.  To detect external changes (file
-                                // created / modified / deleted on disk) we register
-                                // workspace/didChangeWatchedFiles watchers.
-                                {
-                                    use std::sync::atomic::{AtomicI64, Ordering};
-                                    static REG_ID: AtomicI64 = AtomicI64::new(-1000);
-                                    let id = REG_ID.fetch_sub(1, Ordering::Relaxed);
-                                    send(
-                                        &json!({
-                                            "jsonrpc": "2.0",
-                                            "id": id,
-                                            "method": "client/registerCapability",
-                                            "params": {
-                                                "registrations": [{
-                                                    "id": "file-watcher-j",
-                                                    "method": "workspace/didChangeWatchedFiles",
-                                                    "registerOptions": {
-                                                        "watchers": [
-                                                            { "globPattern": "**/*.j",  "kind": 7 },
-                                                            { "globPattern": "**/*.ai", "kind": 7 },
-                                                            { "globPattern": "**/*.as", "kind": 7 }
-                                                        ]
-                                                    }
-                                                }]
-                                            }
-                                        }),
-                                    ).await;
-                                }
                             }
 
 
@@ -1586,23 +1194,10 @@ async fn main() {
                                 mpq_read_send(call.id, &params.archive_path, &params.file_path).await;
                             }
 
-                            MethodCall::DebugInit(_) => {
-                                send(
-                                    &ResponseMessage {
-                                        jsonrpc: "2.0".into(),
-                                        id: call.id,
-                                        result: Some(crate::util::debug_log::get_init_data()),
-                                        error: None,
-                                    },
-                                )
-                                .await;
-                            }
-
                             _ => {
                                 error!("Unexpected method call: {:?}", other);
                             }
                         }
-                        send_debug_log(dbg_method, DebugStatus::Completed, &dbg_id, None, dbg_uri).await;
                     });
                 }
                 }

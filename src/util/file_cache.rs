@@ -18,7 +18,7 @@ use crate::lng::jass::symbol::FileSymbols;
 use crate::lsp::ref_map::{DeclKey, RefMap};
 use crate::util::cache_db;
 use log::{error, info};
-use redb::{ReadableDatabase, ReadableTable};
+use redb::ReadableDatabase;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -184,73 +184,6 @@ pub fn store(
     }
 }
 
-/// Load **all** cached entries from the database.
-///
-/// Returns `(uri, CacheData)` for every valid entry.
-/// Corrupted entries are removed.
-pub fn load_all() -> Vec<(Url, CacheData)> {
-    let Some(db) = cache_db::db() else {
-        return vec![];
-    };
-    let read_txn: redb::ReadTransaction = match db.begin_read() {
-        Ok(t) => t,
-        Err(_) => return vec![],
-    };
-    let table: redb::ReadOnlyTable<&str, &[u8]> = match read_txn.open_table(cache_db::FILE_CACHE_TABLE) {
-        Ok(t) => t,
-        Err(_) => return vec![],
-    };
-
-    let mut result = Vec::new();
-    let mut corrupted = Vec::new();
-
-    let iter = match table.iter() {
-        Ok(it) => it,
-        Err(_) => return vec![],
-    };
-
-    for entry_result in iter {
-        let (key_guard, val_guard): (redb::AccessGuard<&str>, redb::AccessGuard<&[u8]>) = match entry_result {
-            Ok(kv) => kv,
-            Err(_) => continue,
-        };
-        let uri_str: &str = key_guard.value();
-        let bytes: &[u8] = val_guard.value();
-
-        let uri = match Url::parse(uri_str) {
-            Ok(u) => u,
-            Err(_) => {
-                corrupted.push(uri_str.to_string());
-                continue;
-            }
-        };
-
-        match bitcode::deserialize::<CacheEntry>(bytes) {
-            Ok(entry) => {
-                result.push((
-                    uri,
-                    CacheData {
-                        meta: entry.meta,
-                        content_hash: entry.content_hash,
-                        symbols: entry.symbols,
-                        ref_map: entry.ref_map,
-                        func_decl_keys: entry.func_decl_keys,
-                    },
-                ));
-            }
-            Err(_) => {
-                corrupted.push(uri_str.to_string());
-            }
-        }
-    }
-
-    // Clean up corrupted entries in a separate write transaction.
-    if !corrupted.is_empty() {
-        remove_entries_by_str(&corrupted);
-    }
-
-    result
-}
 
 /// Delete **all** cache entries.
 #[allow(dead_code)]
@@ -299,63 +232,6 @@ pub fn purge_set(uris: &HashSet<Url>) {
     }
 }
 
-/// Remove cache entries for all URIs **not** in `keep`.
-///
-/// Call on startup after loading the import graph to garbage-collect
-/// entries for files no longer in the project.
-pub fn gc(keep: &HashSet<String>) {
-    let Some(db) = cache_db::db() else { return };
-
-    // Read all keys first.
-    let keys_to_remove: Vec<String> = {
-        let read_txn: redb::ReadTransaction = match db.begin_read() {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        let table: redb::ReadOnlyTable<&str, &[u8]> = match read_txn.open_table(cache_db::FILE_CACHE_TABLE) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        let iter = match table.iter() {
-            Ok(it) => it,
-            Err(_) => return,
-        };
-
-        let mut to_remove = Vec::new();
-        for entry_result in iter {
-            if let Ok((key_guard, _)) = entry_result {
-                let uri_str: &str = key_guard.value();
-                if !keep.contains(uri_str) {
-                    to_remove.push(uri_str.to_string());
-                }
-            }
-        }
-        to_remove
-    };
-
-    if keys_to_remove.is_empty() {
-        return;
-    }
-
-    let write_txn = match db.begin_write() {
-        Ok(t) => t,
-        Err(_) => return,
-    };
-    {
-        let mut table: redb::Table<&str, &[u8]> = match write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
-            Ok(t) => t,
-            Err(_) => return,
-        };
-        for key in &keys_to_remove {
-            let _ = table.remove(key.as_str());
-        }
-    }
-    if let Err(e) = write_txn.commit() {
-        error!("file_cache: gc commit: {}", e);
-    } else {
-        info!("file_cache: gc removed {} stale entries", keys_to_remove.len());
-    }
-}
 
 /// Try to load the cached entry for `uri` only if it's fresh (stat-based).
 ///
@@ -386,18 +262,3 @@ fn remove_entry(uri: &Url) {
     let _ = write_txn.commit();
 }
 
-fn remove_entries_by_str(keys: &[String]) {
-    let Some(db) = cache_db::db() else { return };
-    let write_txn = match db.begin_write() {
-        Ok(t) => t,
-        Err(_) => return,
-    };
-    {
-        if let Ok(mut table) = write_txn.open_table(cache_db::FILE_CACHE_TABLE) {
-            for key in keys {
-                let _ = table.remove(key.as_str());
-            }
-        }
-    }
-    let _ = write_txn.commit();
-}

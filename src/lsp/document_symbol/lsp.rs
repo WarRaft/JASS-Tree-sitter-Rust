@@ -1,22 +1,7 @@
 use crate::lsp::range::Range;
-use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentSymbolOptions
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct DocumentSymbolOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-}
-
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentSymbolParams
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DocumentSymbolParams {
-    pub text_document: TextDocumentIdentifier,
-}
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentSymbol
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

@@ -1,15 +1,9 @@
-//! LSP types for `textDocument/documentColor` and `textDocument/colorPresentation`.
+//! Types for document colors and `color/presentation`.
 
 use crate::lsp::range::Range;
 use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentColorParams
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DocumentColorParams {
-    pub text_document: TextDocumentIdentifier,
-}
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#colorInformation
 #[derive(Debug, Clone, Serialize, Deserialize)]

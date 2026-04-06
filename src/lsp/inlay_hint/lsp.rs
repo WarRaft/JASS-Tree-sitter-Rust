@@ -1,16 +1,7 @@
 use crate::lsp::position::Position;
-use crate::lsp::range::Range;
-use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#inlayHintParams
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InlayHintParams {
-    pub text_document: TextDocumentIdentifier,
-    pub range: Range,
-}
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#inlayHintKind
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy)]
@@ -41,13 +32,5 @@ pub struct InlayHint {
     /// (before the full re-parse completes).  Skipped during JSON serialization.
     #[serde(skip)]
     pub byte_offset: usize,
-}
-
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#inlayHintOptions
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct InlayHintOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolve_provider: Option<bool>,
 }
 

@@ -58,8 +58,3 @@ pub struct CallHierarchyOutgoingCall {
     pub from_ranges: Vec<Range>,
 }
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#callHierarchyOptions
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CallHierarchyOptions {}
-

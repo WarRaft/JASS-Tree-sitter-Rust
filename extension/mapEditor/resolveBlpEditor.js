@@ -1,21 +1,21 @@
 // noinspection CssUnresolvedCustomProperty
 
 /**
- * Ответ от LSP метода 'blp/render'.
+ * Response from the server method 'blp/render'.
  *
  * @typedef {Object} BlpRenderResult
- * @property {string} uri - URI исходного BLP-файла.
- * @property {Array<BlpMipmap>} mipmaps - Список мипмапов, начиная с самого большого.
+ * @property {string} uri - URI of the source BLP file.
+ * @property {Array<BlpMipmap>} mipmaps - List of mipmaps, starting with the largest.
  */
 
 /**
- * Информация об одном мипмапе BLP-изображения.
+ * Information about a single BLP image mipmap.
  *
  * @typedef {Object} BlpMipmap
- * @property {number} width - Ширина мипмапа.
- * @property {number} height - Высота мипмапа.
- * @property {string} [image_data_url] - PNG-изображение, закодированное в виде `data:image/png;base64,...`.
- *                                       Может отсутствовать, если изображение не загружено.
+ * @property {number} width - Mipmap width.
+ * @property {number} height - Mipmap height.
+ * @property {string} [image_data_url] - PNG image encoded as `data:image/png;base64,...`.
+ *                                       May be absent if the image was not loaded.
  */
 
 
@@ -23,7 +23,7 @@
  * @param {import('vscode').CustomDocument} document
  * @param {import('vscode').WebviewPanel} webviewPanel
  * @param {import('vscode').CancellationToken} _token
- * @param {import('vscode-languageclient').LanguageClient} client
+ * @param {import('../serverClient.js').ServerClient} client
  */
 // eslint-disable-next-line no-unused-vars
 async function resolveBlpEditor(document, webviewPanel, _token, client) {
@@ -215,7 +215,7 @@ async function resolveBlpEditor(document, webviewPanel, _token, client) {
         const bgColorPicker = document.getElementById('bg-color')
         const wrappers = document.querySelectorAll('.img-wrapper')
 
-        // Восстанавливаем из localStorage
+        // Restore from localStorage
         const savedChecker = localStorage.getItem('checker') === 'true'
         const savedColor = localStorage.getItem('bg') || '#000000'
         toggle.checked = savedChecker

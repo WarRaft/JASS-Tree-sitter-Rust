@@ -31,12 +31,5 @@ pub struct Command {
     pub arguments: Option<Vec<Value>>,
 }
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#codeLensOptions
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CodeLensOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolve_provider: Option<bool>,
-}
 
 

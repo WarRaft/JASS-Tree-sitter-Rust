@@ -8,14 +8,14 @@ const vscode = require('vscode')
  * URI scheme: mpq
  * URI format: mpq://<base64url-encoded archive absolute path>/<internal path>
  *
- * The LSP server handles the actual archive I/O via two custom requests:
+ * The server handles the actual archive I/O via two custom requests:
  *   - mpq/list  → { entries: [{ name, size }] }
  *   - mpq/read  → { content: "<base64>" }
  */
 class MpqFileSystemProvider {
 
     /**
-     * @param {() => import('vscode-languageclient').LanguageClient | undefined} getClient
+     * @param {() => import('./serverClient.js').ServerClient | undefined} getClient
      * @param {Promise<void>} clientReady
      */
     constructor(getClient, clientReady) {
@@ -82,15 +82,15 @@ class MpqFileSystemProvider {
     }
 
     /**
-     * Ensure the LSP client is ready, then return it.
+     * Ensure the client is ready, then return it.
      * @private
-     * @returns {Promise<import('vscode-languageclient').LanguageClient>}
+     * @returns {Promise<import('./serverClient.js').ServerClient>}
      */
     async _ensureClient() {
         await this._clientReady
         const client = this._getClient()
         if (!client) {
-            throw vscode.FileSystemError.Unavailable('LSP client not available')
+            throw vscode.FileSystemError.Unavailable('Server client not available')
         }
         return client
     }

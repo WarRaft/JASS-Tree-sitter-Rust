@@ -16,7 +16,7 @@ let panel
 /**
  * Show the import graph for the given file URI.
  *
- * @param {import('vscode-languageclient').LanguageClient} client
+ * @param {import('./serverClient.js').ServerClient} client
  * @param {import('vscode').Uri} extensionUri - Extension root URI (context.extensionUri).
  * @param {import('vscode').ExtensionContext} context
  * @param {string} [fileUri] - If not given, uses the active editor's URI.

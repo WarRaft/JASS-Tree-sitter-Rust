@@ -15,6 +15,18 @@
 
 const {spawn} = require('child_process')
 
+/**
+ * Error thrown when a request is cancelled (e.g. because the document changed).
+ * Callers can check `err.isCancellation` to distinguish from real errors.
+ */
+class RequestCancelledError extends Error {
+    constructor(id) {
+        super(`Request ${id} cancelled`)
+        this.isCancellation = true
+        this.requestId = id
+    }
+}
+
 class ServerClient {
     /**
      * @param {string} command  Path to the server binary
@@ -36,6 +48,12 @@ class ServerClient {
         /** @private */ this._started = false
         /** @private @type {{port: number, token: string} | null} */
         this._serverInfo = null
+
+        // ── URI-based request tracking for cancellation ───────────
+        /** @private @type {Map<string, Set<number>>} uri → set of request IDs */
+        this._pendingByUri = new Map()
+        /** @private @type {Map<number, string>} request ID → uri */
+        this._idToUri = new Map()
     }
 
     /**
@@ -60,6 +78,8 @@ class ServerClient {
                 reject(new Error(`Server exited with code ${code}`))
             }
             this._pending.clear()
+            this._pendingByUri.clear()
+            this._idToUri.clear()
         })
 
         // Read the first line from stdout: {"port": ..., "token": "..."}
@@ -280,6 +300,7 @@ class ServerClient {
             const pending = this._pending.get(msg.id)
             if (pending) {
                 this._pending.delete(msg.id)
+                this._cleanupUriTracking(msg.id)
                 if (msg.error) {
                     pending.reject(new Error(msg.error.message || JSON.stringify(msg.error)))
                 } else {
@@ -324,12 +345,24 @@ class ServerClient {
      * Send a JSON-RPC request and wait for the response.
      * @param {string} method
      * @param {*} [params]
+     * @param {string} [uri]  Optional document URI — when provided, the request
+     *                        is tracked so it can be cancelled via `cancelUri()`.
      * @returns {Promise<*>}
      */
-    sendRequest(method, params) {
+    sendRequest(method, params, uri) {
         return new Promise((resolve, reject) => {
             const id = this._nextId++
             this._pending.set(id, {resolve, reject})
+
+            // Track by URI for bulk cancellation
+            if (uri) {
+                this._idToUri.set(id, uri)
+                if (!this._pendingByUri.has(uri)) {
+                    this._pendingByUri.set(uri, new Set())
+                }
+                this._pendingByUri.get(uri).add(id)
+            }
+
             this._sendText(JSON.stringify({
                 jsonrpc: '2.0',
                 id,
@@ -337,6 +370,50 @@ class ServerClient {
                 params: params ?? {},
             }))
         })
+    }
+
+    /**
+     * Cancel all in-flight requests for the given URI.
+     *
+     * - Sends `$/cancelRequest` to the server for each tracked request ID.
+     * - Immediately rejects the client-side promises with `RequestCancelledError`.
+     *
+     * @param {string} uri
+     */
+    cancelUri(uri) {
+        const ids = this._pendingByUri.get(uri)
+        if (!ids || ids.size === 0) return
+
+        for (const id of ids) {
+            // Notify the server
+            this.sendNotification('$/cancelRequest', {id})
+
+            // Reject the client-side promise
+            const pending = this._pending.get(id)
+            if (pending) {
+                this._pending.delete(id)
+                pending.reject(new RequestCancelledError(id))
+            }
+            this._idToUri.delete(id)
+        }
+        this._pendingByUri.delete(uri)
+    }
+
+    /**
+     * Remove a request ID from the URI tracking maps.
+     * @param {number} id
+     * @private
+     */
+    _cleanupUriTracking(id) {
+        const uri = this._idToUri.get(id)
+        if (uri) {
+            this._idToUri.delete(id)
+            const ids = this._pendingByUri.get(uri)
+            if (ids) {
+                ids.delete(id)
+                if (ids.size === 0) this._pendingByUri.delete(uri)
+            }
+        }
     }
 
     /**
@@ -407,5 +484,5 @@ class ServerClient {
     }
 }
 
-module.exports = {ServerClient}
+module.exports = {ServerClient, RequestCancelledError}
 

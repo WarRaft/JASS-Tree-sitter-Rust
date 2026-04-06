@@ -1,43 +1,43 @@
 function onDidChangeStateMessage(oldState, newState) {
-    // Строгое покрытие всех переходов
+    // Strict coverage of all transitions
     if (oldState === 1) { // Stopped
         if (newState === 1) {
-            return '🟡 LSP клиент уже был остановлен.\nВозможно, попытка перезапуска не сработала.'
+            return '🟡 Server was already stopped.\nRestart attempt may have failed.'
         }
         if (newState === 2) {
-            return '⚠️ LSP клиент перескочил из Stopped прямо в Running.\nОбычно должен быть этап запуска (Starting).'
+            return '⚠️ Server jumped from Stopped to Running.\nNormally there should be a Starting phase.'
         }
         if (newState === 3) {
-            return // Ожидаемый запуск
+            return // Expected start
         }
     }
 
     if (oldState === 2) { // Running
         if (newState === 1) {
-            return // Корректное завершение
+            return // Normal shutdown
         }
         if (newState === 2) {
-            return '🔁 LSP клиент уже был запущен.\nПовторный переход в Running — необычное поведение.'
+            return '🔁 Server was already running.\nRepeated transition to Running — unusual behavior.'
         }
         if (newState === 3) {
-            return '🤨 LSP клиент начал запуск, уже будучи активным.\nЭто выглядит странно и может указывать на баг.'
+            return '🤨 Server started starting while already active.\nThis looks odd and may indicate a bug.'
         }
     }
 
     if (oldState === 3) { // Starting
         if (newState === 1) {
-            return '❌ LSP клиент не смог завершить запуск\nи вернулся в Stopped.'
+            return '❌ Server failed to finish starting\nand returned to Stopped.'
         }
         if (newState === 2) {
-            return // Успешный запуск
+            return // Successful start
         }
         if (newState === 3) {
-            return '🌀 LSP клиент продолжает запускаться...\nПохоже, он застрял в состоянии Starting.'
+            return '🌀 Server keeps starting...\nIt seems stuck in Starting state.'
         }
     }
 
-    // Все состояния известны, сюда попасть нельзя
-    throw new Error(`Непредусмотренный переход: ${oldState} → ${newState}`)
+    // All states are known — should never reach here
+    throw new Error(`Unexpected transition: ${oldState} → ${newState}`)
 }
 
 module.exports = {

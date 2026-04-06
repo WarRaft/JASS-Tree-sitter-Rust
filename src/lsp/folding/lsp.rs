@@ -1,17 +1,5 @@
-use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#foldingRangeOptions
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FoldingRangeOptions {}
-
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#foldingRangeParams
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct FoldingRangeParams {
-    pub text_document: TextDocumentIdentifier,
-}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -1,6 +1,4 @@
 {
-  "viewContainer.jassDebug.title": "JASS журнал налагодження",
-  "view.jassDebugSidebar.name": "Журнал налагодження",
   "command.importGraph.show": "Показати граф імпортів",
   "command.callGraph.show": "Показати граф викликів",
   "command.typeGraph.show": "Показати граф типів",
@@ -19,7 +17,6 @@
   "customEditor.w3e.displayName": "Редактор карти",
   "customEditor.slk.displayName": "Табличний редактор SLK",
   "command.slk.openTable": "Відкрити як таблицю",
-  "command.slk.openText": "Відкрити як текст",
-  "command.debug.showPanel": "Показати панель налагодження"
+  "command.slk.openText": "Відкрити як текст"
 }
 

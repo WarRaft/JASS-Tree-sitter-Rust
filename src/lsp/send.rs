@@ -20,14 +20,6 @@ pub async fn send<T: Serialize>(message: &T) {
 
 /// Send a `RequestCancelled` error response (code −32800) for a cancelled request.
 pub async fn send_cancelled(id: Option<CancelId>) {
-    crate::util::debug_log::send_debug_log(
-        "response",
-        crate::util::debug_log::DebugStatus::Cancelled,
-        &id,
-        None,
-        None,
-    )
-    .await;
 
     send(
         &serde_json::json!({

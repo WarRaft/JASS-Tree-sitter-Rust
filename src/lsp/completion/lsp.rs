@@ -3,13 +3,6 @@ use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#completionOptions
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CompletionOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_characters: Option<Vec<String>>,
-}
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#completionParams
 #[derive(Debug, Serialize, Deserialize)]

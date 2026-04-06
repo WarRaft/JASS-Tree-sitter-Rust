@@ -112,15 +112,7 @@ pub fn db() -> Option<&'static Database> {
     DB_STATE.as_ref().map(|s| &s.db)
 }
 
-/// `true` if data caches were purged on this startup due to a version
-/// mismatch.  `file_cache` and `scope` are empty; `import_graph` is
-/// intact.  Files will be lazily rescanned when their tree is first
-/// accessed (via `ensure_file_symbols` → parse from disk).
-pub fn was_purged() -> bool {
-    PURGED.load(Ordering::SeqCst)
-}
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn open_or_recreate(path: &PathBuf) -> Option<Database> {
     match Database::create(path) {

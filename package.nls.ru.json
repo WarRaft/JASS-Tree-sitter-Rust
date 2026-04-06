@@ -1,6 +1,4 @@
 {
-  "viewContainer.jassDebug.title": "JASS журнал отладки",
-  "view.jassDebugSidebar.name": "Журнал отладки",
   "command.importGraph.show": "Показать граф импортов",
   "command.callGraph.show": "Показать граф вызовов",
   "command.typeGraph.show": "Показать граф типов",
@@ -19,7 +17,6 @@
   "customEditor.w3e.displayName": "Редактор карты",
   "customEditor.slk.displayName": "Табличный редактор SLK",
   "command.slk.openTable": "Открыть как таблицу",
-  "command.slk.openText": "Открыть как текст",
-  "command.debug.showPanel": "Показать панель отладки"
+  "command.slk.openText": "Открыть как текст"
 }
 

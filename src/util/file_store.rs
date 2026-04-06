@@ -15,7 +15,6 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use dashmap::{DashMap, DashSet};
 use log::info;
@@ -78,7 +77,7 @@ pub static CANCEL_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(Dash
 
 /// ─── Per-URI request cancellation ────────────────────────────────────────────
 ///
-/// When `textDocument/didChange` arrives, ALL in-flight LSP request handlers for
+/// When `document/change` arrives, ALL in-flight request handlers for
 /// the same URI are stale — the client will discard their responses anyway.
 /// We keep a single `CancellationToken` per URI that request handlers poll;
 /// `cancel_uri_requests` replaces it with a fresh one, instantly cancelling
@@ -480,52 +479,3 @@ pub fn is_parse_in_flight(uri: &Url) -> bool {
 }
 
 
-/// Like [`wait_for_parse`], but also aborts early if `cancel` fires.
-///
-/// Returns `true` if the parse completed normally, `false` if the token
-/// was cancelled (meaning a new `didChange` arrived and this request is stale).
-pub async fn wait_for_parse_cancellable(
-    uri: &Url,
-    timeout: Duration,
-    cancel: &CancellationToken,
-) -> bool {
-    if cancel.is_cancelled() {
-        return false;
-    }
-
-    let mut rx = match PARSE_DONE_TX.get(uri) {
-        Some(tx) => tx.subscribe(),
-        None => return true, // no parse pending — proceed
-    };
-
-    let uri = uri.clone();
-    let cancel = cancel.clone();
-
-    let result = tokio::time::timeout(timeout, async {
-        loop {
-            if cancel.is_cancelled() {
-                return false;
-            }
-            let desired = match PARSE_DESIRED.get(&uri) {
-                Some(v) => *v,
-                None => return true,
-            };
-            if *rx.borrow() >= desired {
-                return true;
-            }
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return false,
-                res = rx.changed() => {
-                    if res.is_err() { return true; }
-                }
-            }
-        }
-    })
-    .await;
-
-    match result {
-        Ok(completed) => completed,
-        Err(_) => true, // timeout — proceed with what we have
-    }
-}

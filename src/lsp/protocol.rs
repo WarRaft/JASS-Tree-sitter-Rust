@@ -10,10 +10,7 @@ use crate::lsp::completion::lsp::CompletionParams;
 use crate::lsp::formatting::lsp::DocumentFormattingParams;
 use crate::lsp::highlight::lsp::{DefinitionParams, DocumentHighlightParams, ReferenceParams};
 use crate::lsp::hover::lsp::HoverParams;
-use crate::lsp::initialize::InitializeParams;
-use crate::lsp::initialized::InitializedParams;
 use crate::lsp::rename::lsp::{PrepareRenameParams, RenameFilesParams, RenameParams};
-use crate::lsp::set_trace::SetTraceParams;
 use crate::lsp::signature_help::lsp::SignatureHelpParams;
 use crate::lsp::text_document::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
@@ -81,35 +78,20 @@ pub enum MethodCall {
     #[serde(rename = "w3obj/render")]
     W3ObjRender(W3ObjRenderParams),
 
-    /// LSP
-    #[serde(rename = "initialize")]
-    Initialize(InitializeParams),
-
-    #[serde(rename = "shutdown")]
-    Shutdown(),
-
-    #[serde(rename = "exit")]
-    Exit(),
-
-    #[serde(rename = "initialized")]
-    Initialized(InitializedParams),
-
-    #[serde(rename = "$/setTrace")]
-    SetTrace(SetTraceParams),
 
     #[serde(rename = "$/cancelRequest")]
     Cancel(CancelParams),
 
-    #[serde(rename = "textDocument/didClose")]
+    #[serde(rename = "document/close")]
     DidClose(DidCloseTextDocumentParams),
 
-    #[serde(rename = "textDocument/didOpen")]
+    #[serde(rename = "document/open")]
     DidOpen(DidOpenTextDocumentParams),
 
-    #[serde(rename = "textDocument/didChange")]
+    #[serde(rename = "document/change")]
     DidChange(DidChangeTextDocumentParams),
 
-    #[serde(rename = "workspace/didChangeWatchedFiles")]
+    #[serde(rename = "files/changed")]
     DidChangeWatchedFiles(DidChangeWatchedFilesParams),
 
     // NOTE: SemanticFull, SemanticRange, Diagnostic, DocumentSymbol, Folding,
@@ -170,7 +152,7 @@ pub enum MethodCall {
 
     // DocumentColor removed — pushed via custom/parseResult
 
-    #[serde(rename = "textDocument/colorPresentation")]
+    #[serde(rename = "color/presentation")]
     ColorPresentation(ColorPresentationParams),
 
     #[serde(rename = "textDocument/codeAction")]
@@ -217,9 +199,6 @@ pub enum MethodCall {
     #[serde(rename = "slk/edit")]
     SlkEdit(SlkEditParams),
 
-    /// Debug log toggle
-    #[serde(rename = "custom/debugLogEnable")]
-    DebugLogEnable(DebugLogEnableParams),
 
     /// W3E game path
     #[serde(rename = "w3e/gamePath/set")]
@@ -248,9 +227,6 @@ pub enum MethodCall {
     #[serde(rename = "w3e/lookupFile")]
     W3eLookupFile(W3eLookupFileParams),
 
-    /// Debug init data request
-    #[serde(rename = "custom/debugInit")]
-    DebugInit(serde_json::Value),
 }
 
 /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
@@ -335,11 +311,6 @@ pub struct SlkEditParams {
     pub value: String,
 }
 
-/// Params for `custom/debugLogEnable` — toggle debug log streaming.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DebugLogEnableParams {
-    pub enabled: bool,
-}
 
 /// Params for `w3e/gamePath/set` — update the stored game installation path.
 #[derive(Debug, Serialize, Deserialize)]

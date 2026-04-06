@@ -1,78 +1,6 @@
-use crate::lsp::progress::ProgressToken;
-use crate::lsp::range::Range;
-use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
 use std::ops::Add;
-use strum::IntoEnumIterator;
 use strum_macros::{Display, EnumIter};
-
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokensParams
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SemanticTokensParams {
-    pub text_document: TextDocumentIdentifier,
-}
-
-/// // https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokens_rangeRequest
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SemanticTokensRangeParams {
-    pub text_document: TextDocumentIdentifier,
-    pub range: Range,
-    /// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#partialResultParams
-    pub partial_result_token: Option<ProgressToken>,
-}
-
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokens
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SemanticTokens {
-    pub data: Vec<usize>,
-}
-
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokensOptions
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SemanticTokensOptions {
-    pub legend: SemanticTokensLegend,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub range: Option<SemanticTokensRangeProviderCapability>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub full: Option<SemanticTokensFullOptions>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SemanticTokensRangeProviderCapability {
-    Simple(bool),
-    Options(SemanticTokensRangeOptions),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SemanticTokensRangeOptions {}
-
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum SemanticTokensFullOptions {
-    Simple(bool),
-    Options(SemanticTokensFullOptionsObject),
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SemanticTokensFullOptionsObject {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delta: Option<bool>,
-}
-
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#semanticTokensLegend
-/// https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide
-#[derive(Default, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SemanticTokensLegend {
-    pub token_types: Vec<String>,
-    pub token_modifiers: Vec<String>,
-}
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, EnumIter, Display, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
@@ -138,26 +66,5 @@ impl Add<Mod> for u32 {
 
     fn add(self, rhs: Mod) -> u32 {
         self | (1 << rhs as u32)
-    }
-}
-
-pub trait ToCamelVec {
-    fn get_vec() -> Vec<String>;
-}
-impl<T> ToCamelVec for T
-where
-    T: IntoEnumIterator + Display,
-{
-    fn get_vec() -> Vec<String> {
-        T::iter()
-            .map(|variant| {
-                let s = variant.to_string();
-                let mut chars = s.chars();
-                match chars.next() {
-                    Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
-                    None => String::new(),
-                }
-            })
-            .collect()
     }
 }

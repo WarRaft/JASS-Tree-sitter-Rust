@@ -1,5 +1,5 @@
 /**
- * Ответ от LSP метода 'doo/render'.
+ * Response from the server method 'doo/render'.
  *
  * @typedef {Object} DooRenderResult
  * @property {string} magic
@@ -13,7 +13,7 @@
  * @param {import('vscode').CustomDocument} document
  * @param {import('vscode').WebviewPanel} webviewPanel
  * @param {import('vscode').CancellationToken} _token
- * @param {import('vscode-languageclient').LanguageClient} client
+ * @param {import('../serverClient.js').ServerClient} client
  */
 async function resolveDooEditor(document, webviewPanel, _token, client) {
     /** @type {DooRenderResult} */

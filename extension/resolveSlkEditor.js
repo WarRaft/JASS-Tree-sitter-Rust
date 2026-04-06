@@ -128,7 +128,7 @@ async function writeSettings(document, settings) {
  * @param {import('vscode').TextDocument} document
  * @param {import('vscode').WebviewPanel} webviewPanel
  * @param {import('vscode').CancellationToken} _token
- * @param {import('vscode-languageclient').LanguageClient} client
+ * @param {import('./serverClient.js').ServerClient} client
  * @param {import('vscode').ExtensionContext} context
  */
 async function resolveSlkEditor(document, webviewPanel, _token, client, context) {
@@ -141,7 +141,7 @@ async function resolveSlkEditor(document, webviewPanel, _token, client, context)
     let suppressRefresh = false
 
     /**
-     * Fetch fresh data from LSP and return parsed schema + rows.
+     * Fetch fresh data from the server and return parsed schema + rows.
      * @returns {Promise<{schema: object[], rowData: object[], cols: number, rows: number, fname: string, headers: string[]}|null>}
      */
     async function fetchData() {

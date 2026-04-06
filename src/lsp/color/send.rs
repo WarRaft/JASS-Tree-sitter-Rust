@@ -1,31 +1,9 @@
-//! Handlers for `textDocument/documentColor` and `textDocument/colorPresentation`.
+//! Handlers for `color/presentation`.
 
 use crate::lsp::cancel::CancelId;
 use crate::lsp::color::lsp::*;
 use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::send::send;
-use crate::util::file_store::FILE_STORE;
-
-pub async fn document_color_send(
-    id: Option<CancelId>,
-    params: &DocumentColorParams,
-) {
-    let uri = &params.text_document.uri;
-    let colors = FILE_STORE
-        .get(uri)
-        .map(|snap| snap.value().colors.clone())
-        .unwrap_or_default();
-
-    send(
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(&colors),
-            error: None,
-        },
-    )
-    .await;
-}
 
 pub async fn color_presentation_send(
     id: Option<CancelId>,

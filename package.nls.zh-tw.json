@@ -1,6 +1,4 @@
 {
-  "viewContainer.jassDebug.title": "JASS 除錯日誌",
-  "view.jassDebugSidebar.name": "除錯日誌",
   "command.importGraph.show": "顯示匯入圖",
   "command.callGraph.show": "顯示呼叫圖",
   "command.typeGraph.show": "顯示類型圖",
@@ -19,7 +17,6 @@
   "customEditor.w3e.displayName": "地圖編輯器",
   "customEditor.slk.displayName": "SLK 表格編輯器",
   "command.slk.openTable": "以表格開啟",
-  "command.slk.openText": "以文字開啟",
-  "command.debug.showPanel": "顯示除錯面板"
+  "command.slk.openText": "以文字開啟"
 }
 

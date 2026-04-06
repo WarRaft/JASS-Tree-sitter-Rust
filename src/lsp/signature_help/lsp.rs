@@ -59,11 +59,3 @@ pub struct ParameterInformation {
     pub documentation: Option<MarkupContent>,
 }
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#signatureHelpOptions
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SignatureHelpOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub trigger_characters: Option<Vec<String>>,
-}
-

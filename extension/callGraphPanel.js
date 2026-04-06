@@ -27,7 +27,7 @@ const path = require('path')
 let panel
 
 /**
- * @param {import('vscode-languageclient').LanguageClient} client
+ * @param {import('./serverClient.js').ServerClient} client
  * @param {import('vscode').Uri} extensionUri
  * @param {import('vscode').ExtensionContext} context
  * @param {string} [fileUri]

@@ -1,17 +1,112 @@
 # Migrating custom methods from vscode-languageclient to HTTP
 
-> **Status:** Planned
+> **Status:** In progress — Phase 0 (LSP naming cleanup + initialization removal) complete
 >
 > Dependencies: [`binary-protocol.md`](./binary-protocol.md) (Columnar Binary Protocol)
 
+## Completed: Phase 0 — LSP naming cleanup
+
+The extension no longer uses `vscode-languageclient`. Communication happens over
+a custom WebSocket transport (`ServerClient`). This phase removed all remaining
+LSP naming conventions from the wire protocol and extension code.
+
+### Method renames (wire protocol)
+
+| Old (LSP convention)                  | New (custom)           | Direction        |
+|---------------------------------------|------------------------|------------------|
+| `textDocument/didOpen`                | `document/open`        | client → server  |
+| `textDocument/didChange`              | `document/change`      | client → server  |
+| `textDocument/didClose`               | `document/close`       | client → server  |
+| `textDocument/colorPresentation`      | `color/presentation`   | client → server  |
+| `workspace/didChangeWatchedFiles`     | `files/changed`        | client → server  |
+| `client/registerCapability`           | `watchers/register`    | server → client  |
+
+### Removed dead code
+
+| Item                                  | File              | Reason |
+|---------------------------------------|-------------------|--------|
+| `window/logMessage` handler           | `extension.js`    | Server never sends this notification |
+
+### Comment cleanup
+
+All references to "LSP", "vscode-languageclient", and LSP-style method names
+removed from `extension.js` comments. Corresponding Rust comments in `main.rs`,
+`file_store.rs`, `color/lsp.rs`, `color/send.rs` also updated.
+
+### Files changed
+
+- `extension/extension.js` — method renames, dead handler removal, comment cleanup
+- `src/lsp/protocol.rs` — `#[serde(rename)]` attributes updated
+- `src/main.rs` — `method_name()` function, registration send block, comments
+- `src/util/file_store.rs` — comment update
+- `src/lsp/color/lsp.rs` — comment update
+- `src/lsp/color/send.rs` — comment update
+
+## Completed: Phase 0b — LSP initialization removal
+
+The LSP initialization handshake (`initialize` → `initialized` → `shutdown` →
+`exit`) was dead code since the extension switched to a custom WebSocket
+transport. The client (`ServerClient`) never sent these messages — it connects
+via WebSocket and immediately starts sending `document/open` etc.
+
+### Removed from server
+
+| Item | File | Reason |
+|------|------|--------|
+| `initialize.rs` module | `src/lsp/initialize.rs` | Dead code — `InitializeParams`, `InitializeResult`, `ServerCapabilities` structs |
+| `initialized.rs` module | `src/lsp/initialized.rs` | Dead code — `InitializedParams` struct |
+| `set_trace.rs` module | `src/lsp/set_trace.rs` | Dead code — `SetTraceParams` struct |
+| `MethodCall::Initialize` | `src/lsp/protocol.rs` | Never received from client |
+| `MethodCall::Initialized` | `src/lsp/protocol.rs` | Never received from client |
+| `MethodCall::Shutdown` | `src/lsp/protocol.rs` | Never received from client |
+| `MethodCall::Exit` | `src/lsp/protocol.rs` | Never received from client |
+| `MethodCall::SetTrace` | `src/lsp/protocol.rs` | Never received from client |
+| Initialize handler | `src/main.rs` | Built `InitializeResult` with `ServerCapabilities`, sent response — dead code |
+| Initialized handler | `src/main.rs` | Cache loading, file watcher registration, `binaryServerReady` notification — all dead code |
+| Shutdown/Exit handler | `src/main.rs` | Sent empty response and broke loop — dead code (shutdown via stdin close) |
+| SetTrace handler | `src/main.rs` | No-op handler — dead code |
+| `store_init_request()` | `src/util/debug_log.rs` | Stored raw initialize request for debug panel — no longer sent |
+| `store_init_response()` | `src/util/debug_log.rs` | Stored initialize response for debug panel — no longer generated |
+| `INIT_REQUEST`, `INIT_RESPONSE` statics | `src/util/debug_log.rs` | `OnceLock` statics for debug panel — removed |
+
+### What was in the `Initialized` handler (all dead code)
+
+The `Initialized` handler contained significant startup logic that was never
+executed since the WebSocket migration:
+
+1. **`custom/binaryServerReady` notification** — no extension handler exists
+   (extension reads port/token from stdout at startup)
+2. **Cache database init** — `cache_db::was_purged()`, scope resolver loading
+3. **File cache loading** — `file_cache::load_all()`, snapshot reconstruction
+4. **GC orphaned graph nodes** — `IMPORT_GRAPH.gc_orphans()`, `SCOPE_RESOLVER.gc()`
+5. **Stale file re-parsing** — progress notifications, `open_by_uri()` for each stale file
+6. **File watcher registration** — `watchers/register` request for `*.j`, `*.ai`, `*.as`
+
+Items 2–6 may need to be re-implemented as startup logic (before the message
+loop) or triggered lazily. Currently the server works without them.
+
+### Files changed
+
+- `src/lsp/initialize.rs` — **deleted**
+- `src/lsp/initialized.rs` — **deleted**
+- `src/lsp/set_trace.rs` — **deleted**
+- `src/lsp/mod.rs` — removed module declarations
+- `src/lsp/protocol.rs` — removed 5 enum variants + imports
+- `src/main.rs` — removed handlers, imports, `method_name()` arms
+- `src/util/debug_log.rs` — removed init storage, simplified `get_init_data()`
+
 ## Problem
 
-The extension uses `vscode-languageclient` (`LanguageClient`) as the sole
-transport for **everything** — standard LSP language features and completely
+The extension uses a custom `ServerClient` (WebSocket transport) for **everything** —
+language features and completely
 unrelated binary-format tasks: BLP textures, MDX models, SLK catalogs,
 MPQ archives, map editor, build system, graph panels, debug panel.
 
-### What vscode-languageclient does automatically
+> **Note:** The transport has already been migrated from `vscode-languageclient`
+> (stdin/stdout) to a custom WebSocket client. The issues below describe the
+> remaining architectural problems that the HTTP migration will solve.
+
+### What the current architecture does
 
 `LanguageClient` is a JSON-RPC client over `stdin/stdout`. It implements the
 [Language Server Protocol](https://microsoft.github.io/language-server-protocol/)
@@ -63,9 +158,9 @@ All custom methods are crammed into one `enum MethodCall` alongside standard
 LSP methods. Currently **55 variants**, each with its own param struct,
 deserialized via `#[serde(tag = "method", content = "params")]`.
 
-**Standard LSP variants (should stay):** 32
+**Standard LSP variants (should stay):** 27
 ```
-Initialize, Shutdown, Exit, Initialized, SetTrace, Cancel,
+Cancel,
 DidClose, DidOpen, DidChange, DidChangeWatchedFiles,
 SemanticFull, SemanticRange, Diagnostic, DocumentSymbol, Folding,
 Completion, Hover, DocumentHighlight, Definition, References,
@@ -171,8 +266,8 @@ A parallel axum HTTP server is already running. Some endpoints exist:
 .route("/blp/render",           get(blp_render_handler))
 ```
 
-Server notifies the client via `custom/binaryServerReady` notification
-with `{port, token}`. The webview can `fetch()` directly.
+The server prints `{port, token}` JSON to stdout on startup.
+The extension reads it before connecting via WebSocket.
 
 **But**: most code still falls back to LSP. Example from `mapEditor/index.js`:
 ```js
@@ -261,17 +356,16 @@ The goal is to remove all LSP fallbacks.
 
 ## Target architecture
 
-### What stays in LSP
+### What stays on WebSocket
 
-Only standard Language Server Protocol methods:
+Core language features and document sync (custom method names):
 
 | Category | Methods |
 |----------|---------|
-| Lifecycle | `initialize`, `initialized`, `shutdown`, `exit` |
-| Document sync | `didOpen`, `didChange`, `didClose`, `didChangeWatchedFiles` |
-| Language features | `semanticTokens/*`, `diagnostic`, `completion`, `hover`, `definition`, `references`, `documentSymbol`, `foldingRange`, `formatting`, `rename`, `codeAction`, `codeLens`, `signatureHelp`, `documentHighlight`, `documentLink`, `documentColor`, `colorPresentation`, `inlayHint`, `callHierarchy/*`, `typeHierarchy/*` |
-| Custom notifications | `custom/publishInlayHints`, `custom/debugLog`, `custom/binaryServerReady` |
-| Internal | `$/setTrace`, `$/cancelRequest` |
+| Document sync | `document/open`, `document/change`, `document/close`, `files/changed`, `watchers/register` |
+| Language features | `textDocument/completion`, `textDocument/hover`, `textDocument/definition`, `textDocument/references`, `textDocument/formatting`, `textDocument/rename`, `textDocument/prepareRename`, `textDocument/codeAction`, `textDocument/codeLens`, `textDocument/signatureHelp`, `textDocument/documentHighlight`, `textDocument/prepareCallHierarchy`, `textDocument/prepareTypeHierarchy`, `color/presentation`, `workspace/willRenameFiles`, `callHierarchy/*`, `typeHierarchy/*` |
+| Custom notifications | `custom/parseResult`, `custom/debugLog` |
+| Internal | `$/cancelRequest` |
 
 ### What moves to HTTP
 
@@ -326,7 +420,7 @@ Only standard Language Server Protocol methods:
 5. **Portability.** Same HTTP endpoints work in a standalone browser
    (WASM + local file API or remote server). LSP ties us to VS Code only.
 
-6. **Simpler server.** `MethodCall` enum shrinks to ~32 standard LSP variants.
+6. **Simpler server.** `MethodCall` enum shrinks to ~27 language-feature variants.
    Custom requests become separate axum handlers with proper routing,
    middleware, typed parameters, and error handling.
 
@@ -413,17 +507,16 @@ DebugLogEnable, DebugInit
 
 After all custom methods moved to HTTP:
 
-1. **`protocol.rs`**: `MethodCall` contains only standard LSP variants (~32).
+1. **`protocol.rs`**: `MethodCall` contains only language-feature variants (~27).
    All custom param structs (`DooRenderParams`, `MpqArchiveParams`,
    `SlkEditParams`, etc.) move to their respective `src/http/*.rs` modules.
 
 2. **`main.rs`**: the dispatch match shrinks from ~1860 lines to ~800.
-   Only standard LSP methods + notifications remain. Readable and maintainable.
+   Only language features + document sync remain. Readable and maintainable.
 
-3. **`extension.js`**: `vscode-languageclient` dependency stays — it's
-   needed for language features. But `client.sendRequest()` is only used
-   for standard LSP methods (which the library handles automatically).
-   All custom `sendRequest()` / `sendNotification()` calls are gone.
+3. **`extension.js`**: `ServerClient` is only used for language features
+   and document sync. All custom `sendRequest()` / `sendNotification()`
+   calls for rendering, build, graphs etc. are replaced with `fetch()`.
 
 4. **HTTP server (`server.rs`)**: all routes in one place. Auth via token
    query param (already implemented). CORS already configured.
@@ -477,15 +570,16 @@ module.exports = { setBinaryServer, httpGet, httpPost }
 
 - [`binary-protocol.md`](./binary-protocol.md) — binary transport format (WOBJ)
 - [`terrain.md`](./terrain.md) — terrain data format
-- [`src/lsp/protocol.rs`](../../src/lsp/protocol.rs) — current `MethodCall` enum (55 variants)
-- [`src/main.rs`](../../src/main.rs) — current dispatch loop (1860 lines)
-- [`src/http/server.rs`](../../src/http/server.rs) — current HTTP server (9 routes)
-- [`extension/extension.js`](../../extension/extension.js) — LSP client setup
+- [`src/lsp/protocol.rs`](../../src/lsp/protocol.rs) — `MethodCall` enum (wire protocol)
+- [`src/main.rs`](../../src/main.rs) — dispatch loop
+- [`src/http/server.rs`](../../src/http/server.rs) — HTTP server
+- [`extension/extension.js`](../../extension/extension.js) — WebSocket client setup
+- [`extension/serverClient.js`](../../extension/serverClient.js) — custom WebSocket transport
 - [`extension/mapEditor/index.js`](../../extension/mapEditor/index.js) — map editor (partially on HTTP)
-- [`extension/mpqFileSystemProvider.js`](../../extension/mpqFileSystemProvider.js) — MPQ filesystem (all LSP)
-- [`extension/mapEditor/resolveBlpEditor.js`](../../extension/mapEditor/resolveBlpEditor.js) — BLP preview (all LSP)
-- [`extension/resolveSlkEditor.js`](../../extension/resolveSlkEditor.js) — SLK editor (all LSP)
-- [`extension/importGraphPanel.js`](../../extension/importGraphPanel.js) — import graph (all LSP)
-- [`extension/callGraphPanel.js`](../../extension/callGraphPanel.js) — call graph (all LSP)
-- [`extension/typeGraphPanel.js`](../../extension/typeGraphPanel.js) — type graph (all LSP)
-- [`extension/debugSidebarProvider.js`](../../extension/debugSidebarProvider.js) — debug panel (all LSP)
+- [`extension/mpqFileSystemProvider.js`](../../extension/mpqFileSystemProvider.js) — MPQ filesystem (WebSocket)
+- [`extension/mapEditor/resolveBlpEditor.js`](../../extension/mapEditor/resolveBlpEditor.js) — BLP preview (WebSocket)
+- [`extension/resolveSlkEditor.js`](../../extension/resolveSlkEditor.js) — SLK editor (WebSocket)
+- [`extension/importGraphPanel.js`](../../extension/importGraphPanel.js) — import graph (WebSocket)
+- [`extension/callGraphPanel.js`](../../extension/callGraphPanel.js) — call graph (WebSocket)
+- [`extension/typeGraphPanel.js`](../../extension/typeGraphPanel.js) — type graph (WebSocket)
+- [`extension/debugSidebarProvider.js`](../../extension/debugSidebarProvider.js) — debug panel (WebSocket)
