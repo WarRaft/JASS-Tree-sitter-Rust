@@ -4,29 +4,29 @@
 // Assembles sub-modules loaded via separate <script> tags into window.W3E.
 
 window.W3E = (function () {
-    var U = window._W3E_UTILS;
-    var S = window._W3E_STATE;
-    var TILESET = window._W3E_TILESET;
-    var DOOD = window._W3E_DOODADS;
-    var DEST = window._W3E_DESTRUCTABLES;
-    var UNITS = window._W3E_UNITS;
-    var PLACED = window._W3E_PLACED;
-    var GP = window._W3E_GAME_PATH;
+    let U = window._W3E_UTILS;
+    let S = window._W3E_STATE;
+    let TILESET = window._W3E_TILESET;
+    let DOOD = window._W3E_DOODADS;
+    let DEST = window._W3E_DESTRUCTABLES;
+    let UNITS = window._W3E_UNITS;
+    let PLACED = window._W3E_PLACED;
+    let GP = window._W3E_GAME_PATH;
 
     // ── Status / snapshot listeners ──────────────────────────────
-    var _statusListeners = [];
-    var _snapshotListeners = [];
-    var _groundTileCodes = [];
-    var _cliffTileCodes = [];
+    let _statusListeners = [];
+    let _snapshotListeners = [];
+    let _groundTileCodes = [];
+    let _cliffTileCodes = [];
     // Per-map texSource for cliff types (resolved with tileset MPQ).
     // Snapshot data is tileset-agnostic, so we preserve these.
-    var _cliffTexSourceMap = {};
+    let _cliffTexSourceMap = {};
 
     function onStatusChanged(fn) { _statusListeners.push(fn); }
     function onSnapshotChanged(fn) { _snapshotListeners.push(fn); }
 
     function _applyGamePathChanged(status, snapshot) {
-        for (var i = 0; i < _statusListeners.length; i++) {
+        for (let i = 0; i < _statusListeners.length; i++) {
             try { _statusListeners[i](status); } catch (_) {}
         }
         if (!snapshot) return;
@@ -47,13 +47,13 @@ window.W3E = (function () {
         UNITS.rebuild(snapshot.unitsSlk);
         PLACED.updatePlacedNames();
 
-        for (var j = 0; j < _snapshotListeners.length; j++) {
+        for (let j = 0; j < _snapshotListeners.length; j++) {
             try { _snapshotListeners[j](snapshot); } catch (_) {}
         }
     }
 
     // ── Orbit controls — delegate to _W3E_ORBIT ────────────────
-    var makeOrbitControls = window._W3E_ORBIT.makeOrbitControls;
+    let makeOrbitControls = window._W3E_ORBIT.makeOrbitControls;
 
     // ── Menu sync ────────────────────────────────────────────────
     function syncMenuActive() {
@@ -119,7 +119,7 @@ window.W3E = (function () {
 
         // ── Open BLP from tile-item click ────────────────────────
         document.addEventListener('open-blp', function (e) {
-            var p = e.detail && e.detail.path;
+            let p = e.detail && e.detail.path;
             if (p && vscode) vscode.postMessage({command: 'openBlp', path: p});
         });
 
@@ -153,7 +153,7 @@ window.W3E = (function () {
 
         onStatusChanged(function (status) {
             if (!status) return;
-            var gpBody = document.getElementById('gpBody');
+            let gpBody = document.getElementById('gpBody');
             if (!gpBody) return;
             gpBody.innerHTML = GP.renderBody(status);
             bindGpButtons();
@@ -161,8 +161,8 @@ window.W3E = (function () {
 
         // ── Canvas list lifecycle ────────────────────────────────
         document.addEventListener('float-toggled', function (evt) {
-            var id = evt.detail && evt.detail.id;
-            var win = id ? document.getElementById(id) : null;
+            let id = evt.detail && evt.detail.id;
+            let win = id ? document.getElementById(id) : null;
             if (!win) return;
             if (id === 'doodadsSlkWindow') {
                 if (win.open) { DOOD.ensureCanvasList(); DOOD.filterAndRender(false); }
@@ -186,11 +186,11 @@ window.W3E = (function () {
         });
 
         // ── Create canvas lists for already-open windows ─────────
-        var _unitDooWin = document.getElementById('unitDooWindow');
+        let _unitDooWin = document.getElementById('unitDooWindow');
         if (_unitDooWin && _unitDooWin.open) PLACED.ensureUnitDooCanvasList();
-        var _doodadDooWin = document.getElementById('doodadDooWindow');
+        let _doodadDooWin = document.getElementById('doodadDooWindow');
         if (_doodadDooWin && _doodadDooWin.open) PLACED.ensureDoodadDooCanvasList();
-        var _destDooWin = document.getElementById('destructableDooWindow');
+        let _destDooWin = document.getElementById('destructableDooWindow');
         if (_destDooWin && _destDooWin.open) PLACED.ensureDestDooCanvasList();
 
         // ── Model viewer ─────────────────────────────────────────
@@ -229,10 +229,10 @@ window.W3E = (function () {
                     if (empty) empty.style.display = 'none';
                     win.setAttribute('title-text', '\ud83d\uddbc ' + (msg.name || 'BLP'));
 
-                    var html = '';
-                    var mipmaps = msg.mipmaps || [];
-                    for (var i = 0; i < mipmaps.length; i++) {
-                        var mip = mipmaps[i];
+                    let html = '';
+                    let mipmaps = msg.mipmaps || [];
+                    for (let i = 0; i < mipmaps.length; i++) {
+                        let mip = mipmaps[i];
                         html += '<div class="blp-mipmap">';
                         html += '<div class="blp-mip-meta"><span class="blp-mip-size">' + mip.width + ' \u00d7 ' + mip.height + '</span><span>#' + (i + 1) + '</span></div>';
                         if (mip.image_data_url) {

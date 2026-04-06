@@ -22,14 +22,14 @@ function _clRoundRect(ctx, x, y, w, h, r) {
 function _clTruncText(ctx, text, x, y, maxW) {
     if (!text) return;
     if (ctx.measureText(text).width <= maxW) { ctx.fillText(text, x, y); return; }
-    var ew = ctx.measureText('\u2026').width;
-    var t = text;
+    let ew = ctx.measureText('\u2026').width;
+    let t = text;
     while (t.length > 0 && ctx.measureText(t).width + ew > maxW) t = t.slice(0, -1);
     ctx.fillText(t + '\u2026', x, y);
 }
 
 function _clDrawBadge(ctx, ch, x, rowY, rowH, c, isAll) {
-    var bw = 16, bh = 16, by = rowY + (rowH - bh) / 2;
+    let bw = 16, bh = 16, by = rowY + (rowH - bh) / 2;
     ctx.fillStyle = isAll ? c.badgeAllBg : c.badgeBg;
     _clRoundRect(ctx, x, by, bw, bh, 3);
     ctx.fill();
@@ -59,8 +59,8 @@ class CanvasList {
         this._highlight = -1;
         this._highlightTimeout = 0;
 
-        var cs = getComputedStyle(document.documentElement);
-        var cv = function (n, fb) { return cs.getPropertyValue(n).trim() || fb; };
+        let cs = getComputedStyle(document.documentElement);
+        let cv = function (n, fb) { return cs.getPropertyValue(n).trim() || fb; };
         this.C = {
             bg: cv('--vscode-editor-background', '#1e1e1e'),
             fg: cv('--vscode-editor-foreground', '#ccc'),
@@ -83,7 +83,7 @@ class CanvasList {
         container.innerHTML = '';
         container.appendChild(this._canvas);
 
-        var self = this;
+        let self = this;
         this._handlers = {
             wheel: function (e) { self._onWheel(e); },
             move: function (e) { self._onMove(e); },
@@ -113,9 +113,9 @@ class CanvasList {
     }
 
     _resize() {
-        var dpr = window.devicePixelRatio || 1;
-        var w = this._container.clientWidth;
-        var h = this._container.clientHeight;
+        let dpr = window.devicePixelRatio || 1;
+        let w = this._container.clientWidth;
+        let h = this._container.clientHeight;
         if (w <= 0 || h <= 0) return;
         this._canvas.width = w * dpr;
         this._canvas.height = h * dpr;
@@ -127,37 +127,37 @@ class CanvasList {
     }
 
     _clamp() {
-        var max = Math.max(0, this._items.length * this._rh - this._h);
+        let max = Math.max(0, this._items.length * this._rh - this._h);
         if (this._scrollY > max) this._scrollY = max;
         if (this._scrollY < 0) this._scrollY = 0;
     }
 
     _schedule() {
         if (this._raf) return;
-        var self = this;
+        let self = this;
         this._raf = requestAnimationFrame(function () { self._raf = 0; self._draw(); });
     }
 
     _scrollbarMetrics() {
-        var total = this._items.length * this._rh;
+        let total = this._items.length * this._rh;
         if (total <= this._h) return null;
-        var thumbH = Math.max(20, this._h * this._h / total);
-        var thumbY = (this._scrollY / total) * this._h;
+        let thumbH = Math.max(20, this._h * this._h / total);
+        let thumbY = (this._scrollY / total) * this._h;
         return {thumbH: thumbH, thumbY: thumbY, trackX: this._w - 10, trackW: 8};
     }
 
     _draw() {
         if (this._disposed) return;
-        var ctx = this._ctx, w = this._w, h = this._h;
+        let ctx = this._ctx, w = this._w, h = this._h;
         if (!w || !h) return;
         ctx.clearRect(0, 0, w, h);
 
-        var rh = this._rh;
-        var first = Math.floor(this._scrollY / rh);
-        var last = Math.min(this._items.length - 1, Math.ceil((this._scrollY + h) / rh));
+        let rh = this._rh;
+        let first = Math.floor(this._scrollY / rh);
+        let last = Math.min(this._items.length - 1, Math.ceil((this._scrollY + h) / rh));
 
-        for (var i = first; i <= last; i++) {
-            var y = i * rh - this._scrollY;
+        for (let i = first; i <= last; i++) {
+            let y = i * rh - this._scrollY;
             if (i === this._highlight) {
                 ctx.fillStyle = 'rgba(55, 148, 255, 0.2)';
                 ctx.fillRect(0, y, w, rh);
@@ -170,7 +170,7 @@ class CanvasList {
             this._renderRow(ctx, this._items[i], 6, y, w - 20, rh, this.C);
         }
 
-        var sb = this._scrollbarMetrics();
+        let sb = this._scrollbarMetrics();
         if (sb) {
             ctx.fillStyle = 'rgba(255,255,255,0.15)';
             _clRoundRect(ctx, sb.trackX, sb.thumbY, sb.trackW, sb.thumbH, 3);
@@ -179,9 +179,9 @@ class CanvasList {
     }
 
     _idx(clientY) {
-        var rect = this._canvas.getBoundingClientRect();
-        var y = clientY - rect.top;
-        var i = Math.floor((y + this._scrollY) / this._rh);
+        let rect = this._canvas.getBoundingClientRect();
+        let y = clientY - rect.top;
+        let i = Math.floor((y + this._scrollY) / this._rh);
         return i >= 0 && i < this._items.length ? i : -1;
     }
 
@@ -194,7 +194,7 @@ class CanvasList {
     }
 
     _onMove(e) {
-        var i = this._idx(e.clientY);
+        let i = this._idx(e.clientY);
         if (i !== this._hover) { this._hover = i; this._schedule(); }
     }
 
@@ -204,16 +204,16 @@ class CanvasList {
 
     _onClickEvt(e) {
         if (this._scrollDragging) return;
-        var i = this._idx(e.clientY);
+        let i = this._idx(e.clientY);
         if (i >= 0 && this._onClick) this._onClick(this._items[i], i);
     }
 
     _onPointerDown(e) {
-        var sb = this._scrollbarMetrics();
+        let sb = this._scrollbarMetrics();
         if (!sb) return;
-        var rect = this._canvas.getBoundingClientRect();
-        var mx = e.clientX - rect.left;
-        var my = e.clientY - rect.top;
+        let rect = this._canvas.getBoundingClientRect();
+        let mx = e.clientX - rect.left;
+        let my = e.clientY - rect.top;
         if (mx >= sb.trackX && mx <= sb.trackX + sb.trackW && my >= sb.thumbY && my <= sb.thumbY + sb.thumbH) {
             this._scrollDragging = true;
             this._scrollDragStartY = my;
@@ -225,10 +225,10 @@ class CanvasList {
 
     _onPointerMove(e) {
         if (!this._scrollDragging) return;
-        var rect = this._canvas.getBoundingClientRect();
-        var my = e.clientY - rect.top;
-        var dy = my - this._scrollDragStartY;
-        var total = this._items.length * this._rh;
+        let rect = this._canvas.getBoundingClientRect();
+        let my = e.clientY - rect.top;
+        let dy = my - this._scrollDragStartY;
+        let total = this._items.length * this._rh;
         this._scrollY = this._scrollDragStartScrollY + dy * total / this._h;
         this._clamp();
         this._schedule();
@@ -243,14 +243,14 @@ class CanvasList {
 
     scrollToIndex(idx) {
         if (idx < 0 || idx >= this._items.length) return;
-        var y = idx * this._rh;
+        let y = idx * this._rh;
         if (y < this._scrollY || y + this._rh > this._scrollY + this._h) {
             this._scrollY = Math.max(0, y - this._h / 2 + this._rh / 2);
             this._clamp();
         }
         this._highlight = idx;
         this._schedule();
-        var self = this;
+        let self = this;
         clearTimeout(this._highlightTimeout);
         this._highlightTimeout = setTimeout(function () {
             self._highlight = -1;

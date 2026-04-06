@@ -28,7 +28,7 @@ window._W3E_UTILS = (function () {
     }
 
     // ── WESTRING resolution ─────────────────────────────────────
-    var _westringsMap = {};
+    let _westringsMap = {};
 
     function setWestrings(map) {
         _westringsMap = (map && typeof map === 'object') ? map : {};
@@ -36,10 +36,10 @@ window._W3E_UTILS = (function () {
 
     function resolveWestring(val) {
         if (!val || typeof val !== 'string') return val || '';
-        var current = val;
-        for (var i = 0; i < 3; i++) {
+        let current = val;
+        for (let i = 0; i < 3; i++) {
             if (!current.startsWith('WESTRING_')) break;
-            var resolved = _westringsMap[current];
+            let resolved = _westringsMap[current];
             if (resolved === undefined) break;
             current = resolved;
         }
@@ -56,7 +56,7 @@ window._W3E_UTILS = (function () {
     function gsHtml(gs) {
         if (!gs) return '';
         if (typeof gs === 'object' && gs.value !== undefined) {
-            var v = esc(gs.value);
+            let v = esc(gs.value);
             if (gs.original && gs.original !== gs.value) {
                 return '<a href="#" class="gs-resolved" data-gs-original="' + esc(gs.original) + '" data-gs-source="' + esc(gs.source || '') + '">' + v + '</a>';
             }
@@ -66,9 +66,9 @@ window._W3E_UTILS = (function () {
     }
 
     function _showGameStringInfo(value, original, source) {
-        var win = document.getElementById('gameStringInfoWindow');
+        let win = document.getElementById('gameStringInfoWindow');
         if (!win) return;
-        var body = win.querySelector('#gsInfoBody');
+        let body = win.querySelector('#gsInfoBody');
         if (!body) return;
         body.innerHTML =
             '<table class="info">' +
@@ -81,12 +81,12 @@ window._W3E_UTILS = (function () {
     }
 
     document.addEventListener('click', function (e) {
-        var link = e.target.closest('.gs-resolved');
+        let link = e.target.closest('.gs-resolved');
         if (!link) return;
         e.preventDefault();
-        var original = link.getAttribute('data-gs-original') || '';
-        var source = link.getAttribute('data-gs-source') || '';
-        var value = link.textContent || '';
+        let original = link.getAttribute('data-gs-original') || '';
+        let source = link.getAttribute('data-gs-source') || '';
+        let value = link.textContent || '';
         _showGameStringInfo(value, original, source);
     });
 

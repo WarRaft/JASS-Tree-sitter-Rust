@@ -24,73 +24,73 @@
 
 window._W3E_ORBIT = (function () {
 
-    var DEG15 = Math.PI / 12;
-    var ROTATE_SPEED = 0.005;
-    var PAN_SPEED = 1.0;
-    var ANIM_DURATION = 200;
+    let DEG15 = Math.PI / 12;
+    let ROTATE_SPEED = 0.005;
+    let PAN_SPEED = 1.0;
+    let ANIM_DURATION = 200;
 
     function makeOrbitControls(cam, domEl, maxD, opts) {
-        var skipGuards = opts && opts.skipGuards;
-        var zUp = !!(opts && opts.zUp);
+        let skipGuards = opts && opts.skipGuards;
+        let zUp = !!(opts && opts.zUp);
 
-        var ZOOM_LINEAR = maxD * 0.05;     // fixed zoom step per scroll notch
-        var PAN_FIXED   = maxD / 1000;     // fixed pan factor (world units per pixel)
+        let ZOOM_LINEAR = maxD * 0.05;     // fixed zoom step per scroll notch
+        let PAN_FIXED   = maxD / 1000;     // fixed pan factor (world units per pixel)
 
-        var target   = new THREE.Vector3();
-        var panOff   = new THREE.Vector3();
-        var zoomDelta = 0;
-        var hDelta = 0, vDelta = 0;
+        let target   = new THREE.Vector3();
+        let panOff   = new THREE.Vector3();
+        let zoomDelta = 0;
+        let hDelta = 0, vDelta = 0;
 
-        var orbiting = false, panning = false, zooming = false;
-        var lmbDown = false;
-        var px = 0, py = 0;
+        let orbiting = false, panning = false, zooming = false;
+        let lmbDown = false;
+        let px = 0, py = 0;
 
         // ── Quaternion orbit state ──────────────────────────────
-        var _worldUp = zUp ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
-        var _orbit   = new THREE.Quaternion();
-        var _radius  = maxD;
-        var _needsInit = true;
-        var _tmpV = new THREE.Vector3();
-        var _tmpQ = new THREE.Quaternion();
+        let _worldUp = zUp ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+        let _orbit   = new THREE.Quaternion();
+        let _radius  = maxD;
+        let _needsInit = true;
+        let _tmpV = new THREE.Vector3();
+        let _tmpQ = new THREE.Quaternion();
 
         function _buildOrbitQuat(offsetDir) {
-            var z = offsetDir.clone().normalize();
-            var x = new THREE.Vector3().crossVectors(_worldUp, z);
+            let z = offsetDir.clone().normalize();
+            let x = new THREE.Vector3().crossVectors(_worldUp, z);
             if (x.lengthSq() < 1e-6) {
-                var fb = Math.abs(_worldUp.z) > 0.9
+                let fb = Math.abs(_worldUp.z) > 0.9
                     ? new THREE.Vector3(0, 1, 0)
                     : new THREE.Vector3(0, 0, 1);
                 x.crossVectors(fb, z);
             }
             x.normalize();
-            var y = new THREE.Vector3().crossVectors(z, x);
-            var m = new THREE.Matrix4().makeBasis(x, y, z);
+            let y = new THREE.Vector3().crossVectors(z, x);
+            let m = new THREE.Matrix4().makeBasis(x, y, z);
             return new THREE.Quaternion().setFromRotationMatrix(m);
         }
 
         function _initFromCamera() {
-            var activeCam = getActiveCam();
+            let activeCam = getActiveCam();
             _radius = activeCam.position.distanceTo(target) || maxD;
-            var dir = activeCam.position.clone().sub(target);
+            let dir = activeCam.position.clone().sub(target);
             _orbit.copy(_buildOrbitQuat(dir));
             _needsInit = false;
         }
 
         // ── Smooth animation ────────────────────────────────────
-        var animating = false;
-        var animStart = 0;
-        var _animFrom = new THREE.Quaternion();
-        var _animTo   = new THREE.Quaternion();
+        let animating = false;
+        let animStart = 0;
+        let _animFrom = new THREE.Quaternion();
+        let _animTo   = new THREE.Quaternion();
 
         // ── Perspective / Orthographic toggle ───────────────────
-        var isPerspective = true;
-        var orthoCam = null;
+        let isPerspective = true;
+        let orthoCam = null;
         function getActiveCam() { return isPerspective ? cam : orthoCam; }
 
         function ensureOrthoCam() {
             if (orthoCam) return;
-            var aspect = cam.aspect || domEl.clientWidth / domEl.clientHeight || 1;
-            var hh = _radius * 0.5, hw = hh * aspect;
+            let aspect = cam.aspect || domEl.clientWidth / domEl.clientHeight || 1;
+            let hh = _radius * 0.5, hw = hh * aspect;
             orthoCam = new THREE.OrthographicCamera(-hw, hw, hh, -hh, cam.near, cam.far);
             orthoCam.position.copy(cam.position);
             orthoCam.quaternion.copy(cam.quaternion);
@@ -98,8 +98,8 @@ window._W3E_ORBIT = (function () {
 
         function syncOrthoFrustum() {
             if (!orthoCam) return;
-            var aspect = domEl.clientWidth / domEl.clientHeight || 1;
-            var hh = _radius * 0.5, hw = hh * aspect;
+            let aspect = domEl.clientWidth / domEl.clientHeight || 1;
+            let hh = _radius * 0.5, hw = hh * aspect;
             orthoCam.left = -hw; orthoCam.right = hw;
             orthoCam.top = hh;   orthoCam.bottom = -hh;
             orthoCam.near = cam.near; orthoCam.far = cam.far;
@@ -120,12 +120,12 @@ window._W3E_ORBIT = (function () {
         });
 
         domEl.addEventListener('pointermove', function (e) {
-            var dx = e.clientX - px, dy = e.clientY - py;
+            let dx = e.clientX - px, dy = e.clientY - py;
             px = e.clientX; py = e.clientY;
             if (orbiting) { hDelta -= dx * ROTATE_SPEED; vDelta -= dy * ROTATE_SPEED; }
             if (zooming) { zoomDelta += dy / 50 * ZOOM_LINEAR; }
             if (panning) {
-                var v = new THREE.Vector3(), activeCam = getActiveCam();
+                let v = new THREE.Vector3(), activeCam = getActiveCam();
                 v.setFromMatrixColumn(activeCam.matrix, 0); panOff.addScaledVector(v, -dx * PAN_FIXED * PAN_SPEED);
                 v.setFromMatrixColumn(activeCam.matrix, 1); panOff.addScaledVector(v,  dy * PAN_FIXED * PAN_SPEED);
             }
@@ -145,8 +145,8 @@ window._W3E_ORBIT = (function () {
             if (e.ctrlKey || e.metaKey) {
                 zoomDelta += e.deltaY / 100 * ZOOM_LINEAR;
             } else if (e.shiftKey || lmbDown) {
-                var activeCam = getActiveCam();
-                var v = new THREE.Vector3();
+                let activeCam = getActiveCam();
+                let v = new THREE.Vector3();
                 v.setFromMatrixColumn(activeCam.matrix, 0); panOff.addScaledVector(v, e.deltaX * PAN_FIXED * PAN_SPEED * 0.5);
                 v.setFromMatrixColumn(activeCam.matrix, 1); panOff.addScaledVector(v, -e.deltaY * PAN_FIXED * PAN_SPEED * 0.5);
             } else {
@@ -162,7 +162,7 @@ window._W3E_ORBIT = (function () {
         domEl.style.outline = 'none';
         domEl.addEventListener('keydown', function (e) {
             if (!skipGuards && (e.target.closest('float-window') || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
-            var handled = true;
+            let handled = true;
             switch (e.code) {
                 case 'Numpad1': animateTo(Math.PI / 2, e.ctrlKey || e.metaKey ? Math.PI : 0); break;
                 case 'Numpad3': animateTo(Math.PI / 2, e.ctrlKey || e.metaKey ? -Math.PI / 2 : Math.PI / 2); break;
@@ -179,9 +179,9 @@ window._W3E_ORBIT = (function () {
 
         // ── Animation to preset view ────────────────────────────
         function animateTo(phi, theta) {
-            var tmpSph = new THREE.Spherical(1, phi, theta);
-            var dir = new THREE.Vector3().setFromSpherical(tmpSph);
-            if (zUp) { var t = dir.y; dir.y = dir.z; dir.z = t; }
+            let tmpSph = new THREE.Spherical(1, phi, theta);
+            let dir = new THREE.Vector3().setFromSpherical(tmpSph);
+            if (zUp) { let t = dir.y; dir.y = dir.z; dir.z = t; }
             _animFrom.copy(_orbit);
             _animTo.copy(_buildOrbitQuat(dir));
             animStart = performance.now();
@@ -191,14 +191,14 @@ window._W3E_ORBIT = (function () {
         function easeInOut(t) { return t < 0.5 ? 2*t*t : -1 + (4 - 2*t) * t; }
 
         // ── Axis gizmo ──────────────────────────────────────────
-        var gizmoRenderer = null, gizmoScene = null, gizmoCamera = null;
+        let gizmoRenderer = null, gizmoScene = null, gizmoCamera = null;
         (function initGizmo() {
             try {
-                var SIZE = 120, ALEN = 1.0;
-                var gCanvas = document.createElement('canvas');
+                let SIZE = 120, ALEN = 1.0;
+                let gCanvas = document.createElement('canvas');
                 gCanvas.style.cssText = 'position:absolute;top:8px;right:8px;width:'+SIZE+'px;height:'+SIZE+'px;pointer-events:none;z-index:100;';
-                var gParent = domEl.parentElement || document.body;
-                var pp = window.getComputedStyle(gParent).position;
+                let gParent = domEl.parentElement || document.body;
+                let pp = window.getComputedStyle(gParent).position;
                 if (!pp || pp === 'static') gParent.style.position = 'relative';
                 gParent.appendChild(gCanvas);
                 gizmoRenderer = new THREE.WebGLRenderer({canvas: gCanvas, alpha: true, antialias: true});
@@ -209,12 +209,12 @@ window._W3E_ORBIT = (function () {
                 gizmoCamera = new THREE.OrthographicCamera(-1.8, 1.8, 1.8, -1.8, 0.1, 100);
 
                 function axisLine(to, c) { gizmoScene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), to]), new THREE.LineBasicMaterial({color: c}))); }
-                function tip(p, c, r) { var m = new THREE.Mesh(new THREE.SphereGeometry(r,12,12), new THREE.MeshBasicMaterial({color:c})); m.position.copy(p); gizmoScene.add(m); }
+                function tip(p, c, r) { let m = new THREE.Mesh(new THREE.SphereGeometry(r,12,12), new THREE.MeshBasicMaterial({color:c})); m.position.copy(p); gizmoScene.add(m); }
                 function label(text, hex, pos) {
-                    var c = document.createElement('canvas'); c.width=64; c.height=64;
-                    var ctx = c.getContext('2d'); ctx.font='bold 48px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+                    let c = document.createElement('canvas'); c.width=64; c.height=64;
+                    let ctx = c.getContext('2d'); ctx.font='bold 48px Arial,sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
                     ctx.fillStyle='#222'; ctx.fillText(text,33,33); ctx.fillStyle=hex; ctx.fillText(text,32,32);
-                    var s = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false,transparent:true}));
+                    let s = new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false,transparent:true}));
                     s.position.copy(pos); s.scale.set(0.45,0.45,1); gizmoScene.add(s);
                 }
                 axisLine(new THREE.Vector3(ALEN,0,0),0xE34040); tip(new THREE.Vector3(ALEN,0,0),0xE34040,0.12); label('X','#E34040',new THREE.Vector3(ALEN+0.3,0,0));
@@ -226,17 +226,17 @@ window._W3E_ORBIT = (function () {
         })();
 
         // ── Update ──────────────────────────────────────────────
-        var ctrl = {
+        let ctrl = {
             target: target,
             maxDist: maxD,
             get camera() { return getActiveCam(); },
 
             update: function () {
                 if (_needsInit) _initFromCamera();
-                var activeCam = getActiveCam();
+                let activeCam = getActiveCam();
 
                 if (animating) {
-                    var t = Math.min(1, (performance.now() - animStart) / ANIM_DURATION);
+                    let t = Math.min(1, (performance.now() - animStart) / ANIM_DURATION);
                     t = easeInOut(t);
                     _orbit.slerpQuaternions(_animFrom, _animTo, t);
                     if (t >= 1) animating = false;

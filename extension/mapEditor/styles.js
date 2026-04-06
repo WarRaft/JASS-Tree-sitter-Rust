@@ -238,6 +238,13 @@ function editorStyles() {
         table.info { border-collapse: collapse; margin-bottom: 8px; width: 100%; }
         table.info td { padding: 2px 8px 2px 0; font-size: 12px; }
         table.info .key { color: var(--vscode-descriptionForeground, #888); white-space: nowrap; }
+        table.info .dd-default {
+            color: var(--vscode-descriptionForeground, #888);
+            opacity: 0.6;
+            font-size: 11px;
+            white-space: nowrap;
+            text-decoration: line-through;
+        }
         .gs-resolved {
             color: var(--vscode-textLink-foreground, #3794ff);
             cursor: pointer;
@@ -281,6 +288,13 @@ function editorStyles() {
         .ts-slk-link:hover {
             text-decoration: underline;
         }
+        .ts-slk-source-line {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground, #888);
+            opacity: 0.7;
+            margin-top: 2px;
+            word-break: break-all;
+        }
 
         /* ── Doodads sidebar ───────────────────────────────────── */
         .ds-sidebar {
@@ -299,8 +313,7 @@ function editorStyles() {
         .ds-sidebar::-webkit-scrollbar-track { background: transparent; }
         .ds-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
         .ds-sidebar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
-        .ds-sidebar .ts-source {
-            padding: 4px 6px;
+        .ds-sidebar slk-source-list {
             margin: 0 0 4px;
         }
         .ds-filter-group {

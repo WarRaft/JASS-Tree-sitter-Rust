@@ -3,15 +3,29 @@
 // ── Destructables SLK: rebuild, filter, sort, detail ────────────────
 
 window._W3E_DESTRUCTABLES = (function () {
-    var U = window._W3E_UTILS;
-    var S = window._W3E_STATE;
+    let U = window._W3E_UTILS;
+    let S = window._W3E_STATE;
 
-    var _destructableDataMap = {};
-    var _allDestructables = [];
-    var _filteredDestructables = [];
-    var _destructablesSlkLoaded = false;
+    let _destructableDataMap = {};
+    let _allDestructables = [];
+    let _filteredDestructables = [];
+    let _destructablesSlkLoaded = false;
 
-    var _destCanvasList = null;
+    function _makeSlkLink(slkPath) {
+        const link = document.createElement('a');
+        link.className = 'ts-slk-link';
+        link.href = '#';
+        link.textContent = slkPath;
+        link.title = 'Open in side tab';
+        link.addEventListener('click', function (e) {
+            e.preventDefault();
+            const vscode = S.getVscode();
+            if (vscode) vscode.postMessage({command: 'openSlk', path: slkPath});
+        });
+        return link;
+    }
+
+    let _destCanvasList = null;
 
     function getDataMap() { return _destructableDataMap; }
     function getAllDestructables() { return _allDestructables; }
@@ -19,7 +33,7 @@ window._W3E_DESTRUCTABLES = (function () {
     function isLoaded() { return _destructablesSlkLoaded; }
 
     // ── Sort state ────────────────────────────────────────────────
-    var _destSort = {field: null, dir: 'asc'};
+    let _destSort = {field: null, dir: 'asc'};
 
     function _saveDestSort() {
         S.patchWvState({_destSort: {field: _destSort.field, dir: _destSort.dir}});
@@ -213,9 +227,14 @@ window._W3E_DESTRUCTABLES = (function () {
 
         const srcEl = document.getElementById('dtSlkSource');
         if (srcEl) {
+            srcEl.innerHTML = '';
             if (source) {
                 srcEl.className = 'ts-source';
-                srcEl.textContent = source;
+                srcEl.appendChild(_makeSlkLink('Units\\DestructableData.slk'));
+                const srcLine = document.createElement('div');
+                srcLine.className = 'ts-slk-source-line';
+                srcLine.textContent = source;
+                srcEl.appendChild(srcLine);
             } else {
                 srcEl.className = 'ts-source ts-no-slk';
                 srcEl.textContent = 'DestructableData.slk not found \u2014 set Game Path';
@@ -323,7 +342,7 @@ window._W3E_DESTRUCTABLES = (function () {
     }
 
     function showDetail(destId) {
-        var vscode = S.getVscode();
+        let vscode = S.getVscode();
         const d = _destructableDataMap[destId];
         if (!d) {
             const win = document.getElementById('destructableDetailWindow');
@@ -426,18 +445,18 @@ window._W3E_DESTRUCTABLES = (function () {
         });
 
         body.addEventListener('click', function (e) {
-            var link = e.target.closest('.dd-model-link');
+            let link = e.target.closest('.dd-model-link');
             if (link) {
                 e.preventDefault();
-                var cmd = {command: 'openModel', path: link.getAttribute('data-path')};
-                var tId = link.getAttribute('data-tex-id');
-                var tFile = link.getAttribute('data-tex-file');
+                let cmd = {command: 'openModel', path: link.getAttribute('data-path')};
+                let tId = link.getAttribute('data-tex-id');
+                let tFile = link.getAttribute('data-tex-file');
                 if (tId) cmd.texId = parseInt(tId, 10);
                 if (tFile) cmd.texFile = tFile;
                 if (vscode) vscode.postMessage(cmd);
                 return;
             }
-            var ptLink = e.target.closest('.dd-pathtex-link');
+            let ptLink = e.target.closest('.dd-pathtex-link');
             if (ptLink) {
                 e.preventDefault();
                 window._W3E_PATH_TEX.showPathTex(ptLink.getAttribute('data-pathtex'));
@@ -447,35 +466,35 @@ window._W3E_DESTRUCTABLES = (function () {
 
     // ── Canvas list row renderer ──────────────────────────────────
     function renderRow(ctx, d, x, y, w, h, c) {
-        var mid = y + h / 2;
+        let mid = y + h / 2;
         ctx.textBaseline = 'middle';
         ctx.font = '11px ' + c.mono;
         ctx.fillStyle = c.link;
         ctx.fillText(d.destructableId || '', x, mid);
-        var catText = (typeof DESTRUCTABLE_CATEGORIES !== 'undefined' && DESTRUCTABLE_CATEGORIES[d.category]) || d.category || '';
+        let catText = (typeof DESTRUCTABLE_CATEGORIES !== 'undefined' && DESTRUCTABLE_CATEGORIES[d.category]) || d.category || '';
         ctx.font = '11px ' + c.font;
         ctx.fillStyle = c.desc;
         ctx.textAlign = 'right';
         ctx.fillText(catText, x + w, mid);
-        var catW = catText ? ctx.measureText(catText).width + 8 : 0;
+        let catW = catText ? ctx.measureText(catText).width + 8 : 0;
         ctx.textAlign = 'left';
-        var bx = x + w - catW;
-        var ts = d.tilesets || '';
+        let bx = x + w - catW;
+        let ts = d.tilesets || '';
         if (ts) {
-            var chars = ts === '*' ? ['*'] : ts.split(',').filter(Boolean);
-            for (var bi = chars.length - 1; bi >= 0; bi--) {
+            let chars = ts === '*' ? ['*'] : ts.split(',').filter(Boolean);
+            for (let bi = chars.length - 1; bi >= 0; bi--) {
                 bx -= 18;
                 _clDrawBadge(ctx, chars[bi], bx, y, h, c, chars[bi] === '*');
             }
             bx -= 4;
         }
-        var nameX = x + 46;
-        var nameW = bx - nameX;
+        let nameX = x + 46;
+        let nameW = bx - nameX;
         if (nameW > 10) {
             ctx.font = '12px ' + c.font;
             ctx.fillStyle = c.fg;
-            var rn = U.gsValue(d.name) || '';
-            var rs = U.gsValue(d.editorSuffix);
+            let rn = U.gsValue(d.name) || '';
+            let rs = U.gsValue(d.editorSuffix);
             _clTruncText(ctx, rn + (rs ? ' ' + rs : ''), nameX, mid, nameW);
         }
         ctx.textBaseline = 'alphabetic';
@@ -484,7 +503,7 @@ window._W3E_DESTRUCTABLES = (function () {
     // ── Canvas list lifecycle ─────────────────────────────────────
     function ensureCanvasList() {
         if (_destCanvasList) return;
-        var el = document.getElementById('dtDestList');
+        let el = document.getElementById('dtDestList');
         if (!el) return;
         _destCanvasList = new CanvasList(el, {
             rowHeight: 26,

@@ -3,16 +3,17 @@
 // ── Doodads SLK: rebuild, filter, sort, detail ──────────────────────
 
 window._W3E_DOODADS = (function () {
-    var U = window._W3E_UTILS;
-    var S = window._W3E_STATE;
+    let U = window._W3E_UTILS;
+    let S = window._W3E_STATE;
 
-    var _doodadDataMap = {};
-    var _allDoodads = [];
-    var _filteredDoodads = [];
-    var _doodadsSlkLoaded = false;
+    let _doodadDataMap = {};
+    let _allDoodads = [];
+    let _filteredDoodads = [];
+    let _doodadsSlkLoaded = false;
+
 
     // ── Canvas list instance ──────────────────────────────────────
-    var _doodadCanvasList = null;
+    let _doodadCanvasList = null;
 
     function getDataMap() { return _doodadDataMap; }
     function getAllDoodads() { return _allDoodads; }
@@ -20,7 +21,7 @@ window._W3E_DOODADS = (function () {
     function isLoaded() { return _doodadsSlkLoaded; }
 
     // ── Sort state ────────────────────────────────────────────────
-    var _doodSort = {field: null, dir: 'asc'};
+    let _doodSort = {field: null, dir: 'asc'};
 
     function _saveDoodSort() {
         S.patchWvState({_doodSort: {field: _doodSort.field, dir: _doodSort.dir}});
@@ -35,13 +36,18 @@ window._W3E_DOODADS = (function () {
         document.querySelectorAll('.ds-ts-cb').forEach(cb => {
             if (!cb.checked) uncheckedTs.push(cb.getAttribute('data-ts'));
         });
-        S.patchWvState({_doodUncheckedCats: uncheckedCats, _doodUncheckedTs: uncheckedTs});
+        const uncheckedStatus = [];
+        document.querySelectorAll('.ds-status-cb').forEach(cb => {
+            if (!cb.checked) uncheckedStatus.push(cb.getAttribute('data-status'));
+        });
+        S.patchWvState({_doodUncheckedCats: uncheckedCats, _doodUncheckedTs: uncheckedTs, _doodUncheckedStatus: uncheckedStatus});
     }
 
     function restoreDoodFilters() {
         const s = S.getWvState();
         const uncheckedCats = s._doodUncheckedCats || [];
         const uncheckedTs = s._doodUncheckedTs || [];
+        const uncheckedStatus = s._doodUncheckedStatus || [];
         if (uncheckedCats.length) {
             document.querySelectorAll('.ds-cat-cb').forEach(cb => {
                 if (uncheckedCats.includes(cb.getAttribute('data-cat'))) cb.checked = false;
@@ -50,6 +56,11 @@ window._W3E_DOODADS = (function () {
         if (uncheckedTs.length) {
             document.querySelectorAll('.ds-ts-cb').forEach(cb => {
                 if (uncheckedTs.includes(cb.getAttribute('data-ts'))) cb.checked = false;
+            });
+        }
+        if (uncheckedStatus.length) {
+            document.querySelectorAll('.ds-status-cb').forEach(cb => {
+                if (uncheckedStatus.includes(cb.getAttribute('data-status'))) cb.checked = false;
             });
         }
     }
@@ -93,6 +104,10 @@ window._W3E_DOODADS = (function () {
         document.querySelectorAll('.ds-ts-cb').forEach(cb => {
             if (cb.checked) enabledTs.add(cb.getAttribute('data-ts'));
         });
+        const enabledStatus = new Set();
+        document.querySelectorAll('.ds-status-cb').forEach(cb => {
+            if (cb.checked) enabledStatus.add(cb.getAttribute('data-status'));
+        });
         if (saveState !== false) _saveDoodFilters();
 
         const searchEl = document.getElementById('dsSearchInput');
@@ -105,6 +120,9 @@ window._W3E_DOODADS = (function () {
                 const comment = (d.comment || '').toLowerCase();
                 if (!name.includes(q) && !id.includes(q) && !comment.includes(q)) return false;
             }
+            // Status filter
+            const status = d.baseId ? 'custom' : (d.w3dModified ? 'modified' : 'default');
+            if (!enabledStatus.has(status)) return false;
             if (d.category && !enabledCats.has(d.category)) return false;
             if (d.tilesets) {
                 if (d.tilesets === '*') return true;
@@ -148,6 +166,30 @@ window._W3E_DOODADS = (function () {
                 for (const ch of d.tilesets) {
                     if (ch !== ',' && ch !== '*') tsSet.add(ch);
                 }
+            }
+        }
+
+        // Status checkboxes (Default / Modified / Custom)
+        const statusChecks = document.getElementById('dsStatusChecks');
+        if (statusChecks) {
+            statusChecks.innerHTML = '';
+            const statuses = [
+                ['default', '\u26aa', 'Default'],
+                ['modified', '\ud83d\udfe1', 'Modified'],
+                ['custom', '\ud83d\udd35', 'Custom'],
+            ];
+            for (const [code, icon, label] of statuses) {
+                const lbl = document.createElement('label');
+                lbl.className = 'menu-cb';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'ds-status-cb';
+                cb.setAttribute('data-status', code);
+                cb.checked = true;
+                cb.addEventListener('change', filterAndRender);
+                lbl.appendChild(cb);
+                lbl.appendChild(document.createTextNode(' ' + icon + ' ' + label));
+                statusChecks.appendChild(lbl);
             }
         }
 
@@ -202,22 +244,35 @@ window._W3E_DOODADS = (function () {
     function rebuild(slkData) {
         _doodadsSlkLoaded = true;
         let source = '';
+        let w3dErrors = [];
         _allDoodads = [];
         _doodadDataMap = {};
         if (slkData && slkData.doodads) {
             source = slkData.source || '';
+            w3dErrors = slkData.w3dErrors || [];
             _doodadDataMap = slkData.doodads;
             _allDoodads = Object.entries(slkData.doodads).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
         }
 
         const srcEl = document.getElementById('dsSlkSource');
         if (srcEl) {
+            srcEl.clear();
             if (source) {
-                srcEl.className = 'ts-source';
-                srcEl.textContent = source;
+                const vscode = S.getVscode();
+                const openSlk = function (path) {
+                    if (vscode) vscode.postMessage({command: 'openSlk', path: path});
+                };
+                srcEl.addPath(source, function () { openSlk('Doodads\\Doodads.slk'); });
+                srcEl.addPath(source.replace(/Doodads\.slk$/i, 'DoodadMetaData.slk'), function () { openSlk('Doodads\\DoodadMetaData.slk'); });
+
+                if (w3dErrors.length > 0) {
+                    srcEl.addError(
+                        '\u26a0 ' + w3dErrors.length + ' error' + (w3dErrors.length > 1 ? 's' : '') + ' reading Doodads',
+                        function () { _showW3dErrors(w3dErrors); }
+                    );
+                }
             } else {
-                srcEl.className = 'ts-source ts-no-slk';
-                srcEl.textContent = 'Doodads.slk not found \u2014 set Game Path';
+                srcEl.setNotFound('Doodads.slk not found \u2014 set Game Path');
             }
         }
 
@@ -246,7 +301,7 @@ window._W3E_DOODADS = (function () {
     const _DOOD_GROUPS = [
         {
             title: '🏷 Identity', fields: [
-                ['doodID', 'doodId'], ['Name', 'name'], ['comment', 'comment'],
+                ['doodID', 'doodId'], ['baseID', 'baseId'], ['Name', 'name'], ['comment', 'comment'],
                 ['category', 'category'], ['doodClass', 'doodClass'],
                 ['tilesets', 'tilesets'], ['tilesetSpecific', 'tilesetSpecific'],
             ]
@@ -305,7 +360,7 @@ window._W3E_DOODADS = (function () {
     }
 
     function showDetail(doodId) {
-        var vscode = S.getVscode();
+        let vscode = S.getVscode();
         const d = _doodadDataMap[doodId];
         if (!d) {
             const win = document.getElementById('doodadDetailWindow');
@@ -350,14 +405,26 @@ window._W3E_DOODADS = (function () {
                     const links = paths.map(p =>
                         '<a href="#" class="dd-model-link" data-path="' + U.esc(p) + '">' + U.esc(p) + '</a>'
                     ).join('');
-                    rows += '<tr><td class="key">file</td><td>' + links + '</td></tr>';
+                    let fileRow = '<tr><td class="key">file</td><td>' + links + '</td>';
+                    if (d.defaults && d.defaults['file'] !== undefined) {
+                        fileRow += '<td class="dd-default">' + U.esc(d.defaults['file']) + '</td>';
+                    }
+                    rows += fileRow + '</tr>';
                 }
-                rows += '<tr><td class="key">numVar</td><td>' + numVar + '</td></tr>';
+                let numVarRow = '<tr><td class="key">numVar</td><td>' + numVar + '</td>';
+                if (d.defaults && d.defaults['numVar'] !== undefined) {
+                    numVarRow += '<td class="dd-default">' + U.esc(d.defaults['numVar']) + '</td>';
+                }
+                rows += numVarRow + '</tr>';
                 if (group.fields) {
                     for (const [label, key] of group.fields) {
                         const val = d[key];
                         if (val === undefined || val === '' || val === null) continue;
-                        rows += '<tr><td class="key">' + U.esc(label) + '</td><td>' + U.esc(String(val)) + '</td></tr>';
+                        let row = '<tr><td class="key">' + U.esc(label) + '</td><td>' + U.esc(String(val)) + '</td>';
+                        if (d.defaults && d.defaults[key] !== undefined) {
+                            row += '<td class="dd-default">' + U.esc(d.defaults[key]) + '</td>';
+                        }
+                        rows += row + '</tr>';
                     }
                 }
             } else {
@@ -379,15 +446,23 @@ window._W3E_DOODADS = (function () {
                         if (key === 'tilesets' && val) {
                             display = U.tilesetBadges(val);
                         }
-                        rows += '<tr><td class="key">' + U.esc(label) + '</td><td>' + display + '</td></tr>';
+                        let row = '<tr><td class="key">' + U.esc(label) + '</td><td>' + display + '</td>';
+                        if (d.defaults && d.defaults[key] !== undefined) {
+                            row += '<td class="dd-default">' + U.esc(d.defaults[key]) + '</td>';
+                        }
+                        rows += row + '</tr>';
                     }
                 }
                 if (group.color) {
                     const c = d[group.color.key];
                     if (c) {
-                        rows += '<tr><td class="key">' + U.esc(group.color.label) + '</td><td>'
+                        let row = '<tr><td class="key">' + U.esc(group.color.label) + '</td><td>'
                             + c.r + ',' + c.g + ',' + c.b + ' '
-                            + U.colorBadge(c.r, c.g, c.b) + '</td></tr>';
+                            + U.colorBadge(c.r, c.g, c.b) + '</td>';
+                        if (d.defaults && d.defaults[group.color.key] !== undefined) {
+                            row += '<td class="dd-default">' + U.esc(d.defaults[group.color.key]) + '</td>';
+                        }
+                        rows += row + '</tr>';
                     }
                 }
             }
@@ -411,13 +486,13 @@ window._W3E_DOODADS = (function () {
         });
 
         body.addEventListener('click', function (e) {
-            var link = e.target.closest('.dd-model-link');
+            let link = e.target.closest('.dd-model-link');
             if (link) {
                 e.preventDefault();
                 if (vscode) vscode.postMessage({command: 'openModel', path: link.getAttribute('data-path')});
                 return;
             }
-            var ptLink = e.target.closest('.dd-pathtex-link');
+            let ptLink = e.target.closest('.dd-pathtex-link');
             if (ptLink) {
                 e.preventDefault();
                 window._W3E_PATH_TEX.showPathTex(ptLink.getAttribute('data-pathtex'));
@@ -425,32 +500,74 @@ window._W3E_DOODADS = (function () {
         });
     }
 
+    // ── W3D errors window ──────────────────────────────────────
+    function _showW3dErrors(errors) {
+        const win = document.getElementById('doodadErrorsWindow');
+        const body = document.getElementById('doodadErrorsBody');
+        if (!win || !body) return;
+        let html = '<div style="margin-bottom:8px;font-weight:bold;">\u26a0 ' + errors.length + ' error' + (errors.length > 1 ? 's' : '') + ' reading Doodads from war3map.w3d:</div>';
+        html += '<div style="font-family:var(--vscode-editor-font-family,monospace);font-size:11px;">';
+        for (let i = 0; i < errors.length; i++) {
+            html += '<div style="padding:2px 0;border-bottom:1px solid var(--vscode-widget-border,rgba(128,128,128,0.2));">'
+                + U.esc(errors[i]) + '</div>';
+        }
+        html += '</div>';
+        body.innerHTML = html;
+        win.setAttribute('title-text', '\u26a0 Doodad Errors (' + errors.length + ')');
+        win.show();
+    }
+
     // ── Canvas list row renderer ──────────────────────────────────
     function renderRow(ctx, d, x, y, w, h, c) {
-        var mid = y + h / 2;
+        // Highlight modified (yellow) and custom (blue) doodads
+        if (d.baseId) {
+            ctx.fillStyle = 'rgba(70,130,230,0.08)';
+            ctx.fillRect(x, y, w, h);
+            ctx.fillStyle = 'rgba(70,130,230,0.6)';
+            ctx.fillRect(x, y + 2, 3, h - 4);
+        } else if (d.w3dModified) {
+            ctx.fillStyle = 'rgba(220,180,40,0.08)';
+            ctx.fillRect(x, y, w, h);
+            ctx.fillStyle = 'rgba(220,180,40,0.6)';
+            ctx.fillRect(x, y + 2, 3, h - 4);
+        }
+        let mid = y + h / 2;
         ctx.textBaseline = 'middle';
         ctx.font = '11px ' + c.mono;
         ctx.fillStyle = c.link;
         ctx.fillText(d.doodId || '', x, mid);
-        var catText = (typeof DOODAD_CATEGORIES !== 'undefined' && DOODAD_CATEGORIES[d.category]) || d.category || '';
+        let catText = (typeof DOODAD_CATEGORIES !== 'undefined' && DOODAD_CATEGORIES[d.category]) || d.category || '';
         ctx.font = '11px ' + c.font;
         ctx.fillStyle = c.desc;
         ctx.textAlign = 'right';
         ctx.fillText(catText, x + w, mid);
-        var catW = catText ? ctx.measureText(catText).width + 8 : 0;
+        let catW = catText ? ctx.measureText(catText).width + 8 : 0;
         ctx.textAlign = 'left';
-        var bx = x + w - catW;
-        var ts = d.tilesets || '';
+        let bx = x + w - catW;
+        let ts = d.tilesets || '';
         if (ts) {
-            var chars = ts === '*' ? ['*'] : ts.split(',').filter(Boolean);
-            for (var bi = chars.length - 1; bi >= 0; bi--) {
+            let chars = ts === '*' ? ['*'] : ts.split(',').filter(Boolean);
+            for (let bi = chars.length - 1; bi >= 0; bi--) {
                 bx -= 18;
                 _clDrawBadge(ctx, chars[bi], bx, y, h, c, chars[bi] === '*');
             }
             bx -= 4;
         }
-        var nameX = x + 46;
-        var nameW = bx - nameX;
+        // Show baseId badge for custom doodads
+        if (d.baseId) {
+            let badgeText = '\u2190' + d.baseId;
+            ctx.font = '9px ' + c.mono;
+            let bw = ctx.measureText(badgeText).width + 6;
+            bx -= bw + 2;
+            ctx.fillStyle = 'rgba(100,149,237,0.15)';
+            ctx.fillRect(bx, y + 4, bw, h - 8);
+            ctx.fillStyle = 'rgba(100,149,237,0.8)';
+            ctx.fillText(badgeText, bx + 3, mid);
+            bx -= 4;
+            ctx.font = '11px ' + c.font;
+        }
+        let nameX = x + 46;
+        let nameW = bx - nameX;
         if (nameW > 10) {
             ctx.font = '12px ' + c.font;
             ctx.fillStyle = c.fg;
@@ -462,7 +579,7 @@ window._W3E_DOODADS = (function () {
     // ── Canvas list lifecycle ─────────────────────────────────────
     function ensureCanvasList() {
         if (_doodadCanvasList) return;
-        var el = document.getElementById('dsDoodadList');
+        let el = document.getElementById('dsDoodadList');
         if (!el) return;
         _doodadCanvasList = new CanvasList(el, {
             rowHeight: 26,

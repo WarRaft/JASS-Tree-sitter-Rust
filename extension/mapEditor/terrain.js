@@ -1143,35 +1143,35 @@
             })
 
             // ── Click on object → highlight in Placed window ────
-            var _clickStartX = 0, _clickStartY = 0
+            let _clickStartX = 0, _clickStartY = 0
             canvas.addEventListener('pointerdown', function (e) {
                 _clickStartX = e.clientX
                 _clickStartY = e.clientY
             })
             canvas.addEventListener('click', function (e) {
                 // Ignore if it was a drag (orbit/pan)
-                var dx = e.clientX - _clickStartX, dy = e.clientY - _clickStartY
+                let dx = e.clientX - _clickStartX, dy = e.clientY - _clickStartY
                 if (dx * dx + dy * dy > 9) return
                 if (e.target.closest('float-window') || e.target.closest('.menubar')) return
 
-                var rect = canvas.getBoundingClientRect()
-                var ndc = new THREE.Vector2(
+                let rect = canvas.getBoundingClientRect()
+                let ndc = new THREE.Vector2(
                     ((e.clientX - rect.left) / rect.width) * 2 - 1,
                     -((e.clientY - rect.top) / rect.height) * 2 + 1
                 )
-                var rc = new THREE.Raycaster()
+                let rc = new THREE.Raycaster()
                 rc.setFromCamera(ndc, ctrl.camera)
 
                 // Check cliff models first (if visible)
                 if (cliffGroup.visible) {
-                    var cliffHits = rc.intersectObjects(cliffGroup.children, false)
+                    let cliffHits = rc.intersectObjects(cliffGroup.children, false)
                     if (cliffHits.length > 0) {
-                        var cliffHit = cliffHits[0]
-                        var cliffObj = cliffHit.object
+                        let cliffHit = cliffHits[0]
+                        let cliffObj = cliffHit.object
                         if (cliffObj.userData && cliffObj.userData._items && cliffHit.instanceId != null) {
-                            var cliffItem = cliffObj.userData._items[cliffHit.instanceId]
+                            let cliffItem = cliffObj.userData._items[cliffHit.instanceId]
                             if (cliffItem && cliffItem.path && vscode) {
-                                var cmd = {command: 'openModel', path: cliffItem.path}
+                                let cmd = {command: 'openModel', path: cliffItem.path}
                                 if (cliffItem.cliffTex) {
                                     cmd.cliffTex = cliffItem.cliffTex
                                 }
@@ -1184,12 +1184,12 @@
 
                 // Check placed objects (doodads/units)
                 if (!objectGroup.visible) return
-                var hits = rc.intersectObjects(objectGroup.children, false)
+                let hits = rc.intersectObjects(objectGroup.children, false)
                 if (hits.length > 0) {
-                    var hit = hits[0]
-                    var obj = hit.object
+                    let hit = hits[0]
+                    let obj = hit.object
                     if (obj.userData && obj.userData._items && hit.instanceId != null) {
-                        var item = obj.userData._items[hit.instanceId]
+                        let item = obj.userData._items[hit.instanceId]
                         if (item && item.i != null) {
                             W3E.highlightPlacedDoodad(item.i)
                         }
@@ -1371,7 +1371,7 @@
                             if (texId < textures.length) {
                                 const tex = textures[texId]
                                 // Determine texture path: use replaceable texture override if available
-                                var texPath = null
+                                let texPath = null
                                 if (tex && tex.replaceable_id && replaceableTextures) {
                                     if (replaceableTextures._cliffTex !== undefined) {
                                         // Cliff model: single material with Replaceable ID 11,
@@ -1452,13 +1452,13 @@
 
             // Resolve the model file path for a doodad, applying variation logic
             function _resolveModelPath(baseFile, numVar, variation) {
-                var lastSlash = Math.max(baseFile.lastIndexOf('/'), baseFile.lastIndexOf('\\'))
-                var dotIdx = baseFile.lastIndexOf('.')
-                var hasExt = dotIdx > lastSlash && dotIdx >= 0
-                var base = hasExt ? baseFile.substring(0, dotIdx) : baseFile
-                var ext = hasExt ? baseFile.substring(dotIdx) : '.mdx'
+                let lastSlash = Math.max(baseFile.lastIndexOf('/'), baseFile.lastIndexOf('\\'))
+                let dotIdx = baseFile.lastIndexOf('.')
+                let hasExt = dotIdx > lastSlash && dotIdx >= 0
+                let base = hasExt ? baseFile.substring(0, dotIdx) : baseFile
+                let ext = hasExt ? baseFile.substring(dotIdx) : '.mdx'
                 if (numVar <= 1) return base + ext
-                var idx = (variation || 0) % numVar
+                let idx = (variation || 0) % numVar
                 return base + idx + ext
             }
 
@@ -1468,10 +1468,10 @@
             function _cliffCenteredItems(items) {
                 const half = TILE / 2
                 return items.map(function (it) {
-                    var defZ = 0
+                    let defZ = 0
                     if (showDeformation) {
-                        var sx = Math.max(0, Math.min(W - 1, Math.round((it.p[0] - D.offsetX) / TILE)))
-                        var sy = Math.max(0, Math.min(H - 1, Math.round((it.p[1] - D.offsetY) / TILE)))
+                        let sx = Math.max(0, Math.min(W - 1, Math.round((it.p[0] - D.offsetX) / TILE)))
+                        let sy = Math.max(0, Math.min(H - 1, Math.round((it.p[1] - D.offsetY) / TILE)))
                         defZ = (D.groundHeight[sy * W + sx] - H_ZERO) / H_SCALE
                     }
                     return {

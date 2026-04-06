@@ -142,7 +142,7 @@ async function resolveSlkEditor(document, webviewPanel, _token, client, context)
 
     /**
      * Fetch fresh data from LSP and return parsed schema + rows.
-     * @returns {Promise<{schema: object[], rowData: object[], cols: number, rows: number, fname: string}|null>}
+     * @returns {Promise<{schema: object[], rowData: object[], cols: number, rows: number, fname: string, headers: string[]}|null>}
      */
     async function fetchData() {
         /** @type {SlkRenderResult} */
@@ -158,9 +158,11 @@ async function resolveSlkEditor(document, webviewPanel, _token, client, context)
         const savedWidths = settings.columnWidths || {}
         const hiddenCols = settings.hiddenColumns || []
 
+        const headers = []
         const schema = []
         for (let c = 0; c < cols; c++) {
             const headerVal = grid[0] && grid[0][c] ? grid[0][c].value : `Col ${c + 1}`
+            headers.push(headerVal)
             const field = `c${c}`
             const colDef = {
                 name: field,
@@ -186,7 +188,7 @@ async function resolveSlkEditor(document, webviewPanel, _token, client, context)
             rowData.push(row)
         }
 
-        return {schema, rowData, cols, rows, fname}
+        return {schema, rowData, cols, rows, fname, headers}
     }
 
     /**
@@ -280,14 +282,16 @@ function escapeHtml(s) {
 /**
  * Build the full HTML page for the canvas-datagrid-based SLK table.
  *
- * @param {{schema: object[], rowData: object[], cols: number, rows: number, fname: string}} data
+ * @param {{schema: object[], rowData: object[], cols: number, rows: number, fname: string, headers: string[]}} data
  * @param {import('vscode').Uri} canvasDatagridJsUri
  * @param {boolean} defaultEditorChecked
  */
 function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
-    const {schema, rowData, cols, rows, fname} = data
+    const {schema, rowData, cols, rows, fname, headers} = data
     const schemaJson = JSON.stringify(schema)
     const rowDataJson = JSON.stringify(rowData)
+    const headersJson = JSON.stringify(headers)
+    const fnameJson = JSON.stringify(fname)
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -361,6 +365,16 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
         }
         .header-bar .search-box::placeholder {
             color: var(--vscode-input-placeholderForeground);
+        }
+        .slk-color-picker {
+            position: fixed;
+            opacity: 0;
+            width: 0;
+            height: 0;
+            border: none;
+            padding: 0;
+            pointer-events: auto;
+            z-index: 99999;
         }
         #app {
             display: flex;
@@ -461,27 +475,87 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
     <script src="${canvasDatagridJsUri}"><\/script>
     <script>
     (function() {
-        var vscode = acquireVsCodeApi();
-        var schema = ${schemaJson};
-        var rowData = ${rowDataJson};
+        let vscode = acquireVsCodeApi();
+        let schema = ${schemaJson};
+        let rowData = ${rowDataJson};
+        let slkHeaders = ${headersJson};
+        let slkFname = ${fnameJson};
+
+        // ── SLK metadata: detect known file types by filename ──
+        let SLK_META = (function() {
+            let headerToField = {};
+            for (let i = 0; i < slkHeaders.length; i++) {
+                headerToField[slkHeaders[i]] = 'c' + i;
+            }
+            let slkName = slkFname.replace(/\.slk$/i, '').toLowerCase();
+
+            let boolCols = {};   // field → true
+            let colorGroups = []; // [{r:'cN', g:'cM', b:'cK', label:'name'}]
+
+            function markBools(names) {
+                for (let i = 0; i < names.length; i++) {
+                    let f = headerToField[names[i]];
+                    if (f) boolCols[f] = true;
+                }
+            }
+
+            if (slkName === 'doodads') {
+                markBools(['tilesetSpecific','canPlaceRandScale','useClickHelper','ignoreModelClick',
+                    'walkable','onCliffs','onWater','floats','shadow','showInFog','animInFog',
+                    'showInMM','useMMColor','InBeta']);
+                if (headerToField['MMRed'] && headerToField['MMGreen'] && headerToField['MMBlue']) {
+                    colorGroups.push({r:headerToField['MMRed'],g:headerToField['MMGreen'],b:headerToField['MMBlue'],label:'MM'});
+                }
+                for (let i = 1; i <= 10; i++) {
+                    let idx = (i<10?'0':'') + i;
+                    let rH='vertR'+idx, gH='vertG'+idx, bH='vertB'+idx;
+                    if (headerToField[rH] && headerToField[gH] && headerToField[bH]) {
+                        colorGroups.push({r:headerToField[rH],g:headerToField[gH],b:headerToField[bH],label:'V'+idx});
+                    }
+                }
+            } else if (slkName === 'destructabledata') {
+                markBools(['tilesetSpecific','lightweight','fatLOS','useClickHelper','onCliffs','onWater',
+                    'canPlaceDead','walkable','canPlaceRandScale','fogVis','shadow','showInMM',
+                    'useMMColor','selectable','InBeta']);
+                if (headerToField['colorR'] && headerToField['colorG'] && headerToField['colorB']) {
+                    colorGroups.push({r:headerToField['colorR'],g:headerToField['colorG'],b:headerToField['colorB'],label:'Tint'});
+                }
+                if (headerToField['MMRed'] && headerToField['MMGreen'] && headerToField['MMBlue']) {
+                    colorGroups.push({r:headerToField['MMRed'],g:headerToField['MMGreen'],b:headerToField['MMBlue'],label:'MM'});
+                }
+            } else if (slkName === 'unitdata') {
+                markBools(['canSleep','canFlee','isBuildOn']);
+            }
+
+            // Reverse: field → colorGroup
+            let colorFieldMap = {};
+            for (let ci = 0; ci < colorGroups.length; ci++) {
+                let cg = colorGroups[ci];
+                colorFieldMap[cg.r] = cg;
+                colorFieldMap[cg.g] = cg;
+                colorFieldMap[cg.b] = cg;
+            }
+
+            return {boolCols:boolCols, colorGroups:colorGroups, colorFieldMap:colorFieldMap};
+        })();
 
         // ── preloader helpers ──
-        var preloader = document.getElementById('preloader');
-        var steps = {
+        let preloader = document.getElementById('preloader');
+        let steps = {
             parse:  document.getElementById('step-parse'),
             grid:   document.getElementById('step-grid'),
             theme:  document.getElementById('step-theme'),
             layout: document.getElementById('step-layout')
         };
         function markDone(id) {
-            var el = steps[id];
+            let el = steps[id];
             if (!el) return;
             el.classList.remove('active');
             el.classList.add('done');
             el.querySelector('.icon').textContent = '\u2713';
         }
         function markActive(id) {
-            var el = steps[id];
+            let el = steps[id];
             if (!el) return;
             el.classList.add('active');
             el.querySelector('.icon').textContent = '\u25CF';
@@ -498,46 +572,46 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
 
         // ── Step 2: read theme (synchronous, fast) ──
         markActive('theme');
-        var cs = getComputedStyle(document.documentElement);
+        let cs = getComputedStyle(document.documentElement);
         function cv(name, fallback) {
             return cs.getPropertyValue(name).trim() || fallback;
         }
-        var editorBg    = cv('--vscode-editor-background', '#1e1e1e');
-        var editorFg    = cv('--vscode-editor-foreground', '#cccccc');
-        var widgetBg    = cv('--vscode-editorWidget-background', '#252526');
-        var widgetBorder= cv('--vscode-editorWidget-border', '#454545');
-        var headerBg    = cv('--vscode-editorGroupHeader-tabsBackground', '#2d2d2d');
-        var descFg      = cv('--vscode-descriptionForeground', '#969696');
-        var selBg       = cv('--vscode-editor-selectionBackground', 'rgba(38,79,120,0.7)');
-        var selFg       = cv('--vscode-list-activeSelectionForeground', editorFg);
-        var focusBorder = cv('--vscode-focusBorder', '#007fd4');
-        var inputBg     = cv('--vscode-input-background', '#3c3c3c');
-        var inputFg     = cv('--vscode-input-foreground', '#cccccc');
-        var fontFamily  = cv('--vscode-font-family', 'sans-serif');
+        let editorBg    = cv('--vscode-editor-background', '#1e1e1e');
+        let editorFg    = cv('--vscode-editor-foreground', '#cccccc');
+        let widgetBg    = cv('--vscode-editorWidget-background', '#252526');
+        let widgetBorder= cv('--vscode-editorWidget-border', '#454545');
+        let headerBg    = cv('--vscode-editorGroupHeader-tabsBackground', '#2d2d2d');
+        let descFg      = cv('--vscode-descriptionForeground', '#969696');
+        let selBg       = cv('--vscode-editor-selectionBackground', 'rgba(38,79,120,0.7)');
+        let selFg       = cv('--vscode-list-activeSelectionForeground', editorFg);
+        let focusBorder = cv('--vscode-focusBorder', '#007fd4');
+        let inputBg     = cv('--vscode-input-background', '#3c3c3c');
+        let inputFg     = cv('--vscode-input-foreground', '#cccccc');
+        let fontFamily  = cv('--vscode-font-family', 'sans-serif');
         markDone('theme');
 
         // ── helpers ──
         function stripMeta(rows) {
             return rows.map(function(row) {
-                var clean = {};
-                for (var key in row) {
+                let clean = {};
+                for (let key in row) {
                     if (!key.startsWith('_')) clean[key] = row[key];
                 }
                 return clean;
             });
         }
 
-        var cleanData = stripMeta(rowData);
+        let cleanData = stripMeta(rowData);
         // Hidden index column — used to restore original file order
         schema.push({name: '_idx', hidden: true, type: 'number'});
-        for (var i = 0; i < cleanData.length; i++) cleanData[i]._idx = i;
+        for (let i = 0; i < cleanData.length; i++) cleanData[i]._idx = i;
 
-        var currentRowData = rowData;
-        var container = document.getElementById('table-container');
-        var grid; // assigned once layout is ready
-        var lastW = 0, lastH = 0;
+        let currentRowData = rowData;
+        let container = document.getElementById('table-container');
+        let grid; // assigned once layout is ready
+        let lastW = 0, lastH = 0;
 
-        var gridStyle = {
+        let gridStyle = {
             gridBackgroundColor: editorBg,
             gridBorderColor: widgetBorder,
             gridBorderWidth: 1,
@@ -620,7 +694,7 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
         // https://canvas-datagrid.js.org/examples/set-data-after-instantiation
         markActive('grid');
 
-        var gridElement = document.createElement('div');
+        let gridElement = document.createElement('div');
         grid = canvasDatagrid({
             parentNode: gridElement,
             schema: schema,
@@ -651,8 +725,8 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
         // dispatching one is the most reliable way to make it re-measure.
 
         function applySize() {
-            var h = container.offsetHeight;
-            var w = container.offsetWidth;
+            let h = container.offsetHeight;
+            let w = container.offsetWidth;
             if (h > 0 && w > 0) {
                 lastH = h; lastW = w;
                 grid.style.height = h + 'px';
@@ -662,14 +736,14 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
             }
         }
 
-        var attempts = 0;
+        let attempts = 0;
         function pump() {
             applySize();
             window.dispatchEvent(new Event('resize'));
             attempts++;
 
             // grid.visibleCells is populated only after a successful draw
-            var rendered = grid.visibleCells && grid.visibleCells.length > 0;
+            let rendered = grid.visibleCells && grid.visibleCells.length > 0;
 
             if (rendered) {
                 markDone('layout');
@@ -697,8 +771,8 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
 
         // ── keep tracking container size after initial render ──
         new ResizeObserver(function() {
-            var nh = container.offsetHeight;
-            var nw = container.offsetWidth;
+            let nh = container.offsetHeight;
+            let nw = container.offsetWidth;
             if (nh > 0 && nw > 0 && (nh !== lastH || nw !== lastW)) {
                 lastH = nh; lastW = nw;
                 grid.style.height = nh + 'px';
@@ -716,9 +790,212 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
         // ═══════════════════════════════════════════════════
         function setupGrid(grid) {
 
+            // ── Auto-size columns without saved widths ──
+            (function autoSizeColumns() {
+                let ctx = null;
+                try { ctx = grid.canvas ? grid.canvas.getContext('2d') : null; } catch(_){}
+                if (!ctx) {
+                    let tmp = document.createElement('canvas');
+                    ctx = tmp.getContext('2d');
+                }
+                let s = grid.schema;
+                let sampleRows = Math.min(cleanData.length, 60);
+                for (let i = 0; i < s.length; i++) {
+                    let col = s[i];
+                    if (col.name === '_idx' || col.hidden) continue;
+                    if (col.width) continue;
+
+                    // Measure header
+                    ctx.font = 'bold 13px ' + fontFamily;
+                    let headerW = ctx.measureText(col.title || col.name).width;
+
+                    // Check if column is boolean or all-numeric
+                    let isBool = !!SLK_META.boolCols[col.name];
+                    let isNumeric = !isBool;
+                    if (isNumeric) {
+                        for (let r = 0; r < sampleRows && isNumeric; r++) {
+                            let val = cleanData[r] ? String(cleanData[r][col.name] || '') : '';
+                            if (val !== '' && isNaN(val)) isNumeric = false;
+                        }
+                    }
+
+                    let maxW;
+                    if (isBool || isNumeric) {
+                        // Size by header only
+                        maxW = headerW;
+                    } else {
+                        // Size by max of header and data
+                        maxW = headerW;
+                        ctx.font = '13px ' + fontFamily;
+                        for (let r = 0; r < sampleRows; r++) {
+                            let val = cleanData[r] ? String(cleanData[r][col.name] || '') : '';
+                            let tw = ctx.measureText(val).width;
+                            if (tw > maxW) maxW = tw;
+                        }
+                    }
+
+                    let computed = Math.ceil(maxW) + 24;
+                    if (computed < 50) computed = 50;
+                    if (computed > 350) computed = 350;
+                    if (!grid.sizes) grid.sizes = {};
+                    if (!grid.sizes.columns) grid.sizes.columns = {};
+                    grid.sizes.columns[i] = computed;
+                }
+            })();
+
+            // ── Custom cell rendering: booleans, colors, preview button ──
+            grid.addEventListener('rendertext', function(e) {
+                if (!e.cell || !e.cell.header) return;
+                let field = e.cell.header.name;
+                // Boolean columns: draw checkbox instead of text
+                if (SLK_META.boolCols[field] && !e.cell.isColumnHeader && !e.cell.isRowHeader) {
+                    e.preventDefault();
+                    let ctx = e.ctx;
+                    let cx = e.cell.x + e.cell.width / 2;
+                    let cy = e.cell.y + e.cell.height / 2;
+                    let sz = 12;
+                    let x0 = cx - sz/2, y0 = cy - sz/2;
+                    let checked = (e.cell.value === '1' || e.cell.value === 1);
+                    ctx.save();
+                    ctx.strokeStyle = descFg;
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    // Rounded rectangle
+                    let r = 2;
+                    ctx.moveTo(x0+r, y0);
+                    ctx.lineTo(x0+sz-r, y0);
+                    ctx.arcTo(x0+sz, y0, x0+sz, y0+r, r);
+                    ctx.lineTo(x0+sz, y0+sz-r);
+                    ctx.arcTo(x0+sz, y0+sz, x0+sz-r, y0+sz, r);
+                    ctx.lineTo(x0+r, y0+sz);
+                    ctx.arcTo(x0, y0+sz, x0, y0+sz-r, r);
+                    ctx.lineTo(x0, y0+r);
+                    ctx.arcTo(x0, y0, x0+r, y0, r);
+                    ctx.closePath();
+                    if (checked) {
+                        ctx.fillStyle = focusBorder;
+                        ctx.fill();
+                        // Draw checkmark
+                        ctx.strokeStyle = '#fff';
+                        ctx.lineWidth = 2;
+                        ctx.beginPath();
+                        ctx.moveTo(x0+2.5, cy);
+                        ctx.lineTo(x0+5, y0+sz-2.5);
+                        ctx.lineTo(x0+sz-2, y0+2.5);
+                        ctx.stroke();
+                    } else {
+                        ctx.stroke();
+                    }
+                    ctx.restore();
+                    return;
+                }
+            });
+
+            grid.addEventListener('afterrendercell', function(e) {
+                if (!e.cell || !e.cell.header || e.cell.isColumnHeader || e.cell.isRowHeader) return;
+                let field = e.cell.header.name;
+                let ctx = e.ctx;
+
+                // Color swatch for RGB group columns
+                let cg = SLK_META.colorFieldMap[field];
+                if (cg) {
+                    // Compose RGB from sibling columns
+                    let rowObj = cleanData[e.cell.rowIndex];
+                    if (!rowObj) return;
+                    let rv = parseInt(rowObj[cg.r], 10) || 0;
+                    let gv = parseInt(rowObj[cg.g], 10) || 0;
+                    let bv = parseInt(rowObj[cg.b], 10) || 0;
+                    // Draw swatch at right edge
+                    let swSz = 14;
+                    let sx = e.cell.x + e.cell.width - swSz - 4;
+                    let sy = e.cell.y + (e.cell.height - swSz) / 2;
+                    ctx.save();
+                    ctx.fillStyle = 'rgb(' + rv + ',' + gv + ',' + bv + ')';
+                    ctx.fillRect(sx, sy, swSz, swSz);
+                    ctx.strokeStyle = descFg;
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(sx, sy, swSz, swSz);
+                    ctx.restore();
+                }
+            });
+
+            // ── Prevent default edit for boolean columns ──
+            grid.addEventListener('beforebeginedit', function(e) {
+                if (!e.cell || !e.cell.header) return;
+                let field = e.cell.header.name;
+                if (SLK_META.boolCols[field]) {
+                    e.preventDefault();
+                }
+            });
+
+            // ── Click handler: boolean toggle, color picker ──
+            grid.addEventListener('click', function(e) {
+                if (!e.cell || !e.cell.header || e.cell.isColumnHeader || e.cell.isRowHeader) return;
+                let field = e.cell.header.name;
+                let rowIdx = e.cell.rowIndex;
+
+                // Boolean toggle
+                if (SLK_META.boolCols[field]) {
+                    let meta = getMetaForCell(rowIdx, field);
+                    if (!meta || meta.start == null) return;
+                    let curVal = currentRowData[rowIdx] ? currentRowData[rowIdx][field] : '0';
+                    let newVal = (curVal === '1') ? '0' : '1';
+                    vscode.postMessage({command:'edit', start:meta.start, len:meta.len, value:newVal});
+                    return;
+                }
+
+                // Color picker on swatch click
+                let cg = SLK_META.colorFieldMap[field];
+                if (cg) {
+                    // Check if click is in the swatch area (right side of cell)
+                    let swSz = 14;
+                    let sx = e.cell.x + e.cell.width - swSz - 4;
+                    let mouseX = 0;
+                    if (e.NativeEvent) {
+                        let rect = grid.canvas ? grid.canvas.getBoundingClientRect() : null;
+                        if (rect) mouseX = e.NativeEvent.clientX - rect.left;
+                    }
+                    if (mouseX >= sx) {
+                        let rowObj = cleanData[rowIdx];
+                        if (!rowObj) return;
+                        let rv = parseInt(rowObj[cg.r], 10) || 0;
+                        let gv = parseInt(rowObj[cg.g], 10) || 0;
+                        let bv = parseInt(rowObj[cg.b], 10) || 0;
+                        let hex = '#' + ((1<<24)+(rv<<16)+(gv<<8)+bv).toString(16).slice(1);
+
+                        let picker = document.querySelector('.slk-color-picker');
+                        if (!picker) {
+                            picker = document.createElement('input');
+                            picker.type = 'color';
+                            picker.className = 'slk-color-picker';
+                            document.body.appendChild(picker);
+                        }
+                        picker.value = hex;
+                        picker._slkCg = cg;
+                        picker._slkRow = rowIdx;
+
+                        picker.onchange = function() {
+                            let h = this.value;
+                            let nr = parseInt(h.slice(1,3),16);
+                            let ng = parseInt(h.slice(3,5),16);
+                            let nb = parseInt(h.slice(5,7),16);
+                            let cgr = this._slkCg;
+                            let ri = this._slkRow;
+                            let metaR = getMetaForCell(ri, cgr.r);
+                            let metaG = getMetaForCell(ri, cgr.g);
+                            let metaB = getMetaForCell(ri, cgr.b);
+                            if (metaR && metaR.start!=null) vscode.postMessage({command:'edit',start:metaR.start,len:metaR.len,value:String(nr)});
+                            if (metaG && metaG.start!=null) vscode.postMessage({command:'edit',start:metaG.start,len:metaG.len,value:String(ng)});
+                            if (metaB && metaB.start!=null) vscode.postMessage({command:'edit',start:metaB.start,len:metaB.len,value:String(nb)});
+                        };
+                        picker.click();
+                    }
+                }
+            });
+
             // ── 3-state sort: asc → desc → original file order ──
-            var lastSortCol = null;
-            var lastSortDir = null;
+            let lastSortCol = null;
+            let lastSortDir = null;
 
             function resetSort() {
                 lastSortCol = null;
@@ -740,22 +1017,22 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
 
             // ── collect current settings from the grid ──
             function collectSettings() {
-                var settings = {};
+                let settings = {};
 
                 // Column widths — take user-resized width first, fall back to schema width
-                var widths = {};
-                var s = grid.schema;
-                for (var i = 0; i < s.length; i++) {
-                    var col = s[i];
+                let widths = {};
+                let s = grid.schema;
+                for (let i = 0; i < s.length; i++) {
+                    let col = s[i];
                     if (col.name === '_idx') continue;
-                    var w = grid.sizes.columns[i] || col.width;
+                    let w = grid.sizes.columns[i] || col.width;
                     if (w && col.name) widths[col.name] = w;
                 }
                 if (Object.keys(widths).length > 0) settings.columnWidths = widths;
 
                 // Hidden columns (exclude the internal _idx)
-                var hidden = [];
-                for (var i = 0; i < s.length; i++) {
+                let hidden = [];
+                for (let i = 0; i < s.length; i++) {
                     if (s[i].hidden && s[i].name !== '_idx') hidden.push(s[i].name);
                 }
                 if (hidden.length > 0) settings.hiddenColumns = hidden;
@@ -774,15 +1051,15 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
             }
 
             grid.addEventListener('endedit', function(e) {
-                var cell = e.cell;
+                let cell = e.cell;
                 if (!cell) return;
-                var field = cell.header ? cell.header.name : null;
+                let field = cell.header ? cell.header.name : null;
                 if (!field) return;
 
-                var meta = getMetaForCell(cell.rowIndex, field);
+                let meta = getMetaForCell(cell.rowIndex, field);
                 if (!meta || meta.start == null) return;
 
-                var newValue = e.value;
+                let newValue = e.value;
                 if (newValue === e.oldValue) return;
 
                 vscode.postMessage({
@@ -794,7 +1071,7 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
             });
 
             // ── column resize persistence (debounced) ──
-            var resizeTimer = null;
+            let resizeTimer = null;
             grid.addEventListener('resizecolumn', function() {
                 if (resizeTimer) clearTimeout(resizeTimer);
                 resizeTimer = setTimeout(persistSettings, 300);
@@ -811,7 +1088,7 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
                 }
 
                 if (!e.cell || !e.cell.header) return;
-                var clickedCol = e.cell.header;
+                let clickedCol = e.cell.header;
                 if (clickedCol.name === '_idx') return;
 
                 // "Hide column" item
@@ -825,17 +1102,17 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
                 });
 
                 // "Show all columns" item (only if something besides _idx is hidden)
-                var hasHidden = false;
-                var s = grid.schema;
-                for (var i = 0; i < s.length; i++) {
+                let hasHidden = false;
+                let s = grid.schema;
+                for (let i = 0; i < s.length; i++) {
                     if (s[i].hidden && s[i].name !== '_idx') { hasHidden = true; break; }
                 }
                 if (hasHidden) {
                     e.items.push({
                         title: 'Show all columns',
                         click: function() {
-                            var s = grid.schema;
-                            for (var i = 0; i < s.length; i++) {
+                            let s = grid.schema;
+                            for (let i = 0; i < s.length; i++) {
                                 if (s[i].name !== '_idx') s[i].hidden = false;
                             }
                             grid.draw();
@@ -847,11 +1124,11 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
 
             // ── incremental data updates from extension host ──
             window.addEventListener('message', function(event) {
-                var msg = event.data;
+                let msg = event.data;
                 if (msg.command === 'updateData') {
                     currentRowData = msg.rowData;
-                    var newClean = stripMeta(msg.rowData);
-                    for (var i = 0; i < newClean.length; i++) newClean[i]._idx = i;
+                    let newClean = stripMeta(msg.rowData);
+                    for (let i = 0; i < newClean.length; i++) newClean[i]._idx = i;
                     cleanData = newClean;
                     grid.data = newClean;
                 }
@@ -863,20 +1140,20 @@ function buildHtml(data, canvasDatagridJsUri, defaultEditorChecked) {
             });
 
             // ── search / filter ──
-            var searchBox = document.getElementById('search');
+            let searchBox = document.getElementById('search');
             searchBox.addEventListener('input', function() {
-                var val = this.value.toLowerCase();
+                let val = this.value.toLowerCase();
                 if (!val) {
                     grid.data = cleanData.slice();
                     currentRowData = rowData;
                     return;
                 }
-                var filteredClean = [];
-                var filteredRaw = [];
-                for (var i = 0; i < rowData.length; i++) {
-                    var row = rowData[i];
-                    var match = false;
-                    for (var key in row) {
+                let filteredClean = [];
+                let filteredRaw = [];
+                for (let i = 0; i < rowData.length; i++) {
+                    let row = rowData[i];
+                    let match = false;
+                    for (let key in row) {
                         if (key.startsWith('_')) continue;
                         if (String(row[key]).toLowerCase().indexOf(val) !== -1) {
                             match = true;

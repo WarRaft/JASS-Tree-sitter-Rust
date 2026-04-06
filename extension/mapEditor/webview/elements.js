@@ -379,6 +379,91 @@ button[disabled] { cursor: default; opacity: 0.3; pointer-events: none; }
 customElements.define('reload-button', ReloadButton);
 
 
+// ── <slk-source-list> Custom Element ─────────────────────────────────
+// Usage:
+//   <slk-source-list id="dsSlkSource"></slk-source-list>
+// API:
+//   .clear()                – remove all items
+//   .addPath(text, onClick) – add a clickable SLK path item
+//   .addError(text, onClick)– add an error item (red)
+//   .setNotFound(text)      – show a single "not found" message
+
+class SlkSourceList extends HTMLElement {
+    constructor() {
+        super();
+        this.attachShadow({mode: 'open'});
+        this.shadowRoot.innerHTML = `
+<style>
+:host { display: block; font-size: 11px; }
+.item {
+    background: rgba(255, 255, 255, 0.05);
+    padding: 4px 6px;
+    word-break: break-all;
+}
+.item:not(:first-child) { margin-top: 1px; }
+.item:first-child { border-radius: 3px 3px 0 0; }
+.item:last-child { border-radius: 0 0 3px 3px; }
+.item:only-child { border-radius: 3px; }
+a {
+    color: var(--vscode-textLink-foreground, #3794ff);
+    text-decoration: none;
+    cursor: pointer;
+    display: block;
+}
+a:hover { text-decoration: underline; }
+.error { color: var(--vscode-errorForeground, #f44); }
+.error a { color: inherit; }
+.not-found {
+    color: var(--vscode-errorForeground, #f48771);
+    font-style: italic;
+    border-radius: 3px;
+}
+</style>
+<div id="c"></div>`;
+        this._c = this.shadowRoot.getElementById('c');
+    }
+
+    clear() { this._c.innerHTML = ''; }
+
+    addPath(text, onClick) {
+        const item = document.createElement('div');
+        item.className = 'item';
+        const link = document.createElement('a');
+        link.href = '#';
+        link.textContent = text;
+        link.title = 'Open in side tab';
+        link.addEventListener('click', (e) => { e.preventDefault(); if (onClick) onClick(); });
+        item.appendChild(link);
+        this._c.appendChild(item);
+    }
+
+    addError(text, onClick) {
+        const item = document.createElement('div');
+        item.className = 'item error';
+        if (onClick) {
+            const link = document.createElement('a');
+            link.href = '#';
+            link.textContent = text;
+            link.addEventListener('click', (e) => { e.preventDefault(); onClick(); });
+            item.appendChild(link);
+        } else {
+            item.textContent = text;
+        }
+        this._c.appendChild(item);
+    }
+
+    setNotFound(text) {
+        this._c.innerHTML = '';
+        const item = document.createElement('div');
+        item.className = 'item not-found';
+        item.textContent = text;
+        this._c.appendChild(item);
+    }
+}
+
+customElements.define('slk-source-list', SlkSourceList);
+
+
 // ── <collapse-group> Custom Element ─────────────────────────────────
 // Usage:
 //   <collapse-group group-title="🏷 Title" open>…content…</collapse-group>

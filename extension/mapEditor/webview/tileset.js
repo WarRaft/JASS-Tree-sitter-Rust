@@ -3,18 +3,18 @@
 // ── Tileset rebuilder ───────────────────────────────────────────────
 
 window._W3E_TILESET = (function () {
-    var U = window._W3E_UTILS;
-    var S = window._W3E_STATE;
+    let U = window._W3E_UTILS;
+    let S = window._W3E_STATE;
 
-    function _makeSlkLink(slkPath, source) {
-        var link = document.createElement('a');
+    function _makeSlkLink(slkPath) {
+        let link = document.createElement('a');
         link.className = 'ts-slk-link';
         link.href = '#';
-        link.textContent = source || slkPath;
+        link.textContent = slkPath;
         link.title = 'Open in side tab';
         link.addEventListener('click', function (e) {
             e.preventDefault();
-            var vscode = S.getVscode();
+            let vscode = S.getVscode();
             if (vscode) vscode.postMessage({command: 'openSlk', path: slkPath});
         });
         return link;
@@ -33,7 +33,11 @@ window._W3E_TILESET = (function () {
             srcEl.innerHTML = '';
             if (source) {
                 srcEl.className = 'ts-source';
-                srcEl.appendChild(_makeSlkLink('TerrainArt\\Terrain.slk', source));
+                srcEl.appendChild(_makeSlkLink('TerrainArt\\Terrain.slk'));
+                const srcLine = document.createElement('div');
+                srcLine.className = 'ts-slk-source-line';
+                srcLine.textContent = source;
+                srcEl.appendChild(srcLine);
             } else {
                 srcEl.className = 'ts-source ts-no-slk';
                 srcEl.textContent = 'TerrainArt\\Terrain.slk \u2014 not found, set Game Path';
@@ -72,7 +76,11 @@ window._W3E_TILESET = (function () {
             const source = (cliffTypesSlk && cliffTypesSlk.source) || '';
             if (source) {
                 srcEl.className = 'ts-source';
-                srcEl.appendChild(_makeSlkLink('TerrainArt\\CliffTypes.slk', source));
+                srcEl.appendChild(_makeSlkLink('TerrainArt\\CliffTypes.slk'));
+                const srcLine = document.createElement('div');
+                srcLine.className = 'ts-slk-source-line';
+                srcLine.textContent = source;
+                srcEl.appendChild(srcLine);
             } else {
                 srcEl.className = 'ts-source ts-no-slk';
                 srcEl.textContent = 'TerrainArt\\CliffTypes.slk \u2014 not found, set Game Path';

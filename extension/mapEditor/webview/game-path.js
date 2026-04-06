@@ -3,7 +3,7 @@
 // ── Game Path body builder ──────────────────────────────────────────
 
 window._W3E_GAME_PATH = (function () {
-    var U = window._W3E_UTILS;
+    let U = window._W3E_UTILS;
 
     const REQUIRED_MPQ = ['War3.mpq', 'War3x.mpq', 'War3xLocal.mpq', 'War3Patch.mpq'];
 

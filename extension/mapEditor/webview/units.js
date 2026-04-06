@@ -3,20 +3,20 @@
 // ── Units SLK: rebuild, filter, sort, detail ────────────────────────
 
 window._W3E_UNITS = (function () {
-    var U = window._W3E_UTILS;
-    var S = window._W3E_STATE;
+    let U = window._W3E_UTILS;
+    let S = window._W3E_STATE;
 
-    var _unitDataMap = {};
-    var _allUnits = [];
-    var _filteredUnits = [];
+    let _unitDataMap = {};
+    let _allUnits = [];
+    let _filteredUnits = [];
 
-    var _unitCanvasList = null;
+    let _unitCanvasList = null;
 
     function getDataMap() { return _unitDataMap; }
     function getAllUnits() { return _allUnits; }
 
     // ── Sort state ────────────────────────────────────────────────
-    var _unitSort = {field: null, dir: 'asc'};
+    let _unitSort = {field: null, dir: 'asc'};
 
     function _saveUnitSort() {
         S.patchWvState({_unitSort: {field: _unitSort.field, dir: _unitSort.dir}});
@@ -95,7 +95,7 @@ window._W3E_UNITS = (function () {
             const f = _unitSort.field;
             const mul = _unitSort.dir === 'desc' ? -1 : 1;
             filtered.sort((a, b) => {
-                var va, vb;
+                let va, vb;
                 if (f === 'name') {
                     va = (U.gsValue(a.name) || '').toLowerCase();
                     vb = (U.gsValue(b.name) || '').toLowerCase();
@@ -314,7 +314,7 @@ window._W3E_UNITS = (function () {
     }
 
     function showDetail(unitId) {
-        var vscode = S.getVscode();
+        let vscode = S.getVscode();
         const u = _unitDataMap[unitId];
         if (!u) {
             const win = document.getElementById('unitDetailWindow');
@@ -401,13 +401,13 @@ window._W3E_UNITS = (function () {
         });
 
         body.addEventListener('click', function (e) {
-            var link = e.target.closest('.dd-model-link');
+            let link = e.target.closest('.dd-model-link');
             if (link) {
                 e.preventDefault();
                 if (vscode) vscode.postMessage({command: 'openModel', path: link.getAttribute('data-path')});
                 return;
             }
-            var ptLink = e.target.closest('.dd-pathtex-link');
+            let ptLink = e.target.closest('.dd-pathtex-link');
             if (ptLink) {
                 e.preventDefault();
                 window._W3E_PATH_TEX.showPathTex(ptLink.getAttribute('data-pathtex'));
@@ -417,21 +417,21 @@ window._W3E_UNITS = (function () {
 
     // ── Canvas list row renderer ──────────────────────────────────
     function renderRow(ctx, u, x, y, w, h, c) {
-        var mid = y + h / 2;
+        let mid = y + h / 2;
         ctx.textBaseline = 'middle';
         ctx.font = '11px ' + c.mono;
         ctx.fillStyle = c.link;
         ctx.fillText(u.unitId || '', x, mid);
-        var raceText = u.race || '';
+        let raceText = u.race || '';
         ctx.font = '11px ' + c.font;
         ctx.fillStyle = c.desc;
         ctx.textAlign = 'right';
         ctx.fillText(raceText, x + w, mid);
-        var raceW = raceText ? ctx.measureText(raceText).width + 8 : 0;
+        let raceW = raceText ? ctx.measureText(raceText).width + 8 : 0;
         ctx.textAlign = 'left';
-        var nameX = x + 46;
-        var nameEnd = x + w - raceW;
-        var nameW = nameEnd - nameX;
+        let nameX = x + 46;
+        let nameEnd = x + w - raceW;
+        let nameW = nameEnd - nameX;
         if (nameW > 10) {
             ctx.font = '12px ' + c.font;
             ctx.fillStyle = c.fg;
@@ -443,7 +443,7 @@ window._W3E_UNITS = (function () {
     // ── Canvas list lifecycle ─────────────────────────────────────
     function ensureCanvasList() {
         if (_unitCanvasList) return;
-        var el = document.getElementById('usUnitList');
+        let el = document.getElementById('usUnitList');
         if (!el) return;
         _unitCanvasList = new CanvasList(el, {
             rowHeight: 26,

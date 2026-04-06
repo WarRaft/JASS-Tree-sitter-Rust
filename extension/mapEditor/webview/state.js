@@ -5,7 +5,7 @@
 // sort/filter/collapse state in VS Code webview state.
 
 window._W3E_STATE = (function () {
-    var _vscode = null;
+    let _vscode = null;
 
     function setVscode(v) { _vscode = v; }
     function getVscode() { return _vscode; }

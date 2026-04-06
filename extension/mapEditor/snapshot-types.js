@@ -65,6 +65,7 @@
 /**
  * @typedef {Object} Doodad
  * @property {string} doodId - Rawcode, e.g. "APms"
+ * @property {string} baseId - Original rawcode for custom doodads from .w3d (empty for standard)
  * @property {GameString} name
  * @property {string} comment
  * @property {string} category
@@ -105,6 +106,7 @@
  * @typedef {Object} DoodadsSlkResult
  * @property {string} source
  * @property {Object<string, Doodad>} doodads - Keyed by rawcode u32
+ * @property {string[]} [w3dErrors] - Errors from merging war3map.w3d
  */
 
 // ─── Units ───────────────────────────────────────────────────────────────────

@@ -106,13 +106,11 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const filesRows = mapInfo.isArchive ? renderFilesRows(mapInfo.archiveFiles) : ''
 
     // Build doodads SLK data
-    let doodadsSlkSource = ''
     const doodadCategoriesSet = new Set()
     const doodadTilesetsSet = new Set()
     const doodadsMap = (terrainData && terrainData._doodadsSlk && terrainData._doodadsSlk.doodads) || {}
     const doodadsValues = Object.values(doodadsMap)
     if (terrainData && terrainData._doodadsSlk) {
-        doodadsSlkSource = terrainData._doodadsSlk.source || ''
         for (const d of doodadsValues) {
             if (d.category) doodadCategoriesSet.add(d.category)
             if (d.tilesets) {
@@ -423,8 +421,12 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     <float-window id="doodadsSlkWindow" title-text="\ud83c\udf33 Doodads" no-padding hidden style="left:140px;top:16px;width:750px;height:70vh;">
         <reload-button slot="actions"></reload-button>
         <div style="display:flex;height:100%;overflow:hidden;">
-            <div class="ds-sidebar" id="dsSidebar">
-                <div id="dsSlkSource" class="${doodadsSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${doodadsSlkSource ? esc(doodadsSlkSource) : 'Doodads.slk not found \u2014 set Game Path'}</div>
+             <div class="ds-sidebar" id="dsSidebar">
+                <slk-source-list id="dsSlkSource"></slk-source-list>
+                <div class="ds-filter-group">
+                    <div class="ds-filter-title">Status</div>
+                    <div class="terrain-checks" id="dsStatusChecks"></div>
+                </div>
                 <div class="ds-filter-group">
                     <div class="ds-filter-title">Categories</div>
                     <div class="terrain-checks" id="dsCatChecks">${categoryCheckboxes}</div>
@@ -449,6 +451,10 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     <float-window id="doodadDetailWindow" title-text="\ud83c\udf33 Doodad" hidden style="left:200px;top:60px;width:560px;">
         <div id="doodadDetailBody"></div>
+    </float-window>
+
+    <float-window id="doodadErrorsWindow" title-text="\u26a0 Doodad Errors" hidden style="left:220px;top:80px;width:600px;max-height:60vh;">
+        <div id="doodadErrorsBody" style="padding:8px;overflow:auto;max-height:55vh;font-size:12px;"></div>
     </float-window>
 
     <float-window id="destructablesSlkWindow" title-text="\ud83c\udfda Destructables" no-padding hidden style="left:140px;top:16px;width:750px;height:70vh;">

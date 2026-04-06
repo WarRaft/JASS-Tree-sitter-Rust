@@ -531,6 +531,7 @@ module.exports = {
                 }
             }),
 
+
             // Import Graph panel
             commands.registerCommand('importGraph.show', () => {
                 showImportGraph(client, context.extensionUri, context)

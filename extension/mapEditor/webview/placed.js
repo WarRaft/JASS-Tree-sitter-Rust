@@ -3,18 +3,18 @@
 // ── Placed DOO objects — canvas list renderers & name resolution ─────
 
 window._W3E_PLACED = (function () {
-    var U = window._W3E_UTILS;
-    var DOOD = window._W3E_DOODADS;
-    var DEST = window._W3E_DESTRUCTABLES;
-    var UNITS = window._W3E_UNITS;
+    let U = window._W3E_UTILS;
+    let DOOD = window._W3E_DOODADS;
+    let DEST = window._W3E_DESTRUCTABLES;
+    let UNITS = window._W3E_UNITS;
 
-    var _doodadDooItems = [];
-    var _unitDooItems = [];
-    var _destDooItems = [];
+    let _doodadDooItems = [];
+    let _unitDooItems = [];
+    let _destDooItems = [];
 
-    var _unitDooCanvasList = null;
-    var _doodadDooCanvasList = null;
-    var _destDooCanvasList = null;
+    let _unitDooCanvasList = null;
+    let _doodadDooCanvasList = null;
+    let _destDooCanvasList = null;
 
     function setDoodadDooItems(items) { _doodadDooItems = items || []; }
     function setUnitDooItems(items) { _unitDooItems = items || []; }
@@ -27,7 +27,7 @@ window._W3E_PLACED = (function () {
 
     // ── Row renderers ─────────────────────────────────────────────
     function _renderPlacedDoodadRow(ctx, item, x, y, w, h, c) {
-        var mid = y + h / 2;
+        let mid = y + h / 2;
         ctx.textBaseline = 'middle';
         ctx.font = '10px ' + c.mono;
         ctx.fillStyle = c.desc;
@@ -40,15 +40,15 @@ window._W3E_PLACED = (function () {
         ctx.font = '10px ' + c.mono;
         ctx.fillStyle = c.desc;
         ctx.textAlign = 'right';
-        var angleDeg = item.angle != null ? (item.angle * 180 / Math.PI).toFixed(0) + '\u00b0' : '';
+        let angleDeg = item.angle != null ? (item.angle * 180 / Math.PI).toFixed(0) + '\u00b0' : '';
         ctx.fillText(angleDeg, x + w, mid);
-        var posText = _fmtPlacedF(item.position.x) + ', ' + _fmtPlacedF(item.position.y);
+        let posText = _fmtPlacedF(item.position.x) + ', ' + _fmtPlacedF(item.position.y);
         ctx.fillText(posText, x + w - 42, mid);
-        var posW = ctx.measureText(posText).width;
+        let posW = ctx.measureText(posText).width;
         ctx.textAlign = 'left';
-        var nameX = x + 78;
-        var nameEnd = x + w - 42 - posW - 12;
-        var nameW = nameEnd - nameX;
+        let nameX = x + 78;
+        let nameEnd = x + w - 42 - posW - 12;
+        let nameW = nameEnd - nameX;
         if (nameW > 10) {
             ctx.font = '12px ' + c.font;
             ctx.fillStyle = c.fg;
@@ -58,7 +58,7 @@ window._W3E_PLACED = (function () {
     }
 
     function _renderPlacedUnitRow(ctx, item, x, y, w, h, c) {
-        var mid = y + h / 2;
+        let mid = y + h / 2;
         ctx.textBaseline = 'middle';
         ctx.font = '10px ' + c.mono;
         ctx.fillStyle = c.desc;
@@ -74,15 +74,15 @@ window._W3E_PLACED = (function () {
         if (item.player != null) {
             ctx.fillText('P' + item.player, x + w, mid);
         }
-        var angleDeg = item.angle != null ? (item.angle * 180 / Math.PI).toFixed(0) + '\u00b0' : '';
+        let angleDeg = item.angle != null ? (item.angle * 180 / Math.PI).toFixed(0) + '\u00b0' : '';
         ctx.fillText(angleDeg, x + w - 28, mid);
-        var posText = _fmtPlacedF(item.position.x) + ', ' + _fmtPlacedF(item.position.y);
+        let posText = _fmtPlacedF(item.position.x) + ', ' + _fmtPlacedF(item.position.y);
         ctx.fillText(posText, x + w - 68, mid);
-        var posW = ctx.measureText(posText).width;
+        let posW = ctx.measureText(posText).width;
         ctx.textAlign = 'left';
-        var nameX = x + 78;
-        var nameEnd = x + w - 68 - posW - 12;
-        var nameW = nameEnd - nameX;
+        let nameX = x + 78;
+        let nameEnd = x + w - 68 - posW - 12;
+        let nameW = nameEnd - nameX;
         if (nameW > 10) {
             ctx.font = '12px ' + c.font;
             ctx.fillStyle = c.fg;
@@ -93,20 +93,20 @@ window._W3E_PLACED = (function () {
 
     // ── Categorize and resolve names ──────────────────────────────
     function _categorizePlacedItems() {
-        var doodadDataMap = DOOD.getDataMap();
-        var destructableDataMap = DEST.getDataMap();
-        var destItems = [];
+        let doodadDataMap = DOOD.getDataMap();
+        let destructableDataMap = DEST.getDataMap();
+        let destItems = [];
 
-        for (var i = 0; i < _doodadDooItems.length; i++) {
-            var it = _doodadDooItems[i];
-            var rawKey = String(it.raw);
+        for (let i = 0; i < _doodadDooItems.length; i++) {
+            let it = _doodadDooItems[i];
+            let rawKey = String(it.raw);
             if (doodadDataMap[rawKey]) {
                 it._name = U.gsValue(doodadDataMap[rawKey].name);
                 it._error = false;
             } else if (destructableDataMap[rawKey]) {
-                var dObj = destructableDataMap[rawKey];
-                var rn = U.gsValue(dObj.name);
-                var rs = U.gsValue(dObj.editorSuffix);
+                let dObj = destructableDataMap[rawKey];
+                let rn = U.gsValue(dObj.name);
+                let rs = U.gsValue(dObj.editorSuffix);
                 it._name = rn + (rs ? ' ' + rs : '');
                 it._error = false;
                 destItems.push(it);
@@ -119,7 +119,7 @@ window._W3E_PLACED = (function () {
 
         _destDooItems = destItems;
 
-        var titleEl = document.getElementById('destDooTitle');
+        let titleEl = document.getElementById('destDooTitle');
         if (titleEl) {
             titleEl.textContent = '\ud83c\udfda Placed Destructables (' + destItems.length + ')';
         }
@@ -133,14 +133,14 @@ window._W3E_PLACED = (function () {
     }
 
     function updatePlacedNames() {
-        var unitDataMap = UNITS.getDataMap();
+        let unitDataMap = UNITS.getDataMap();
         if (_doodadDooItems.length && DOOD.isLoaded() && DEST.isLoaded()) {
             _categorizePlacedItems();
         }
-        for (var j = 0; j < _unitDooItems.length; j++) {
-            var u = _unitDooItems[j];
-            var rawKey = String(u.raw);
-            var uObj = unitDataMap[rawKey];
+        for (let j = 0; j < _unitDooItems.length; j++) {
+            let u = _unitDooItems[j];
+            let rawKey = String(u.raw);
+            let uObj = unitDataMap[rawKey];
             u._name = uObj ? (U.gsValue(uObj.name) || uObj.comment || '') : '';
         }
         if (_unitDooCanvasList) {
@@ -151,13 +151,13 @@ window._W3E_PLACED = (function () {
     // ── Canvas list lifecycle ─────────────────────────────────────
     function ensureUnitDooCanvasList() {
         if (_unitDooCanvasList) return;
-        var el = document.getElementById('unitDooList');
+        let el = document.getElementById('unitDooList');
         if (!el) return;
         _unitDooCanvasList = new CanvasList(el, {
             rowHeight: 26,
             renderRow: _renderPlacedUnitRow,
             onClick: function (item) {
-                var rawKey = String(item.raw);
+                let rawKey = String(item.raw);
                 if (UNITS.getDataMap()[rawKey]) {
                     UNITS.showDetail(rawKey);
                 }
@@ -171,13 +171,13 @@ window._W3E_PLACED = (function () {
 
     function ensureDoodadDooCanvasList() {
         if (_doodadDooCanvasList) return;
-        var el = document.getElementById('doodadDooList');
+        let el = document.getElementById('doodadDooList');
         if (!el) return;
         _doodadDooCanvasList = new CanvasList(el, {
             rowHeight: 26,
             renderRow: _renderPlacedDoodadRow,
             onClick: function (item) {
-                var rawKey = String(item.raw);
+                let rawKey = String(item.raw);
                 if (DOOD.getDataMap()[rawKey]) {
                     DOOD.showDetail(rawKey);
                 } else if (DEST.getDataMap()[rawKey]) {
@@ -193,13 +193,13 @@ window._W3E_PLACED = (function () {
 
     function ensureDestDooCanvasList() {
         if (_destDooCanvasList) return;
-        var el = document.getElementById('destructableDooList');
+        let el = document.getElementById('destructableDooList');
         if (!el) return;
         _destDooCanvasList = new CanvasList(el, {
             rowHeight: 26,
             renderRow: _renderPlacedDoodadRow,
             onClick: function (item) {
-                var rawKey = String(item.raw);
+                let rawKey = String(item.raw);
                 if (DEST.getDataMap()[rawKey]) {
                     DEST.showDetail(rawKey);
                 } else if (DOOD.getDataMap()[rawKey]) {
@@ -215,12 +215,12 @@ window._W3E_PLACED = (function () {
 
     // ── Highlight placed doodad ──────────────────────────────────
     function highlightPlacedDoodad(dooIndex) {
-        var foundIdx = -1;
-        for (var i = 0; i < _doodadDooItems.length; i++) {
+        let foundIdx = -1;
+        for (let i = 0; i < _doodadDooItems.length; i++) {
             if (_doodadDooItems[i].index === dooIndex) { foundIdx = i; break; }
         }
         if (foundIdx < 0) return;
-        var win = document.getElementById('doodadDooWindow');
+        let win = document.getElementById('doodadDooWindow');
         if (!win) return;
         win.show();
         ensureDoodadDooCanvasList();

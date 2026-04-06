@@ -1,5 +1,5 @@
 use crate::lng::w3e::parse::W3eData;
-use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk};
+use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk, load_doodad_metadata, merge_w3d_into_doodads};
 use crate::lng::w3e::textures::load_tile_textures;
 use crate::lsp::cancel::CancelId;
 use crate::lsp::protocol::ResponseMessage;
@@ -142,10 +142,36 @@ async fn _send(
 
         // Attach terrain SLK tile metadata (blocking FS/MPQ reads).
         let ap2 = archive_path.map(|s| s.to_string());
+        let ap_for_w3d = archive_path.map(|s| s.to_string());
         let slk_and_tex = tokio::task::spawn_blocking(move || {
             let slk = load_terrain_slk(ap2.as_deref());
             let tex = load_tile_textures(&ground_tiles, slk.as_ref(), ap2.as_deref());
-            let dood_slk = load_doodads_slk(ap2.as_deref());
+            let mut dood_slk = load_doodads_slk(ap2.as_deref());
+
+            // Try to load war3map.w3d from the archive and merge into doodads.
+            if let Some(ref mut dood_result) = dood_slk {
+                if let Some(ref ap) = ap_for_w3d {
+                    if let Ok(archive) = storm_rs::MpqArchive::open(ap) {
+                        if let Ok(w3d_buf) = archive.read_file("war3map.w3d") {
+                            match crate::lng::w3abdhqtu::parse::W3ObjectData::read(&w3d_buf, true) {
+                                Ok((w3d_data, _meta)) => {
+                                    let dood_meta = load_doodad_metadata();
+                                    let errs = merge_w3d_into_doodads(
+                                        &mut dood_result.doodads,
+                                        &w3d_data,
+                                        &dood_meta,
+                                    );
+                                    dood_result.w3d_errors = errs;
+                                }
+                                Err(e) => {
+                                    dood_result.w3d_errors.push(format!("Failed to parse war3map.w3d: {}", e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let unit_slk = load_units_slk(ap2.as_deref());
             let dest_slk = load_destructables_slk(ap2.as_deref());
             let cliff_types_slk = load_cliff_types_slk(ap2.as_deref(), Some(&tileset_for_cliff));
@@ -196,10 +222,36 @@ async fn _send(
         val["_packed"] = packed;
 
         // Attach terrain SLK tile metadata and textures.
+        let w3d_path = path.parent().map(|p| p.join("war3map.w3d"));
         let slk_and_tex = tokio::task::spawn_blocking(move || {
             let slk = load_terrain_slk(None);
             let tex = load_tile_textures(&ground_tiles, slk.as_ref(), None);
-            let dood_slk = load_doodads_slk(None);
+            let mut dood_slk = load_doodads_slk(None);
+
+            // Try to load war3map.w3d from the same directory and merge into doodads.
+            if let Some(ref mut dood_result) = dood_slk {
+                if let Some(ref w3d_file) = w3d_path {
+                    if w3d_file.exists() {
+                        if let Ok(w3d_buf) = std::fs::read(w3d_file) {
+                            match crate::lng::w3abdhqtu::parse::W3ObjectData::read(&w3d_buf, true) {
+                                Ok((w3d_data, _meta)) => {
+                                    let dood_meta = load_doodad_metadata();
+                                    let errs = merge_w3d_into_doodads(
+                                        &mut dood_result.doodads,
+                                        &w3d_data,
+                                        &dood_meta,
+                                    );
+                                    dood_result.w3d_errors = errs;
+                                }
+                                Err(e) => {
+                                    dood_result.w3d_errors.push(format!("Failed to parse war3map.w3d: {}", e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let unit_slk = load_units_slk(None);
             let dest_slk = load_destructables_slk(None);
             let cliff_types_slk = load_cliff_types_slk(None, Some(&tileset_for_cliff));

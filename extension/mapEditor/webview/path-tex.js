@@ -3,25 +3,25 @@
 // ── Path Texture viewer ─────────────────────────────────────────────
 
 window._W3E_PATH_TEX = (function () {
-    var U = window._W3E_UTILS;
+    let U = window._W3E_UTILS;
 
     function showPathTex(texPath) {
-        var win = document.getElementById('pathTexWindow');
-        var body = document.getElementById('pathTexBody');
+        let win = document.getElementById('pathTexWindow');
+        let body = document.getElementById('pathTexBody');
         if (!win || !body) return;
 
         win.setAttribute('title-text', '\ud83d\udea7 ' + texPath.replace(/\\/g, '/').split('/').pop());
         win.show();
         body.innerHTML = '<div class="ptex-loading">\u231b Loading\u2026</div>';
 
-        var data = window.__W3E_DATA__;
+        let data = window.__W3E_DATA__;
         if (!data || !data.binaryServer) {
             body.innerHTML = '<div class="ptex-error">\u26a0 Binary server not available</div>';
             return;
         }
 
-        var bs = data.binaryServer;
-        var params = new URLSearchParams({token: bs.token, path: texPath});
+        let bs = data.binaryServer;
+        let params = new URLSearchParams({token: bs.token, path: texPath});
         if (data.isArchive && data.archivePath) params.set('archive', data.archivePath);
 
         fetch('http://127.0.0.1:' + bs.port + '/w3e/pathTex?' + params)
@@ -38,11 +38,11 @@ window._W3E_PATH_TEX = (function () {
     }
 
     function _renderPathTexGrid(container, result, texPath) {
-        var w = result.width;
-        var h = result.height;
-        var px = result.pixels;
+        let w = result.width;
+        let h = result.height;
+        let px = result.pixels;
 
-        var html = '<div class="ptex-legend">'
+        let html = '<div class="ptex-legend">'
             + '<div class="ptex-legend-row">'
             + '<div class="ptex-legend-cell">'
             + '<span style="background:#e53935"></span>'
@@ -68,23 +68,23 @@ window._W3E_PATH_TEX = (function () {
 
         html += '<div class="ptex-grid" style="grid-template-columns:repeat(' + w + ', 24px);">';
 
-        for (var y = 0; y < h; y++) {
-            for (var x = 0; x < w; x++) {
-                var idx = (y * w + x) * 3;
-                var r = px[idx];
-                var g = px[idx + 1];
-                var b = px[idx + 2];
+        for (let y = 0; y < h; y++) {
+            for (let x = 0; x < w; x++) {
+                let idx = (y * w + x) * 3;
+                let r = px[idx];
+                let g = px[idx + 1];
+                let b = px[idx + 2];
 
-                var canWalk = (r === 0);
-                var canFly = (g === 0);
-                var canBuild = (b === 0);
+                let canWalk = (r === 0);
+                let canFly = (g === 0);
+                let canBuild = (b === 0);
 
-                var walkColor = canWalk ? '#e53935' : 'rgba(229,57,53,0.12)';
-                var flyColor = canFly ? '#43a047' : 'rgba(67,160,71,0.12)';
-                var buildColor = canBuild ? '#1e88e5' : 'rgba(30,136,229,0.12)';
-                var rgbColor = 'rgb(' + r + ',' + g + ',' + b + ')';
+                let walkColor = canWalk ? '#e53935' : 'rgba(229,57,53,0.12)';
+                let flyColor = canFly ? '#43a047' : 'rgba(67,160,71,0.12)';
+                let buildColor = canBuild ? '#1e88e5' : 'rgba(30,136,229,0.12)';
+                let rgbColor = 'rgb(' + r + ',' + g + ',' + b + ')';
 
-                var title = 'x=' + x + ' y=' + y
+                let title = 'x=' + x + ' y=' + y
                     + '  R=' + r + ' G=' + g + ' B=' + b
                     + '\nWalk: ' + (canWalk ? 'YES' : 'no')
                     + '  Fly: ' + (canFly ? 'YES' : 'no')

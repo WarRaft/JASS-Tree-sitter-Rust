@@ -53,7 +53,7 @@ window._W3E_MODEL_VIEWER = (function () {
         let defaultCamTarget = new THREE.Vector3();
         let maxDim = 100;
 
-        var ctrl = window._W3E_ORBIT.makeOrbitControls(camera, canvas, maxDim, {skipGuards: true});
+        let ctrl = window._W3E_ORBIT.makeOrbitControls(camera, canvas, maxDim, {skipGuards: true});
 
         // Toolbar buttons
         const wireBtn = document.getElementById('mvWireBtn');
@@ -82,7 +82,7 @@ window._W3E_MODEL_VIEWER = (function () {
             wireOn = !wireOn;
             toggleSbBtn(wireBtn, wireOn);
             wireframeGroup.children.forEach(function (m, i) {
-                var mainMesh = meshGroup.children[i];
+                let mainMesh = meshGroup.children[i];
                 m.visible = wireOn && (!mainMesh || mainMesh.visible);
             });
         });
@@ -156,15 +156,15 @@ window._W3E_MODEL_VIEWER = (function () {
             handle.addEventListener('mousedown', function (e) {
                 e.preventDefault();
                 e.stopPropagation();
-                var panel = handle.parentElement;
+                let panel = handle.parentElement;
                 if (!panel) return;
-                var startX = e.clientX;
-                var startW = panel.offsetWidth;
+                let startX = e.clientX;
+                let startW = panel.offsetWidth;
                 handle.classList.add('active');
                 function onMove(ev) {
                     ev.preventDefault();
-                    var delta = startX - ev.clientX;
-                    var newW = Math.max(120, Math.min(panel.parentElement.clientWidth * 0.8, startW + delta));
+                    let delta = startX - ev.clientX;
+                    let newW = Math.max(120, Math.min(panel.parentElement.clientWidth * 0.8, startW + delta));
                     panel.style.width = newW + 'px';
                 }
                 function onUp() {
@@ -226,12 +226,12 @@ window._W3E_MODEL_VIEWER = (function () {
             return new Uint16Array(buf);
         }
 
-        var FILTER_MODE_NAMES = [
+        let FILTER_MODE_NAMES = [
             'None', 'Transparent', 'Blend', 'Additive',
             'AddAlpha', 'Modulate', 'Modulate2x'
         ];
 
-        var SHADING_FLAG_BITS = [
+        let SHADING_FLAG_BITS = [
             {bit: 0x01, name: 'Unshaded'},
             {bit: 0x02, name: 'SphereEnvMap'},
             {bit: 0x10, name: 'TwoSided'},
@@ -241,8 +241,8 @@ window._W3E_MODEL_VIEWER = (function () {
         ];
 
         function decodeShadingFlags(flags) {
-            var names = [];
-            for (var i = 0; i < SHADING_FLAG_BITS.length; i++) {
+            let names = [];
+            for (let i = 0; i < SHADING_FLAG_BITS.length; i++) {
                 if (flags & SHADING_FLAG_BITS[i].bit) names.push(SHADING_FLAG_BITS[i].name);
             }
             return names.length > 0 ? names.join(', ') : 'None';
@@ -251,7 +251,7 @@ window._W3E_MODEL_VIEWER = (function () {
 
         function textureUrl(bs, archivePath, texPath) {
             if (!bs || !texPath) return null;
-            var params = new URLSearchParams({
+            let params = new URLSearchParams({
                 token: bs.token,
                 path: texPath,
             });
@@ -282,16 +282,16 @@ window._W3E_MODEL_VIEWER = (function () {
                 return;
             }
 
-            var loadedTextures = new Array(textures.length).fill(null);
-            var textureLoader = new THREE.TextureLoader();
+            let loadedTextures = new Array(textures.length).fill(null);
+            let textureLoader = new THREE.TextureLoader();
             textureLoader.crossOrigin = 'anonymous';
 
             function getTextureForMaterial(materialId) {
                 if (materialId < materials.length) {
-                    var mat = materials[materialId];
-                    var layers = mat.layers || [];
+                    let mat = materials[materialId];
+                    let layers = mat.layers || [];
                     if (layers.length > 0) {
-                        var texId = layers[0].texture_id;
+                        let texId = layers[0].texture_id;
                         if (texId < loadedTextures.length && loadedTextures[texId]) {
                             return {texture: loadedTextures[texId], layer: layers[0], texIndex: texId};
                         }
@@ -302,8 +302,8 @@ window._W3E_MODEL_VIEWER = (function () {
 
             function getLayerForMaterial(materialId) {
                 if (materialId < materials.length) {
-                    var mat = materials[materialId];
-                    var layers = mat.layers || [];
+                    let mat = materials[materialId];
+                    let layers = mat.layers || [];
                     if (layers.length > 0) return layers[0];
                 }
                 return null;
@@ -329,12 +329,12 @@ window._W3E_MODEL_VIEWER = (function () {
                 if (normals.length === 0) geometry.computeVertexNormals();
 
                 const color = COLORS[idx % COLORS.length];
-                var texInfo = getTextureForMaterial(g.material_id);
-                var layer = getLayerForMaterial(g.material_id);
-                var sf = layer ? layer.shading_flags : 0;
-                var fm = layer ? layer.filter_mode : 0;
+                let texInfo = getTextureForMaterial(g.material_id);
+                let layer = getLayerForMaterial(g.material_id);
+                let sf = layer ? layer.shading_flags : 0;
+                let fm = layer ? layer.filter_mode : 0;
 
-                var matOpts = { flatShading: false };
+                let matOpts = { flatShading: false };
 
                 // TwoSided (0x10) → DoubleSide, otherwise FrontSide
                 matOpts.side = (sf & 0x10) ? THREE.DoubleSide : THREE.DoubleSide;
@@ -396,7 +396,7 @@ window._W3E_MODEL_VIEWER = (function () {
                 }
 
                 // Unshaded (0x01) → use MeshBasicMaterial (no lighting)
-                var material;
+                let material;
                 if (sf & 0x01) {
                     material = new THREE.MeshBasicMaterial(matOpts);
                 } else {
@@ -420,7 +420,7 @@ window._W3E_MODEL_VIEWER = (function () {
             if (bs) {
                 textures.forEach(function (tex, i) {
                     if (!tex) return;
-                    var actualPath = null;
+                    let actualPath = null;
                     if (tex.replaceable_id && replaceableTextures) {
                         if (replaceableTextures._cliffTex !== undefined) {
                             actualPath = replaceableTextures._cliffTex;
@@ -431,20 +431,20 @@ window._W3E_MODEL_VIEWER = (function () {
                         actualPath = tex.file_name;
                     }
                     if (!actualPath) return;
-                    var url = textureUrl(bs, archivePath, actualPath);
+                    let url = textureUrl(bs, archivePath, actualPath);
                     if (!url) return;
 
-                    var threeTex = textureLoader.load(url, function () {
+                    let threeTex = textureLoader.load(url, function () {
                         meshGroup.children.forEach(function (m) {
-                            var matId = m.userData.materialId;
-                            var info = getTextureForMaterial(matId);
+                            let matId = m.userData.materialId;
+                            let info = getTextureForMaterial(matId);
                             if (info && info.texIndex === i) {
                                 m.material.map = threeTex;
                                 m.material.color.set(0xffffff);
                                 m.material.needsUpdate = true;
                             }
                         });
-                        var imgs = document.querySelectorAll('[data-mv-tex-index="' + i + '"]');
+                        let imgs = document.querySelectorAll('[data-mv-tex-index="' + i + '"]');
                         imgs.forEach(function (img) {
                             img.src = url;
                             img.style.display = '';
@@ -490,26 +490,26 @@ window._W3E_MODEL_VIEWER = (function () {
             if (materialList) {
                 materialList.innerHTML = '';
                 materials.forEach(function (mat, i) {
-                    var item = document.createElement('div');
+                    let item = document.createElement('div');
                     item.className = 'mv-mat-item';
 
-                    var header = document.createElement('div');
+                    let header = document.createElement('div');
                     header.className = 'mv-mat-item-header';
-                    var headerText = 'Material #' + i;
+                    let headerText = 'Material #' + i;
                     if (mat.priority_plane) headerText += ' (plane: ' + mat.priority_plane + ')';
                     if (mat.flags) headerText += ' [0x' + mat.flags.toString(16) + ']';
                     header.textContent = headerText;
                     item.appendChild(header);
 
-                    var layers = mat.layers || [];
+                    let layers = mat.layers || [];
                     layers.forEach(function (layer, li) {
-                        var layerDiv = document.createElement('div');
+                        let layerDiv = document.createElement('div');
                         layerDiv.className = 'mv-mat-layer';
 
-                        var fmName = FILTER_MODE_NAMES[layer.filter_mode] || 'Unknown(' + layer.filter_mode + ')';
-                        var tex = textures[layer.texture_id];
+                        let fmName = FILTER_MODE_NAMES[layer.filter_mode] || 'Unknown(' + layer.filter_mode + ')';
+                        let tex = textures[layer.texture_id];
 
-                        var layerHtml =
+                        let layerHtml =
                             '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Layer #' + li + '</span></div>' +
                             '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Filter:</span> <span>' + fmName + '</span></div>' +
                             '<div class="mv-mat-layer-row"><span class="mv-mat-layer-label">Shading:</span> <span>' + decodeShadingFlags(layer.shading_flags) + '</span></div>' +
@@ -523,16 +523,16 @@ window._W3E_MODEL_VIEWER = (function () {
                         layerDiv.innerHTML = layerHtml;
 
                         if (tex && tex.file_name && !tex.replaceable_id && bs) {
-                            var thumbUrl = textureUrl(bs, archivePath, tex.file_name);
+                            let thumbUrl = textureUrl(bs, archivePath, tex.file_name);
                             if (thumbUrl) {
-                                var thumb = document.createElement('img');
+                                let thumb = document.createElement('img');
                                 thumb.className = 'mv-mat-thumb';
                                 thumb.src = thumbUrl;
                                 thumb.alt = tex.file_name;
                                 thumb.setAttribute('data-mv-tex-index', layer.texture_id);
                                 thumb.onerror = function () {
                                     thumb.style.display = 'none';
-                                    var ph = document.createElement('div');
+                                    let ph = document.createElement('div');
                                     ph.className = 'mv-mat-thumb-placeholder';
                                     ph.textContent = 'Texture not found';
                                     thumb.parentNode.replaceChild(ph, thumb);
@@ -540,17 +540,17 @@ window._W3E_MODEL_VIEWER = (function () {
                                 layerDiv.appendChild(thumb);
                             }
                         } else if (tex && tex.replaceable_id && replaceableTextures && replaceableTextures[tex.replaceable_id] && bs) {
-                            var replPath = replaceableTextures[tex.replaceable_id];
-                            var thumbUrl = textureUrl(bs, archivePath, replPath);
+                            let replPath = replaceableTextures[tex.replaceable_id];
+                            let thumbUrl = textureUrl(bs, archivePath, replPath);
                             if (thumbUrl) {
-                                var thumb = document.createElement('img');
+                                let thumb = document.createElement('img');
                                 thumb.className = 'mv-mat-thumb';
                                 thumb.src = thumbUrl;
                                 thumb.alt = replPath;
                                 thumb.setAttribute('data-mv-tex-index', layer.texture_id);
                                 thumb.onerror = function () {
                                     thumb.style.display = 'none';
-                                    var ph = document.createElement('div');
+                                    let ph = document.createElement('div');
                                     ph.className = 'mv-mat-thumb-placeholder';
                                     ph.textContent = 'Texture not found';
                                     thumb.parentNode.replaceChild(ph, thumb);
@@ -558,7 +558,7 @@ window._W3E_MODEL_VIEWER = (function () {
                                 layerDiv.appendChild(thumb);
                             }
                         } else if (tex && tex.replaceable_id) {
-                            var ph = document.createElement('div');
+                            let ph = document.createElement('div');
                             ph.className = 'mv-mat-thumb-placeholder';
                             ph.textContent = 'Replaceable (ID ' + tex.replaceable_id + ')';
                             layerDiv.appendChild(ph);
@@ -576,39 +576,39 @@ window._W3E_MODEL_VIEWER = (function () {
             }
 
             // Build skeleton
-            var allNodes = [];
+            let allNodes = [];
             bones.forEach(function (b) { allNodes.push({name: b.name, objectId: b.object_id, parentId: b.parent_id, flags: b.flags, type: 'bone'}); });
             helpers.forEach(function (h) { allNodes.push({name: h.name, objectId: h.object_id, parentId: h.parent_id, flags: h.flags, type: 'helper'}); });
 
-            var pivotMap = {};
+            let pivotMap = {};
             pivotPoints.forEach(function (p, i) { pivotMap[i] = p; });
 
-            var boneLineVerts = [];
+            let boneLineVerts = [];
             allNodes.forEach(function (node) {
                 if (node.parentId === 0xFFFFFFFF || node.parentId === 4294967295) return;
-                var childPivot = pivotMap[node.objectId];
-                var parentPivot = pivotMap[node.parentId];
+                let childPivot = pivotMap[node.objectId];
+                let parentPivot = pivotMap[node.parentId];
                 if (!childPivot || !parentPivot) return;
                 boneLineVerts.push(parentPivot[0], parentPivot[1], parentPivot[2]);
                 boneLineVerts.push(childPivot[0], childPivot[1], childPivot[2]);
             });
 
             if (boneLineVerts.length > 0) {
-                var skelGeom = new THREE.BufferGeometry();
+                let skelGeom = new THREE.BufferGeometry();
                 skelGeom.setAttribute('position', new THREE.Float32BufferAttribute(boneLineVerts, 3));
-                var skelMat = new THREE.LineBasicMaterial({color: 0xffff00, linewidth: 2, transparent: true, opacity: 0.8});
-                var skelLines = new THREE.LineSegments(skelGeom, skelMat);
+                let skelMat = new THREE.LineBasicMaterial({color: 0xffff00, linewidth: 2, transparent: true, opacity: 0.8});
+                let skelLines = new THREE.LineSegments(skelGeom, skelMat);
                 skelLines.visible = skeletonOn;
                 skeletonGroup.add(skelLines);
             }
 
-            var sphereGeom = new THREE.SphereGeometry(1.5, 8, 6);
+            let sphereGeom = new THREE.SphereGeometry(1.5, 8, 6);
             allNodes.forEach(function (node) {
-                var pivot = pivotMap[node.objectId];
+                let pivot = pivotMap[node.objectId];
                 if (!pivot) return;
-                var col = node.type === 'bone' ? 0x00ff88 : 0x4488ff;
-                var sMat = new THREE.MeshBasicMaterial({color: col, transparent: true, opacity: 0.8});
-                var sphere = new THREE.Mesh(sphereGeom, sMat);
+                let col = node.type === 'bone' ? 0x00ff88 : 0x4488ff;
+                let sMat = new THREE.MeshBasicMaterial({color: col, transparent: true, opacity: 0.8});
+                let sphere = new THREE.Mesh(sphereGeom, sMat);
                 sphere.position.set(pivot[0], pivot[1], pivot[2]);
                 sphere.visible = skeletonOn;
                 skeletonGroup.add(sphere);
@@ -622,16 +622,16 @@ window._W3E_MODEL_VIEWER = (function () {
                 } else {
                     function addBoneSection(nodes, label, nodeType) {
                         if (nodes.length === 0) return;
-                        var sectionHeader = document.createElement('div');
+                        let sectionHeader = document.createElement('div');
                         sectionHeader.className = 'mv-mat-item-header';
                         sectionHeader.textContent = label + ' (' + nodes.length + ')';
                         bonesList.appendChild(sectionHeader);
 
                         nodes.forEach(function (node) {
-                            var row = document.createElement('div');
+                            let row = document.createElement('div');
                             row.className = 'mv-mat-row';
-                            var parentStr = (node.parentId === 0xFFFFFFFF || node.parentId === 4294967295) ? 'root' : '#' + node.parentId;
-                            var colorDot = nodeType === 'bone' ? '#00ff88' : '#4488ff';
+                            let parentStr = (node.parentId === 0xFFFFFFFF || node.parentId === 4294967295) ? 'root' : '#' + node.parentId;
+                            let colorDot = nodeType === 'bone' ? '#00ff88' : '#4488ff';
                             row.innerHTML =
                                 '<div class="mv-mat-swatch" style="background:' + colorDot + '"></div>' +
                                 '<span class="mv-mat-label">' + (node.name || '(unnamed)') + ' <span style="opacity:.5;font-size:11px">ID:' + node.objectId + ' → ' + parentStr + '</span></span>';
@@ -646,7 +646,7 @@ window._W3E_MODEL_VIEWER = (function () {
 
             // Info bar
             if (infoEl) {
-                var infoText = geosets.length + ' geoset(s) | ' + totalVerts + ' verts | ' + totalFaces + ' faces';
+                let infoText = geosets.length + ' geoset(s) | ' + totalVerts + ' verts | ' + totalFaces + ' faces';
                 if (bones.length > 0 || helpers.length > 0) {
                     infoText += ' | ' + bones.length + ' bone(s)';
                     if (helpers.length > 0) infoText += ', ' + helpers.length + ' helper(s)';
