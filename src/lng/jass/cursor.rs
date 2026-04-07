@@ -10,7 +10,7 @@ use crate::lng::jass::type_map::{
 };
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
 use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
-use crate::lsp::folding::lsp::{FoldingRange, FoldingRangeKind};
+use crate::http::folding::{FoldingRange, FoldingRangeKind};
 use crate::lsp::highlight::lsp::DocumentHighlightKind;
 use crate::http::inlay_hint::{InlayHint, InlayHintKind};
 use crate::lsp::position::Position;
@@ -156,7 +156,7 @@ pub struct Cursor {
     pub func_decl_keys: HashSet<DeclKey>,
 
     /// Color information for `|cAARRGGBB` in strings and `0xAARRGGBB` hex literals.
-    pub colors: Vec<crate::lsp::color::lsp::ColorInformation>,
+    pub colors: Vec<crate::http::color::ColorInformation>,
 
     /// Per-file settings parsed from `//set key value` directives.
     pub file_settings: HashMap<String, String>,

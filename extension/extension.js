@@ -5,11 +5,13 @@ const {
     Uri, commands, ProgressLocation, workspace,
     languages, InlayHint, InlayHintKind, Position, Range, EventEmitter,
     ShellExecution, Task, TaskScope, tasks,
+    Diagnostic: VscDiagnostic,
     DocumentSymbol: VscDocumentSymbol, SymbolKind,
     FoldingRange, FoldingRangeKind,
     SemanticTokensLegend,
     DocumentLink: VscDocumentLink,
     ColorInformation, Color, ColorPresentation: VscColorPresentation, TextEdit,
+    WorkspaceEdit: VscWorkspaceEdit,
 } = require('vscode')
 
 const {ServerClient} = require('./serverClient.js')
@@ -284,6 +286,11 @@ module.exports = {
         const SECTION_SEMANTIC = 0x01
         const SECTION_INLAY_HINTS = 0x02
         const SECTION_SEMANTIC_EDIT = 0x03
+        const SECTION_DIAGNOSTICS = 0x04
+        const SECTION_FOLDING = 0x05
+        const SECTION_SYMBOLS = 0x06
+        const SECTION_LINKS = 0x07
+        const SECTION_COLORS = 0x08
         // Request sections (client → server)
         const SECTION_FULL_TEXT = 0x10
         const SECTION_CONTENT_CHANGE = 0x11
@@ -411,7 +418,7 @@ module.exports = {
             provideColorPresentations(color, ctx) {
                 const uri = ctx.document.uri.toString()
                 return client.sendRequest('color/presentation', {
-                    textDocument: {uri},
+                    uri,
                     color: {red: color.red, green: color.green, blue: color.blue, alpha: color.alpha},
                     range: {
                         start: {line: ctx.range.start.line, character: ctx.range.start.character},
@@ -435,6 +442,156 @@ module.exports = {
             }
         })
 
+        // ── Rename provider ─────────────────────────────────────────
+        const renameSelector = [
+            {scheme: 'file', language: 'jass'},
+            {scheme: 'file', language: 'angelscript'},
+        ]
+        const renameProvider = languages.registerRenameProvider(renameSelector, {
+            async prepareRename(document, position) {
+                const uri = document.uri.toString()
+                const result = await client.sendRequest('lsp/prepareRename', {
+                    uri,
+                    position: {line: position.line, character: position.character},
+                })
+                if (!result) return undefined
+                return {
+                    range: new Range(
+                        result.range.start.line, result.range.start.character,
+                        result.range.end.line, result.range.end.character,
+                    ),
+                    placeholder: result.placeholder,
+                }
+            },
+            async provideRenameEdits(document, position, newName) {
+                const uri = document.uri.toString()
+                const result = await client.sendRequest('lsp/rename', {
+                    uri,
+                    position: {line: position.line, character: position.character},
+                    newName,
+                })
+                if (!result || !result.changes) return undefined
+                const edit = new VscWorkspaceEdit()
+                for (const [docUri, edits] of Object.entries(result.changes)) {
+                    const fileUri = Uri.parse(docUri)
+                    for (const e of edits) {
+                        edit.replace(fileUri,
+                            new Range(
+                                e.range.start.line, e.range.start.character,
+                                e.range.end.line, e.range.end.character,
+                            ),
+                            e.newText,
+                        )
+                    }
+                }
+                return edit
+            }
+        })
+
+        // ── Will / Did rename files ─────────────────────────────────
+        const willRenameDisposable = workspace.onWillRenameFiles(event => {
+            const files = event.files
+                .filter(f => /\.(j|ai)$/i.test(f.oldUri.fsPath))
+                .map(f => ({oldUri: f.oldUri.toString(), newUri: f.newUri.toString()}))
+            if (files.length === 0) return
+            const editPromise = client.sendRequest('lsp/willRenameFiles', {files}).then(result => {
+                if (!result || !result.changes) return undefined
+                const edit = new VscWorkspaceEdit()
+                for (const [docUri, edits] of Object.entries(result.changes)) {
+                    const fileUri = Uri.parse(docUri)
+                    for (const e of edits) {
+                        edit.replace(fileUri,
+                            new Range(
+                                e.range.start.line, e.range.start.character,
+                                e.range.end.line, e.range.end.character,
+                            ),
+                            e.newText,
+                        )
+                    }
+                }
+                return edit
+            }).catch(() => undefined)
+            event.waitUntil(editPromise)
+        })
+
+        const didRenameDisposable = workspace.onDidRenameFiles(event => {
+            const files = event.files
+                .filter(f => /\.(j|ai)$/i.test(f.oldUri.fsPath) || /\.(j|ai)$/i.test(f.newUri.fsPath))
+                .map(f => ({oldUri: f.oldUri.toString(), newUri: f.newUri.toString()}))
+            if (files.length === 0) return
+
+            // Swap URI in local caches
+            for (const f of files) {
+                const oldKey = f.oldUri
+                const newKey = f.newUri
+
+                if (openedDocs.has(oldKey)) {
+                    openedDocs.delete(oldKey)
+                    openedDocs.add(newKey)
+                }
+
+                if (_docVersion.has(oldKey)) {
+                    _docVersion.set(newKey, _docVersion.get(oldKey))
+                    _docVersion.delete(oldKey)
+                }
+
+                if (_queue.has(oldKey)) {
+                    _queue.set(newKey, _queue.get(oldKey))
+                    _queue.delete(oldKey)
+                }
+                if (_locked.has(oldKey)) {
+                    _locked.set(newKey, _locked.get(oldKey))
+                    _locked.delete(oldKey)
+                }
+
+                if (semanticBase.has(oldKey)) {
+                    semanticBase.set(newKey, semanticBase.get(oldKey))
+                    semanticBase.delete(oldKey)
+                }
+                if (semanticResultId.has(oldKey)) {
+                    semanticResultId.set(newKey, semanticResultId.get(oldKey))
+                    semanticResultId.delete(oldKey)
+                }
+                if (semanticCache.has(oldKey)) {
+                    semanticCache.set(newKey, semanticCache.get(oldKey))
+                    semanticCache.delete(oldKey)
+                }
+
+                if (inlayHintsCache.has(oldKey)) {
+                    inlayHintsCache.set(newKey, inlayHintsCache.get(oldKey))
+                    inlayHintsCache.delete(oldKey)
+                }
+                if (foldingCache.has(oldKey)) {
+                    foldingCache.set(newKey, foldingCache.get(oldKey))
+                    foldingCache.delete(oldKey)
+                }
+                if (symbolsCache.has(oldKey)) {
+                    symbolsCache.set(newKey, symbolsCache.get(oldKey))
+                    symbolsCache.delete(oldKey)
+                }
+                if (linksCache.has(oldKey)) {
+                    linksCache.set(newKey, linksCache.get(oldKey))
+                    linksCache.delete(oldKey)
+                }
+                if (colorsCache.has(oldKey)) {
+                    colorsCache.set(newKey, colorsCache.get(oldKey))
+                    colorsCache.delete(oldKey)
+                }
+
+                // Swap diagnostics
+                const oldDiagUri = Uri.parse(oldKey)
+                const existingDiags = diagnosticCollection.get(oldDiagUri)
+                if (existingDiags && existingDiags.length > 0) {
+                    diagnosticCollection.delete(oldDiagUri)
+                    diagnosticCollection.set(Uri.parse(newKey), existingDiags)
+                }
+            }
+
+            // Notify server to swap URIs (no rescan)
+            client.http.post('/document/didRenameFiles', {files})
+                .catch(e => console.error('document/didRenameFiles error:', e))
+        })
+
         // ── Start the client and perform document sync ────────────────
         const clientReady = client.start().catch(err => {
             window.showErrorMessage(`❌ Failed to start server:\n\n${err.message}`)
@@ -455,27 +612,26 @@ module.exports = {
 
         // ── Per-URI serial update queue ─────────────────────────────
         // Only ONE /document/update request is in flight per URI at any
-        // time.  Edits that arrive while a request is running are
-        // accumulated and sent as a single batch when the running request
-        // completes.
+        // time.  While a request is running, edits accumulate in
+        // `_pending`.  When the response arrives the accumulated edits
+        // are sent as a single batch.  If no request is in flight the
+        // edit is sent immediately.
         //
         // Guarantees:
-        //  • All edits reach the server in order (no abort → no lost edits)
+        //  • All edits reach the server in order (no lost edits)
         //  • Only one parse per batch (efficient)
-        //  • Version echo still discards stale responses
+        //  • Version echo discards stale responses
 
         /** @type {Map<string, number>} uri → monotonic document version */
         const _docVersion = new Map()
 
-        /** @type {Map<string, boolean>} uri → true while a request is in flight */
-        const _sending = new Map()
+        /** @type {Map<string, {version: number, languageId: string, sections: Buffer[]}>} */
+        const _queue = new Map()
 
-        /**
-         * Accumulated TLV sections to send after the current in-flight
-         * request completes.
-         * @type {Map<string, {version: number, languageId: string, sections: Buffer[]}>}
-         */
-        const _pending = new Map()
+        /** @type {Map<string, boolean>} */
+        const _locked = new Map()
+
+
 
         /**
          * Parse a binary TLV response from /document/update and populate caches.
@@ -588,6 +744,146 @@ module.exports = {
                         inlayHintsChanged.fire()
                         break
                     }
+                    case SECTION_DIAGNOSTICS: {
+                        if (!fresh) break
+                        const diags = []
+                        let p = 0
+                        while (p + 17 <= data.length) {
+                            const startLine = data.readUInt32LE(p); p += 4
+                            const startChar = data.readUInt32LE(p); p += 4
+                            const endLine = data.readUInt32LE(p); p += 4
+                            const endChar = data.readUInt32LE(p); p += 4
+                            const severity = data[p]; p += 1
+                            const msgLen = data.readUInt16LE(p); p += 2
+                            if (p + msgLen > data.length) break
+                            const message = data.toString('utf8', p, p + msgLen); p += msgLen
+                            // Tags
+                            if (p >= data.length) break
+                            const tagCount = data[p]; p += 1
+                            const tags = []
+                            for (let t = 0; t < tagCount && p < data.length; t++) {
+                                tags.push(data[p]); p += 1
+                            }
+                            // Code
+                            if (p + 2 > data.length) break
+                            const codeLen = data.readUInt16LE(p); p += 2
+                            const code = codeLen > 0 ? data.toString('utf8', p, p + codeLen) : undefined; p += codeLen
+                            // Code href
+                            if (p + 2 > data.length) break
+                            const codeHrefLen = data.readUInt16LE(p); p += 2
+                            const codeHref = codeHrefLen > 0 ? data.toString('utf8', p, p + codeHrefLen) : undefined; p += codeHrefLen
+                            // Source
+                            if (p + 2 > data.length) break
+                            const sourceLen = data.readUInt16LE(p); p += 2
+                            const source = sourceLen > 0 ? data.toString('utf8', p, p + sourceLen) : undefined; p += sourceLen
+
+                            const diag = new VscDiagnostic(
+                                new Range(startLine, startChar, endLine, endChar),
+                                message,
+                                severity === 1 ? 0 : severity === 2 ? 1 : severity === 3 ? 2 : severity === 4 ? 3 : 2
+                            )
+                            if (source) diag.source = source
+                            if (code && codeHref) {
+                                diag.code = {value: code, target: Uri.parse(codeHref)}
+                            } else if (code) {
+                                diag.code = code
+                            }
+                            if (tags.length > 0) diag.tags = tags
+                            diags.push(diag)
+                        }
+                        try {
+                            diagnosticCollection.set(Uri.parse(uri), diags)
+                        } catch {}
+                        break
+                    }
+                    case SECTION_FOLDING: {
+                        if (!fresh) break
+                        const ranges = []
+                        let p = 0
+                        while (p + 9 <= data.length) {
+                            const startLine = data.readUInt32LE(p); p += 4
+                            const endLine = data.readUInt32LE(p); p += 4
+                            const kind = data[p]; p += 1
+                            const fr = new FoldingRange(startLine, endLine,
+                                kind === 1 ? FoldingRangeKind.Comment
+                                    : kind === 2 ? FoldingRangeKind.Imports
+                                        : kind === 3 ? FoldingRangeKind.Region
+                                            : undefined
+                            )
+                            ranges.push(fr)
+                        }
+                        foldingCache.set(uri, ranges)
+                        break
+                    }
+                    case SECTION_SYMBOLS: {
+                        if (!fresh) break
+                        try {
+                            const raw = JSON.parse(data.toString('utf8'))
+                            const convert = (items) => (items || []).map(s => {
+                                const range = new Range(
+                                    s.range.start.line, s.range.start.character,
+                                    s.range.end.line, s.range.end.character
+                                )
+                                const selRange = new Range(
+                                    s.selectionRange.start.line, s.selectionRange.start.character,
+                                    s.selectionRange.end.line, s.selectionRange.end.character
+                                )
+                                const sym = new VscDocumentSymbol(
+                                    s.name, s.detail || '', s.kind, range, selRange
+                                )
+                                if (s.children) sym.children = convert(s.children)
+                                if (s.tags) sym.tags = s.tags
+                                if (s.deprecated) sym.deprecated = true
+                                return sym
+                            })
+                            symbolsCache.set(uri, convert(raw))
+                        } catch {}
+                        break
+                    }
+                    case SECTION_LINKS: {
+                        if (!fresh) break
+                        const links = []
+                        let p = 0
+                        while (p + 16 <= data.length) {
+                            const startLine = data.readUInt32LE(p); p += 4
+                            const startChar = data.readUInt32LE(p); p += 4
+                            const endLine = data.readUInt32LE(p); p += 4
+                            const endChar = data.readUInt32LE(p); p += 4
+                            if (p + 2 > data.length) break
+                            const targetLen = data.readUInt16LE(p); p += 2
+                            const target = targetLen > 0 ? data.toString('utf8', p, p + targetLen) : undefined; p += targetLen
+                            if (p + 2 > data.length) break
+                            const tooltipLen = data.readUInt16LE(p); p += 2
+                            const tooltip = tooltipLen > 0 ? data.toString('utf8', p, p + tooltipLen) : undefined; p += tooltipLen
+                            const range = new Range(startLine, startChar, endLine, endChar)
+                            const link = new VscDocumentLink(range, target ? Uri.parse(target) : undefined)
+                            if (tooltip) link.tooltip = tooltip
+                            links.push(link)
+                        }
+                        linksCache.set(uri, links)
+                        break
+                    }
+                    case SECTION_COLORS: {
+                        if (!fresh) break
+                        const colors = []
+                        let p = 0
+                        while (p + 32 <= data.length) {
+                            const startLine = data.readUInt32LE(p); p += 4
+                            const startChar = data.readUInt32LE(p); p += 4
+                            const endLine = data.readUInt32LE(p); p += 4
+                            const endChar = data.readUInt32LE(p); p += 4
+                            const r = data.readFloatLE(p); p += 4
+                            const g = data.readFloatLE(p); p += 4
+                            const b = data.readFloatLE(p); p += 4
+                            const a = data.readFloatLE(p); p += 4
+                            colors.push(new ColorInformation(
+                                new Range(startLine, startChar, endLine, endChar),
+                                new Color(r, g, b, a)
+                            ))
+                        }
+                        colorsCache.set(uri, colors)
+                        break
+                    }
                     // Future section types: just add cases here
                 }
             }
@@ -607,44 +903,40 @@ module.exports = {
         }
 
         /**
-         * Enqueue a /document/update request.
+         * Enqueue a /document/update.
          *
-         * If no request is currently in flight for this URI the request is
-         * sent immediately.  Otherwise the TLV body is accumulated and will
-         * be sent as a single batch when the running request completes.
-         *
-         * @param {string} uri
-         * @param {string} languageId
-         * @param {number} version  current document version (monotonic)
-         * @param {Buffer} body     pre-built TLV sections
+         * - Правка всегда идёт в очередь.
+         * - Если залочено → return, finally заберёт.
+         * - Если нет → _flush() лочит, забирает, шлёт.
+         * - В finally: есть очередь → не снимая лок шлём дальше.
+         *              нет очереди → снимаем лок.
          */
         function _enqueueUpdate(uri, languageId, version, body) {
-            if (_sending.get(uri)) {
-                // Request in flight — accumulate sections
-                const p = _pending.get(uri)
-                if (p) {
-                    p.sections.push(body)
-                    p.version = version
-                } else {
-                    _pending.set(uri, {version, languageId, sections: [body]})
-                }
-                return
+            const q = _queue.get(uri)
+            if (q) {
+                q.sections.push(body)
+                q.version = version
+            } else {
+                _queue.set(uri, {version, languageId, sections: [body]})
             }
-            _flushQueue(uri, languageId, version, body)
+            if (_locked.get(uri)) return
+            _flush(uri)
         }
 
-        /**
-         * Actually send a /document/update and, when done, drain any
-         * sections that accumulated while we were waiting.
-         */
-        function _flushQueue(uri, languageId, version, body) {
-            _sending.set(uri, true)
+        function _flush(uri) {
+            const q = _queue.get(uri)
+            if (!q) {
+                _locked.set(uri, false)
+                return
+            }
+            _locked.set(uri, true)
+            _queue.delete(uri)
 
-            const params = {uri, languageId, version: String(version), hints: '1'}
+            const params = {uri, languageId: q.languageId, version: String(q.version), hints: '1'}
             const lastId = semanticResultId.get(uri)
             if (lastId !== undefined) params.lastResultId = String(lastId)
 
-            client.http.postBinary('/document/update', params, body).then(buf => {
+            client.http.postBinary('/document/update', params, Buffer.concat(q.sections)).then(buf => {
                 if (buf.length >= 4) {
                     const echoedVersion = buf.readUInt32LE(0)
                     const fresh = echoedVersion === _docVersion.get(uri)
@@ -653,14 +945,7 @@ module.exports = {
             }).catch(e => {
                 console.error('document/update error:', e)
             }).finally(() => {
-                _sending.set(uri, false)
-                // Drain accumulated edits
-                const p = _pending.get(uri)
-                if (p) {
-                    _pending.delete(uri)
-                    _flushQueue(uri, p.languageId, p.version,
-                        Buffer.concat(p.sections))
-                }
+                _flush(uri)
             })
         }
 
@@ -849,10 +1134,16 @@ module.exports = {
             if (!openedDocs.has(key)) return
             openedDocs.delete(key)
             _docVersion.delete(key)
-            _sending.delete(key)
-            _pending.delete(key)
+            _queue.delete(key)
+            _locked.delete(key)
             semanticBase.delete(key)
             semanticResultId.delete(key)
+            inlayHintsCache.delete(key)
+            foldingCache.delete(key)
+            symbolsCache.delete(key)
+            linksCache.delete(key)
+            colorsCache.delete(key)
+            diagnosticCollection.delete(Uri.parse(key))
             client.http.post('/document/close', {
                 textDocument: {uri: key}
             }).catch(e => console.error('document/close error:', e))
@@ -875,6 +1166,9 @@ module.exports = {
             symbolProvider,
             linkProvider,
             colorProvider,
+            renameProvider,
+            willRenameDisposable,
+            didRenameDisposable,
             docChangeDisposable,
             docCloseDisposable,
 

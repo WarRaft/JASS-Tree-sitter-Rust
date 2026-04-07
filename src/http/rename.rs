@@ -1,10 +1,60 @@
-use crate::util::file_store::{is_uri_frozen, FILE_STORE};
 use crate::lsp::position::Position;
-use crate::lsp::rename::lsp::{PrepareRenameResult, TextEdit, WorkspaceEdit};
+use crate::lsp::range::Range;
+use crate::util::file_store::{is_uri_frozen, FILE_STORE};
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use url::Url;
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Types
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── Request types (Deserialize only) ────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PrepareRenameParams {
+    pub uri: Url,
+    pub position: Position,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameParams {
+    pub uri: Url,
+    pub position: Position,
+    pub new_name: String,
+}
+
+// ─── Response types (Serialize only) ─────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareRenameResult {
+    pub range: Range,
+    pub placeholder: String,
+}
+
+// ─── Shared types (used by code_action & file_rename too) ────────────────────
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEdit {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes: Option<HashMap<Url, Vec<TextEdit>>>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextEdit {
+    pub range: Range,
+    pub new_text: String,
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Identifier rename — textDocument/rename & textDocument/prepareRename
+// ═════════════════════════════════════════════════════════════════════════════
 
 // ─── Prepare rename ──────────────────────────────────────────────────────────
 
@@ -135,3 +185,12 @@ fn find_declaring_file(name: &str, from_uri: &Url) -> Option<Url> {
     }
     None
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Tests
+// ═════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+#[path = "rename_test.rs"]
+mod tests;
+

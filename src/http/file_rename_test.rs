@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::lsp::rename::handle::{
+    use crate::http::file_rename::{
         find_import_edits, find_import_edits_for_target, find_self_move_edits,
         is_absolute_import, pathdiff_relative,
     };

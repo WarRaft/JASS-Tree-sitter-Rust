@@ -3,7 +3,7 @@ mod tests {
     use crate::lng::jass::ast::*;
     use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
     use crate::lsp::document_symbol::lsp::SymbolKind;
-    use crate::lsp::folding::lsp::FoldingRangeKind;
+    use crate::http::folding::FoldingRangeKind;
     use crate::lsp::position::Position;
     use crate::lsp::ref_map::{build_ref_map, EXTERNAL_KEY_BASE};
     use crate::http::semantic::token::Kind as TokenKind;

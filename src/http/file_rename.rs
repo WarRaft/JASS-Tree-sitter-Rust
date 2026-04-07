@@ -1,11 +1,35 @@
+use crate::http::rename::{TextEdit, WorkspaceEdit};
 use crate::lsp::position::Position;
 use crate::lsp::range::Range;
-use crate::lsp::rename::lsp::{FileRename, TextEdit, WorkspaceEdit};
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use log::error;
+use serde::Deserialize;
 use std::collections::HashMap;
 use url::Url;
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Types
+// ═════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameFilesParams {
+    pub files: Vec<FileRename>,
+}
+
+/// Stores pre-parsed `Url`s — invalid URIs are rejected at deserialization
+/// time, so the logic never needs fallible `Url::parse()` calls.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRename {
+    pub old_uri: Url,
+    pub new_uri: Url,
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  File rename — rewrite import paths when files are moved / renamed
+// ═════════════════════════════════════════════════════════════════════════════
 
 /// Compute a `WorkspaceEdit` that rewrites import paths in all files that
 /// import any of the renamed/moved files.
@@ -25,17 +49,11 @@ pub fn compute_rename_edits(renames: &[FileRename]) -> WorkspaceEdit {
     let mut all_edits: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
     for rename in renames {
-        let old_url = match Url::parse(&rename.old_uri) {
-            Ok(u) => u,
-            Err(_) => continue,
-        };
-        let new_url = match Url::parse(&rename.new_uri) {
-            Ok(u) => u,
-            Err(_) => continue,
-        };
+        let old_url = &rename.old_uri;
+        let new_url = &rename.new_uri;
 
         // ── Part 1: Update dependents (files that import the moved file) ─
-        let dependents = IMPORT_GRAPH.direct_dependents(&old_url);
+        let dependents = IMPORT_GRAPH.direct_dependents(old_url);
 
         for dep_uri in &dependents {
             let text = match read_file_text(dep_uri) {
@@ -46,7 +64,7 @@ pub fn compute_rename_edits(renames: &[FileRename]) -> WorkspaceEdit {
                 }
             };
 
-            let edits = find_import_edits_for_target(&text, dep_uri, &old_url, &new_url);
+            let edits = find_import_edits_for_target(&text, dep_uri, old_url, new_url);
 
             if !edits.is_empty() {
                 all_edits
@@ -395,9 +413,11 @@ pub(crate) fn find_import_edits(
     find_import_edits_for_target(text, dep_uri, old_url, &new_url)
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+//  Tests
+// ═════════════════════════════════════════════════════════════════════════════
+
 #[cfg(test)]
-#[path = "handle_test.rs"]
+#[path = "file_rename_test.rs"]
 mod tests;
-
-
 

@@ -1,4 +1,4 @@
-use crate::lsp::protocol::SlkEditParams;
+use crate::http::api::SlkEditParams;
 use crate::lsp::position::Position;
 use crate::util::roper::uri_map::ROPE_MAP;
 use serde::Serialize;

@@ -24,7 +24,7 @@ use crate::lsp::ref_map::{DeclKey, RefMap};
 use crate::util::file_cache;
 use crate::util::file_store::{
     drain_pending, mark_parse_done,
-    send_refresh_all, is_parse_in_flight, CascadeGuard, FILE_STORE,
+    CascadeGuard, FILE_STORE,
     MAX_CASCADE_PEERS, REPARSE_GUARD,
 };
 use crate::util::import_graph::resolve_import;
@@ -821,24 +821,9 @@ pub async fn cascade_parse_and_notify(
         }
     }
 
-    // Signal that this parse generation is complete.  Must happen BEFORE the
-    // is_parse_in_flight check below so that the check tests whether a NEWER
-    // parse has been requested (desired > generation), not whether the current one
-    // is still "in-flight" (which it always would be otherwise).
+    // Signal that this parse generation is complete.
     if let Some(g) = generation {
         mark_parse_done(uri, g);
-    }
-
-    // Only notify clients when there is no newer in-flight parse for this
-    // URI.  A cancelled task that was superseded by a newer DidChange should
-    // not trigger a spurious workspace/semanticTokens/refresh — the newer
-    // task will send the refresh once it actually finishes.
-    let should_refresh = match generation {
-        Some(_) => !is_parse_in_flight(uri),
-        None => true, // no generation tracking → always refresh
-    };
-    if should_refresh {
-        send_refresh_all().await;
     }
 
     Ok(())

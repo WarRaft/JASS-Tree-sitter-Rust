@@ -1,10 +1,10 @@
 use crate::lng::string_colors::{collect_raw_string_colors, tokenize_raw_string};
 use crate::lng::wts::kind::Kind;
 use crate::lng::wts::trigstr::{TrigstrEntry, TRIGSTR_MAP};
-use crate::lsp::color::lsp::ColorInformation;
+use crate::http::color::ColorInformation;
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
 use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
-use crate::lsp::folding::lsp::{FoldingRange, FoldingRangeKind};
+use crate::http::folding::{FoldingRange, FoldingRangeKind};
 use crate::lsp::ref_map::RefMap;
 use crate::http::semantic::hub::Hub;
 use crate::http::semantic::token::Kind as TokenKind;
@@ -24,9 +24,7 @@ pub async fn parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
 
 /// Parse + refresh all open editors.
 pub async fn parse_and_notify(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
-    parse(uri).await?;
-    crate::util::file_store::send_refresh_all().await;
-    Ok(())
+    parse(uri).await
 }
 
 fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {

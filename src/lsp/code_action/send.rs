@@ -4,7 +4,7 @@ use crate::lsp::code_action::lsp::{
 use crate::lsp::diagnostic::lsp::Diagnostic;
 use crate::lsp::position::Position;
 use crate::lsp::range::Range;
-use crate::lsp::rename::lsp::{TextEdit, WorkspaceEdit};
+use crate::http::rename::{TextEdit, WorkspaceEdit};
 use crate::util::file_store::FILE_STORE;
 use crate::util::open::is_as_uri;
 use crate::util::roper::uri_map::ROPE_MAP;

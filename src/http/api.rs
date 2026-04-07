@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, Ordering};
 use url::Url;
@@ -262,9 +262,21 @@ pub async fn slk_render(
 
 // ─── SLK edit ─────────────────────────────────────────────────────────────────
 
+/// Params for `slk/edit` — edit a single cell in the SLK table.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SlkEditParams {
+    pub uri: Url,
+    /// Byte offset of the old value in the document.
+    pub start: usize,
+    /// Byte length of the old value.
+    pub len: usize,
+    /// New cell value (raw text to insert).
+    pub value: String,
+}
+
 pub async fn slk_edit(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::protocol::SlkEditParams>,
+    Json(params): Json<SlkEditParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
     let result = crate::lng::slk::edit::apply_cell_edit(&params);
@@ -546,7 +558,6 @@ pub async fn rescan_execute(
         }
     }
 
-    crate::util::file_store::send_refresh_all().await;
 
     let msg = if errors.is_empty() {
         format!("Rescanned {} files", ok_count)
@@ -604,7 +615,6 @@ pub async fn ujapi_download(
         if let Ok(content) = source_uri.to_file_path().and_then(|p| std::fs::read_to_string(&p).map_err(|_| ())) {
             let _ = crate::util::open::open_by_uri(&source_uri, &content).await;
         }
-        crate::util::file_store::send_refresh_all().await;
     }
 
     Ok(Json(result))
@@ -767,10 +777,10 @@ pub async fn formatting(
 
 pub async fn prepare_rename(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::rename::lsp::PrepareRenameParams>,
+    Json(params): Json<crate::http::rename::PrepareRenameParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::rename::identifier::prepare_rename(&params.text_document.uri, &params.position);
+    let result = crate::http::rename::prepare_rename(&params.uri, &params.position);
     Ok(Json(match result {
         Some(r) => serde_json::to_value(r).unwrap_or(Value::Null),
         None => Value::Null,
@@ -781,11 +791,11 @@ pub async fn prepare_rename(
 
 pub async fn rename(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::rename::lsp::RenameParams>,
+    Json(params): Json<crate::http::rename::RenameParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let edit = crate::lsp::rename::identifier::compute_identifier_rename(
-        &params.text_document.uri, &params.position, &params.new_name,
+    let edit = crate::http::rename::compute_identifier_rename(
+        &params.uri, &params.position, &params.new_name,
     );
     Ok(Json(serde_json::to_value(edit).unwrap_or_default()))
 }
@@ -794,10 +804,10 @@ pub async fn rename(
 
 pub async fn will_rename_files(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::rename::lsp::RenameFilesParams>,
+    Json(params): Json<crate::http::file_rename::RenameFilesParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let edit = crate::lsp::rename::handle::compute_rename_edits(&params.files);
+    let edit = crate::http::file_rename::compute_rename_edits(&params.files);
     Ok(Json(serde_json::to_value(edit).unwrap_or_default()))
 }
 
@@ -805,7 +815,7 @@ pub async fn will_rename_files(
 
 pub async fn color_presentation(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::color::lsp::ColorPresentationParams>,
+    Json(params): Json<crate::http::color::ColorPresentationParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
     let range_len = if params.range.start.line == params.range.end.line {
@@ -814,16 +824,16 @@ pub async fn color_presentation(
     let is_pipe_color = range_len == 10;
     let presentations = if is_pipe_color {
         let label = crate::lng::string_colors::color_to_pipe_string(&params.color);
-        vec![crate::lsp::color::lsp::ColorPresentation {
+        vec![crate::http::color::ColorPresentation {
             label: label.clone(),
-            text_edit: Some(crate::lsp::color::lsp::TextEdit { range: params.range.clone(), new_text: label }),
+            text_edit: Some(crate::http::color::TextEdit { range: params.range.clone(), new_text: label }),
             additional_text_edits: None,
         }]
     } else {
         let label = crate::lng::string_colors::color_to_hex_string(&params.color);
-        vec![crate::lsp::color::lsp::ColorPresentation {
+        vec![crate::http::color::ColorPresentation {
             label: label.clone(),
-            text_edit: Some(crate::lsp::color::lsp::TextEdit { range: params.range.clone(), new_text: label }),
+            text_edit: Some(crate::http::color::TextEdit { range: params.range.clone(), new_text: label }),
             additional_text_edits: None,
         }]
     };
@@ -959,6 +969,30 @@ mod section {
     /// - **SKIP** `[0xFFFFFFFF, 1, count, 0, 0]`
     ///   → skip `count` tokens in old array (delete), advance cursor
     pub const SEMANTIC_EDIT: u8 = 0x03;
+    /// Diagnostics — per diagnostic:
+    /// `[u32 startLine][u32 startChar][u32 endLine][u32 endChar]
+    ///  [u8 severity][u16 msgLen][…msg UTF-8…]
+    ///  [u8 tagCount][u8… tags]
+    ///  [u16 codeLen][…code UTF-8…]
+    ///  [u16 codeHrefLen][…codeHref UTF-8…]
+    ///  [u16 sourceLen][…source UTF-8…]`
+    pub const DIAGNOSTICS: u8 = 0x04;
+    /// Folding ranges — per range:
+    /// `[u32 startLine][u32 endLine][u8 kind]`
+    /// kind: 0 = none, 1 = comment, 2 = imports, 3 = region
+    pub const FOLDING: u8 = 0x05;
+    /// Document symbols — raw JSON array (tree structure too complex for
+    /// a flat binary encoding).
+    pub const SYMBOLS: u8 = 0x06;
+    /// Document links — per link:
+    /// `[u32 startLine][u32 startChar][u32 endLine][u32 endChar]
+    ///  [u16 targetLen][…target UTF-8…]
+    ///  [u16 tooltipLen][…tooltip UTF-8…]`
+    pub const LINKS: u8 = 0x07;
+    /// Document colors — per color:
+    /// `[u32 startLine][u32 startChar][u32 endLine][u32 endChar]
+    ///  [f32 red][f32 green][f32 blue][f32 alpha]`
+    pub const COLORS: u8 = 0x08;
 
     // ── Request sections (client → server) ───────────────────────
     /// Full document text (open) — raw UTF-8 bytes.
@@ -1088,6 +1122,118 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) ->
             buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
             buf.extend_from_slice(&section_buf);
         }
+    }
+
+    // ── Section 0x04: Diagnostics ─────────────────────────────────
+    {
+        let diagnostics = &snap.diagnostics;
+        let mut section_buf = Vec::new();
+        for d in diagnostics {
+            // Range: 4 × u32
+            section_buf.extend_from_slice(&(d.range.start.line as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(d.range.start.character as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(d.range.end.line as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(d.range.end.character as u32).to_le_bytes());
+            // Severity: u8
+            section_buf.push(d.severity.map(|s| s as u8).unwrap_or(0));
+            // Message: u16 len + UTF-8
+            let msg = d.message.as_bytes();
+            section_buf.extend_from_slice(&(msg.len() as u16).to_le_bytes());
+            section_buf.extend_from_slice(msg);
+            // Tags: u8 count + u8 each
+            let tags = d.tags.as_deref().unwrap_or(&[]);
+            section_buf.push(tags.len() as u8);
+            for t in tags {
+                section_buf.push(*t as u8);
+            }
+            // Code: u16 len + UTF-8
+            let code_str = d.code.as_ref().map(|c| match c {
+                crate::lsp::diagnostic::lsp::DiagnosticCode::String(s) => s.clone(),
+                crate::lsp::diagnostic::lsp::DiagnosticCode::Int(i) => i.to_string(),
+            }).unwrap_or_default();
+            let code_bytes = code_str.as_bytes();
+            section_buf.extend_from_slice(&(code_bytes.len() as u16).to_le_bytes());
+            section_buf.extend_from_slice(code_bytes);
+            // Code href: u16 len + UTF-8
+            let code_href = d.code_description.as_ref().map(|cd| cd.href.as_bytes()).unwrap_or(&[]);
+            section_buf.extend_from_slice(&(code_href.len() as u16).to_le_bytes());
+            section_buf.extend_from_slice(code_href);
+            // Source: u16 len + UTF-8
+            let source = d.source.as_deref().unwrap_or("").as_bytes();
+            section_buf.extend_from_slice(&(source.len() as u16).to_le_bytes());
+            section_buf.extend_from_slice(source);
+        }
+        // Always send (even empty → clears old diagnostics)
+        buf.push(section::DIAGNOSTICS);
+        buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&section_buf);
+    }
+
+    // ── Section 0x05: Folding ranges ──────────────────────────────
+    if !snap.folding.is_empty() {
+        let mut section_buf = Vec::with_capacity(snap.folding.len() * 9);
+        for fr in &snap.folding {
+            section_buf.extend_from_slice(&(fr.start_line as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(fr.end_line as u32).to_le_bytes());
+            let kind_byte: u8 = match fr.kind.as_ref() {
+                Some(crate::http::folding::FoldingRangeKind::Comment) => 1,
+                Some(crate::http::folding::FoldingRangeKind::Imports) => 2,
+                Some(crate::http::folding::FoldingRangeKind::Region) => 3,
+                None => 0,
+            };
+            section_buf.push(kind_byte);
+        }
+        buf.push(section::FOLDING);
+        buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&section_buf);
+    }
+
+    // ── Section 0x06: Document symbols (JSON) ─────────────────────
+    if !snap.symbols.is_empty() {
+        let json = serde_json::to_vec(&snap.symbols).unwrap_or_default();
+        if !json.is_empty() {
+            buf.push(section::SYMBOLS);
+            buf.extend_from_slice(&(json.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&json);
+        }
+    }
+
+    // ── Section 0x07: Document links ──────────────────────────────
+    if !snap.links.is_empty() {
+        let mut section_buf = Vec::new();
+        for link in &snap.links {
+            section_buf.extend_from_slice(&(link.range.start.line as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(link.range.start.character as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(link.range.end.line as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(link.range.end.character as u32).to_le_bytes());
+            let target = link.target.as_deref().unwrap_or("").as_bytes();
+            section_buf.extend_from_slice(&(target.len() as u16).to_le_bytes());
+            section_buf.extend_from_slice(target);
+            let tooltip = link.tooltip.as_deref().unwrap_or("").as_bytes();
+            section_buf.extend_from_slice(&(tooltip.len() as u16).to_le_bytes());
+            section_buf.extend_from_slice(tooltip);
+        }
+        buf.push(section::LINKS);
+        buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&section_buf);
+    }
+
+    // ── Section 0x08: Document colors ─────────────────────────────
+    if !snap.colors.is_empty() {
+        let mut section_buf = Vec::with_capacity(snap.colors.len() * 32);
+        for ci in &snap.colors {
+            section_buf.extend_from_slice(&(ci.range.start.line as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(ci.range.start.character as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(ci.range.end.line as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(ci.range.end.character as u32).to_le_bytes());
+            section_buf.extend_from_slice(&(ci.color.red as f32).to_le_bytes());
+            section_buf.extend_from_slice(&(ci.color.green as f32).to_le_bytes());
+            section_buf.extend_from_slice(&(ci.color.blue as f32).to_le_bytes());
+            section_buf.extend_from_slice(&(ci.color.alpha as f32).to_le_bytes());
+        }
+        buf.push(section::COLORS);
+        buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&section_buf);
     }
 
     buf
@@ -1343,8 +1489,45 @@ pub async fn files_changed(
                     }
                 }
             }
-            crate::util::file_store::send_refresh_all().await;
         });
+    }
+
+    Ok(StatusCode::OK)
+}
+
+// ─── Did Rename Files (swap URI, no rescan) ───────────────────────────────────
+
+pub async fn did_rename_files(
+    Query(auth): Query<AuthQuery>,
+    Json(params): Json<crate::http::file_rename::RenameFilesParams>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    auth.check()?;
+
+    use crate::util::import_graph::IMPORT_GRAPH;
+    use crate::util::roper::uri_map::ROPE_MAP;
+    use crate::util::file_store::FILE_STORE;
+
+    for rename in &params.files {
+        let old_url = &rename.old_uri;
+        let new_url = &rename.new_uri;
+
+        // Swap URI in ROPE_MAP
+        if let Some((_, rope)) = ROPE_MAP.remove(old_url) {
+            ROPE_MAP.insert(new_url.clone(), rope);
+        }
+
+        // Swap URI in FILE_STORE
+        if let Some((_, snap)) = FILE_STORE.remove(old_url) {
+            FILE_STORE.insert(new_url.clone(), snap);
+        }
+
+        // Swap URI in SEMANTIC_LAST
+        if let Some((_, sem)) = SEMANTIC_LAST.remove(old_url) {
+            SEMANTIC_LAST.insert(new_url.clone(), sem);
+        }
+
+        // Swap URI in IMPORT_GRAPH
+        IMPORT_GRAPH.rename_node(old_url, new_url);
     }
 
     Ok(StatusCode::OK)

@@ -6,7 +6,7 @@
 //! - Color picker info for `|cAARRGGBB` inside strings
 //!   and `0xAARRGGBB` / `0xRRGGBB` hex literals.
 
-use crate::lsp::color::lsp::{Color, ColorInformation};
+use crate::http::color::{Color, ColorInformation};
 use crate::lsp::range::Range;
 use crate::http::semantic::hub::Hub;
 use crate::http::semantic::token::Kind as TokenKind;

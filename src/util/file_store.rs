@@ -25,11 +25,11 @@ use url::Url;
 
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
-use crate::lsp::color::lsp::ColorInformation;
+use crate::http::color::ColorInformation;
 use crate::lsp::diagnostic::lsp::Diagnostic;
 use crate::lsp::document_link::lsp::DocumentLink;
 use crate::lsp::document_symbol::lsp::DocumentSymbol;
-use crate::lsp::folding::lsp::FoldingRange;
+use crate::http::folding::FoldingRange;
 use crate::http::inlay_hint::{InlayHint, InlayHintKind};
 use crate::lsp::ref_map::{DeclKey, RefMap};
 use crate::http::semantic::hub::Hub;
@@ -299,97 +299,6 @@ pub fn new_cancel_token(uri: &Url) -> CancellationToken {
     token
 }
 
-/// Push a unified `custom/parseResult` notification for **every** file in
-/// `FILE_STORE`.
-pub async fn send_refresh_all() {
-    push_parse_results().await;
-}
-
-/// Push a unified `custom/parseResult` for a single URI.
-pub async fn push_parse_result_for_uri(uri: &Url) {
-    let data = match build_parse_result(uri) {
-        Some(d) => d,
-        None => return,
-    };
-
-    crate::lsp::send::send(&data).await;
-}
-
-/// Build the JSON notification payload for one URI.
-fn build_parse_result(uri: &Url) -> Option<serde_json::Value> {
-    use serde_json::json;
-
-    let snapshot = FILE_STORE.get(uri)?;
-    let snap = snapshot.value();
-
-    let semantic_data = snap.semantic.read().unwrap().data(None);
-    let diagnostics = &snap.diagnostics;
-    let hints = snap.all_inlay_hints();
-    let folding = &snap.folding;
-    let symbols = &snap.symbols;
-    let links = &snap.links;
-    let colors = &snap.colors;
-
-    Some(json!({
-        "jsonrpc": "2.0",
-        "method": "custom/parseResult",
-        "params": {
-            "uri": uri.to_string(),
-            "semanticTokens": semantic_data,
-            "diagnostics": diagnostics,
-            "inlayHints": hints,
-            "folding": folding,
-            "symbols": symbols,
-            "documentLinks": links,
-            "colors": colors
-        }
-    }))
-}
-
-/// Push `custom/parseResult` for every file in `FILE_STORE`.
-///
-/// **Important**: we snapshot the data first and drop the DashMap guards
-/// *before* awaiting any IO.  Holding a DashMap read-lock across `.await`
-/// would deadlock with concurrent `insert()` calls from parse tasks.
-async fn push_parse_results() {
-    use serde_json::json;
-
-    let payloads: Vec<serde_json::Value> = FILE_STORE
-        .iter()
-        .filter_map(|entry| {
-            let uri = entry.key();
-            let snap = entry.value();
-
-            let semantic_data = snap.semantic.read().unwrap().data(None);
-            let diagnostics = snap.diagnostics.clone();
-            let hints = snap.all_inlay_hints();
-            let folding = snap.folding.clone();
-            let symbols = snap.symbols.clone();
-            let links = snap.links.clone();
-            let colors = snap.colors.clone();
-
-            Some(json!({
-                "jsonrpc": "2.0",
-                "method": "custom/parseResult",
-                "params": {
-                    "uri": uri.to_string(),
-                    "semanticTokens": semantic_data,
-                    "diagnostics": diagnostics,
-                    "inlayHints": hints,
-                    "folding": folding,
-                    "symbols": symbols,
-                    "documentLinks": links,
-                    "colors": colors
-                }
-            }))
-        })
-        .collect();
-    // DashMap guards dropped here.
-
-    for payload in &payloads {
-        crate::lsp::send::send(payload).await;
-    }
-}
 
 // ─── DidClose cleanup ────────────────────────────────────────────────────────
 
@@ -574,22 +483,4 @@ pub fn mark_parse_done(uri: &Url, generation: u64) {
         });
     }
 }
-
-/// Returns `true` if a parse for `uri` has been requested but not yet completed.
-///
-/// Used by [`cascade_parse_and_notify`] to suppress spurious
-/// `workspace/semanticTokens/refresh` calls from cancelled parse tasks that
-/// have already been superseded by a newer one.
-pub fn is_parse_in_flight(uri: &Url) -> bool {
-    let desired = match PARSE_DESIRED.get(uri) {
-        Some(v) => *v,
-        None => return false,
-    };
-    let done = match PARSE_DONE_TX.get(uri) {
-        Some(tx) => *tx.borrow(),
-        None => return false,
-    };
-    desired > done
-}
-
 

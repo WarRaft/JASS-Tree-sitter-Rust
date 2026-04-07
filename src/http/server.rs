@@ -69,7 +69,6 @@ pub async fn start_server() -> std::io::Result<u16> {
     };
 
     let app = Router::new()
-        .route("/ws", get(crate::http::ws::ws_handler))
         // ── Existing routes ──────────────────────────────────────────
         .route("/w3e/terrain", get(terrain_handler))
         .route("/w3e/file", get(file_lookup_handler))
@@ -133,6 +132,7 @@ pub async fn start_server() -> std::io::Result<u16> {
         // ── Document sync (HTTP replacements for WS notifications) ──
         .route("/document/update", post(crate::http::api::document_update))
         .route("/document/close", post(crate::http::api::document_close))
+        .route("/document/didRenameFiles", post(crate::http::api::did_rename_files))
         .route("/files/changed", post(crate::http::api::files_changed))
         // ── Binary data ─────────────────────────────────────────────
         .route("/semantic", get(crate::http::api::semantic_tokens))

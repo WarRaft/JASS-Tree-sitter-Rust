@@ -314,7 +314,7 @@ namespace Outer {
 
     // ─── Folding ranges ─────────────────────────────────────────────────
 
-    use crate::lsp::folding::lsp::FoldingRangeKind;
+    use crate::http::folding::FoldingRangeKind;
 
     #[test]
     fn function_folding() {

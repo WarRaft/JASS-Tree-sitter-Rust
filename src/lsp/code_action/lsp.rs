@@ -1,6 +1,6 @@
 use crate::lsp::diagnostic::lsp::Diagnostic;
 use crate::lsp::range::Range;
-use crate::lsp::rename::lsp::WorkspaceEdit;
+use crate::http::rename::WorkspaceEdit;
 use crate::lsp::text_document::TextDocumentIdentifier;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
