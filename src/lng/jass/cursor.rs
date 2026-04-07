@@ -12,12 +12,12 @@ use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticCode, DiagnosticSeverity
 use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
 use crate::lsp::folding::lsp::{FoldingRange, FoldingRangeKind};
 use crate::lsp::highlight::lsp::DocumentHighlightKind;
-use crate::lsp::inlay_hint::lsp::{InlayHint, InlayHintKind};
+use crate::http::inlay_hint::{InlayHint, InlayHintKind};
 use crate::lsp::position::Position;
 use crate::lsp::range::Range;
 use crate::lsp::ref_map::{DeclKey, ExternalDecl, RawOccurrence, EXTERNAL_KEY_BASE};
-use crate::lsp::semantic::hub::Hub;
-use crate::lsp::semantic::lsp::Kind as TokenKind;
+use crate::http::semantic::hub::Hub;
+use crate::http::semantic::token::Kind as TokenKind;
 use crate::util::roper::node::NodeExt;
 use lapce_xi_rope::Rope;
 use tree_sitter::Node;
@@ -898,9 +898,7 @@ impl Cursor {
                 character: end.column,
             },
             label: display,
-            kind: Some(InlayHintKind::Type),
-            padding_left: Some(true),
-            padding_right: Some(false),
+            kind: InlayHintKind::Type,
             byte_offset: node.end_byte(),
         });
     }

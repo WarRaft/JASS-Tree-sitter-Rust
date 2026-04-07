@@ -1,9 +1,6 @@
 use crate::lng::w3e::parse::W3eData;
 use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk, load_doodad_metadata, merge_w3d_into_doodads};
 use crate::lng::w3e::textures::load_tile_textures;
-use crate::lsp::cancel::CancelId;
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{json, to_value};
@@ -63,28 +60,12 @@ fn pack_points(data: &W3eData) -> serde_json::Value {
     })
 }
 
-pub async fn send(
-    call_id: Option<CancelId>,
+
+pub(crate) async fn compute(
     uri: &Url,
     archive_path: Option<&str>,
-) {
-    let result_json = _send(uri, archive_path).await.unwrap_or_else(|e| {
-        json!({
-            "error": {
-                "message": e.to_string(),
-                "kind": "w3e_render_failure"
-            }
-        })
-    });
-
-    let response = ResponseMessage {
-        jsonrpc: "2.0".into(),
-        id: call_id,
-        result: Some(result_json),
-        error: None,
-    };
-
-    let _ = lsp_send(&response).await;
+) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    _send(uri, archive_path).await
 }
 
 async fn _send(

@@ -1,10 +1,7 @@
-use crate::lsp::cancel::CancelId;
 use crate::lsp::completion::lsp::{
-    CompletionItem, CompletionItemKind, CompletionList, InsertTextFormat,
+    CompletionItem, CompletionItemKind, InsertTextFormat,
 };
 use crate::lsp::position::Position;
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
 use crate::util::roper::uri_map::ROPE_MAP;
 use std::path::Path;
 use url::Url;
@@ -16,31 +13,8 @@ use crate::util::scope_resolver::{SCOPE_RESOLVER, SymbolNS};
 use crate::util::tree_map::TREE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
 
-/// Handle `textDocument/completion`.
-pub async fn send(
-    id: Option<CancelId>,
-    uri: &Url,
-    position: &Position,
-) {
-    let items = compute(uri, position);
 
-    lsp_send(
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(CompletionList {
-                is_incomplete: items
-                    .iter()
-                    .any(|i| i.kind == Some(CompletionItemKind::Folder)),
-                items,
-            }),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
+pub(crate) fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
     let rope_entry = match ROPE_MAP.get(uri) {
         Some(e) => e,
         None => return vec![],

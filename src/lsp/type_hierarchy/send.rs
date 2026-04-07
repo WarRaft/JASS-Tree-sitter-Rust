@@ -1,41 +1,16 @@
-use crate::lsp::cancel::CancelId;
 use crate::lsp::document_symbol::lsp::SymbolKind;
 use crate::lsp::position::Position;
-use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::range::Range;
-use crate::lsp::send::send as lsp_send;
 use crate::lsp::type_hierarchy::lsp::TypeHierarchyItem;
 use crate::util::file_store::FILE_STORE;
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
-use serde_json::Value;
 use url::Url;
 
 // ─── Prepare ─────────────────────────────────────────────────────────────────
 
-pub async fn send_prepare(
-    id: Option<CancelId>,
-    uri: &Url,
-    position: &Position,
-) {
-    let result = compute_prepare(uri, position);
-
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(match result {
-                Some(items) => serde_json::to_value(&items).unwrap_or(Value::Null),
-                None => Value::Null,
-            }),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<TypeHierarchyItem>> {
+pub(crate) fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<TypeHierarchyItem>> {
     let lng = LNG_URI_MAP.get(uri)?;
     let lng_val = lng.value().clone();
     if lng_val != "jass" && lng_val != "angelscript" {
@@ -98,24 +73,8 @@ fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<TypeHierarchyIt
 
 // ─── Supertypes ──────────────────────────────────────────────────────────────
 
-pub async fn send_supertypes(
-    id: Option<CancelId>,
-    item: &TypeHierarchyItem,
-) {
-    let result = compute_supertypes(item);
 
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(serde_json::to_value(&result).unwrap_or(Value::Null)),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute_supertypes(item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
+pub(crate) fn compute_supertypes(item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
     let type_name = &item.name;
     let item_uri = match Url::parse(&item.uri) {
         Ok(u) => u,
@@ -157,24 +116,8 @@ fn compute_supertypes(item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
 
 // ─── Subtypes ────────────────────────────────────────────────────────────────
 
-pub async fn send_subtypes(
-    id: Option<CancelId>,
-    item: &TypeHierarchyItem,
-) {
-    let result = compute_subtypes(item);
 
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(serde_json::to_value(&result).unwrap_or(Value::Null)),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute_subtypes(item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
+pub(crate) fn compute_subtypes(item: &TypeHierarchyItem) -> Vec<TypeHierarchyItem> {
     let type_name = &item.name;
     let item_uri = match Url::parse(&item.uri) {
         Ok(u) => u,
@@ -242,4 +185,3 @@ fn find_type_decl_range(uri: &Url, name: &str) -> Option<Range> {
 
     None
 }
-

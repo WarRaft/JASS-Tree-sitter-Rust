@@ -30,9 +30,9 @@ use crate::lsp::diagnostic::lsp::Diagnostic;
 use crate::lsp::document_link::lsp::DocumentLink;
 use crate::lsp::document_symbol::lsp::DocumentSymbol;
 use crate::lsp::folding::lsp::FoldingRange;
-use crate::lsp::inlay_hint::lsp::InlayHint;
+use crate::http::inlay_hint::{InlayHint, InlayHintKind};
 use crate::lsp::ref_map::{DeclKey, RefMap};
-use crate::lsp::semantic::hub::Hub;
+use crate::http::semantic::hub::Hub;
 use std::sync::RwLock;
 
 // ─── ParseSnapshot ───────────────────────────────────────────────────────────
@@ -64,6 +64,70 @@ pub struct ParseSnapshot {
     pub func_decl_keys: HashSet<DeclKey>,
     /// Color information for `|cAARRGGBB` in strings and `0xAARRGGBB` hex literals.
     pub colors: Vec<ColorInformation>,
+}
+
+impl ParseSnapshot {
+    /// Compute all inlay hints for this snapshot.
+    ///
+    /// Merges ujapi version hints (always visible), reference-ID hints
+    /// (`//set ref-tip 1`), and type-annotation hints (`//set type-tip 1`).
+    /// Previously lived in `lsp/inlay_hint/send.rs` as `compute_all` —
+    /// moved here to eliminate the re-lookup of `FILE_STORE` and to keep
+    /// the hint computation next to the data it reads.
+    pub fn all_inlay_hints(&self) -> Vec<InlayHint> {
+        let mut hints = Vec::new();
+
+        // ujapi hints: always visible (version tag after import path).
+        hints.extend(self.ujapi_hints.iter().cloned());
+
+        let settings = &self.file_symbols.file_settings;
+        let ref_tip = settings.get("ref-tip").map(|v| v == "1").unwrap_or(false);
+        let type_tip = settings.get("type-tip").map(|v| v == "1").unwrap_or(false);
+
+        if !ref_tip && !type_tip {
+            return hints;
+        }
+
+        // ref-tip: debug reference-ID hints.
+        if ref_tip {
+            let ref_map = &self.ref_map;
+            for span in &ref_map.spans {
+                let label = if span.is_external {
+                    ref_map
+                        .external_decls
+                        .get(&span.decl_key)
+                        .map(|ext| {
+                            let parts: Vec<String> = ext.origins.iter().map(|o| {
+                                let path = o.uri.path();
+                                let fname = path.rsplit('/').next().unwrap_or(path);
+                                match o.origin_decl_key {
+                                    Some(ok) => format!("{}#{}", fname, ok),
+                                    None => fname.to_string(),
+                                }
+                            }).collect();
+                            format!("\u{2192}{}", parts.join(","))
+                        })
+                        .unwrap_or_else(|| format!("#{}", span.decl_key))
+                } else {
+                    format!("#{}", span.decl_key)
+                };
+
+                hints.push(InlayHint {
+                    position: span.range.end.clone(),
+                    label,
+                    kind: InlayHintKind::Type,
+                    byte_offset: 0,
+                });
+            }
+        }
+
+        // type-tip: type-annotation hints.
+        if type_tip {
+            hints.extend(self.type_hints.iter().cloned());
+        }
+
+        hints
+    }
 }
 
 // ─── Global stores ───────────────────────────────────────────────────────────
@@ -201,7 +265,6 @@ pub async fn push_parse_result_for_uri(uri: &Url) {
 
 /// Build the JSON notification payload for one URI.
 fn build_parse_result(uri: &Url) -> Option<serde_json::Value> {
-    use crate::lsp::inlay_hint::send::compute_all;
     use serde_json::json;
 
     let snapshot = FILE_STORE.get(uri)?;
@@ -209,7 +272,7 @@ fn build_parse_result(uri: &Url) -> Option<serde_json::Value> {
 
     let semantic_data = snap.semantic.read().unwrap().data(None);
     let diagnostics = &snap.diagnostics;
-    let hints = compute_all(uri);
+    let hints = snap.all_inlay_hints();
     let folding = &snap.folding;
     let symbols = &snap.symbols;
     let links = &snap.links;
@@ -237,7 +300,6 @@ fn build_parse_result(uri: &Url) -> Option<serde_json::Value> {
 /// *before* awaiting any IO.  Holding a DashMap read-lock across `.await`
 /// would deadlock with concurrent `insert()` calls from parse tasks.
 async fn push_parse_results() {
-    use crate::lsp::inlay_hint::send::compute_all;
     use serde_json::json;
 
     let payloads: Vec<serde_json::Value> = FILE_STORE
@@ -248,7 +310,7 @@ async fn push_parse_results() {
 
             let semantic_data = snap.semantic.read().unwrap().data(None);
             let diagnostics = snap.diagnostics.clone();
-            let hints = compute_all(uri);
+            let hints = snap.all_inlay_hints();
             let folding = snap.folding.clone();
             let symbols = snap.symbols.clone();
             let links = snap.links.clone();

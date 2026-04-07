@@ -2,7 +2,7 @@
 mod tests {
     use crate::lng::ass::ast::*;
     use crate::lng::ass::cursor::Cursor;
-    use crate::lsp::semantic::lsp::Kind as TokenKind;
+    use crate::http::semantic::token::Kind as TokenKind;
     use lapce_xi_rope::Rope;
 
     fn with_cursor(src: &str, f: impl FnOnce(&Cursor)) {

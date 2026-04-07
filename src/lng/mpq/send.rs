@@ -1,9 +1,5 @@
-use crate::lsp::cancel::CancelId;
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use log::error;
 use serde_json::json;
 
 /// The external listfile shipped with the extension — contains properly-cased
@@ -29,97 +25,6 @@ use std::sync::LazyLock;
 static LISTFILE_CASE_MAP: LazyLock<std::collections::HashMap<String, String>> =
     LazyLock::new(build_listfile_map);
 
-/// Handle `mpq/info` — return archive metadata for the custom editor page.
-pub async fn send_info(
-    call_id: Option<CancelId>,
-    archive_path: &str,
-) {
-    let path = archive_path.to_string();
-    let result = tokio::task::spawn_blocking(move || get_info(&path))
-        .await
-        .unwrap_or_else(|e| Err(format!("spawn_blocking: {}", e)));
-
-    let result_json = match result {
-        Ok(info) => info,
-        Err(e) => {
-            error!("mpq/info error: {}", e);
-            json!({ "error": e })
-        }
-    };
-
-    lsp_send(
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id: call_id,
-            result: Some(result_json),
-            error: None,
-        },
-    )
-    .await;
-}
-
-/// Handle `mpq/list` — return the flat list of files inside an MPQ archive.
-pub async fn send_list(
-    call_id: Option<CancelId>,
-    archive_path: &str,
-) {
-    let path = archive_path.to_string();
-    let result = tokio::task::spawn_blocking(move || list_files(&path))
-        .await
-        .unwrap_or_else(|e| Err(format!("spawn_blocking: {}", e)));
-
-    let result_json = match result {
-        Ok(entries) => json!({ "entries": entries }),
-        Err(e) => {
-            error!("mpq/list error: {}", e);
-            json!({ "error": e })
-        }
-    };
-
-    lsp_send(
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id: call_id,
-            result: Some(result_json),
-            error: None,
-        },
-    )
-    .await;
-}
-
-/// Handle `mpq/read` — read a single file from an MPQ archive, return base64.
-pub async fn send_read(
-    call_id: Option<CancelId>,
-    archive_path: &str,
-    file_path: &str,
-) {
-    let apath = archive_path.to_string();
-    let fpath = file_path.to_string();
-    let result = tokio::task::spawn_blocking(move || read_file(&apath, &fpath))
-        .await
-        .unwrap_or_else(|e| Err(format!("spawn_blocking: {}", e)));
-
-    let result_json = match result {
-        Ok(data) => {
-            let encoded = BASE64.encode(&data);
-            json!({ "content": encoded, "size": data.len() })
-        }
-        Err(e) => {
-            error!("mpq/read error: {}", e);
-            json!({ "error": e })
-        }
-    };
-
-    lsp_send(
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id: call_id,
-            result: Some(result_json),
-            error: None,
-        },
-    )
-    .await;
-}
 
 /// Well-known filenames found in W3X / W3M map archives.
 /// Many maps ship without a `(listfile)`, so we probe these explicitly.
@@ -180,6 +85,10 @@ fn fix_case(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+pub(crate) fn list_files_pub(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
+    list_files(archive_path)
+}
+
 fn list_files(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
     let archive =
         storm_rs::MpqArchive::open(archive_path).map_err(|e| format!("Cannot open archive: {}", e))?;
@@ -226,6 +135,10 @@ fn list_files(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
     Ok(entries)
 }
 
+pub(crate) fn read_file_pub(archive_path: &str, file_path: &str) -> Result<Vec<u8>, String> {
+    read_file(archive_path, file_path)
+}
+
 fn read_file(archive_path: &str, file_path: &str) -> Result<Vec<u8>, String> {
     let archive =
         storm_rs::MpqArchive::open(archive_path).map_err(|e| format!("Cannot open archive: {}", e))?;
@@ -233,6 +146,10 @@ fn read_file(archive_path: &str, file_path: &str) -> Result<Vec<u8>, String> {
     archive
         .read_file(file_path)
         .map_err(|e| format!("Cannot read file '{}': {}", file_path, e))
+}
+
+pub(crate) fn get_info_pub(archive_path: &str) -> Result<serde_json::Value, String> {
+    get_info(archive_path)
 }
 
 /// Gather archive metadata for the custom editor page.

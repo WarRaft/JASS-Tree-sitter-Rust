@@ -1,30 +1,11 @@
-use crate::lsp::cancel::CancelId;
 use crate::lsp::code_lens::lsp::{CodeLens, Command};
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
 use crate::util::file_store::FILE_STORE;
 use crate::util::uri_map::LNG_URI_MAP;
-use serde_json::{json, Value};
+use serde_json::json;
 use url::Url;
 
-pub async fn send(
-    id: Option<CancelId>,
-    uri: &Url,
-) {
-    let result = compute(uri);
 
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(serde_json::to_value(&result).unwrap_or(Value::Null)),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute(uri: &Url) -> Vec<CodeLens> {
+pub(crate) fn compute(uri: &Url) -> Vec<CodeLens> {
     let lng = match LNG_URI_MAP.get(uri) {
         Some(lng) => lng.value().clone(),
         None => return vec![],

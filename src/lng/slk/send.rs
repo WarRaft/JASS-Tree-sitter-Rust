@@ -1,13 +1,9 @@
 use crate::lng::slk::kind::Kind;
-use crate::lsp::cancel::CancelId;
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, to_value};
-use std::error::Error;
+use serde_json::to_value;
 use url::Url;
 
 // ─── Response types ──────────────────────────────────────────────────────────
@@ -34,27 +30,14 @@ pub struct SlkTableResponse {
 
 // ─── LSP entry point ─────────────────────────────────────────────────────────
 
-pub async fn send(call_id: Option<CancelId>, uri: &Url) {
-    let result_json = _send(uri).unwrap_or_else(|e| {
-        json!({
-            "error": { "message": e.to_string() }
-        })
-    });
 
-    let _ = lsp_send(
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id: call_id,
-            result: Some(result_json),
-            error: None,
-        },
-    )
-    .await;
+pub(crate) fn compute(uri: &Url) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+    _send(uri)
 }
 
 // ─── Core logic ──────────────────────────────────────────────────────────────
 
-fn _send(uri: &Url) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+fn _send(uri: &Url) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
     let rope = ROPE_MAP
         .get(uri)
         .map(|r| r.value().clone())

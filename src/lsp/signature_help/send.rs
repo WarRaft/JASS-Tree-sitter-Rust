@@ -1,8 +1,5 @@
-use crate::lsp::cancel::CancelId;
 use crate::lsp::hover::lsp::{MarkupContent, MarkupKind};
 use crate::lsp::position::Position;
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
 use crate::lsp::signature_help::lsp::{
     ParameterInformation, SignatureHelp, SignatureInformation,
 };
@@ -11,31 +8,10 @@ use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
 use crate::util::uri_map::LNG_URI_MAP;
-use serde_json::Value;
 use url::Url;
 
-pub async fn send(
-    id: Option<CancelId>,
-    uri: &Url,
-    position: &Position,
-) {
-    let result = compute(uri, position);
 
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(match result {
-                Some(h) => serde_json::to_value(h).unwrap_or(Value::Null),
-                None => Value::Null,
-            }),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute(uri: &Url, position: &Position) -> Option<SignatureHelp> {
+pub(crate) fn compute(uri: &Url, position: &Position) -> Option<SignatureHelp> {
     let lng = LNG_URI_MAP.get(uri)?;
     let lng_val = lng.value().clone();
     if lng_val != "jass" && lng_val != "angelscript" {

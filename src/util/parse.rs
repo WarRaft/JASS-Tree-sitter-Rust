@@ -137,7 +137,7 @@ pub fn resolve_ujapi_directive(
     frozen_imports: &mut HashSet<Url>,
     links: &mut Vec<DocumentLink>,
     diagnostics: &mut Vec<Diagnostic>,
-    inlay_hints: &mut Vec<crate::lsp::inlay_hint::lsp::InlayHint>,
+    inlay_hints: &mut Vec<crate::http::inlay_hint::InlayHint>,
 ) {
     use crate::util::ujapi;
 
@@ -218,23 +218,19 @@ pub fn resolve_ujapi_directive(
                 }
                 // Tags match → show version as inlay hint ✓
                 (Some(ft), Some(rel)) if *ft == rel.tag => {
-                    inlay_hints.push(crate::lsp::inlay_hint::lsp::InlayHint {
+                    inlay_hints.push(crate::http::inlay_hint::InlayHint {
                         position: path_range.end.clone(),
                         label: format!("{} ✓", ft),
-                        kind: None,
-                        padding_left: Some(true),
-                        padding_right: Some(false),
+                        kind: crate::http::inlay_hint::InlayHintKind::None,
                         byte_offset: path_end_byte,
                     });
                 }
                 // File has tag but no cached release — show version as inlay hint
                 (Some(ft), None) => {
-                    inlay_hints.push(crate::lsp::inlay_hint::lsp::InlayHint {
+                    inlay_hints.push(crate::http::inlay_hint::InlayHint {
                         position: path_range.end.clone(),
                         label: format!("{}", ft),
-                        kind: None,
-                        padding_left: Some(true),
-                        padding_right: Some(false),
+                        kind: crate::http::inlay_hint::InlayHintKind::None,
                         byte_offset: path_end_byte,
                     });
                 }

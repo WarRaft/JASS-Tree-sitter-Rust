@@ -1,35 +1,8 @@
 use crate::lng::w3abdhqtu::parse::W3ObjectData;
-use crate::lsp::cancel::CancelId;
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
-use serde_json::{json, to_value};
+use serde_json::to_value;
 use std::error::Error;
 use url::Url;
 
-pub async fn send(
-    call_id: Option<CancelId>,
-    uri: &Url,
-    level_data: bool,
-    archive_path: Option<&str>,
-) {
-    let result_json = _send(uri, level_data, archive_path).await.unwrap_or_else(|e| {
-        json!({
-            "error": {
-                "message": e.to_string(),
-                "kind": "w3obj_render_failure"
-            }
-        })
-    });
-
-    let response = ResponseMessage {
-        jsonrpc: "2.0".into(),
-        id: call_id,
-        result: Some(result_json),
-        error: None,
-    };
-
-    let _ = lsp_send(&response).await;
-}
 
 async fn _send(
     uri: &Url,

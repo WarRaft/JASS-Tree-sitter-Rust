@@ -1,87 +1,24 @@
-use crate::lsp::call_hierarchy::lsp::{
-    CallHierarchyIncomingCallsParams, CallHierarchyOutgoingCallsParams,
-    CallHierarchyPrepareParams,
-};
-use crate::lsp::cancel::{CancelId, CancelParams};
-use crate::lsp::code_action::lsp::{CodeActionParams, UjapiDownloadParams};
-use crate::lsp::code_lens::lsp::CodeLensParams;
-use crate::lsp::color::lsp::ColorPresentationParams;
-use crate::lsp::completion::lsp::CompletionParams;
-use crate::lsp::formatting::lsp::DocumentFormattingParams;
-use crate::lsp::highlight::lsp::{DefinitionParams, DocumentHighlightParams, ReferenceParams};
-use crate::lsp::hover::lsp::HoverParams;
-use crate::lsp::rename::lsp::{PrepareRenameParams, RenameFilesParams, RenameParams};
-use crate::lsp::signature_help::lsp::SignatureHelpParams;
+//! Wire protocol types — notifications only.
+//!
+//! All request/response methods are now served via HTTP routes
+//! (see `http::api`). WebSocket carries only document-sync
+//! notifications.
+
 use crate::lsp::text_document::{
     DidChangeTextDocumentParams, DidChangeWatchedFilesParams, DidCloseTextDocumentParams,
-    DidOpenTextDocumentParams, TextDocumentIdentifier,
-};
-use crate::lsp::type_hierarchy::lsp::{
-    TypeHierarchyPrepareParams, TypeHierarchySubtypesParams, TypeHierarchySupertypesParams,
+    DidOpenTextDocumentParams,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use url::Url;
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum LspMessage {
-    Call(LspCall),
-    RequestMessage(RequestMessage),
-    /// Response from the client to a server-initiated request
-    /// (e.g. `workspace/semanticTokens/refresh`).  Silently consumed.
-    ClientResponse(ClientResponse),
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+//  WebSocket notification — the only message type on the wire now
+// ═══════════════════════════════════════════════════════════════════════════════
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ClientResponse {
-    pub id: Value,
-    #[serde(default)]
-    pub result: Option<Value>,
-    #[serde(default)]
-    pub error: Option<Value>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct LspCall {
-    pub jsonrpc: String,
-    pub id: Option<CancelId>,
-    #[serde(flatten)]
-    pub payload: MethodCall,
-}
-
+/// Inbound WebSocket message — only notifications (no id, no jsonrpc).
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
-pub enum MethodCall {
-    /// BLP
-    #[serde(rename = "blp/render")]
-    BlpRender(TextDocumentIdentifier),
-
-    /// MDX
-    #[serde(rename = "mdx/render")]
-    MdxRender(TextDocumentIdentifier),
-
-    /// DOO
-    #[serde(rename = "doo/render")]
-    DooRender(DooRenderParams),
-
-    /// W3I
-    #[serde(rename = "w3i/render")]
-    W3iRender(W3iRenderParams),
-
-    /// W3E
-    #[serde(rename = "w3e/render")]
-    W3eRender(W3eRenderParams),
-
-    /// W3 Object Data (.w3a/.w3b/.w3d/.w3h/.w3q/.w3t/.w3u)
-    #[serde(rename = "w3obj/render")]
-    W3ObjRender(W3ObjRenderParams),
-
-
-    #[serde(rename = "$/cancelRequest")]
-    Cancel(CancelParams),
-
+pub enum WsNotification {
     #[serde(rename = "document/close")]
     DidClose(DidCloseTextDocumentParams),
 
@@ -93,211 +30,11 @@ pub enum MethodCall {
 
     #[serde(rename = "files/changed")]
     DidChangeWatchedFiles(DidChangeWatchedFilesParams),
-
-    // NOTE: SemanticFull, SemanticRange, Diagnostic, DocumentSymbol, Folding,
-    // InlayHint, DocumentLink, DocumentColor have been removed.
-    // These are now pushed via `custom/parseResult` notifications.
-
-    #[serde(rename = "textDocument/completion")]
-    Completion(CompletionParams),
-
-    #[serde(rename = "textDocument/hover")]
-    Hover(HoverParams),
-
-    #[serde(rename = "textDocument/documentHighlight")]
-    DocumentHighlight(DocumentHighlightParams),
-
-    #[serde(rename = "textDocument/definition")]
-    Definition(DefinitionParams),
-
-    #[serde(rename = "textDocument/references")]
-    References(ReferenceParams),
-
-    // InlayHint removed — pushed via custom/parseResult
-
-    // DocumentLink removed — pushed via custom/parseResult
-
-    #[serde(rename = "textDocument/formatting")]
-    Formatting(DocumentFormattingParams),
-
-    #[serde(rename = "textDocument/prepareRename")]
-    PrepareRename(PrepareRenameParams),
-
-    #[serde(rename = "textDocument/rename")]
-    Rename(RenameParams),
-
-    #[serde(rename = "workspace/willRenameFiles")]
-    WillRenameFiles(RenameFilesParams),
-
-    #[serde(rename = "importGraph/subgraph")]
-    ImportGraphSubgraph(TextDocumentIdentifier),
-
-    #[serde(rename = "callGraph/subgraph")]
-    CallGraphSubgraph(TextDocumentIdentifier),
-
-    #[serde(rename = "typeGraph/subgraph")]
-    TypeGraphSubgraph(TextDocumentIdentifier),
-
-    #[serde(rename = "build/execute")]
-    BuildExecute(TextDocumentIdentifier),
-
-    #[serde(rename = "build/hooks")]
-    BuildHooks(TextDocumentIdentifier),
-
-    #[serde(rename = "rescan/execute")]
-    RescanExecute(TextDocumentIdentifier),
-
-    #[serde(rename = "ujapi/download")]
-    UjapiDownload(UjapiDownloadParams),
-
-    // DocumentColor removed — pushed via custom/parseResult
-
-    #[serde(rename = "color/presentation")]
-    ColorPresentation(ColorPresentationParams),
-
-    #[serde(rename = "textDocument/codeAction")]
-    CodeAction(CodeActionParams),
-
-    #[serde(rename = "textDocument/signatureHelp")]
-    SignatureHelp(SignatureHelpParams),
-
-    #[serde(rename = "textDocument/codeLens")]
-    CodeLens(CodeLensParams),
-
-    #[serde(rename = "textDocument/prepareCallHierarchy")]
-    PrepareCallHierarchy(CallHierarchyPrepareParams),
-
-    #[serde(rename = "callHierarchy/incomingCalls")]
-    IncomingCalls(CallHierarchyIncomingCallsParams),
-
-    #[serde(rename = "callHierarchy/outgoingCalls")]
-    OutgoingCalls(CallHierarchyOutgoingCallsParams),
-
-    #[serde(rename = "textDocument/prepareTypeHierarchy")]
-    PrepareTypeHierarchy(TypeHierarchyPrepareParams),
-
-    #[serde(rename = "typeHierarchy/supertypes")]
-    Supertypes(TypeHierarchySupertypesParams),
-
-    #[serde(rename = "typeHierarchy/subtypes")]
-    Subtypes(TypeHierarchySubtypesParams),
-
-    /// MPQ archive browsing
-    #[serde(rename = "mpq/info")]
-    MpqInfo(MpqArchiveParams),
-
-    #[serde(rename = "mpq/list")]
-    MpqList(MpqArchiveParams),
-
-    #[serde(rename = "mpq/read")]
-    MpqRead(MpqReadParams),
-
-    /// SLK table editor
-    #[serde(rename = "slk/render")]
-    SlkRender(TextDocumentIdentifier),
-
-    #[serde(rename = "slk/edit")]
-    SlkEdit(SlkEditParams),
-
-
-    /// W3E game path
-    #[serde(rename = "w3e/gamePath/set")]
-    W3eGamePathSet(W3eGamePathSetParams),
-
-    #[serde(rename = "w3e/gamePath/status")]
-    W3eGamePathStatus(serde_json::Value),
-
-    /// W3E terrain SLK lookup
-    #[serde(rename = "w3e/terrainSlk")]
-    W3eTerrainSlk(W3eTerrainSlkParams),
-
-    /// W3E doodads SLK lookup
-    #[serde(rename = "w3e/doodadsSlk")]
-    W3eDoodadsSlk(W3eDoodadsSlkParams),
-
-    /// W3E units SLK lookup
-    #[serde(rename = "w3e/unitsSlk")]
-    W3eUnitsSlk(W3eUnitsSlkParams),
-
-    /// W3E destructables SLK lookup
-    #[serde(rename = "w3e/destructablesSlk")]
-    W3eDestructablesSlk(W3eDestructablesSlkParams),
-
-    /// W3E cascading file lookup
-    #[serde(rename = "w3e/lookupFile")]
-    W3eLookupFile(W3eLookupFileParams),
-
 }
 
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#requestMessage
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RequestMessage {
-    pub id: Value,
-    pub method: String,
-    pub params: Option<Value>,
-}
-
-/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#responseMessage
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ResponseMessage<T = Value> {
-    pub jsonrpc: String,
-    pub id: Option<CancelId>,
-    pub result: Option<T>,
-    pub error: Option<Value>,
-}
-
-/// Params for `mpq/list` — list files in an archive.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MpqArchiveParams {
-    /// Absolute filesystem path to the MPQ archive.
-    pub archive_path: String,
-}
-
-/// Params for `mpq/read` — read a single file from an archive.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MpqReadParams {
-    /// Absolute filesystem path to the MPQ archive.
-    pub archive_path: String,
-    /// Internal path inside the archive (e.g. "war3map.j").
-    pub file_path: String,
-}
-
-/// Params for `doo/render`.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DooRenderParams {
-    pub uri: Url,
-    /// Whether this is a unit file (`war3mapUnits.doo`) vs doodad file (`war3map.doo`).
-    #[serde(default)]
-    pub is_unit: bool,
-    /// When opened from an MPQ archive, the absolute path to the archive.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archive_path: Option<String>,
-}
-
-/// Params for `w3i/render`.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3iRenderParams {
-    pub uri: Url,
-    /// When opened from an MPQ archive, the absolute path to the archive
-    /// so the server can read `war3map.wts` and resolve TRIGSTR references.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archive_path: Option<String>,
-}
-
-/// Params for `w3e/render`.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3eRenderParams {
-    pub uri: Url,
-    /// When opened from an MPQ archive, the absolute path to the archive
-    /// so the server can extract `war3map.w3e` from it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archive_path: Option<String>,
-}
+// ═══════════════════════════════════════════════════════════════════════════════
+//  Param structs used by HTTP route handlers (kept here to avoid circular deps)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 /// Params for `slk/edit` — edit a single cell in the SLK table.
 #[derive(Debug, Serialize, Deserialize)]
@@ -310,76 +47,3 @@ pub struct SlkEditParams {
     /// New cell value (raw text to insert).
     pub value: String,
 }
-
-
-/// Params for `w3e/gamePath/set` — update the stored game installation path.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3eGamePathSetParams {
-    /// Absolute filesystem path to the Warcraft III installation folder.
-    pub game_path: String,
-}
-
-/// Params for `w3e/terrainSlk` — request terrain SLK tile metadata.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3eTerrainSlkParams {
-    /// Optional archive path (for looking up SLK inside the map archive).
-    #[serde(default)]
-    pub archive_path: Option<String>,
-}
-
-/// Params for `w3e/doodadsSlk` — request doodads SLK metadata.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3eDoodadsSlkParams {
-    /// Optional archive path (for looking up SLK inside the map archive).
-    #[serde(default)]
-    pub archive_path: Option<String>,
-}
-
-/// Params for `w3e/unitsSlk` — request units SLK metadata.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3eUnitsSlkParams {
-    /// Optional archive path (for looking up SLK inside the map archive).
-    #[serde(default)]
-    pub archive_path: Option<String>,
-}
-
-/// Params for `w3e/destructablesSlk` — request destructables SLK metadata.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3eDestructablesSlkParams {
-    /// Optional archive path (for looking up SLK inside the map archive).
-    #[serde(default)]
-    pub archive_path: Option<String>,
-}
-
-/// Params for `w3obj/render` — render object-data files
-/// (`.w3a`, `.w3b`, `.w3d`, `.w3h`, `.w3q`, `.w3t`, `.w3u`).
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3ObjRenderParams {
-    pub uri: Url,
-    /// Whether this format uses level-based modifications
-    /// (`true` for `.w3a`, `.w3d`, `.w3q`).
-    #[serde(default)]
-    pub level_data: bool,
-    /// When opened from an MPQ archive, the absolute path to the archive.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub archive_path: Option<String>,
-}
-
-/// Params for `w3e/lookupFile` — resolve a game-internal file path
-/// using the cascading lookup (map archive → game folder → game MPQs).
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct W3eLookupFileParams {
-    /// Game-internal path (e.g. `"Doodads\\Ashenvale\\Plants\\AshenShrooms\\AshenShrooms.mdx"`).
-    pub path: String,
-    /// Optional archive path (for looking up inside the map archive first).
-    #[serde(default)]
-    pub archive_path: Option<String>,
-}
-

@@ -1,42 +1,17 @@
 use crate::lsp::call_hierarchy::lsp::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall,
 };
-use crate::lsp::cancel::CancelId;
 use crate::lsp::document_symbol::lsp::SymbolKind;
 use crate::lsp::position::Position;
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
 use crate::util::file_store::FILE_STORE;
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
-use serde_json::Value;
 use url::Url;
 
 // ─── Prepare ─────────────────────────────────────────────────────────────────
 
-pub async fn send_prepare(
-    id: Option<CancelId>,
-    uri: &Url,
-    position: &Position,
-) {
-    let result = compute_prepare(uri, position);
-
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(match result {
-                Some(items) => serde_json::to_value(&items).unwrap_or(Value::Null),
-                None => Value::Null,
-            }),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<CallHierarchyItem>> {
+pub(crate) fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<CallHierarchyItem>> {
     let lng = LNG_URI_MAP.get(uri)?;
     let lng_val = lng.value().clone();
     if lng_val != "jass" && lng_val != "angelscript" {
@@ -103,24 +78,7 @@ fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<CallHierarchyIt
 
 // ─── Incoming Calls ──────────────────────────────────────────────────────────
 
-pub async fn send_incoming(
-    id: Option<CancelId>,
-    item: &CallHierarchyItem,
-) {
-    let result = compute_incoming(item);
-
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(serde_json::to_value(&result).unwrap_or(Value::Null)),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute_incoming(item: &CallHierarchyItem) -> Vec<CallHierarchyIncomingCall> {
+pub(crate) fn compute_incoming(item: &CallHierarchyItem) -> Vec<CallHierarchyIncomingCall> {
     let target_name = &item.name;
     let item_uri = match Url::parse(&item.uri) {
         Ok(u) => u,
@@ -166,24 +124,7 @@ fn compute_incoming(item: &CallHierarchyItem) -> Vec<CallHierarchyIncomingCall> 
 
 // ─── Outgoing Calls ──────────────────────────────────────────────────────────
 
-pub async fn send_outgoing(
-    id: Option<CancelId>,
-    item: &CallHierarchyItem,
-) {
-    let result = compute_outgoing(item);
-
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(serde_json::to_value(&result).unwrap_or(Value::Null)),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute_outgoing(item: &CallHierarchyItem) -> Vec<CallHierarchyOutgoingCall> {
+pub(crate) fn compute_outgoing(item: &CallHierarchyItem) -> Vec<CallHierarchyOutgoingCall> {
     let func_name = &item.name;
     let item_uri = match Url::parse(&item.uri) {
         Ok(u) => u,
@@ -289,4 +230,3 @@ fn find_call_ranges(uri: &Url, name: &str) -> Vec<crate::lsp::range::Range> {
 
     vec![]
 }
-

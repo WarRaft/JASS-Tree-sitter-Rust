@@ -1,3 +1,3 @@
-pub(super) mod parse;
-pub(super) mod response;
+pub(crate) mod parse;
+pub(crate) mod response;
 pub mod send;

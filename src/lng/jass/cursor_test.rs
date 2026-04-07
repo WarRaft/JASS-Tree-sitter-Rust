@@ -6,7 +6,7 @@ mod tests {
     use crate::lsp::folding::lsp::FoldingRangeKind;
     use crate::lsp::position::Position;
     use crate::lsp::ref_map::{build_ref_map, EXTERNAL_KEY_BASE};
-    use crate::lsp::semantic::lsp::Kind as TokenKind;
+    use crate::http::semantic::token::Kind as TokenKind;
     use lapce_xi_rope::Rope;
     use url::Url;
 

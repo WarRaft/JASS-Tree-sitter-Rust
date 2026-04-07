@@ -3,11 +3,10 @@
 const {
     window,
     Uri, commands, ProgressLocation, workspace,
-    languages, InlayHint, InlayHintKind, Position, Range, Location, EventEmitter,
+    languages, InlayHint, InlayHintKind, Position, Range, EventEmitter,
     ShellExecution, Task, TaskScope, tasks,
     DocumentSymbol: VscDocumentSymbol, SymbolKind,
     FoldingRange, FoldingRangeKind,
-    Diagnostic: VscDiagnostic, DiagnosticSeverity, DiagnosticTag,
     SemanticTokensLegend,
     DocumentLink: VscDocumentLink,
     ColorInformation, Color, ColorPresentation: VscColorPresentation, TextEdit,
@@ -164,16 +163,6 @@ function _runHookTask(label, cmd, cwd) {
 /** @type {import('vscode').Disposable[]} */
 const fileWatcherDisposables = []
 
-/** Map severity (1-4) to VS Code DiagnosticSeverity */
-function _mapSeverity(sev) {
-    switch (sev) {
-        case 1: return DiagnosticSeverity.Error
-        case 2: return DiagnosticSeverity.Warning
-        case 3: return DiagnosticSeverity.Information
-        case 4: return DiagnosticSeverity.Hint
-        default: return DiagnosticSeverity.Information
-    }
-}
 
 /** Map SymbolKind (1-26) to VS Code SymbolKind */
 function _mapSymbolKind(kind) {
@@ -235,6 +224,19 @@ module.exports = {
 
         client = new ServerClient(binPath)
 
+        // ── Trace output channel ───────────────────────────────────
+        const traceChannel = window.createOutputChannel('JASS Server Trace')
+        client._traceOutputChannel = traceChannel
+        context.subscriptions.push(traceChannel)
+
+        context.subscriptions.push(commands.registerCommand('jass.toggleTrace', () => {
+            client.traceMessages = !client.traceMessages
+            const state = client.traceMessages ? 'ON' : 'OFF'
+            traceChannel.appendLine(`[trace] Message tracing ${state}`)
+            if (client.traceMessages) traceChannel.show(true)
+            window.showInformationMessage(`JASS Server Trace: ${state}`)
+        }))
+
         // ── Supported languages for document sync ─────────────────────
         const SUPPORTED_LANGUAGES = new Set(['bni', 'jass', 'angelscript', 'wts', 'slk'])
 
@@ -277,113 +279,31 @@ module.exports = {
         ]
         const legend = new SemanticTokensLegend(tokenTypes, tokenModifiers)
 
-        // ── Handle unified custom/parseResult notification ────────────
-        client.onNotification('custom/parseResult', (params) => {
-            const uriStr = params.uri
+        // ── Binary TLV section types (must match Rust `section::*`) ───
+        // Response sections (server → client)
+        const SECTION_SEMANTIC = 0x01
+        const SECTION_INLAY_HINTS = 0x02
+        const SECTION_SEMANTIC_EDIT = 0x03
+        // Request sections (client → server)
+        const SECTION_FULL_TEXT = 0x10
+        const SECTION_CONTENT_CHANGE = 0x11
+        const SECTION_OPEN_URI = 0x12
 
-            // Semantic tokens
-            semanticCache.set(uriStr, params.semanticTokens || [])
-            semanticChanged.fire()
-
-            // Diagnostics
-            const diags = (params.diagnostics || []).map(d => {
-                const range = new Range(
-                    d.range.start.line, d.range.start.character,
-                    d.range.end.line, d.range.end.character
-                )
-                const diag = new VscDiagnostic(range, d.message, _mapSeverity(d.severity))
-                if (d.source) diag.source = d.source
-                if (d.code != null) {
-                    if (d.codeDescription && d.codeDescription.href) {
-                        diag.code = {value: d.code, target: Uri.parse(d.codeDescription.href)}
-                    } else {
-                        diag.code = d.code
-                    }
-                }
-                if (d.tags) {
-                    diag.tags = d.tags.map(t =>
-                        t === 1 ? DiagnosticTag.Unnecessary
-                            : t === 2 ? DiagnosticTag.Deprecated
-                                : t
-                    )
-                }
-                if (d.relatedInformation) {
-                    diag.relatedInformation = d.relatedInformation.map(ri => ({
-                        location: new Location(
-                            Uri.parse(ri.location.uri),
-                            new Range(
-                                ri.location.range.start.line, ri.location.range.start.character,
-                                ri.location.range.end.line, ri.location.range.end.character,
-                            )
-                        ),
-                        message: ri.message,
-                    }))
-                }
-                return diag
-            })
-            diagnosticCollection.set(Uri.parse(uriStr), diags)
-
-            // Inlay hints
-            const vscHints = (params.inlayHints || []).map(h => {
-                const hint = new InlayHint(
-                    new Position(h.position.line, h.position.character),
-                    h.label,
-                    h.kind === 1 ? InlayHintKind.Type
-                        : h.kind === 2 ? InlayHintKind.Parameter
-                            : undefined
-                )
-                if (h.paddingLeft != null) hint.paddingLeft = h.paddingLeft
-                if (h.paddingRight != null) hint.paddingRight = h.paddingRight
-                return hint
-            })
-            inlayHintsCache.set(uriStr, vscHints)
-            inlayHintsChanged.fire()
-
-            // Folding ranges
-            const folds = (params.folding || []).map(f => {
-                const kind = f.kind === 'comment' ? FoldingRangeKind.Comment
-                    : f.kind === 'imports' ? FoldingRangeKind.Imports
-                        : f.kind === 'region' ? FoldingRangeKind.Region
-                            : undefined
-                return new FoldingRange(f.startLine, f.endLine, kind)
-            })
-            foldingCache.set(uriStr, folds)
-
-            // Document symbols
-            const symbols = (params.symbols || []).map(s => _mapSymbol(s))
-            symbolsCache.set(uriStr, symbols)
-
-            // Document links
-            const links = (params.documentLinks || []).map(l => {
-                const range = new Range(
-                    l.range.start.line, l.range.start.character,
-                    l.range.end.line, l.range.end.character
-                )
-                const link = new VscDocumentLink(range, l.target ? Uri.parse(l.target) : undefined)
-                if (l.tooltip) link.tooltip = l.tooltip
-                return link
-            })
-            linksCache.set(uriStr, links)
-
-            // Colors
-            const colors = (params.colors || []).map(c => {
-                const range = new Range(
-                    c.range.start.line, c.range.start.character,
-                    c.range.end.line, c.range.end.character
-                )
-                return new ColorInformation(
-                    range,
-                    new Color(c.color.red, c.color.green, c.color.blue, c.color.alpha)
-                )
-            })
-            colorsCache.set(uriStr, colors)
-        })
 
 
         // ── Binary HTTP server (parallel data channel) ───────────────
         // Server info (port + token) is available immediately after start().
         /** @returns {{port: number, token: string} | null} */
         function getBinaryServer() { return client.getServerInfo() }
+
+        // ── Semantic delta state ──────────────────────────────────────
+        // `semanticBase` holds the last SERVER-sent token array (un-adjusted
+        // by _adjustSemanticTokens).  Deltas are applied to this base, not
+        // to `semanticCache` which may have been locally shifted.
+        /** @type {Map<string, Uint32Array>} uri → last server semantic data */
+        const semanticBase = new Map()
+        /** @type {Map<string, number>} uri → last received resultId */
+        const semanticResultId = new Map()
 
         // ── Document selectors ────────────────────────────────────────
         const allSelector = [
@@ -418,9 +338,49 @@ module.exports = {
             {
                 onDidChangeSemanticTokens: semanticChanged.event,
                 provideDocumentSemanticTokens(document) {
-                    const data = semanticCache.get(document.uri.toString())
+                    // Lazy open: first time VS Code asks for tokens for this
+                    // document — send FULL_TEXT to the server. The response
+                    // will fire semanticChanged → re-query with real data.
+                    const uri = document.uri.toString()
+                    if (!openedDocs.has(uri) && SUPPORTED_LANGUAGES.has(document.languageId)
+                        && (document.uri.scheme === 'file' || document.uri.scheme === 'mpq')) {
+                        clientReady.then(() => _sendDidOpen(document))
+                    }
+                    const data = semanticCache.get(uri)
                     if (!data || data.length === 0) return undefined
-                    return {data: new Uint32Array(data)}
+                    const src = data instanceof Uint32Array ? data : new Uint32Array(data)
+
+                    // Clamp stale tokens so they never exceed current line
+                    // lengths (avoids "Invalid Semantic Tokens Data" error).
+                    // In the common case (tokens match document) this is a
+                    // single fast scan with no copy.
+                    const lineCount = document.lineCount
+                    let line = 0, startChar = 0, needsClamp = false
+                    for (let i = 0; i + 4 <= src.length; i += 5) {
+                        line += src[i]
+                        startChar = src[i] > 0 ? src[i + 1] : startChar + src[i + 1]
+                        if (line >= lineCount || startChar + src[i + 2] > document.lineAt(line).text.length) {
+                            needsClamp = true
+                            break
+                        }
+                    }
+                    if (!needsClamp) return {data: src}
+
+                    // Slow path: copy and clamp positions to fit the current document.
+                    const arr = new Uint32Array(src)
+                    line = 0; startChar = 0
+                    let validLen = arr.length
+                    for (let i = 0; i + 4 <= arr.length; i += 5) {
+                        line += arr[i]
+                        startChar = arr[i] > 0 ? arr[i + 1] : startChar + arr[i + 1]
+                        if (line >= lineCount) { validLen = i; break }
+                        const lineLen = document.lineAt(line).text.length
+                        if (startChar + arr[i + 2] > lineLen) {
+                            arr[i + 2] = Math.max(0, lineLen - startChar)
+                        }
+                    }
+                    const result = validLen < arr.length ? arr.slice(0, validLen) : arr
+                    return result.length > 0 ? {data: result} : undefined
                 },
             },
             legend
@@ -493,25 +453,323 @@ module.exports = {
             }
         })
 
-        function _sendDidOpen(doc) {
-            const key = doc.uri.toString()
-            if (openedDocs.has(key)) return
-            openedDocs.add(key)
-            client.sendNotification('document/open', {
-                textDocument: {
-                    uri: key,
-                    languageId: doc.languageId,
-                    version: doc.version,
-                    text: doc.getText(),
+        // ── Per-URI serial update queue ─────────────────────────────
+        // Only ONE /document/update request is in flight per URI at any
+        // time.  Edits that arrive while a request is running are
+        // accumulated and sent as a single batch when the running request
+        // completes.
+        //
+        // Guarantees:
+        //  • All edits reach the server in order (no abort → no lost edits)
+        //  • Only one parse per batch (efficient)
+        //  • Version echo still discards stale responses
+
+        /** @type {Map<string, number>} uri → monotonic document version */
+        const _docVersion = new Map()
+
+        /** @type {Map<string, boolean>} uri → true while a request is in flight */
+        const _sending = new Map()
+
+        /**
+         * Accumulated TLV sections to send after the current in-flight
+         * request completes.
+         * @type {Map<string, {version: number, languageId: string, sections: Buffer[]}>}
+         */
+        const _pending = new Map()
+
+        /**
+         * Parse a binary TLV response from /document/update and populate caches.
+         * @param {string} uri
+         * @param {Buffer} buf
+         */
+        function _applyBinaryResponse(uri, buf) {
+            let offset = 0
+            while (offset + 5 <= buf.length) {
+                const type = buf[offset]; offset += 1
+                const len = buf.readUInt32LE(offset); offset += 4
+                if (offset + len > buf.length) break
+                const data = buf.slice(offset, offset + len); offset += len
+
+                switch (type) {
+                    case SECTION_SEMANTIC: {
+                        // Full semantic tokens: [u32 resultId][u32... tokens]
+                        const resultId = data.readUInt32LE(0)
+                        const tokenData = data.slice(4)
+                        const aligned = new Uint8Array(tokenData).buffer
+                        const u32 = new Uint32Array(aligned)
+                        semanticBase.set(uri, u32)
+                        semanticCache.set(uri, u32)
+                        semanticResultId.set(uri, resultId)
+                        semanticChanged.fire()
+                        break
+                    }
+                    case SECTION_SEMANTIC_EDIT: {
+                        // Token-aware delta: [u32 resultId][...stream of 5×u32 tuples]
+                        // Each tuple is either:
+                        //   regular token: [deltaLine, deltaChar, len, type, mods]
+                        //   COPY command:  [0xFFFFFFFF, 0, count, 0, 0]
+                        //   SKIP command:  [0xFFFFFFFF, 1, count, 0, 0]
+                        const SENTINEL = 0xFFFFFFFF
+                        const OP_COPY = 0
+                        const OP_SKIP = 1
+
+                        const resultId = data.readUInt32LE(0)
+                        const stream = new Uint32Array(new Uint8Array(data.slice(4)).buffer)
+                        const base = semanticBase.get(uri) || new Uint32Array(0)
+
+                        const result = []
+                        let oldCursor = 0 // index into base (u32 units)
+
+                        for (let si = 0; si + 4 < stream.length; si += 5) {
+                            if (stream[si] === SENTINEL) {
+                                const op = stream[si + 1]
+                                const count = stream[si + 2]
+                                const len = count * 5
+                                if (op === OP_COPY) {
+                                    for (let j = 0; j < len && oldCursor + j < base.length; j++) {
+                                        result.push(base[oldCursor + j])
+                                    }
+                                    oldCursor += len
+                                } else if (op === OP_SKIP) {
+                                    oldCursor += len
+                                }
+                            } else {
+                                // Regular token — insert
+                                result.push(stream[si], stream[si + 1], stream[si + 2], stream[si + 3], stream[si + 4])
+                            }
+                        }
+
+                        const tokens = new Uint32Array(result)
+                        semanticBase.set(uri, tokens)
+                        semanticCache.set(uri, tokens)
+                        semanticResultId.set(uri, resultId)
+                        semanticChanged.fire()
+                        break
+                    }
+                    case SECTION_INLAY_HINTS: {
+                        const hints = []
+                        let p = 0
+                        while (p + 11 <= data.length) {
+                            const line = data.readUInt32LE(p); p += 4
+                            const character = data.readUInt32LE(p); p += 4
+                            const kind = data[p]; p += 1
+                            const labelLen = data.readUInt16LE(p); p += 2
+                            if (p + labelLen > data.length) break
+                            const label = data.toString('utf8', p, p + labelLen); p += labelLen
+
+                            const hint = new InlayHint(
+                                new Position(line, character),
+                                label,
+                                kind === 1 ? InlayHintKind.Type
+                                    : kind === 2 ? InlayHintKind.Parameter
+                                        : undefined
+                            )
+                            hint.paddingLeft = true
+                            hint.paddingRight = false
+                            hints.push(hint)
+                        }
+                        inlayHintsCache.set(uri, hints)
+                        inlayHintsChanged.fire()
+                        break
+                    }
+                    // Future section types: just add cases here
+                }
+            }
+        }
+
+        /**
+         * Build a TLV section: [u8 type][u32 LE length][...data]
+         * @param {number} type
+         * @param {Buffer} data
+         * @returns {Buffer}
+         */
+        function _tlvSection(type, data) {
+            const header = Buffer.alloc(5)
+            header[0] = type
+            header.writeUInt32LE(data.length, 1)
+            return Buffer.concat([header, data])
+        }
+
+        /**
+         * Enqueue a /document/update request.
+         *
+         * If no request is currently in flight for this URI the request is
+         * sent immediately.  Otherwise the TLV body is accumulated and will
+         * be sent as a single batch when the running request completes.
+         *
+         * @param {string} uri
+         * @param {string} languageId
+         * @param {number} version  current document version (monotonic)
+         * @param {Buffer} body     pre-built TLV sections
+         */
+        function _enqueueUpdate(uri, languageId, version, body) {
+            if (_sending.get(uri)) {
+                // Request in flight — accumulate sections
+                const p = _pending.get(uri)
+                if (p) {
+                    p.sections.push(body)
+                    p.version = version
+                } else {
+                    _pending.set(uri, {version, languageId, sections: [body]})
+                }
+                return
+            }
+            _flushQueue(uri, languageId, version, body)
+        }
+
+        /**
+         * Actually send a /document/update and, when done, drain any
+         * sections that accumulated while we were waiting.
+         */
+        function _flushQueue(uri, languageId, version, body) {
+            _sending.set(uri, true)
+
+            const params = {uri, languageId, version: String(version)}
+            const lastId = semanticResultId.get(uri)
+            if (lastId !== undefined) params.lastResultId = String(lastId)
+
+            client.http.postBinary('/document/update', params, body).then(buf => {
+                if (buf.length >= 4) {
+                    const echoedVersion = buf.readUInt32LE(0)
+                    if (echoedVersion === _docVersion.get(uri)) {
+                        _applyBinaryResponse(uri, buf.slice(4))
+                    } else {
+                        // Response is stale — invalidate delta base so next
+                        // request sends lastResultId=0 → server sends full.
+                        semanticResultId.delete(uri)
+                    }
+                }
+            }).catch(e => {
+                console.error('document/update error:', e)
+            }).finally(() => {
+                _sending.set(uri, false)
+                // Drain accumulated edits
+                const p = _pending.get(uri)
+                if (p) {
+                    _pending.delete(uri)
+                    _flushQueue(uri, p.languageId, p.version,
+                        Buffer.concat(p.sections))
                 }
             })
         }
 
-        const docOpenDisposable = workspace.onDidOpenTextDocument(doc => {
-            if (!SUPPORTED_LANGUAGES.has(doc.languageId)) return
-            if (doc.uri.scheme !== 'file' && doc.uri.scheme !== 'mpq') return
-            _sendDidOpen(doc)
-        })
+        function _sendDidOpen(doc) {
+            const key = doc.uri.toString()
+            if (openedDocs.has(key)) return
+            openedDocs.add(key)
+            const ver = (_docVersion.get(key) || 0) + 1
+            _docVersion.set(key, ver)
+
+            if (doc.uri.scheme === 'file') {
+                // Server reads the file from disk — no text over the wire.
+                _enqueueUpdate(key, doc.languageId, ver, _tlvSection(SECTION_OPEN_URI, Buffer.alloc(0)))
+            } else {
+                // mpq:// or other schemes — server can't access the file,
+                // send full text.
+                const textBuf = Buffer.from(doc.getText(), 'utf8')
+                _enqueueUpdate(key, doc.languageId, ver, _tlvSection(SECTION_FULL_TEXT, textBuf))
+            }
+        }
+
+        /**
+         * Adjust delta-encoded semantic tokens for a single content change.
+         * Keeps the cached tokens in sync with the document so that
+         * VS Code's delayed re-query returns correctly-positioned tokens
+         * instead of stale pre-edit data.
+         * @param {Uint32Array} data  delta-encoded [dLine, dChar, len, type, mod, …]
+         * @param {import('vscode').TextDocumentContentChangeEvent} change
+         * @returns {Uint32Array} adjusted copy
+         */
+        function _adjustSemanticTokens(data, change) {
+            const sL = change.range.start.line, sC = change.range.start.character
+            const eL = change.range.end.line, eC = change.range.end.character
+            const parts = change.text.split('\n')
+            const addedLines = parts.length - 1
+            const lineDelta = addedLines - (eL - sL)
+            const lastPartLen = parts[parts.length - 1].length
+
+            const arr = new Uint32Array(data) // copy
+            let prevLine = 0, prevChar = 0
+            let prevNewLine = 0, prevNewChar = 0
+
+            for (let i = 0; i + 4 <= arr.length; i += 5) {
+                const dLine = arr[i], dChar = arr[i + 1]
+                const absLine = prevLine + dLine
+                const absChar = dLine > 0 ? dChar : prevChar + dChar
+
+                let newLine = absLine, newChar = absChar
+
+                if (absLine > eL || (absLine === eL && absChar >= eC)) {
+                    // ── Token is AFTER the edit ─────────────────────
+                    if (absLine === eL) {
+                        newLine = sL + addedLines
+                        newChar = (addedLines > 0 ? lastPartLen : sC + lastPartLen) + (absChar - eC)
+                    } else {
+                        newLine = absLine + lineDelta
+                    }
+                } else if (absLine > sL || (absLine === sL && absChar >= sC)) {
+                    // ── Token is INSIDE the deleted range ───────────
+                    // Collapse to edit start; server will fix it.
+                    newLine = sL
+                    newChar = sC
+                }
+
+                // Re-encode delta
+                arr[i] = Math.max(0, newLine - prevNewLine)
+                arr[i + 1] = (newLine > prevNewLine) ? newChar : Math.max(0, newChar - prevNewChar)
+
+                prevLine = absLine; prevChar = absChar
+                prevNewLine = newLine; prevNewChar = newChar
+            }
+            return arr
+        }
+
+        /**
+         * Adjust cached InlayHint positions for a single content change.
+         * VS Code does NOT auto-adjust InlayHint positions on edit,
+         * so we must do it ourselves for instant visual feedback.
+         * @param {import('vscode').InlayHint[]} hints
+         * @param {import('vscode').TextDocumentContentChangeEvent} change
+         * @returns {import('vscode').InlayHint[]}
+         */
+        function _adjustInlayHints(hints, change) {
+            const sL = change.range.start.line, sC = change.range.start.character
+            const eL = change.range.end.line, eC = change.range.end.character
+            const parts = change.text.split('\n')
+            const addedLines = parts.length - 1
+            const deletedLines = eL - sL
+            const lastPartLen = parts[parts.length - 1].length
+
+            const result = []
+            for (const hint of hints) {
+                const L = hint.position.line, C = hint.position.character
+
+                // Before change — keep as-is
+                if (L < sL || (L === sL && C <= sC)) {
+                    result.push(hint)
+                    continue
+                }
+
+                // Inside deleted range — drop
+                if (L < eL || (L === eL && C < eC)) continue
+
+                // After change — adjust
+                let newL, newC
+                if (L === eL) {
+                    newL = sL + addedLines
+                    newC = (addedLines > 0 ? lastPartLen : sC + lastPartLen) + (C - eC)
+                } else {
+                    newL = L + addedLines - deletedLines
+                    newC = C
+                }
+
+                const h = new InlayHint(new Position(newL, newC), hint.label, hint.kind)
+                h.paddingLeft = hint.paddingLeft
+                h.paddingRight = hint.paddingRight
+                result.push(h)
+            }
+            return result
+        }
 
         const docChangeDisposable = workspace.onDidChangeTextDocument(e => {
             const doc = e.document
@@ -523,56 +781,62 @@ module.exports = {
             }
             if (e.contentChanges.length === 0) return
 
-            // Cancel all in-flight requests for this URI — they're working
-            // with stale data.  The server does the same on its side, but
-            // cancelling client-side avoids waiting for doomed responses.
-            client.cancelUri(doc.uri.toString())
+            const uri = doc.uri.toString()
 
-            client.sendNotification('document/change', {
-                textDocument: {
-                    uri: doc.uri.toString(),
-                    version: doc.version,
-                },
-                contentChanges: e.contentChanges.map(c => ({
-                    range: {
-                        start: {line: c.range.start.line, character: c.range.start.character},
-                        end: {line: c.range.end.line, character: c.range.end.character},
-                    },
-                    text: c.text,
-                })),
+            // ── Bump document version ───────────────────────────────────
+            const ver = (_docVersion.get(uri) || 0) + 1
+            _docVersion.set(uri, ver)
+
+            // ── Adjust caches so VS Code shows correct positions ────────
+            if (e.contentChanges.length === 1) {
+                const change = e.contentChanges[0]
+                const cached = semanticCache.get(uri)
+                if (cached && cached.length > 0) {
+                    semanticCache.set(uri, _adjustSemanticTokens(cached, change))
+                }
+                const hints = inlayHintsCache.get(uri)
+                if (hints && hints.length > 0) {
+                    inlayHintsCache.set(uri, _adjustInlayHints(hints, change))
+                    inlayHintsChanged.fire()
+                }
+            } else {
+                semanticCache.delete(uri)
+                inlayHintsCache.set(uri, [])
+                inlayHintsChanged.fire()
+            }
+
+            // ── Send edits through the serial queue ──────────────────────
+            // Never abort — the queue guarantees all edits reach the server
+            // in order.  If a request is in flight, edits accumulate and are
+            // sent as a single batch when it completes.
+            const sections = e.contentChanges.map(c => {
+                const textBytes = Buffer.from(c.text, 'utf8')
+                const data = Buffer.alloc(20 + textBytes.length)
+                data.writeUInt32LE(c.range.start.line, 0)
+                data.writeUInt32LE(c.range.start.character, 4)
+                data.writeUInt32LE(c.range.end.line, 8)
+                data.writeUInt32LE(c.range.end.character, 12)
+                data.writeUInt32LE(textBytes.length, 16)
+                textBytes.copy(data, 20)
+                return _tlvSection(SECTION_CONTENT_CHANGE, data)
             })
+            _enqueueUpdate(uri, doc.languageId, ver, Buffer.concat(sections))
         })
 
         const docCloseDisposable = workspace.onDidCloseTextDocument(doc => {
             const key = doc.uri.toString()
             if (!openedDocs.has(key)) return
             openedDocs.delete(key)
-            client.sendNotification('document/close', {
+            _docVersion.delete(key)
+            _sending.delete(key)
+            _pending.delete(key)
+            semanticBase.delete(key)
+            semanticResultId.delete(key)
+            client.http.post('/document/close', {
                 textDocument: {uri: key}
-            })
+            }).catch(e => console.error('document/close error:', e))
         })
 
-        // ── File watchers ─────────────────────────────────────────────
-        // Handle server's watchers/register request for file watchers
-        client.onNotification('watchers/register', (params) => {
-            if (!params || !params.registrations) return
-            for (const reg of params.registrations) {
-                if (reg.method !== 'files/changed') continue
-                const watchers = reg.registerOptions?.watchers || []
-                for (const w of watchers) {
-                    const watcher = workspace.createFileSystemWatcher(w.globPattern)
-                    const sendEvent = (uri, type) => {
-                        client.sendNotification('files/changed', {
-                            changes: [{uri: uri.toString(), type}]
-                        })
-                    }
-                    if (!w.kind || w.kind & 1) watcher.onDidCreate(uri => sendEvent(uri, 1))
-                    if (!w.kind || w.kind & 2) watcher.onDidChange(uri => sendEvent(uri, 2))
-                    if (!w.kind || w.kind & 4) watcher.onDidDelete(uri => sendEvent(uri, 3))
-                    fileWatcherDisposables.push(watcher)
-                }
-            }
-        })
 
         /** Helper: open-custom-document boilerplate */
         const openCustomDocument = uri => ({uri, dispose: () => {}})
@@ -590,7 +854,6 @@ module.exports = {
             symbolProvider,
             linkProvider,
             colorProvider,
-            docOpenDisposable,
             docChangeDisposable,
             docCloseDisposable,
 

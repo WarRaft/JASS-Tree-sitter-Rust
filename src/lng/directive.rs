@@ -13,8 +13,8 @@
 //! needs a thin adapter.
 
 use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::semantic::hub::Hub;
-use crate::lsp::semantic::lsp::Kind as TokenKind;
+use crate::http::semantic::hub::Hub;
+use crate::http::semantic::token::Kind as TokenKind;
 use crate::util::roper::node::NodeExt;
 use lapce_xi_rope::Rope;
 use tree_sitter::Node;

@@ -1,31 +1,8 @@
-use crate::lsp::cancel::CancelId;
-use crate::lsp::highlight::lsp::{DocumentHighlight, DocumentHighlightParams};
-use crate::lsp::protocol::ResponseMessage;
-use crate::lsp::send::send as lsp_send;
+use crate::lsp::highlight::lsp::DocumentHighlight;
 use crate::util::file_store::FILE_STORE;
 
-/// Handle `textDocument/documentHighlight`.
-pub async fn send(
-    id: Option<CancelId>,
-    params: &DocumentHighlightParams,
-) {
-    let uri = &params.text_document.uri;
-    let position = &params.position;
 
-    let result = compute(uri, position);
-
-    lsp_send(
-        &ResponseMessage {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(result),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute(uri: &url::Url, position: &crate::lsp::position::Position) -> Vec<DocumentHighlight> {
+pub(crate) fn compute(uri: &url::Url, position: &crate::lsp::position::Position) -> Vec<DocumentHighlight> {
     let snapshot = match FILE_STORE.get(uri) {
         Some(s) => s,
         None => return vec![],

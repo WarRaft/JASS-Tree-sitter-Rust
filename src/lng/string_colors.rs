@@ -8,8 +8,8 @@
 
 use crate::lsp::color::lsp::{Color, ColorInformation};
 use crate::lsp::range::Range;
-use crate::lsp::semantic::hub::Hub;
-use crate::lsp::semantic::lsp::Kind as TokenKind;
+use crate::http::semantic::hub::Hub;
+use crate::http::semantic::token::Kind as TokenKind;
 use lapce_xi_rope::Rope;
 use tree_sitter::Node;
 

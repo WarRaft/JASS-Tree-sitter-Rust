@@ -530,6 +530,10 @@
         "command": "slk.openText",
         "title": "%command.slk.openText%",
         "icon": "$(code)"
+      },
+      {
+        "command": "jass.toggleTrace",
+        "title": "JASS: Toggle Server Trace"
       }
     ],
     "menus": {

@@ -1,40 +1,20 @@
-use crate::lsp::cancel::CancelId;
 use crate::lsp::code_action::lsp::{
     CodeAction, CodeActionParams, Command, CODE_ACTION_KIND_QUICKFIX, CODE_ACTION_KIND_REFACTOR,
 };
 use crate::lsp::diagnostic::lsp::Diagnostic;
 use crate::lsp::position::Position;
-use crate::lsp::protocol::ResponseMessage;
 use crate::lsp::range::Range;
 use crate::lsp::rename::lsp::{TextEdit, WorkspaceEdit};
-use crate::lsp::send::send as lsp_send;
 use crate::util::file_store::FILE_STORE;
 use crate::util::open::is_as_uri;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 use tree_sitter::Point;
 
-/// Handle `textDocument/codeAction`.
-pub async fn send(
-    id: Option<CancelId>,
-    params: &CodeActionParams,
-) {
-    let actions = compute(params);
 
-    lsp_send(
-        &ResponseMessage::<Value> {
-            jsonrpc: "2.0".into(),
-            id,
-            result: Some(serde_json::to_value(actions).unwrap_or(Value::Null)),
-            error: None,
-        },
-    )
-    .await;
-}
-
-fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
+pub(crate) fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
     let mut actions = Vec::new();
 
     // ── UjAPI download / re-download actions ──────────────────────────────

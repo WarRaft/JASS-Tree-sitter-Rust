@@ -1,4 +1,8 @@
-use crate::lsp::cancel::CancelId;
+//! Global sender for outgoing WebSocket notifications.
+//!
+//! Used only for server→client push (e.g. `custom/parseResult`,
+//! `watchers/register`).  Request/response is now handled by HTTP.
+
 use once_cell::sync::OnceCell;
 use serde::Serialize;
 use tokio::sync::mpsc;
@@ -16,20 +20,4 @@ pub async fn send<T: Serialize>(message: &T) {
     if let Some(tx) = SEND_TX.get() {
         let _ = tx.send(json);
     }
-}
-
-/// Send a `RequestCancelled` error response (code −32800) for a cancelled request.
-pub async fn send_cancelled(id: Option<CancelId>) {
-
-    send(
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "error": {
-                "code": -32800,
-                "message": "Request cancelled"
-            }
-        }),
-    )
-    .await;
 }

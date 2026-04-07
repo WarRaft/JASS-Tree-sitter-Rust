@@ -129,7 +129,7 @@ pub fn get_tileset() -> Option<String> {
 
 // ─── Tileset MPQ discovery ───────────────────────────────────────────────────
 
-/// All known tileset letters (from docs/mapEditor/terrain.md).
+/// All known tileset letters (from docs/protocol/terrain.md).
 const TILESET_LETTERS: &[char] = &[
     'A', 'B', 'C', 'D', 'F', 'G', 'I', 'J', 'K', 'L',
     'N', 'O', 'Q', 'V', 'W', 'X', 'Y', 'Z',
