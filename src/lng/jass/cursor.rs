@@ -165,7 +165,7 @@ pub struct Cursor {
 
     /// Per-declaration resolved types.
     pub type_map: TypeMap,
-    /// Inlay hints for type annotations (shown when `//set type-tip 1`).
+    /// Inlay hints for type annotations (shown when `//set hint type`).
     pub type_hints: Vec<InlayHint>,
     /// Compile-time evaluated values of `constant` globals.
     /// Keyed by variable name; used by `eval_expr` to propagate values
@@ -1585,7 +1585,7 @@ impl Cursor {
                             doc_comment: ann.doc_comment,
                             ignore_tags: ann.ignore_tags,
                         });
-                        // type-tip: show type with const/comptime/array modifiers
+                        // type hint: show type with const/comptime/array modifiers
                         if let Some(name_id) = &d.name {
                             if let Some(ref tn) = type_name {
                                 let cv = d.value.as_ref().and_then(|e| self.eval_expr(e));
@@ -1671,7 +1671,7 @@ impl Cursor {
                             is_constant: false,
                             is_comptime: false,
                         }));
-                        // type-tip: show local type + comptime value of initializer
+                        // type hint: show local type + comptime value of initializer
                         let cv = l.value.as_ref().and_then(|e| self.eval_expr(e));
                         self.emit_type_hint(&name_id.node, &tn, cv.as_ref());
                     }
@@ -1765,7 +1765,7 @@ impl Cursor {
                             ignore_tags: ann.ignore_tags,
                         });
                     }
-                    // TypeMap + type-tip
+                    // TypeMap + type hint
                     if let Some(ref name_id) = d.name {
                         if let Some(ref tn) = type_name {
                             // Type mismatch check: unknown → concrete type
@@ -2402,7 +2402,7 @@ impl Cursor {
                     }
                 }
 
-                // type-tip: show inferred type + compile-time value
+                // type hint: show inferred type + compile-time value
                 if let Some(ref t) = result {
                     let cv = self.eval_expr(expr);
                     self.emit_type_hint(node, t, cv.as_ref());
@@ -2443,7 +2443,7 @@ impl Cursor {
                     }
                 }
 
-                // type-tip: show inferred type + compile-time value
+                // type hint: show inferred type + compile-time value
                 if let Some(ref t) = result {
                     let cv = self.eval_expr(expr);
                     self.emit_type_hint(node, t, cv.as_ref());

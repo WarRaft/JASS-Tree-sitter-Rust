@@ -530,6 +530,17 @@ pub fn invalid_bool_value(value: &str, key: &str) -> String {
     }
 }
 
+pub fn unknown_tag_value(tag: &str, key: &str, allowed: &[&str]) -> String {
+    let list = allowed.join("`, `");
+    match locale() {
+        Locale::En => format!("Unknown value `{}` for `{}`: expected one of `{}`", tag, key, list),
+        Locale::Ru => format!("Неизвестное значение `{}` для `{}`: допустимы `{}`", tag, key, list),
+        Locale::Uk => format!("Невідоме значення `{}` для `{}`: допустимі `{}`", tag, key, list),
+        Locale::Zh => format!("`{}` 的未知值 `{}`：应为 `{}` 之一", key, tag, list),
+        Locale::Tc => format!("`{}` 的未知值 `{}`：應為 `{}` 之一", key, tag, list),
+    }
+}
+
 // ─── //ignore directive diagnostics ─────────────────────────────────────────
 
 pub fn missing_ignore_tag() -> &'static str {
@@ -772,23 +783,13 @@ pub fn completion_function_snippet() -> &'static str {
 
 // ─── SetDef details (localized) ─────────────────────────────────────────────
 
-pub fn set_def_ref_tip() -> &'static str {
+pub fn set_def_hint() -> &'static str {
     pick(
-        "Show / hide reference-ID inlay hints (debug)",
-        "Показать / скрыть подсказки ID ссылок (отладка)",
-        "Показати / сховати підказки ID посилань (зневадження)",
-        "显示/隐藏引用ID内嵌提示（调试）",
-        "顯示/隱藏參考ID內嵌提示（除錯）",
-    )
-}
-
-pub fn set_def_type_tip() -> &'static str {
-    pick(
-        "Show / hide type-annotation inlay hints",
-        "Показать / скрыть подсказки аннотаций типов",
-        "Показати / сховати підказки анотацій типів",
-        "显示/隐藏类型注释内嵌提示",
-        "顯示/隱藏類型註解內嵌提示",
+        "Inlay hints to show: `ref` (reference IDs) `type` (type annotations)",
+        "Подсказки для отображения: `ref` (ID ссылок) `type` (аннотации типов)",
+        "Підказки для відображення: `ref` (ID посилань) `type` (анотації типів)",
+        "要显示的内嵌提示：`ref`（引用ID）`type`（类型注释）",
+        "要顯示的內嵌提示：`ref`（參考ID）`type`（類型註解）",
     )
 }
 
@@ -855,8 +856,7 @@ pub fn set_def_build_after() -> &'static str {
 /// Get the localized detail for a `SetDef` by key.
 pub fn set_def_detail(key: &str) -> &'static str {
     match key {
-        "ref-tip" => set_def_ref_tip(),
-        "type-tip" => set_def_type_tip(),
+        "hint" => set_def_hint(),
         "build-jass" => set_def_build_jass(),
         "build-as" => set_def_build_as(),
         "backup" => set_def_backup(),

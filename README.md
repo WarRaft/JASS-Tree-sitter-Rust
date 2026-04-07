@@ -125,8 +125,7 @@ Directives must appear at the very beginning of the file, before any language st
 ## `//set` — Per-File Configuration
 
 ```jass
-//set ref-tip 1
-//set type-tip 1
+//set hint ref type
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
 //set backup ./backup
@@ -134,8 +133,7 @@ Directives must appear at the very beginning of the file, before any language st
 
 | Key | Values | Description |
 |-----|--------|-------------|
-| `ref-tip` | `1` / `0` | Show / hide reference-ID inlay hints next to each identifier — useful for debugging symbol resolution. Default `0`. |
-| `type-tip` | `1` / `0` | Show / hide type-annotation inlay hints for variables and parameters (e.g. `: integer`, `: constant real array`). Default `0`. |
+| `hint` | `ref` `type` | Inlay hints to display. `ref` — reference-ID hints (debug symbol resolution), `type` — type-annotation hints (e.g. `: integer`, `: constant real array`). Without the directive only ujapi hints are shown. |
 | `build-jass` | `<path>` | Output path for the JASS build. Merges the entire import tree into a single `.j` file. If the path is a directory, `war3map.j` is appended. When the path points to a `.w3x` / `.w3m` archive, the script is injected directly into the map. |
 | `build-as` | `<path>` | Output path for the AngelScript build. Same merge logic, but emits `.as` syntax. Reserved-word conflicts are resolved by appending a numeric suffix. When the path points to a `.w3x` / `.w3m` archive, the script is injected directly into the map. |
 | `backup` | `<path>` | Backup directory for the map archive before build injection. A date-prefixed copy (`YYYY_MM_DD_FileName.w3x`) is saved before modifying the archive. |

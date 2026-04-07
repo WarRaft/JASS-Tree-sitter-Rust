@@ -479,10 +479,21 @@ module.exports = {
 
         /**
          * Parse a binary TLV response from /document/update and populate caches.
+         *
+         * When `fresh` is true the response matches the current document
+         * version — display caches (`semanticCache`, `inlayHintsCache`) are
+         * updated and change events fired.
+         *
+         * When `fresh` is false the response is stale (version mismatch) —
+         * only the delta-tracking state (`semanticBase`, `semanticResultId`)
+         * is updated so the next request can still send `lastResultId` and
+         * receive a compact delta instead of a full token array.
+         *
          * @param {string} uri
          * @param {Buffer} buf
+         * @param {boolean} fresh
          */
-        function _applyBinaryResponse(uri, buf) {
+        function _applyBinaryResponse(uri, buf, fresh) {
             let offset = 0
             while (offset + 5 <= buf.length) {
                 const type = buf[offset]; offset += 1
@@ -498,9 +509,11 @@ module.exports = {
                         const aligned = new Uint8Array(tokenData).buffer
                         const u32 = new Uint32Array(aligned)
                         semanticBase.set(uri, u32)
-                        semanticCache.set(uri, u32)
                         semanticResultId.set(uri, resultId)
-                        semanticChanged.fire()
+                        if (fresh) {
+                            semanticCache.set(uri, u32)
+                            semanticChanged.fire()
+                        }
                         break
                     }
                     case SECTION_SEMANTIC_EDIT: {
@@ -541,12 +554,15 @@ module.exports = {
 
                         const tokens = new Uint32Array(result)
                         semanticBase.set(uri, tokens)
-                        semanticCache.set(uri, tokens)
                         semanticResultId.set(uri, resultId)
-                        semanticChanged.fire()
+                        if (fresh) {
+                            semanticCache.set(uri, tokens)
+                            semanticChanged.fire()
+                        }
                         break
                     }
                     case SECTION_INLAY_HINTS: {
+                        if (!fresh) break
                         const hints = []
                         let p = 0
                         while (p + 11 <= data.length) {
@@ -624,20 +640,15 @@ module.exports = {
         function _flushQueue(uri, languageId, version, body) {
             _sending.set(uri, true)
 
-            const params = {uri, languageId, version: String(version)}
+            const params = {uri, languageId, version: String(version), hints: '1'}
             const lastId = semanticResultId.get(uri)
             if (lastId !== undefined) params.lastResultId = String(lastId)
 
             client.http.postBinary('/document/update', params, body).then(buf => {
                 if (buf.length >= 4) {
                     const echoedVersion = buf.readUInt32LE(0)
-                    if (echoedVersion === _docVersion.get(uri)) {
-                        _applyBinaryResponse(uri, buf.slice(4))
-                    } else {
-                        // Response is stale — invalidate delta base so next
-                        // request sends lastResultId=0 → server sends full.
-                        semanticResultId.delete(uri)
-                    }
+                    const fresh = echoedVersion === _docVersion.get(uri)
+                    _applyBinaryResponse(uri, buf.slice(4), fresh)
                 }
             }).catch(e => {
                 console.error('document/update error:', e)
@@ -788,20 +799,30 @@ module.exports = {
             _docVersion.set(uri, ver)
 
             // ── Adjust caches so VS Code shows correct positions ────────
-            if (e.contentChanges.length === 1) {
-                const change = e.contentChanges[0]
-                const cached = semanticCache.get(uri)
-                if (cached && cached.length > 0) {
-                    semanticCache.set(uri, _adjustSemanticTokens(cached, change))
+            // Sort changes bottom-to-top so each adjustment doesn't shift
+            // positions of subsequent (higher) changes.  VS Code provides
+            // ranges relative to the original document — processing from
+            // bottom guarantees correctness for delta-encoded tokens.
+            const changes = e.contentChanges.length === 1
+                ? e.contentChanges
+                : [...e.contentChanges].sort((a, b) =>
+                    b.range.start.line - a.range.start.line
+                    || b.range.start.character - a.range.start.character)
+
+            let cached = semanticCache.get(uri)
+            if (cached && cached.length > 0) {
+                for (const change of changes) {
+                    cached = _adjustSemanticTokens(cached, change)
                 }
-                const hints = inlayHintsCache.get(uri)
-                if (hints && hints.length > 0) {
-                    inlayHintsCache.set(uri, _adjustInlayHints(hints, change))
-                    inlayHintsChanged.fire()
+                semanticCache.set(uri, cached)
+                semanticChanged.fire()
+            }
+            let hints = inlayHintsCache.get(uri)
+            if (hints && hints.length > 0) {
+                for (const change of changes) {
+                    hints = _adjustInlayHints(hints, change)
                 }
-            } else {
-                semanticCache.delete(uri)
-                inlayHintsCache.set(uri, [])
+                inlayHintsCache.set(uri, hints)
                 inlayHintsChanged.fire()
             }
 

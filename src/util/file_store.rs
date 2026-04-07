@@ -56,7 +56,7 @@ pub struct ParseSnapshot {
     /// Per-declaration resolved types — foundation for type checking,
     /// compile-time evaluation, inlay hints, and build.
     pub _type_map: TypeMap,
-    /// Inlay hints for type annotations (shown when `//set type-tip 1`).
+    /// Inlay hints for type annotations (shown when `//set hint type`).
     pub type_hints: Vec<InlayHint>,
     /// Inlay hints from `//import-ujapi!` — always visible (version tag).
     pub ujapi_hints: Vec<InlayHint>,
@@ -70,10 +70,8 @@ impl ParseSnapshot {
     /// Compute all inlay hints for this snapshot.
     ///
     /// Merges ujapi version hints (always visible), reference-ID hints
-    /// (`//set ref-tip 1`), and type-annotation hints (`//set type-tip 1`).
-    /// Previously lived in `lsp/inlay_hint/send.rs` as `compute_all` —
-    /// moved here to eliminate the re-lookup of `FILE_STORE` and to keep
-    /// the hint computation next to the data it reads.
+    /// (`ref` tag), and type-annotation hints (`type` tag) based on the
+    /// `//set hint ref type` directive.
     pub fn all_inlay_hints(&self) -> Vec<InlayHint> {
         let mut hints = Vec::new();
 
@@ -81,14 +79,15 @@ impl ParseSnapshot {
         hints.extend(self.ujapi_hints.iter().cloned());
 
         let settings = &self.file_symbols.file_settings;
-        let ref_tip = settings.get("ref-tip").map(|v| v == "1").unwrap_or(false);
-        let type_tip = settings.get("type-tip").map(|v| v == "1").unwrap_or(false);
+        let hint_value = settings.get("hint").map(|v| v.as_str()).unwrap_or("");
+        let ref_tip = hint_value.split_whitespace().any(|w| w == "ref");
+        let type_tip = hint_value.split_whitespace().any(|w| w == "type");
 
         if !ref_tip && !type_tip {
             return hints;
         }
 
-        // ref-tip: debug reference-ID hints.
+        // ref: debug reference-ID hints.
         if ref_tip {
             let ref_map = &self.ref_map;
             for span in &ref_map.spans {
@@ -121,7 +120,60 @@ impl ParseSnapshot {
             }
         }
 
-        // type-tip: type-annotation hints.
+        // type: type-annotation hints.
+        if type_tip {
+            hints.extend(self.type_hints.iter().cloned());
+        }
+
+        hints
+    }
+
+    /// Like [`all_inlay_hints`] but uses a request-level override string
+    /// (comma or space-separated tags: `ref`, `type`) instead of file settings.
+    pub fn all_inlay_hints_filtered(&self, requested: &str) -> Vec<InlayHint> {
+        let mut hints = Vec::new();
+        hints.extend(self.ujapi_hints.iter().cloned());
+
+        let has = |tag: &str| requested.split(|c: char| c == ',' || c.is_whitespace())
+            .any(|w| w == tag);
+        let ref_tip = has("ref");
+        let type_tip = has("type");
+
+        if !ref_tip && !type_tip {
+            return hints;
+        }
+
+        if ref_tip {
+            let ref_map = &self.ref_map;
+            for span in &ref_map.spans {
+                let label = if span.is_external {
+                    ref_map
+                        .external_decls
+                        .get(&span.decl_key)
+                        .map(|ext| {
+                            let parts: Vec<String> = ext.origins.iter().map(|o| {
+                                let path = o.uri.path();
+                                let fname = path.rsplit('/').next().unwrap_or(path);
+                                match o.origin_decl_key {
+                                    Some(ok) => format!("{}#{}", fname, ok),
+                                    None => fname.to_string(),
+                                }
+                            }).collect();
+                            format!("\u{2192}{}", parts.join(","))
+                        })
+                        .unwrap_or_else(|| format!("#{}", span.decl_key))
+                } else {
+                    format!("#{}", span.decl_key)
+                };
+                hints.push(InlayHint {
+                    position: span.range.end.clone(),
+                    label,
+                    kind: InlayHintKind::Type,
+                    byte_offset: 0,
+                });
+            }
+        }
+
         if type_tip {
             hints.extend(self.type_hints.iter().cloned());
         }

@@ -117,8 +117,7 @@ JASS 檔案可以透過特殊的註解指令相互連結：
 ## `//set` — 檔案級設定
 
 ```jass
-//set ref-tip 1
-//set type-tip 1
+//set hint ref type
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
 //set backup ./backup
@@ -126,8 +125,7 @@ JASS 檔案可以透過特殊的註解指令相互連結：
 
 | 鍵 | 值 | 說明 |
 |----|-----|------|
-| `ref-tip` | `1` / `0` | 顯示/隱藏每個識別碼旁的參考 ID 內嵌提示——對偵錯符號解析很有用。預設 `0`。 |
-| `type-tip` | `1` / `0` | 顯示/隱藏變數和參數的型別註解內嵌提示（如 `: integer`、`: constant real array`）。預設 `0`。 |
+| `hint` | `ref` `type` | 要顯示的內嵌提示類型。`ref` — 參考 ID（偵錯符號解析），`type` — 型別註解（如 `: integer`、`: constant real array`）。無指令時不顯示提示（ujapi 除外）。 |
 | `build-jass` | `<路徑>` | JASS 建置的輸出路徑。將整個匯入樹合併為單一 `.j` 檔案。如果路徑是目錄，則追加 `war3map.j`。當路徑指向 `.w3x` / `.w3m` 封存檔時，腳本直接注入地圖。 |
 | `build-as` | `<路徑>` | AngelScript 建置的輸出路徑。相同的合併邏輯，但輸出 `.as` 語法。保留字衝突透過追加數字後綴解決。當路徑指向 `.w3x` / `.w3m` 封存檔時，腳本直接注入地圖。 |
 | `backup` | `<路徑>` | 建置注入前地圖封存檔的備份目錄。修改封存檔前，以日期前綴儲存副本（`YYYY_MM_DD_FileName.w3x`）。 |

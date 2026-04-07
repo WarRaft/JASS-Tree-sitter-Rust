@@ -196,7 +196,21 @@ Every response to `/document/update` included the complete
 
 **Token-aware delta format:**
 
-The diff operates on **5-u32 token boundaries** (not raw u32s).
+The diff is computed by the unified `diff` module (`src/http/diff.rs`).
+Both old and new delta-encoded arrays are converted to absolute `Item`s
+(`Pos` + `Payload::Semantic`), diffed, then the result is encoded back
+to a COPY/SKIP/INSERT stream.
+
+The comparison uses a **hybrid strategy**:
+
+- **Prefix**: matched by **absolute** position + payload (so a
+  line-shift edit stops the prefix exactly at the edit point).
+- **Suffix**: matched by **delta-key** — position delta to predecessor
+  plus payload equality.  This guarantees `COPY` is always safe
+  without boundary fixup: the delta-key match ensures that the old
+  array's stored delta produces the correct absolute position relative
+  to any output predecessor.
+
 The sentinel value `0xFFFFFFFF` marks command tuples — it can never
 appear as a valid `deltaLine` in real data.
 
@@ -248,16 +262,46 @@ new data. On local edit: only `semanticCache` is adjusted (for instant
 visual feedback). Deltas are always applied to `semanticBase`, not the
 locally-adjusted `semanticCache`.
 
-### Discarded response handling
+### Stale response handling
 
-When the client discards a response (version mismatch), it deletes
-`semanticResultId` for that URI. The next request sends no
-`lastResultId`, forcing the server to respond with full tokens. This
-prevents applying a delta against data the client never received.
+When a response's echoed version no longer matches `_docVersion`, the
+response is **stale** — its tokens correspond to an older document state
+and must not be displayed.
+
+However, the delta-tracking state (`semanticBase`, `semanticResultId`)
+is **always** updated from every response, stale or fresh. This keeps
+the client's delta base in sync with the server's `SEMANTIC_LAST`, so
+the **next** request can send `lastResultId` and receive a compact delta
+instead of a full 4+ MB token array.
+
+| Response | `semanticBase` | `semanticResultId` | `semanticCache` | `semanticChanged` |
+|---|---|---|---|---|
+| Fresh (version match) | ✅ updated | ✅ updated | ✅ updated | ✅ fired |
+| Stale (version mismatch) | ✅ updated | ✅ updated | — kept as-is | — not fired |
+
+During fast typing, most responses are stale (the user has already typed
+further). Without this strategy, `semanticResultId` would be cleared on
+every stale response, forcing the server to send full tokens every time
+— megabytes per keystroke on a 40k-line file.
 
 ---
 
 ## Module layout
+
+### Diff infrastructure (`src/http/diff.rs`)
+
+Unified diff module for all positioned document items. Provides:
+
+- `Pos` — absolute `(line, character)` position.
+- `Payload` — enum: `Semantic(len, type, mods)` | `Hint { kind, label }`.
+- `Item` — `Pos` + `Payload`, the unit of diffing.
+- `Item::from_semantic_u32` / `Item::to_semantic_u32` — convert between
+  delta-encoded `u32` arrays and absolute `Item`s.
+- `Item::from_hints` / `Item::to_hints` — convert `InlayHint` arrays.
+- `Diff::compute(old, new)` — prefix by absolute position, suffix by
+  delta-key (position delta to predecessor + payload equality).
+- `Diff::encode_semantic` — emit COPY/SKIP/INSERT wire stream.
+- `semantic_diff(old_u32, new_u32)` — convenience one-liner.
 
 ### Semantic tokens (`src/http/semantic/`)
 
@@ -269,12 +313,29 @@ returns `Vec<u32>` (matches the wire format — `Uint32Array` on JS side).
 
 The inlay hint module lives in `src/http/inlay_hint.rs`. Hints are
 pushed as part of the `/document/update` response alongside semantic
-tokens, diagnostics, folding, etc.
+tokens.
 
-The `InlayHint` struct is flattened for the custom protocol:
+Hint types are configured via the `//set hint` directive:
 
 ```
-{"line":5,"character":12,"label":": integer","kind":1}
+//set hint ref type
+```
+
+Available tags: `ref` (reference-ID debug hints), `type` (type-annotation
+hints).  Without the directive, only ujapi version hints are generated.
+
+The `hints` query parameter controls whether the server includes hints
+in the response at all:
+
+```
+POST /document/update?…&hints=1     ← include hints (file settings decide which)
+POST /document/update?…&hints=      ← skip hints (0 bytes)
+```
+
+Binary format per hint:
+
+```
+[u32 line][u32 char][u8 kind][u16 label_len][…label UTF-8…]
 ```
 
 `padding_left` / `padding_right` are hardcoded on the JS side.
@@ -353,6 +414,7 @@ All communication is HTTP. Routes are served by axum on `127.0.0.1`.
 
 - [`binary-protocol.md`](./binary-protocol.md) — binary transport format (WOBJ)
 - [`terrain.md`](./terrain.md) — terrain data format
+- [`src/http/diff.rs`](../../src/http/diff.rs) — unified diff infrastructure (Pos, Payload, Item, Diff)
 - [`src/http/semantic/`](../../src/http/semantic/) — semantic token types (`token.rs`) and delta-encoder (`hub.rs`)
 - [`src/http/api.rs`](../../src/http/api.rs) — HTTP route handlers
 - [`src/http/server.rs`](../../src/http/server.rs) — HTTP server

@@ -163,9 +163,13 @@ fn compute_directive_hover(
                 if let Some(def) = crate::lng::directive::find_set_def(key) {
                     let detail = crate::util::i18n::set_def_detail(def.key);
                     let type_label = match def.kind {
-                        crate::lng::directive::SetValueKind::Bool => "`0` | `1`",
-                        crate::lng::directive::SetValueKind::Path => "`<path>`",
-                        crate::lng::directive::SetValueKind::Command => "`<command>`",
+                        crate::lng::directive::SetValueKind::Bool => "`0` | `1`".to_string(),
+                        crate::lng::directive::SetValueKind::Path => "`<path>`".to_string(),
+                        crate::lng::directive::SetValueKind::Command => "`<command>`".to_string(),
+                        crate::lng::directive::SetValueKind::Tags(allowed) => {
+                            let tags: Vec<_> = allowed.iter().map(|t| format!("`{}`", t)).collect();
+                            tags.join(" ")
+                        }
                     };
                     let md = format!(
                         "### `//set {}`\n\n{}\n\n**Type:** {}\\\n**Default:** `{}`",

@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn import_set_ignore_all_colored() {
-        let src = "//import ../common.j\n//set ref-tip 1\n//ignore unused\nvoid main() {}\n";
+        let src = "//import ../common.j\n//set hint ref\n//ignore unused\nvoid main() {}\n";
         with_cursor(src, |cursor| {
             let tokens = collect_tokens(src, cursor);
 
@@ -554,11 +554,11 @@ interface IAnimal {
 
     #[test]
     fn set_directive_populates_settings() {
-        let src = "//set ref-tip 1\nvoid main() {}\n";
+        let src = "//set hint ref\nvoid main() {}\n";
         with_cursor(src, |cursor| {
-            assert_eq!(cursor.file_settings.get("ref-tip").map(|s| s.as_str()),
-                Some("1"),
-                "Expected file_settings[\"ref-tip\"] = \"1\", got: {:?}", cursor.file_settings);
+            assert_eq!(cursor.file_settings.get("hint").map(|s| s.as_str()),
+                Some("ref"),
+                "Expected file_settings[\"hint\"] = \"ref\", got: {:?}", cursor.file_settings);
         });
     }
 

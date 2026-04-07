@@ -117,8 +117,7 @@ JASS 文件可以通过特殊的注释指令相互链接：
 ## `//set` — 文件级配置
 
 ```jass
-//set ref-tip 1
-//set type-tip 1
+//set hint ref type
 //set build-jass ./out/war3map.j
 //set build-as ./out/war3map.as
 //set backup ./backup
@@ -126,8 +125,7 @@ JASS 文件可以通过特殊的注释指令相互链接：
 
 | 键 | 值 | 说明 |
 |----|-----|------|
-| `ref-tip` | `1` / `0` | 显示/隐藏每个标识符旁的引用 ID 内联提示——对调试符号解析很有用。默认 `0`。 |
-| `type-tip` | `1` / `0` | 显示/隐藏变量和参数的类型注解内联提示（如 `: integer`、`: constant real array`）。默认 `0`。 |
+| `hint` | `ref` `type` | 要显示的内嵌提示类型。`ref` — 引用 ID（调试符号解析），`type` — 类型注解（如 `: integer`、`: constant real array`）。无指令时不显示提示（ujapi 除外）。 |
 | `build-jass` | `<路径>` | JASS 构建的输出路径。将整个导入树合并为单个 `.j` 文件。如果路径是目录，则追加 `war3map.j`。当路径指向 `.w3x` / `.w3m` 存档时，脚本直接注入地图。 |
 | `build-as` | `<路径>` | AngelScript 构建的输出路径。相同的合并逻辑，但输出 `.as` 语法。保留字冲突通过追加数字后缀解决。当路径指向 `.w3x` / `.w3m` 存档时，脚本直接注入地图。 |
 | `backup` | `<路径>` | 构建注入前地图存档的备份目录。修改存档前，以日期前缀保存副本（`YYYY_MM_DD_FileName.w3x`）。 |

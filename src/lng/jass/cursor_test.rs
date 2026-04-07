@@ -1364,8 +1364,7 @@ call A()
     fn link_import_real_ass_j_scenario() {
         // Exact content of ass.j (minus directives which become SetDir)
         let src = "\
-//set ref-tip 1
-//set type-tip 1
+//set hint ref type
 
 set a = \" \\\"\"+122
 
@@ -1854,48 +1853,48 @@ endglobals
     // ─── //set directive tests ──────────────────────────────────────────
 
     #[test]
-    fn set_type_tip_recognized() {
-        let src = "//set type-tip 1\nglobals\n    integer x = 5\nendglobals\n";
+    fn set_hint_type_recognized() {
+        let src = "//set hint type\nglobals\n    integer x = 5\nendglobals\n";
         with_cursor(src, |c| {
-            assert_eq!(c.file_settings.get("type-tip").map(|v| v.as_str()), Some("1"));
+            assert_eq!(c.file_settings.get("hint").map(|v| v.as_str()), Some("type"));
         });
     }
 
     #[test]
-    fn set_type_tip_off() {
-        let src = "//set type-tip 0\nglobals\n    integer x = 5\nendglobals\n";
+    fn set_hint_ref_type_recognized() {
+        let src = "//set hint ref type\nglobals\n    integer x = 5\nendglobals\n";
         with_cursor(src, |c| {
-            assert_eq!(c.file_settings.get("type-tip").map(|v| v.as_str()), Some("0"));
+            assert_eq!(c.file_settings.get("hint").map(|v| v.as_str()), Some("ref type"));
         });
     }
 
     #[test]
-    fn set_bool_invalid_value_warns() {
-        let src = "//set ref-tip maybe\nglobals\n    integer x = 5\nendglobals\n";
+    fn set_hint_invalid_value_warns() {
+        let src = "//set hint banana\nglobals\n    integer x = 5\nendglobals\n";
         with_cursor(src, |c| {
             // The value is still stored (for forward-compat)
-            assert_eq!(c.file_settings.get("ref-tip").map(|v| v.as_str()), Some("maybe"));
+            assert_eq!(c.file_settings.get("hint").map(|v| v.as_str()), Some("banana"));
             // But a warning diagnostic should be emitted
             let has_warning = c.diagnostics.iter().any(|d| {
-                d.message.contains("Invalid value") && d.message.contains("ref-tip")
+                d.message.contains("Unknown value") || d.message.contains("unknown")
             });
-            assert!(has_warning, "should warn about invalid bool value, diagnostics: {:?}",
+            assert!(has_warning, "should warn about unknown tag value, diagnostics: {:?}",
                 c.diagnostics.iter().map(|d| &d.message).collect::<Vec<_>>());
         });
     }
 
     #[test]
-    fn set_def_registry_has_type_tip() {
-        let def = crate::lng::directive::find_set_def("type-tip");
-        assert!(def.is_some(), "type-tip should be in SET_DEFS");
+    fn set_def_registry_has_hint() {
+        let def = crate::lng::directive::find_set_def("hint");
+        assert!(def.is_some(), "hint should be in SET_DEFS");
         let def = def.unwrap();
-        assert_eq!(def.kind, crate::lng::directive::SetValueKind::Bool);
-        assert_eq!(def.default, "0");
+        assert!(matches!(def.kind, crate::lng::directive::SetValueKind::Tags(_)));
+        assert_eq!(def.default, "");
     }
 
     #[test]
     fn set_def_registry_has_all_known_keys() {
-        for key in &["ref-tip", "type-tip", "build-jass", "build-as"] {
+        for key in &["hint", "build-jass", "build-as"] {
             assert!(
                 crate::lng::directive::find_set_def(key).is_some(),
                 "SET_DEFS should contain {:?}",
@@ -1905,12 +1904,12 @@ endglobals
     }
 
     #[test]
-    fn set_validate_bool_accepts_0_and_1() {
-        let def = crate::lng::directive::find_set_def("ref-tip").unwrap();
-        assert!(crate::lng::directive::validate_set_value(def, "0").is_none());
-        assert!(crate::lng::directive::validate_set_value(def, "1").is_none());
-        assert!(crate::lng::directive::validate_set_value(def, "yes").is_some());
-        assert!(crate::lng::directive::validate_set_value(def, "").is_some());
+    fn set_validate_hint_accepts_known_tags() {
+        let def = crate::lng::directive::find_set_def("hint").unwrap();
+        assert!(crate::lng::directive::validate_set_value(def, "ref").is_none());
+        assert!(crate::lng::directive::validate_set_value(def, "type").is_none());
+        assert!(crate::lng::directive::validate_set_value(def, "ref type").is_none());
+        assert!(crate::lng::directive::validate_set_value(def, "banana").is_some());
     }
 
     #[test]

@@ -362,13 +362,13 @@ endfunction
 
     #[test]
     fn set_directive_basic() {
-        let src = "//set ref-tip 1\nfunction F takes nothing returns nothing\nendfunction\n";
+        let src = "//set hint ref\nfunction F takes nothing returns nothing\nendfunction\n";
         with_ast_imports(src, |ast| {
             let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
             assert_eq!(set_count, 1);
             if let Statement::SetDir(sd) = &ast.items[0] {
-                assert_eq!(sd.key, "ref-tip");
-                assert_eq!(sd.value, "1");
+                assert_eq!(sd.key, "hint");
+                assert_eq!(sd.value, "ref");
             } else {
                 panic!("expected SetDir");
             }
@@ -377,12 +377,12 @@ endfunction
 
     #[test]
     fn set_directive_empty_value() {
-        let src = "//set ref-tip\nfunction F takes nothing returns nothing\nendfunction\n";
+        let src = "//set hint\nfunction F takes nothing returns nothing\nendfunction\n";
         with_ast_imports(src, |ast| {
             let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
             assert_eq!(set_count, 1);
             if let Statement::SetDir(sd) = &ast.items[0] {
-                assert_eq!(sd.key, "ref-tip");
+                assert_eq!(sd.key, "hint");
                 assert_eq!(sd.value, "");
             } else {
                 panic!("expected SetDir");
@@ -407,7 +407,7 @@ endfunction
 
     #[test]
     fn set_and_import_interleaved() {
-        let src = "//import path/to/file\n//set ref-tip 1\n//import! other.j\nfunction F takes nothing returns nothing\nendfunction\n";
+        let src = "//import path/to/file\n//set hint ref\n//import! other.j\nfunction F takes nothing returns nothing\nendfunction\n";
         with_ast_imports(src, |ast| {
             let import_count = ast.items.iter().filter(|s| matches!(s, Statement::Import(_))).count();
             let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
@@ -418,7 +418,7 @@ endfunction
 
     #[test]
     fn set_after_code_stays_comment() {
-        let src = "function F takes nothing returns nothing\nendfunction\n//set ref-tip 1\n";
+        let src = "function F takes nothing returns nothing\nendfunction\n//set hint ref\n";
         with_ast_imports(src, |ast| {
             let set_count = ast.items.iter().filter(|s| matches!(s, Statement::SetDir(_))).count();
             assert_eq!(set_count, 0, "//set after code should stay as comment");

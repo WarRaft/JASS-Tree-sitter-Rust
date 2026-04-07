@@ -204,6 +204,20 @@ pub(crate) fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                                 })
                                 .collect();
                         }
+                        crate::lng::directive::SetValueKind::Tags(allowed) => {
+                            // Suggest each allowed tag as a value
+                            return allowed
+                                .iter()
+                                .enumerate()
+                                .map(|(i, tag)| CompletionItem {
+                                    label: (*tag).into(),
+                                    kind: Some(CompletionItemKind::EnumMember),
+                                    insert_text: Some((*tag).into()),
+                                    sort_text: Some(i.to_string()),
+                                    ..Default::default()
+                                })
+                                .collect();
+                        }
                     };
                 }
                 return vec![];
@@ -219,6 +233,7 @@ pub(crate) fn compute(uri: &Url, position: &Position) -> Vec<CompletionItem> {
                             SetValueKind::Bool => format!("{} {}", def.key, def.default),
                             SetValueKind::Path => format!("{} {}", def.key, def.default),
                             SetValueKind::Command => format!("{} ", def.key),
+                            SetValueKind::Tags(_) => format!("{} ", def.key),
                         };
                         CompletionItem {
                             label: def.key.into(),

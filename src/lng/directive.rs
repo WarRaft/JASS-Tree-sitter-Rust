@@ -33,7 +33,8 @@ pub enum SetValueKind {
     Path,
     /// A shell command to execute (free-form text).
     Command,
-    // Future: EnumList(&'static [&'static str]),
+    /// Space-separated tags from a fixed set of allowed values.
+    Tags(&'static [&'static str]),
 }
 
 /// Descriptor for a single `//set` key.
@@ -43,7 +44,7 @@ pub enum SetValueKind {
 /// completion.
 #[derive(Debug, Clone)]
 pub struct SetDef {
-    /// The key name (e.g. `"ref-tip"`).
+    /// The key name (e.g. `"hint"`).
     pub key: &'static str,
     /// Value type.
     pub kind: SetValueKind,
@@ -62,52 +63,46 @@ pub struct SetDef {
 /// 3. Update `docs/jass/set/*.md`.
 pub static SET_DEFS: &[SetDef] = &[
     SetDef {
-        key: "ref-tip",
-        kind: SetValueKind::Bool,
-        default: "0",
+        key: "hint",
+        kind: SetValueKind::Tags(&["ref", "type"]),
+        default: "",
         sort_order: 0,
-    },
-    SetDef {
-        key: "type-tip",
-        kind: SetValueKind::Bool,
-        default: "0",
-        sort_order: 1,
     },
     SetDef {
         key: "build-jass",
         kind: SetValueKind::Path,
         default: "./",
-        sort_order: 2,
+        sort_order: 1,
     },
     SetDef {
         key: "build-as",
         kind: SetValueKind::Path,
         default: "./",
-        sort_order: 3,
+        sort_order: 2,
     },
     SetDef {
         key: "backup",
         kind: SetValueKind::Path,
         default: "./",
-        sort_order: 4,
+        sort_order: 3,
     },
     SetDef {
         key: "build-uglify",
         kind: SetValueKind::Bool,
         default: "0",
-        sort_order: 5,
+        sort_order: 4,
     },
     SetDef {
         key: "build-before",
         kind: SetValueKind::Command,
         default: "",
-        sort_order: 6,
+        sort_order: 5,
     },
     SetDef {
         key: "build-after",
         kind: SetValueKind::Command,
         default: "",
-        sort_order: 7,
+        sort_order: 6,
     },
 ];
 
@@ -191,6 +186,14 @@ pub fn validate_set_value(def: &SetDef, value: &str) -> Option<String> {
             // Commands are free-form shell strings; no validation.
             None
         }
+        SetValueKind::Tags(allowed) => {
+            for word in value.split_whitespace() {
+                if !allowed.contains(&word) {
+                    return Some(crate::util::i18n::unknown_tag_value(word, def.key, allowed));
+                }
+            }
+            None
+        }
     }
 }
 
@@ -224,7 +227,7 @@ pub struct ImportDirective<'tree> {
 pub struct SetDirective<'tree> {
     /// The original comment CST node.
     pub node: Node<'tree>,
-    /// The setting key (e.g. `ref-tip`).
+    /// The setting key (e.g. `hint`).
     pub key: String,
     /// The raw value string (everything after the key until end-of-line, trimmed).
     pub value: String,
@@ -479,12 +482,22 @@ pub fn visit_set_semantic(
                 if !value_part.is_empty() {
                     let val_offset = key_offset + key_len + ws_before_value;
 
-                    let is_command = matches!(
-                        find_set_def(&sd.key),
-                        Some(def) if def.kind == SetValueKind::Command
-                    );
 
-                    if is_command {
+                    let found_def = find_set_def(&sd.key);
+                    let is_command = matches!(found_def, Some(def) if def.kind == SetValueKind::Command);
+                    let is_tags = matches!(found_def, Some(def) if matches!(def.kind, SetValueKind::Tags(_)));
+
+                    if is_tags {
+                        // Color each tag word as EnumMember (like //ignore tags).
+                        let mut cursor = 0usize;
+                        for tag in value_part.split_whitespace() {
+                            if let Some(pos) = value_part[cursor..].find(tag) {
+                                let tag_offset = val_offset + cursor + pos;
+                                semantic.add_range(tag_offset, tag.len(), rope, TokenKind::EnumMember, 0u32);
+                                cursor += pos + tag.len();
+                            }
+                        }
+                    } else if is_command {
                         // Split value into literal String parts and {{var}} Variable parts.
                         let spans = find_template_spans(value_part);
                         let mut cursor = 0usize;
@@ -562,12 +575,17 @@ pub fn visit_set_semantic(
             ..Diagnostic::new("jass", "setting-missing-key")
         });
     } else if sd.value.is_empty() {
-        diagnostics.push(Diagnostic {
-            range: node.to_range(rope),
-            message: crate::util::i18n::missing_setting_value(&sd.key),
-            severity: Some(DiagnosticSeverity::Warning),
-            ..Diagnostic::new("jass", "setting-missing-value")
-        });
+        // Tags kind: empty value is valid (means "none enabled").
+        let is_tags = matches!(find_set_def(&sd.key), Some(def) if matches!(def.kind, SetValueKind::Tags(_)));
+        if !is_tags {
+            diagnostics.push(Diagnostic {
+                range: node.to_range(rope),
+                message: crate::util::i18n::missing_setting_value(&sd.key),
+                severity: Some(DiagnosticSeverity::Warning),
+                ..Diagnostic::new("jass", "setting-missing-value")
+            });
+        }
+        file_settings.insert(sd.key.clone(), sd.value.clone());
     } else {
         // Validate against the registry
         if let Some(def) = find_set_def(&sd.key) {

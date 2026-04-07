@@ -17,7 +17,7 @@
 
 ```jass
 //import common/natives.j
-//set ref-tip 1
+//set hint ref type
 //set build-jass ./out/war3map.j
 
 globals
@@ -29,8 +29,7 @@ endglobals
 
 | 键 | 类型 | 默认 | 说明 |
 |----|------|------|------|
-| `ref-tip` | `0 \| 1` | `0` | 显示/隐藏每个标识符旁边的引用 ID 内嵌提示。用于调试符号解析和重命名重构。 |
-| `type-tip` | `0 \| 1` | `0` | 显示/隐藏变量和参数的类型注释内嵌提示（例如 `: integer`、`: constant real array`）。 |
+| `hint` | `ref` `type` | | 要显示的内嵌提示类型。`ref` — 引用 ID（用于调试符号解析），`type` — 类型注释（例如 `: integer`、`: constant real array`）。无指令时不显示提示（ujapi 除外）。 |
 | `build-jass` | `<路径>` | `./` | JASS 构建的输出路径。将整个导入树合并为单个 `.j` 文件：类型 → native → globals → 函数（拓扑排序）→ `main`。如果路径是目录，则追加 `war3map.j`。当路径指向 `.w3x` 或 `.w3m` 存档时，脚本会直接注入到地图中。 |
 | `build-as` | `<路径>` | `./` | AngelScript 构建的输出路径。相同的合并逻辑，但输出 `.as` 语法。保留字冲突通过追加数字后缀解决。当路径指向 `.w3x` 或 `.w3m` 存档时，脚本会直接注入到地图中。 |
 | `backup` | `<路径>` | `./` | 地图存档备份路径。在向 `.w3x` / `.w3m` 文件注入脚本之前，原始存档的副本会保存到此路径，文件名带有日期前缀：`YYYY_MM_DD_原始文件名.w3x`。如果路径是目录，则带日期前缀的文件名会放入该目录。 |

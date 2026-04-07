@@ -971,13 +971,6 @@ mod section {
     /// Payload is zero-length (URI is in query params).
     /// Used for `file://` scheme; `mpq://` still uses `FULL_TEXT`.
     pub const OPEN_URI: u8 = 0x12;
-
-    /// Sentinel marker — first u32 of a command tuple in `SEMANTIC_EDIT`.
-    pub const SENTINEL: u32 = 0xFFFF_FFFF;
-    /// COPY opcode: copy N tokens from old array.
-    pub const OP_COPY: u32 = 0;
-    /// SKIP opcode: skip (delete) N tokens from old array.
-    pub const OP_SKIP: u32 = 1;
 }
 
 // ── Per-URI semantic delta state ─────────────────────────────────────────────
@@ -1011,6 +1004,10 @@ pub struct DocumentUpdateQuery {
     /// is sent instead of the full token array.  Missing / 0 = send full.
     #[serde(default)]
     pub last_result_id: Option<u32>,
+    /// Comma-separated list of hint types to include in the response.
+    /// Empty or missing → no hints.  Example: `hints=ref,type`.
+    #[serde(default)]
+    pub hints: String,
 }
 
 /// Build binary TLV response from the current `FILE_STORE` snapshot.
@@ -1018,7 +1015,10 @@ pub struct DocumentUpdateQuery {
 /// `prev_result_id` is the client's `lastResultId` — if it matches the
 /// server's `SEMANTIC_LAST`, a compact token-aware delta is sent instead of
 /// the full token array.
-fn build_update_response(uri: &Url, prev_result_id: Option<u32>) -> Vec<u8> {
+///
+/// `hints` controls which inlay hint types to include in the response.
+/// Empty string → no hints.  Space/comma-separated tags: `ref`, `type`.
+fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) -> Vec<u8> {
     use crate::util::file_store::FILE_STORE;
 
     let mut buf = Vec::new();
@@ -1037,7 +1037,7 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>) -> Vec<u8> {
         .and_then(|client_id| {
             let prev = SEMANTIC_LAST.get(uri)?;
             if prev.0 != client_id { return None; }
-            Some(compute_token_diff(&prev.1, &semantic))
+            Some(crate::http::diff::semantic_diff(&prev.1, &semantic))
             // DashMap guard dropped here
         });
 
@@ -1072,20 +1072,22 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>) -> Vec<u8> {
     }
 
     // ── Section 0x02: Inlay hints ────────────────────────────────
-    let hints = snap.all_inlay_hints();
     if !hints.is_empty() {
-        let mut section_buf = Vec::new();
-        for hint in &hints {
-            section_buf.extend_from_slice(&(hint.position.line as u32).to_le_bytes());
-            section_buf.extend_from_slice(&(hint.position.character as u32).to_le_bytes());
-            section_buf.push(hint.kind as u8);
-            let label_bytes = hint.label.as_bytes();
-            section_buf.extend_from_slice(&(label_bytes.len() as u16).to_le_bytes());
-            section_buf.extend_from_slice(label_bytes);
+        let all_hints = snap.all_inlay_hints();
+        if !all_hints.is_empty() {
+            let mut section_buf = Vec::new();
+            for hint in &all_hints {
+                section_buf.extend_from_slice(&(hint.position.line as u32).to_le_bytes());
+                section_buf.extend_from_slice(&(hint.position.character as u32).to_le_bytes());
+                section_buf.push(hint.kind as u8);
+                let label_bytes = hint.label.as_bytes();
+                section_buf.extend_from_slice(&(label_bytes.len() as u16).to_le_bytes());
+                section_buf.extend_from_slice(label_bytes);
+            }
+            buf.push(section::INLAY_HINTS);
+            buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&section_buf);
         }
-        buf.push(section::INLAY_HINTS);
-        buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
-        buf.extend_from_slice(&section_buf);
     }
 
     buf
@@ -1102,80 +1104,6 @@ fn encode_semantic_full(buf: &mut Vec<u8>, result_id: u32, tokens: &[u32]) {
     }
 }
 
-/// Compute a **token-aware** diff between two delta-encoded semantic token
-/// arrays.
-///
-/// Both arrays must have length divisible by 5 (each token = 5 × u32).
-///
-/// Returns a diff stream of 5-u32 tuples:
-/// - `[0xFFFFFFFF, OP_COPY, count, 0, 0]` — copy `count` tokens from old
-/// - `[0xFFFFFFFF, OP_SKIP, count, 0, 0]` — skip `count` tokens in old
-/// - `[deltaLine, deltaChar, len, type, mods]` — insert this token
-///
-/// Returns empty `Vec` if old == new (no change).
-fn compute_token_diff(old: &[u32], new: &[u32]) -> Vec<u32> {
-    debug_assert!(old.len() % 5 == 0, "old token array not aligned to 5");
-    debug_assert!(new.len() % 5 == 0, "new token array not aligned to 5");
-
-    let old_count = old.len() / 5;
-    let new_count = new.len() / 5;
-    let min_count = old_count.min(new_count);
-
-    // ── Common prefix (in whole tokens) ──────────────────────────
-    let mut prefix = 0;
-    while prefix < min_count
-        && old[prefix * 5..(prefix + 1) * 5] == new[prefix * 5..(prefix + 1) * 5]
-    {
-        prefix += 1;
-    }
-
-    // Arrays are identical
-    if prefix == old_count && prefix == new_count {
-        return Vec::new();
-    }
-
-    // ── Common suffix (in whole tokens, non-overlapping with prefix) ─
-    let mut suffix = 0;
-    let max_suffix = min_count - prefix;
-    while suffix < max_suffix {
-        let oi = (old_count - 1 - suffix) * 5;
-        let ni = (new_count - 1 - suffix) * 5;
-        if old[oi..oi + 5] != new[ni..ni + 5] {
-            break;
-        }
-        suffix += 1;
-    }
-
-    let old_mid = old_count - prefix - suffix;
-    let new_mid = new_count - prefix - suffix;
-
-    // ── Build diff stream ────────────────────────────────────────
-    let mut out = Vec::new();
-
-    // COPY prefix
-    if prefix > 0 {
-        out.extend_from_slice(&[section::SENTINEL, section::OP_COPY, prefix as u32, 0, 0]);
-    }
-
-    // SKIP deleted tokens from old
-    if old_mid > 0 {
-        out.extend_from_slice(&[section::SENTINEL, section::OP_SKIP, old_mid as u32, 0, 0]);
-    }
-
-    // INSERT new tokens
-    let ins_start = prefix * 5;
-    let ins_end = (new_count - suffix) * 5;
-    if ins_start < ins_end {
-        out.extend_from_slice(&new[ins_start..ins_end]);
-    }
-
-    // COPY suffix
-    if suffix > 0 {
-        out.extend_from_slice(&[section::SENTINEL, section::OP_COPY, suffix as u32, 0, 0]);
-    }
-
-    out
-}
 
 /// Parse content changes from binary TLV sections (type 0x11).
 fn parse_content_changes(body: &[u8]) -> Result<Vec<crate::lsp::text_document::TextDocumentContentChangeEvent>, String> {
@@ -1353,7 +1281,7 @@ pub async fn document_update(
     // The first 4 bytes are the echoed client version (u32 LE) so the
     // client can discard stale responses that no longer match its
     // current document state.
-    let tlv = build_update_response(&uri, params.last_result_id);
+    let tlv = build_update_response(&uri, params.last_result_id, &params.hints);
     let mut resp = Vec::with_capacity(4 + tlv.len());
     resp.extend_from_slice(&version.to_le_bytes());
     resp.extend_from_slice(&tlv);
