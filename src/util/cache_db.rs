@@ -31,7 +31,7 @@ pub const EXT_VERSION: &str = env!("EXT_VERSION");
 /// Cache schema version — bump when the on-disk format changes
 /// (new fields in `CacheEntry`, `GlobalEntry`, etc.) independently
 /// of the extension version.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Combined version key stored in the database.
 fn version_key() -> String {

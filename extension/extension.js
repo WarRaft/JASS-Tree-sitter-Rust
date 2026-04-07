@@ -30,6 +30,9 @@ const {
     CallHierarchyOutgoingCall: VscCallHierarchyOutgoingCall,
     TypeHierarchyItem: VscTypeHierarchyItem,
     SymbolKind: VscSymbolKind,
+    FileDecoration: VscFileDecoration,
+    ThemeColor,
+    DiagnosticSeverity: VscDiagnosticSeverity,
 } = require('vscode')
 
 const {ServerClient} = require('./serverClient.js')
@@ -141,6 +144,99 @@ async function _collectFiles(mpqProvider, archivePath, dirPath, result) {
  */
 
 /**
+ * Consume SSE stream from `/rescan` endpoint and report progress.
+ *
+ * If the response is a plain JSON (not SSE), it means the server replied
+ * synchronously (e.g. `{ busy: true }`).
+ *
+ * @param {ServerClient} client
+ * @param {string} uri
+ * @param {import('vscode').Progress<{increment?: number, message?: string}>} progress
+ * @returns {Promise<{ok?: boolean, busy?: boolean, message?: string, errors?: string[]}>}
+ */
+function _consumeRescanSSE(client, uri, progress) {
+    const http = require('http')
+    const info = client.getServerInfo()
+    if (!info) return Promise.reject(new Error('Server not started'))
+
+    const body = Buffer.from(JSON.stringify({uri}), 'utf8')
+    const qs = new (require('url').URLSearchParams)({token: info.token})
+
+    return new Promise((resolve, reject) => {
+        const req = http.request({
+            hostname: '127.0.0.1',
+            port: info.port,
+            path: `/rescan?${qs.toString()}`,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': body.length,
+                'Accept': 'text/event-stream',
+            },
+        }, res => {
+            const contentType = res.headers['content-type'] || ''
+
+            // If the server replied with JSON (not SSE), parse as a single response.
+            if (contentType.includes('application/json')) {
+                const chunks = []
+                res.on('data', chunk => chunks.push(chunk))
+                res.on('end', () => {
+                    try {
+                        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+                    } catch (e) {
+                        reject(e)
+                    }
+                })
+                return
+            }
+
+            // Parse SSE stream
+            let buffer = ''
+            let lastResult = null
+
+            res.on('data', chunk => {
+                buffer += chunk.toString('utf8')
+                const lines = buffer.split('\n')
+                buffer = lines.pop() || '' // keep incomplete line
+
+                for (const line of lines) {
+                    if (!line.startsWith('data:')) continue
+                    const dataStr = line.slice(5).trim()
+                    if (!dataStr) continue
+                    try {
+                        const data = JSON.parse(dataStr)
+                        if (data.done) {
+                            lastResult = data
+                        } else if (data.total) {
+                            const pct = Math.round(((data.index + 1) / data.total) * 100)
+                            progress.report({
+                                increment: data.index === 0 ? pct : (100 / data.total),
+                                message: `(${data.index + 1}/${data.total}) ${data.file}`,
+                            })
+                        }
+                    } catch { /* ignore parse errors */ }
+                }
+            })
+
+            res.on('end', () => {
+                resolve(lastResult || {ok: true, message: 'Rescan completed'})
+            })
+        })
+
+        req.on('error', reject)
+        req.write(body)
+        req.end()
+
+        // Safety timeout (5 min for large projects)
+        const timeout = setTimeout(() => {
+            req.destroy()
+            reject(new Error('Rescan timeout (5 min)'))
+        }, 300_000)
+        req.on('close', () => clearTimeout(timeout))
+    })
+}
+
+/**
  * Run a shell command as a VS Code Task and wait for it to finish.
  * The output is shown in a terminal panel so the user can see it.
  *
@@ -225,6 +321,78 @@ module.exports = {
         // ── Diagnostics collection ────────────────────────────────────
         const diagnosticCollection = languages.createDiagnosticCollection('jass')
 
+        // ── Diagnostic summary cache (for closed files — persisted in redb) ──
+        /** @type {Map<string, {errors: number, warnings: number}>} */
+        const diagSummaryCache = new Map()
+
+        // ── Tree membership set (URIs belonging to any open import tree) ──
+        /** @type {Set<string>} */
+        const treeUris = new Set()
+
+        // ── File decoration provider (error/warning badges in Explorer) ──
+        const fileDecoChanged = new EventEmitter()
+        const fileDecorationProvider = window.registerFileDecorationProvider({
+            onDidChangeFileDecorations: fileDecoChanged.event,
+            provideFileDecoration(uri) {
+                // 1. Prefer live diagnostics for open files
+                const diags = diagnosticCollection.get(uri)
+                if (diags && diags.length > 0) {
+                    let errors = 0, warnings = 0
+                    for (const d of diags) {
+                        if (d.severity === VscDiagnosticSeverity.Error) errors++
+                        else if (d.severity === VscDiagnosticSeverity.Warning) warnings++
+                    }
+                    if (errors > 0) {
+                        const badge = errors > 99 ? '99' : String(errors)
+                        return new VscFileDecoration(
+                            badge,
+                            `${errors} error(s), ${warnings} warning(s)`,
+                            new ThemeColor('list.errorForeground')
+                        )
+                    }
+                    if (warnings > 0) {
+                        const badge = warnings > 99 ? '99' : String(warnings)
+                        return new VscFileDecoration(
+                            badge,
+                            `${warnings} warning(s)`,
+                            new ThemeColor('list.warningForeground')
+                        )
+                    }
+                    return undefined
+                }
+                // 2. Fall back to cached summary (for closed / peer files)
+                const summary = diagSummaryCache.get(uri.toString())
+                if (summary) {
+                    const {errors, warnings} = summary
+                    if (errors > 0) {
+                        const badge = errors > 99 ? '99' : String(errors)
+                        return new VscFileDecoration(
+                            badge,
+                            `${errors} error(s), ${warnings} warning(s)`,
+                            new ThemeColor('list.errorForeground')
+                        )
+                    }
+                    if (warnings > 0) {
+                        const badge = warnings > 99 ? '99' : String(warnings)
+                        return new VscFileDecoration(
+                            badge,
+                            `${warnings} warning(s)`,
+                            new ThemeColor('list.warningForeground')
+                        )
+                    }
+                }
+                // 3. Fall back to tree membership indicator
+                if (treeUris.has(uri.toString())) {
+                    return new VscFileDecoration(
+                        '🔗',
+                        'Import tree member',
+                        new ThemeColor('textLink.foreground')
+                    )
+                }
+                return undefined
+            }
+        })
+
         // ── Caches for pushed data ────────────────────────────────────
         /** @type {Map<string, import('vscode').InlayHint[]>} */
         const inlayHintsCache = new Map()
@@ -242,6 +410,8 @@ module.exports = {
 
         /** @type {Map<string, import('vscode').DocumentLink[]>} */
         const linksCache = new Map()
+        /** @type {Map<string, (links: import('vscode').DocumentLink[]) => void>} */
+        const linksResolvers = new Map()
 
         /** @type {Map<string, import('vscode').ColorInformation[]>} */
         const colorsCache = new Map()
@@ -276,6 +446,8 @@ module.exports = {
         const SECTION_LINKS = 0x07
         const SECTION_COLORS = 0x08
         const SECTION_CODE_LENSES = 0x09
+        const SECTION_PEER_DIAG_SUMMARY = 0x0A
+        const SECTION_TREE_URIS = 0x0B
         // Request sections (client → server)
         const SECTION_FULL_TEXT = 0x10
         const SECTION_CONTENT_CHANGE = 0x11
@@ -391,8 +563,20 @@ module.exports = {
         })
 
         const linkProvider = languages.registerDocumentLinkProvider(allSelector, {
-            provideDocumentLinks(document) {
-                return linksCache.get(document.uri.toString()) || []
+            provideDocumentLinks(document, token) {
+                const uri = document.uri.toString()
+                const cached = linksCache.get(uri)
+                if (cached) return cached
+                return new Promise(resolve => {
+                    linksResolvers.set(uri, resolve)
+                    token.onCancellationRequested(() => {
+                        linksResolvers.delete(uri)
+                        resolve([])
+                    })
+                    setTimeout(() => {
+                        if (linksResolvers.delete(uri)) resolve(linksCache.get(uri) || [])
+                    }, 15000)
+                })
             }
         })
 
@@ -625,8 +809,8 @@ module.exports = {
                         diagnostics: context.diagnostics.map(d => ({
                             range: {start: _posParam(d.range.start), end: _posParam(d.range.end)},
                             message: d.message,
-                            severity: d.severity,
-                            code: d.code,
+                            severity: d.severity != null ? d.severity + 1 : undefined,
+                            code: d.code != null ? (typeof d.code === 'object' ? d.code.value : d.code) : undefined,
                         })),
                     },
                 })
@@ -851,7 +1035,9 @@ module.exports = {
                 const existingDiags = diagnosticCollection.get(oldDiagUri)
                 if (existingDiags && existingDiags.length > 0) {
                     diagnosticCollection.delete(oldDiagUri)
-                    diagnosticCollection.set(Uri.parse(newKey), existingDiags)
+                    const newDiagUri = Uri.parse(newKey)
+                    diagnosticCollection.set(newDiagUri, existingDiags)
+                    fileDecoChanged.fire([oldDiagUri, newDiagUri])
                 }
             }
 
@@ -876,6 +1062,29 @@ module.exports = {
                     _sendDidOpen(doc)
                 }
             }
+        })
+
+        // Load cached diagnostic summaries for closed files (from redb)
+        clientReady.then(() => {
+            client.http.getBinary('/diagnostics/summary').then(buf => {
+                if (!buf || buf.length === 0) return
+                let p = 0
+                const changedUris = []
+                while (p + 2 <= buf.length) {
+                    const uriLen = buf.readUInt16LE(p); p += 2
+                    if (p + uriLen + 8 > buf.length) break
+                    const peerUri = buf.toString('utf8', p, p + uriLen); p += uriLen
+                    const errors = buf.readUInt32LE(p); p += 4
+                    const warnings = buf.readUInt32LE(p); p += 4
+                    if (errors > 0 || warnings > 0) {
+                        diagSummaryCache.set(peerUri, {errors, warnings})
+                        changedUris.push(Uri.parse(peerUri))
+                    }
+                }
+                if (changedUris.length > 0) {
+                    fileDecoChanged.fire(changedUris)
+                }
+            }).catch(() => {})
         })
 
         // ── Per-URI serial update queue ─────────────────────────────
@@ -1060,7 +1269,20 @@ module.exports = {
                             diags.push(diag)
                         }
                         try {
-                            diagnosticCollection.set(Uri.parse(uri), diags)
+                            const parsedUri = Uri.parse(uri)
+                            diagnosticCollection.set(parsedUri, diags)
+                            // Keep summary cache in sync
+                            let errors = 0, warnings = 0
+                            for (const d of diags) {
+                                if (d.severity === VscDiagnosticSeverity.Error) errors++
+                                else if (d.severity === VscDiagnosticSeverity.Warning) warnings++
+                            }
+                            if (errors > 0 || warnings > 0) {
+                                diagSummaryCache.set(uri, {errors, warnings})
+                            } else {
+                                diagSummaryCache.delete(uri)
+                            }
+                            fileDecoChanged.fire(parsedUri)
                         } catch {}
                         break
                     }
@@ -1129,6 +1351,11 @@ module.exports = {
                             links.push(link)
                         }
                         linksCache.set(uri, links)
+                        const resolver = linksResolvers.get(uri)
+                        if (resolver) {
+                            linksResolvers.delete(uri)
+                            resolver(links)
+                        }
                         break
                     }
                     case SECTION_COLORS: {
@@ -1180,6 +1407,47 @@ module.exports = {
                         }
                         codeLensCache.set(uri, lenses)
                         codeLensChanged.fire()
+                        break
+                    }
+                    case SECTION_PEER_DIAG_SUMMARY: {
+                        let p = 0
+                        const changedUris = []
+                        while (p + 2 <= data.length) {
+                            const uriLen = data.readUInt16LE(p); p += 2
+                            if (p + uriLen + 8 > data.length) break
+                            const peerUri = data.toString('utf8', p, p + uriLen); p += uriLen
+                            const errors = data.readUInt32LE(p); p += 4
+                            const warnings = data.readUInt32LE(p); p += 4
+                            const old = diagSummaryCache.get(peerUri)
+                            if (!old || old.errors !== errors || old.warnings !== warnings) {
+                                if (errors === 0 && warnings === 0) {
+                                    diagSummaryCache.delete(peerUri)
+                                } else {
+                                    diagSummaryCache.set(peerUri, {errors, warnings})
+                                }
+                                changedUris.push(Uri.parse(peerUri))
+                            }
+                        }
+                        if (changedUris.length > 0) {
+                            fileDecoChanged.fire(changedUris)
+                        }
+                        break
+                    }
+                    case SECTION_TREE_URIS: {
+                        let p = 0
+                        const changedUris = []
+                        while (p + 2 <= data.length) {
+                            const uriLen = data.readUInt16LE(p); p += 2
+                            if (p + uriLen > data.length) break
+                            const peerUri = data.toString('utf8', p, p + uriLen); p += uriLen
+                            if (!treeUris.has(peerUri)) {
+                                treeUris.add(peerUri)
+                                changedUris.push(Uri.parse(peerUri))
+                            }
+                        }
+                        if (changedUris.length > 0) {
+                            fileDecoChanged.fire(changedUris)
+                        }
                         break
                     }
                     // Future section types: just add cases here
@@ -1440,9 +1708,21 @@ module.exports = {
             foldingCache.delete(key)
             symbolsCache.delete(key)
             linksCache.delete(key)
+            linksResolvers.delete(key)
             colorsCache.delete(key)
             codeLensCache.delete(key)
-            diagnosticCollection.delete(Uri.parse(key))
+            const closedUri = Uri.parse(key)
+            diagnosticCollection.delete(closedUri)
+
+            // Clear stale decorations (tree links & peer diagnostics)
+            const staleUris = []
+            for (const u of treeUris) staleUris.push(Uri.parse(u))
+            for (const u of diagSummaryCache.keys()) staleUris.push(Uri.parse(u))
+            treeUris.clear()
+            diagSummaryCache.clear()
+            staleUris.push(closedUri)
+            fileDecoChanged.fire(staleUris)
+
             client.http.post('/document/close', {
                 textDocument: {uri: key}
             }).catch(e => console.error('document/close error:', e))
@@ -1457,6 +1737,8 @@ module.exports = {
 
         context.subscriptions.push(
             diagnosticCollection,
+            fileDecorationProvider,
+            fileDecoChanged,
             inlayHintsProvider,
             inlayHintsChanged,
             semanticTokensProvider,
@@ -1700,7 +1982,7 @@ module.exports = {
             }),
 
 
-            // Rescan all files
+            // Rescan all files (SSE with real progress)
             commands.registerCommand('rescan.execute', async () => {
                 const editor = window.activeTextEditor
                 if (!editor) {
@@ -1711,16 +1993,20 @@ module.exports = {
                 await window.withProgress(
                     {
                         location: ProgressLocation.Notification,
-                        title: 'Rescanning all files…',
+                        title: 'Rescanning…',
                         cancellable: false
                     },
-                    async () => {
+                    async (progress) => {
                         try {
-                            const result = await client.sendRequest('rescan', {uri})
+                            const result = await _consumeRescanSSE(client, uri, progress)
+                            if (result && result.busy) {
+                                window.showWarningMessage('Rescan is already in progress.')
+                                return
+                            }
                             if (result && result.ok) {
                                 window.showInformationMessage(`↻ ${result.message}`)
                             } else if (result && result.errors && result.errors.length > 0) {
-                                const summary = `✗ Rescanned ${result.message.split('\n')[0]}`
+                                const summary = `✗ ${result.message.split('\n')[0]}`
                                 const action = await window.showErrorMessage(summary, 'Show Details')
                                 if (action === 'Show Details') {
                                     const ch = window.createOutputChannel('JASS Rescan')

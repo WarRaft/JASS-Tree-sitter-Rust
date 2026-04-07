@@ -201,12 +201,14 @@ pub struct VarDeclStmt<'tree> {
     pub decls: Vec<Declarator<'tree>>,
 }
 
-/// Single variable declarator: `name [= value]`
+/// Single variable declarator: `name [= value]` or `name(args)`
 #[derive(Debug, Clone)]
 pub struct Declarator<'tree> {
     pub node: Node<'tree>,
     pub name: Option<Id<'tree>>,
     pub value: Option<Expr<'tree>>,
+    /// Constructor-style initializer arguments: `name(arg1, arg2, ...)`
+    pub args: Vec<Expr<'tree>>,
 }
 
 /// `if (cond) stmt [else stmt]`
@@ -782,6 +784,30 @@ fn build_function<'tree>(
     }
 }
 
+fn build_arg_list<'tree>(node: &Node<'tree>) -> Vec<Expr<'tree>> {
+    let mut args = Vec::new();
+    if let Some(al) = node.child_by_field_id(FIELD_ARGS) {
+        let count = al.child_count();
+        for i in 0..count {
+            if let Some(child) = al.child(i as u32) {
+                if let Some(e) = build_expr(&child) {
+                    args.push(e);
+                }
+            }
+        }
+    }
+    args
+}
+
+fn build_declarator<'tree>(d: &Node<'tree>) -> Declarator<'tree> {
+    Declarator {
+        node: *d,
+        name: maybe_id(d, FIELD_NAME, IdRole::Variable),
+        value: d.child_by_field_id(FIELD_VALUE).and_then(|n| build_expr(&n)),
+        args: build_arg_list(d),
+    }
+}
+
 fn build_var_decl_stmt<'tree>(node: &Node<'tree>) -> VarDeclStmt<'tree> {
     let mut decls = Vec::new();
     let count = node.child_count();
@@ -794,13 +820,7 @@ fn build_var_decl_stmt<'tree>(node: &Node<'tree>) -> VarDeclStmt<'tree> {
                     for j in 0..vc {
                         if let Some(d) = child.child(j as u32) {
                             if Kind::try_from(d.kind_id()) == Ok(Kind::Declarator) {
-                                decls.push(Declarator {
-                                    node: d,
-                                    name: maybe_id(&d, FIELD_NAME, IdRole::Variable),
-                                    value: d
-                                        .child_by_field_id(FIELD_VALUE)
-                                        .and_then(|n| build_expr(&n)),
-                                });
+                                decls.push(build_declarator(&d));
                             }
                         }
                     }
@@ -811,13 +831,7 @@ fn build_var_decl_stmt<'tree>(node: &Node<'tree>) -> VarDeclStmt<'tree> {
                     };
                 }
                 Ok(Kind::Declarator) => {
-                    decls.push(Declarator {
-                        node: child,
-                        name: maybe_id(&child, FIELD_NAME, IdRole::Variable),
-                        value: child
-                            .child_by_field_id(FIELD_VALUE)
-                            .and_then(|n| build_expr(&n)),
-                    });
+                    decls.push(build_declarator(&child));
                 }
                 _ => {}
             }

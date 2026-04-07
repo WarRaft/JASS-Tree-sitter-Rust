@@ -1182,6 +1182,9 @@ impl Cursor {
             if let Some(val) = &d.value {
                 self.visit_expr(val);
             }
+            for arg in &d.args {
+                self.visit_expr(arg);
+            }
 
             // Collect symbol
             if export {
@@ -1387,11 +1390,31 @@ impl Cursor {
             | Expr::Lambda { .. } | Expr::Other(_) => {}
             Expr::HandleOf { operand, .. } => {
                 // `@FuncName` — function reference (compatible with JASS `code` type)
+                // `@var = expr` — handle assignment (assign handle to a variable)
                 match operand.as_ref() {
                     Expr::Id(id) => {
                         let name = self.node_text(&id.node);
-                        self.hl_reference_func(&name, &id.node, DocumentHighlightKind::Read);
-                        self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
+                        // Check if the name is a known function.
+                        let is_func = self
+                            .hl_scopes
+                            .iter()
+                            .rev()
+                            .any(|scope| scope.funcs.contains_key(&name));
+                        // Check if the name is a known variable.
+                        let is_var = !is_func && self
+                            .hl_scopes
+                            .iter()
+                            .rev()
+                            .any(|scope| scope.vars.contains_key(&name));
+                        if is_var {
+                            // Handle assignment: @var = expr
+                            self.hl_reference_var(&name, &id.node, DocumentHighlightKind::Write);
+                            self.id_roles.insert(id.node.start_byte(), IdRole::Variable);
+                        } else {
+                            // Function reference (@FuncName) or unresolved forward reference
+                            self.hl_reference_func(&name, &id.node, DocumentHighlightKind::Read);
+                            self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
+                        }
                     }
                     other => self.visit_expr(other),
                 }

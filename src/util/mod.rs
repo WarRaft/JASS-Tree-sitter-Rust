@@ -9,6 +9,7 @@ pub(crate) mod i18n;
 pub(crate) mod import_graph;
 pub(crate) mod open;
 pub(crate) mod parse;
+pub(crate) mod rescan;
 pub(crate) mod roper;
 pub(crate) mod scope_resolver;
 pub(crate) mod string_hash;

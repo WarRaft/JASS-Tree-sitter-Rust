@@ -7,7 +7,7 @@ edition = "2024"
 
 [dependencies]
 axum = { version = "0.8.8", features = ["ws"] }
-futures-util = "0.3"
+futures-util = "0.3.32"
 base64 = "0.22.1"
 blp = "0.1.37"
 tree-sitter = "0.26.8"
@@ -39,6 +39,7 @@ reqwest = { version = "0.13.2", default-features = false, features = ["rustls", 
 redb = "4.0.0"
 sha2 = "0.11.0"
 tokio-util = "0.7.18"
+tokio-stream = "0.1.18"
 tower-http = { version = "0.6.6", features = ["cors"] }
 
 [build-dependencies]

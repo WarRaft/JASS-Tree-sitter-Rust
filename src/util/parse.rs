@@ -27,7 +27,7 @@ use crate::util::file_store::{
     CascadeGuard, FILE_STORE,
     MAX_CASCADE_PEERS, REPARSE_GUARD,
 };
-use crate::util::import_graph::resolve_import;
+use crate::util::import_graph::{resolve_import, IMPORT_GRAPH};
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::scope_resolver::{GlobalEntry, SymbolNS, SCOPE_RESOLVER};
 use crate::util::tree_map::TREE_MAP;
@@ -521,6 +521,83 @@ pub fn as_file_symbols_to_entries(
     entries
 }
 
+// ─── Recursive import extraction ────────────────────────────────────────────
+
+/// Recursively collect all import URLs from an AS AST.
+///
+/// Walks `TopLevel::Namespace` children so that `#include` directives
+/// nested inside namespace blocks are discovered (the namespace scope
+/// does not affect the import — all includes go to the global scope).
+pub fn collect_as_imports(
+    items: &[crate::lng::ass::ast::TopLevel],
+    uri: &Url,
+    rope: &Rope,
+) -> HashSet<Url> {
+    use crate::lng::ass::ast::TopLevel;
+    use crate::util::roper::node::NodeExt;
+
+    let mut imports = HashSet::new();
+    for item in items {
+        match item {
+            TopLevel::Include(incl) => {
+                if let Some(path_node) = &incl.path {
+                    let path_text = path_node.text(rope);
+                    if let Some(resolved) = resolve_import(uri, &path_text) {
+                        imports.insert(resolved.url);
+                    }
+                }
+            }
+            TopLevel::ImportDir(imp) => {
+                if !imp.path.is_empty() {
+                    if let Some(resolved) = resolve_import(uri, &imp.path) {
+                        imports.insert(resolved.url);
+                    }
+                }
+            }
+            TopLevel::UjapiDir(ud) => {
+                if !ud.path.is_empty() {
+                    if let Some(resolved) = resolve_import(uri, &ud.path) {
+                        imports.insert(resolved.url);
+                    }
+                }
+            }
+            TopLevel::Namespace(ns) => {
+                // Recurse into namespace body — #include inside namespace
+                // still imports to the global scope.
+                imports.extend(collect_as_imports(&ns.body, uri, rope));
+            }
+            _ => {}
+        }
+    }
+    imports
+}
+
+/// Collect all import URLs from a JASS AST (after `rewrite_imports`).
+pub fn collect_jass_imports(
+    items: &[crate::lng::jass::ast::Statement],
+    uri: &Url,
+) -> HashSet<Url> {
+    use crate::lng::jass::ast::Statement;
+
+    let mut imports = HashSet::new();
+    for item in items {
+        if let Statement::Import(imp) = item {
+            if !imp.path.is_empty() {
+                if let Some(resolved) = resolve_import(uri, &imp.path) {
+                    imports.insert(resolved.url);
+                }
+            }
+        }
+        if let Statement::UjapiImport(ud) = item {
+            if !ud.path.is_empty() {
+                if let Some(resolved) = resolve_import(uri, &ud.path) {
+                    imports.insert(resolved.url);
+                }
+            }
+        }
+    }
+    imports
+}
 
 /// Ensure that `FILE_SYMBOLS` and `SCOPE_RESOLVER` have entries for `dep_uri`.
 ///
@@ -600,6 +677,15 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         let mut ast = crate::lng::ass::ast::build_ast(tree.root_node());
         let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
         crate::lng::ass::ast::rewrite_directives(&mut ast, &src);
+
+        // Extract imports (recursively — handles #include inside namespace
+        // blocks) and register them in the import graph so that transitive
+        // dependencies are visible to `visible_component`.
+        let dep_imports = collect_as_imports(&ast.items, dep_uri, &rope);
+        if !dep_imports.is_empty() {
+            IMPORT_GRAPH.update(dep_uri, dep_imports);
+        }
+
         let cursor = crate::lng::ass::cursor::Cursor::walk(&ast, &rope, &[]);
 
         let mut as_file_symbols = cursor.file_symbols;
@@ -643,7 +729,17 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
     }
 
     // ── JASS path (default) ──
-    let ast = crate::lng::jass::ast::build_ast(tree.root_node());
+    let mut ast = crate::lng::jass::ast::build_ast(tree.root_node());
+    let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
+    crate::lng::jass::ast::rewrite_imports(&mut ast, &src);
+
+    // Extract imports and register them in the import graph so that
+    // transitive dependencies are visible to `visible_component`.
+    let dep_imports = collect_jass_imports(&ast.items, dep_uri);
+    if !dep_imports.is_empty() {
+        IMPORT_GRAPH.update(dep_uri, dep_imports);
+    }
+
     let cursor = crate::lng::jass::cursor::Cursor::walk(&ast, &rope, &[]);
     let file_symbols = cursor.file_symbols;
     let hash = file_cache::content_hash(&rope);
@@ -680,6 +776,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
 
     // Persist to unified disk cache.
     if let Some(meta) = file_cache::FileMeta::from_uri(dep_uri) {
+        let (de, dw) = file_cache::diag_counts(&snapshot.diagnostics);
         file_cache::store(
             dep_uri,
             meta,
@@ -689,6 +786,8 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             &func_decl_keys,
             &var_decl_keys,
             &arg_decl_keys,
+            de,
+            dw,
         );
     }
 

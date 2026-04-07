@@ -91,44 +91,21 @@ fn _parse(
     let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
     rewrite_directives(&mut ast, &src);
 
-    // 3. Extract imports from BOTH #include directives AND //import directives
-    let mut imports = HashSet::new();
+    // 3. Extract imports from BOTH #include directives AND //import directives.
+    //    #include can appear inside namespace blocks — it still imports to global scope.
     let mut frozen_imports = HashSet::new();
     let mut links = Vec::new();
     let mut import_diagnostics = Vec::new();
     let mut ujapi_hints = Vec::new();
 
-    for item in &ast.items {
-        // Native #include
-        if let TopLevel::Include(incl) = item {
-            if let Some(path_node) = &incl.path {
-                let path_text = path_node.text(rope);
-                let path_range = path_node.to_range(rope);
+    // Collect ALL import URLs recursively (handles #include inside namespaces).
+    let imports = crate::util::parse::collect_as_imports(&ast.items, uri, rope);
 
-                resolve_path_import(
-                    uri, &path_text, path_range,
-                    &mut imports, &mut links, &mut import_diagnostics,
-                );
-            }
-        }
-
-        // //import / //import! directives
-        if let TopLevel::ImportDir(imp) = item {
-            resolve_import_directive(
-                uri, imp, &src, rope,
-                &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
-            );
-        }
-
-        // //import-ujapi! directives
-        if let TopLevel::UjapiDir(ud) = item {
-            crate::util::parse::resolve_ujapi_directive(
-                uri, ud, &src, rope,
-                &mut imports, &mut frozen_imports, &mut links, &mut import_diagnostics,
-                &mut ujapi_hints,
-            );
-        }
-    }
+    // Generate diagnostics/links for visible import directives.
+    collect_as_import_details(
+        &ast.items, uri, &src, rope,
+        &mut frozen_imports, &mut links, &mut import_diagnostics, &mut ujapi_hints,
+    );
 
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() { return Ok(vec![]); }
@@ -141,7 +118,7 @@ fn _parse(
     // Refresh entry cache so that visible_component reads the updated graph.
     IMPORT_GRAPH.recompute_entry_cache();
 
-    let component = IMPORT_GRAPH.visible_component(uri);
+    let mut component = IMPORT_GRAPH.visible_component(uri);
 
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() { return Ok(vec![]); }
@@ -153,23 +130,45 @@ fn _parse(
     //    AS code can reference them without qualifier (e.g. `unit`, `handle`).
     let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
     {
-        // Ensure every peer is in the scope resolver.
-        for peer_uri in &component {
-            if peer_uri != uri {
-                let ts_lang = if crate::util::open::is_as_uri(peer_uri) {
+        // Iteratively ensure every peer is in the scope resolver.
+        // `ensure_file_symbols` may register new import edges in the graph
+        // (for transitive imports), so we re-check `visible_component` until
+        // no new peers appear.
+        let mut ensured: HashSet<Url> = HashSet::new();
+        ensured.insert(uri.clone());
+        const MAX_ROUNDS: usize = 64;
+
+        for _round in 0..MAX_ROUNDS {
+            let mut discovered_new = false;
+            for peer_uri in component.iter().cloned().collect::<Vec<_>>() {
+                if !ensured.insert(peer_uri.clone()) {
+                    continue;
+                }
+                let ts_lang = if crate::util::open::is_as_uri(&peer_uri) {
                     tree_sitter_as::language().into()
                 } else {
                     tree_sitter_jass::language().into()
                 };
-                if !ensure_file_symbols(peer_uri, ts_lang) {
-                    register_pending(peer_uri, uri);
+                if !ensure_file_symbols(&peer_uri, ts_lang) {
+                    register_pending(&peer_uri, uri);
                     log::info!(
                         "pending import: {} waits for {}",
                         uri.path(),
                         peer_uri.path()
                     );
                 }
+                discovered_new = true;
             }
+            if !discovered_new {
+                break;
+            }
+            // Recompute after new edges may have been added by ensure_file_symbols.
+            IMPORT_GRAPH.recompute_entry_cache();
+            let new_component = IMPORT_GRAPH.visible_component(uri);
+            if new_component == component {
+                break;
+            }
+            component = new_component;
         }
 
         let visible_entries = SCOPE_RESOLVER.all_visible(&component);
@@ -337,6 +336,62 @@ fn _parse(
     };
 
     Ok(cascade)
+}
+
+/// Recursively collect import diagnostics, document links, frozen imports,
+/// and UJAPI hints from AS AST items — handles `#include` inside namespace blocks.
+fn collect_as_import_details(
+    items: &[TopLevel],
+    uri: &url::Url,
+    src: &[u8],
+    rope: &Rope,
+    frozen_imports: &mut HashSet<url::Url>,
+    links: &mut Vec<crate::http::document_link::DocumentLink>,
+    import_diagnostics: &mut Vec<crate::http::diagnostic::Diagnostic>,
+    ujapi_hints: &mut Vec<crate::http::inlay_hint::InlayHint>,
+) {
+    for item in items {
+        // Native #include (may be inside namespace)
+        if let TopLevel::Include(incl) = item {
+            if let Some(path_node) = &incl.path {
+                let path_text = path_node.text(rope);
+                let path_range = path_node.to_range(rope);
+
+                let mut dummy_imports = HashSet::new();
+                resolve_path_import(
+                    uri, &path_text, path_range,
+                    &mut dummy_imports, links, import_diagnostics,
+                );
+            }
+        }
+
+        // //import / //import! directives
+        if let TopLevel::ImportDir(imp) = item {
+            let mut dummy_imports = HashSet::new();
+            resolve_import_directive(
+                uri, imp, src, rope,
+                &mut dummy_imports, frozen_imports, links, import_diagnostics,
+            );
+        }
+
+        // //import-ujapi! directives
+        if let TopLevel::UjapiDir(ud) = item {
+            let mut dummy_imports = HashSet::new();
+            crate::util::parse::resolve_ujapi_directive(
+                uri, ud, src, rope,
+                &mut dummy_imports, frozen_imports, links, import_diagnostics,
+                ujapi_hints,
+            );
+        }
+
+        // Recurse into namespace bodies
+        if let TopLevel::Namespace(ns) = item {
+            collect_as_import_details(
+                &ns.body, uri, src, rope,
+                frozen_imports, links, import_diagnostics, ujapi_hints,
+            );
+        }
+    }
 }
 
 /// Parse a **closed** file from disk, produce a full [`ParseSnapshot`], and

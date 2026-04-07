@@ -929,4 +929,106 @@ void main() {
                 "Expected 'undeclared' diagnostic for Jass::UnknownFunc without imports");
         });
     }
+
+    // ─── Handle assignment (@var = expr) ──────────────────────────────────
+
+    #[test]
+    fn handle_assign_var_no_undeclared() {
+        // @dummyDamageCallback = cb — handle assignment to a variable
+        // should NOT produce "undeclared" diagnostic for dummyDamageCallback
+        let src = "\
+funcdef void DamageCallbackFn(int x);
+class UnitData {
+    DamageCallbackFn@ dummyDamageCallback;
+    void SetDamageCallback(DamageCallbackFn@ cb) {
+        @dummyDamageCallback = cb;
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("dummyDamageCallback"))
+                .collect();
+            assert!(undeclared.is_empty(),
+                "Expected no 'undeclared' diagnostic for @dummyDamageCallback in handle assignment, got {:?}", undeclared);
+        });
+    }
+
+    #[test]
+    fn handle_assign_var_colored_as_variable() {
+        let src = "\
+funcdef void DamageCallbackFn(int x);
+class UnitData {
+    DamageCallbackFn@ dummyDamageCallback;
+    void SetDamageCallback(DamageCallbackFn@ cb) {
+        @dummyDamageCallback = cb;
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            // dummyDamageCallback in @dummyDamageCallback should be Variable, not Function
+            let dd_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "dummyDamageCallback")
+                .collect();
+            assert!(dd_tokens.iter().all(|(_, k)| *k == TokenKind::Variable),
+                "Expected all 'dummyDamageCallback' tokens to be Variable, got {:?}", dd_tokens);
+        });
+    }
+
+    #[test]
+    fn funcdef_handle_type_in_method_param_no_undeclared() {
+        // DamageCallbackFn@ as a method parameter type should resolve
+        let src = "\
+funcdef void DamageCallbackFn(int x);
+class UnitData {
+    void SetDamageCallback(DamageCallbackFn@ cb) {}
+}
+";
+        with_cursor(src, |cursor| {
+            let undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("DamageCallbackFn"))
+                .collect();
+            assert!(undeclared.is_empty(),
+                "Expected no 'undeclared' diagnostic for DamageCallbackFn@ in method param, got {:?}", undeclared);
+        });
+    }
+
+    #[test]
+    fn funcdef_handle_type_in_method_param_colored_as_type() {
+        let src = "\
+funcdef void DamageCallbackFn(int x);
+class UnitData {
+    void SetDamageCallback(DamageCallbackFn@ cb) {}
+}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            let dcf_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "DamageCallbackFn")
+                .collect();
+            // All DamageCallbackFn tokens should be Type (funcdef is a type declaration)
+            // except the funcdef name itself which is Function
+            assert!(dcf_tokens.len() >= 2,
+                "Expected at least 2 DamageCallbackFn tokens (decl + usage), got {:?}", dcf_tokens);
+        });
+    }
+
+    #[test]
+    fn funcdef_handle_global_var_no_undeclared() {
+        // Global variable with funcdef handle type should work
+        let src = "\
+funcdef void DamageCallbackFn(int x);
+DamageCallbackFn@ gDmg_Callback = null;
+";
+        with_cursor(src, |cursor| {
+            let undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("DamageCallbackFn"))
+                .collect();
+            assert!(undeclared.is_empty(),
+                "Expected no 'undeclared' diagnostic for DamageCallbackFn@ at global scope, got {:?}", undeclared);
+        });
+    }
 }

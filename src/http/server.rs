@@ -108,6 +108,7 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/build/hooks", post(crate::http::api::build_hooks))
         // ── Rescan & UJAPI ───────────────────────────────────────────
         .route("/rescan", post(crate::http::api::rescan_execute))
+        .route("/rescan/status", get(crate::http::api::rescan_status))
         .route("/ujapi/download", post(crate::http::api::ujapi_download))
         // ── Language features ────────────────────────────────────────
         .route("/lsp/completion", post(crate::http::api::completion))
@@ -133,8 +134,9 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/document/close", post(crate::http::api::document_close))
         .route("/document/didRenameFiles", post(crate::http::api::did_rename_files))
         .route("/files/changed", post(crate::http::api::files_changed))
-        // ── Binary data ─────────────────────────────────────────────
+        // ── Binary data ─────────────────────────────────────────
         .route("/semantic", get(crate::http::api::semantic_tokens))
+        .route("/diagnostics/summary", get(crate::http::api::diagnostics_summary))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?

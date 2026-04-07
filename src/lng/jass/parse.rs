@@ -182,30 +182,51 @@ fn _parse(
 
     // 4. Gather symbols from the **visible component** (entry-aware scope).
     let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
-    let component: HashSet<Url>;
+    let mut component: HashSet<Url>;
     {
         component = IMPORT_GRAPH.visible_component(uri);
 
-        // Ensure every PEER is in the scope resolver.
-        // Skip `uri` itself to avoid clobbering current-file data with stale cache.
-        for peer_uri in &component {
-            if peer_uri != uri {
-                let ts_lang = if crate::util::open::is_as_uri(peer_uri) {
+        // Iteratively ensure every peer is in the scope resolver.
+        // `ensure_file_symbols` may register new import edges in the graph
+        // (for transitive imports), so we re-check `visible_component` until
+        // no new peers appear.
+        let mut ensured: HashSet<Url> = HashSet::new();
+        ensured.insert(uri.clone());
+        const MAX_ROUNDS: usize = 64;
+
+        for _round in 0..MAX_ROUNDS {
+            let mut discovered_new = false;
+            for peer_uri in component.iter().cloned().collect::<Vec<_>>() {
+                if !ensured.insert(peer_uri.clone()) {
+                    continue;
+                }
+                let ts_lang = if crate::util::open::is_as_uri(&peer_uri) {
                     tree_sitter_as::language().into()
                 } else {
                     tree_sitter_jass::language().into()
                 };
-                if !ensure_file_symbols(peer_uri, ts_lang) {
+                if !ensure_file_symbols(&peer_uri, ts_lang) {
                     // Dependency not available yet — register so that when it
                     // finishes parsing we get a cascade re-parse.
-                    register_pending(peer_uri, uri);
+                    register_pending(&peer_uri, uri);
                     log::info!(
                         "pending import: {} waits for {}",
                         uri.path(),
                         peer_uri.path()
                     );
                 }
+                discovered_new = true;
             }
+            if !discovered_new {
+                break;
+            }
+            // Recompute after new edges may have been added by ensure_file_symbols.
+            IMPORT_GRAPH.recompute_entry_cache();
+            let new_component = IMPORT_GRAPH.visible_component(uri);
+            if new_component == component {
+                break;
+            }
+            component = new_component;
         }
 
         // O(1)-per-name: get all symbols from the connected component.
@@ -499,6 +520,7 @@ fn _parse(
 
     // Persist to unified disk cache.
     if let Some(meta) = file_cache::FileMeta::from_uri(uri) {
+        let (de, dw) = file_cache::diag_counts(&new_snapshot.diagnostics);
         file_cache::store(
             uri,
             meta,
@@ -508,6 +530,8 @@ fn _parse(
             &new_snapshot.func_decl_keys,
             &new_snapshot.var_decl_keys,
             &new_snapshot.arg_decl_keys,
+            de,
+            dw,
         );
     }
 

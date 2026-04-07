@@ -542,60 +542,110 @@ pub async fn build_hooks(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Rescan endpoint
+//  Rescan endpoint (SSE with singleton guard)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub async fn rescan_execute(
     Query(auth): Query<AuthQuery>,
     Json(params): Json<UriParam>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<axum::response::Response, (StatusCode, String)> {
     auth.check()?;
-    let uri = &params.uri;
+    use axum::response::sse::{Event, Sse};
     use crate::util::import_graph::IMPORT_GRAPH;
     use crate::util::file_store::FILE_STORE;
+    use crate::util::rescan::RescanGuard;
 
-    let tree_uris = IMPORT_GRAPH.tree_for_uri(uri);
+    // Only one rescan at a time — if busy, reply immediately.
+    let guard = match RescanGuard::try_acquire() {
+        Some(g) => g,
+        None => {
+            let body = json!({ "busy": true, "message": "Rescan already in progress" });
+            return Ok(Json(body).into_response());
+        }
+    };
+
+    let uri = params.uri.clone();
+
+    let tree_uris = IMPORT_GRAPH.tree_for_uri(&uri);
     if tree_uris.is_empty() {
-        return Ok(Json(json!({ "ok": false, "message": "No files in tree" })));
+        drop(guard);
+        let body = json!({ "ok": false, "message": "No files in tree" });
+        return Ok(Json(body).into_response());
     }
 
-    let _total = tree_uris.len();
+    let total = tree_uris.len();
     let tree_list: Vec<Url> = tree_uris.iter().cloned().collect();
 
-    // Purge caches
+    // Purge caches before the scan loop.
     crate::util::file_cache::purge_set(&tree_uris);
     crate::util::scope_resolver::SCOPE_RESOLVER.remove_files(&tree_uris);
     for u in &tree_list { FILE_STORE.remove(u); }
 
-    let mut ok_count = 0usize;
-    let mut errors: Vec<String> = Vec::new();
+    // Create a channel so the background task can push SSE events.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
 
-    for u in &tree_list {
-        let fname = u.path().rsplit('/').next().unwrap_or("");
-        match u.to_file_path() {
-            Ok(path) if path.is_dir() => continue,
-            Ok(path) => match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    if let Err(e) = crate::util::open::open_by_uri(u, &content).await {
-                        errors.push(format!("{}: {}", fname, e));
-                    } else {
-                        ok_count += 1;
+    // Spawn the heavy work so the SSE response starts streaming immediately.
+    tokio::spawn(async move {
+        let _guard = guard; // move guard into spawned task — dropped when done
+
+        let mut ok_count = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+
+        for (index, u) in tree_list.iter().enumerate() {
+            let fname = u.path().rsplit('/').next().unwrap_or("");
+
+            // Send progress event.
+            let progress = json!({
+                "file": fname,
+                "index": index,
+                "total": total,
+            });
+            let _ = tx.send(Ok(Event::default().data(progress.to_string()))).await;
+
+            match u.to_file_path() {
+                Ok(path) if path.is_dir() => continue,
+                Ok(path) => match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        if let Err(e) = crate::util::open::open_by_uri(u, &content).await {
+                            errors.push(format!("{}: {}", fname, e));
+                        } else {
+                            ok_count += 1;
+                        }
                     }
-                }
-                Err(e) => errors.push(format!("{}: cannot read — {}", fname, e)),
-            },
-            Err(_) => errors.push(format!("{}: invalid file path", fname)),
+                    Err(e) => errors.push(format!("{}: cannot read — {}", fname, e)),
+                },
+                Err(_) => errors.push(format!("{}: invalid file path", fname)),
+            }
         }
-    }
 
+        let msg = if errors.is_empty() {
+            format!("Rescanned {} files", ok_count)
+        } else {
+            format!("Rescanned {} files ({} errors)\n{}", ok_count, errors.len(), errors.join("\n"))
+        };
 
-    let msg = if errors.is_empty() {
-        format!("Rescanned {} files", ok_count)
-    } else {
-        format!("Rescanned {} files ({} errors)\n{}", ok_count, errors.len(), errors.join("\n"))
-    };
+        let done = json!({
+            "done": true,
+            "ok": errors.is_empty(),
+            "message": msg,
+            "errors": errors,
+        });
+        let _ = tx.send(Ok(Event::default().data(done.to_string()))).await;
+    });
 
-    Ok(Json(json!({ "ok": errors.is_empty(), "message": msg, "errors": errors })))
+    // Convert the receiver into a stream for axum SSE.
+    let event_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let sse = Sse::new(event_stream)
+        .keep_alive(axum::response::sse::KeepAlive::default());
+
+    Ok(sse.into_response())
+}
+
+pub async fn rescan_status(
+    Query(auth): Query<AuthQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    auth.check()?;
+    Ok(Json(json!({ "running": crate::util::rescan::is_running() })))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1016,6 +1066,14 @@ mod section {
     /// `[u32 declLine][u32 declChar][u32 refCount]
     ///  [u32 refStartLine][u32 refStartChar][u32 refEndLine][u32 refEndChar] × refCount`
     pub const CODE_LENSES: u8 = 0x09;
+    /// Peer diagnostic summaries — per peer file in the import tree:
+    /// `[u16 uriLen][…uri UTF-8…][u32 errors][u32 warnings]`
+    /// Allows the client to show error/warning badges for closed files.
+    pub const PEER_DIAG_SUMMARY: u8 = 0x0A;
+    /// All URIs in the import tree — per URI:
+    /// `[u16 uriLen][…uri UTF-8…]`
+    /// Allows the client to mark every file in the tree in the Explorer.
+    pub const TREE_URIS: u8 = 0x0B;
 
     // ── Request sections (client → server) ───────────────────────
     /// Full document text (open) — raw UTF-8 bytes.
@@ -1306,6 +1364,43 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) ->
                 buf.push(section::CODE_LENSES);
                 buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
                 buf.extend_from_slice(&section_buf);
+            }
+        }
+    }
+
+    // ── Section 0x0A: Peer diagnostic summaries ──────────────────
+    {
+        use crate::util::import_graph::IMPORT_GRAPH;
+        let tree_uris = IMPORT_GRAPH.tree_for_uri(uri);
+        let mut section_buf = Vec::new();
+        for peer in &tree_uris {
+            if let Some(peer_snap) = FILE_STORE.get(peer) {
+                let (errors, warnings) = crate::util::file_cache::diag_counts(&peer_snap.diagnostics);
+                let uri_bytes = peer.as_str().as_bytes();
+                section_buf.extend_from_slice(&(uri_bytes.len() as u16).to_le_bytes());
+                section_buf.extend_from_slice(uri_bytes);
+                section_buf.extend_from_slice(&errors.to_le_bytes());
+                section_buf.extend_from_slice(&warnings.to_le_bytes());
+            }
+        }
+        if !section_buf.is_empty() {
+            buf.push(section::PEER_DIAG_SUMMARY);
+            buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&section_buf);
+        }
+
+        // ── Section 0x0B: All tree URIs ──────────────────────────────
+        {
+            let mut tree_buf = Vec::new();
+            for peer in &tree_uris {
+                let uri_bytes = peer.as_str().as_bytes();
+                tree_buf.extend_from_slice(&(uri_bytes.len() as u16).to_le_bytes());
+                tree_buf.extend_from_slice(uri_bytes);
+            }
+            if !tree_buf.is_empty() {
+                buf.push(section::TREE_URIS);
+                buf.extend_from_slice(&(tree_buf.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&tree_buf);
             }
         }
     }
@@ -1645,3 +1740,45 @@ pub async fn semantic_tokens(
     ))
 }
 
+/// Returns diagnostic error/warning counts for all known files as binary:
+/// `[u16 uriLen][…uri UTF-8…][u32 errors][u32 warnings]` repeated.
+///
+/// Sources: live `FILE_STORE` snapshots take precedence, then falls back
+/// to cached counts from `redb`.
+pub async fn diagnostics_summary(
+    Query(auth): Query<AuthQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    auth.check()?;
+
+    use crate::util::file_store::FILE_STORE;
+    use std::collections::HashMap;
+
+    // Start with cached summaries from redb.
+    let mut summaries: HashMap<String, (u32, u32)> = HashMap::new();
+    for s in crate::util::file_cache::load_all_diag_summaries() {
+        summaries.insert(s.uri, (s.errors, s.warnings));
+    }
+
+    // Override with live FILE_STORE data (more up-to-date).
+    for entry in FILE_STORE.iter() {
+        let uri_str = entry.key().as_str().to_string();
+        let (e, w) = crate::util::file_cache::diag_counts(&entry.value().diagnostics);
+        summaries.insert(uri_str, (e, w));
+    }
+
+    // Encode as binary.
+    let mut buf = Vec::new();
+    for (uri, (errors, warnings)) in &summaries {
+        if *errors == 0 && *warnings == 0 { continue; }
+        let uri_bytes = uri.as_bytes();
+        buf.extend_from_slice(&(uri_bytes.len() as u16).to_le_bytes());
+        buf.extend_from_slice(uri_bytes);
+        buf.extend_from_slice(&errors.to_le_bytes());
+        buf.extend_from_slice(&warnings.to_le_bytes());
+    }
+
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        buf,
+    ))
+}
