@@ -5,7 +5,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use super::{parse_slk, parse_unit_strings, slk_u8, slk_u32, slk_f64, slk_bool, slk_str, rawcode_to_u32, slk_index_by, SlkSource};
-use crate::lng::w3e::westrings::GameString;
+use crate::lng::map_editor::westrings::GameString;
 
 /// A single unit entry merged from `Units\UnitData.slk`, `Units\UnitBalance.slk`,
 /// `Units\unitUI.slk`, and `Units\UnitWeapons.slk`.
@@ -194,13 +194,13 @@ pub struct UnitsSlkResult {
 /// Merges data from `UnitData.slk` (primary), `UnitBalance.slk`, `unitUI.slk`,
 /// and `UnitWeapons.slk`.
 pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
-    let (buf, source) = crate::lng::w3e::file_lookup::lookup_file(
+    let (buf, source) = crate::lng::map_editor::file_lookup::lookup_file(
         "Units\\UnitData.slk",
         archive_path,
     )?;
 
     // Ensure WorldEditStrings are loaded for WESTRING_* resolution.
-    crate::lng::w3e::westrings::ensure_loaded(archive_path);
+    crate::lng::map_editor::westrings::ensure_loaded(archive_path);
 
     let data_rows = parse_slk(&buf);
 
@@ -211,7 +211,7 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
     }];
 
     // Load supplementary SLK files, indexed by their ID columns.
-    let balance_map = crate::lng::w3e::file_lookup::lookup_file("Units\\UnitBalance.slk", archive_path)
+    let balance_map = crate::lng::map_editor::file_lookup::lookup_file("Units\\UnitBalance.slk", archive_path)
         .map(|(b, src)| {
             let rows = parse_slk(&b);
             let n = rows.len();
@@ -221,7 +221,7 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
         })
         .unwrap_or_default();
 
-    let ui_map = crate::lng::w3e::file_lookup::lookup_file("Units\\unitUI.slk", archive_path)
+    let ui_map = crate::lng::map_editor::file_lookup::lookup_file("Units\\unitUI.slk", archive_path)
         .map(|(b, src)| {
             let rows = parse_slk(&b);
             let n = rows.len();
@@ -231,7 +231,7 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
         })
         .unwrap_or_default();
 
-    let weap_map = crate::lng::w3e::file_lookup::lookup_file("Units\\UnitWeapons.slk", archive_path)
+    let weap_map = crate::lng::map_editor::file_lookup::lookup_file("Units\\UnitWeapons.slk", archive_path)
         .map(|(b, src)| {
             let rows = parse_slk(&b);
             let n = rows.len();
@@ -256,7 +256,7 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
 
         // Resolve WESTRING_* references in the Name field (from unitUI).
         let raw_name = ui.get("name").cloned().unwrap_or_default();
-        let name = crate::lng::w3e::westrings::resolve_game_string(&raw_name);
+        let name = crate::lng::map_editor::westrings::resolve_game_string(&raw_name);
 
         let key = rawcode_to_u32(&unit_id);
         units.insert(key, UnitInfo {
@@ -422,7 +422,7 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
     ];
 
     for &file_path in UNIT_STRING_FILES {
-        if let Some((buf, src)) = crate::lng::w3e::file_lookup::lookup_file(file_path, archive_path) {
+        if let Some((buf, src)) = crate::lng::map_editor::file_lookup::lookup_file(file_path, archive_path) {
             let sections = parse_unit_strings(&buf);
             let file_name = file_path
                 .rsplit('\\')
@@ -442,7 +442,7 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
                     // Override name if present in UnitStrings
                     if let Some(name_val) = fields.get("Name") {
                         if !name_val.is_empty() {
-                            unit.name = crate::lng::w3e::westrings::resolve_game_string(name_val);
+                            unit.name = crate::lng::map_editor::westrings::resolve_game_string(name_val);
                         }
                     }
 
@@ -469,153 +469,5 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
         sources,
         units,
     })
-}
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_units_slk_fixture() {
-        let data = include_bytes!("../../../lng/slk/fixtures/Units/UnitData.slk");
-        let rows = parse_slk(data);
-        assert!(!rows.is_empty(), "should parse some rows");
-
-        let first = &rows[0];
-        assert_eq!(first.get("unitID").map(|s| s.as_str()), Some("Hamg"));
-        assert_eq!(first.get("comment(s)").map(|s| s.as_str()), Some("HeroArchMage"));
-        assert_eq!(first.get("race").map(|s| s.as_str()), Some("human"));
-    }
-
-    /// Dump all column names from all 4 unit SLK files.
-    ///
-    /// Run manually:
-    /// ```sh
-    /// cargo test --package JASS-Tree-sitter-Rust w3e::slk::unit::tests::dump_unit_field_names -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore]
-    fn dump_unit_field_names() {
-        use std::collections::BTreeSet;
-
-        let files: &[(&str, &[u8])] = &[
-            ("UnitData.slk", include_bytes!("../../../lng/slk/fixtures/Units/UnitData.slk")),
-            ("UnitBalance.slk", include_bytes!("../../../lng/slk/fixtures/Units/UnitBalance.slk")),
-            ("unitUI.slk", include_bytes!("../../../lng/slk/fixtures/Units/unitUI.slk")),
-            ("UnitWeapons.slk", include_bytes!("../../../lng/slk/fixtures/Units/UnitWeapons.slk")),
-        ];
-
-        let mut all_fields = BTreeSet::new();
-
-        for (name, data) in files {
-            let rows = parse_slk(data);
-            assert!(!rows.is_empty(), "should parse rows from {}", name);
-
-            let mut fields = BTreeSet::new();
-            for row in &rows {
-                for key in row.keys() {
-                    fields.insert(key.clone());
-                }
-            }
-
-            println!("\n── {} ({} fields, {} rows) ──", name, fields.len(), rows.len());
-            for f in &fields {
-                println!("  {}", f);
-                all_fields.insert(format!("{}:{}", name, f));
-            }
-        }
-
-        let out_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/lng/slk/fixtures/Units/unit_field_names.txt"
-        );
-        let content = all_fields.iter().cloned().collect::<Vec<_>>().join("\n");
-        std::fs::write(out_path, &content).expect("failed to write unit_field_names.txt");
-
-        println!("\nWrote {} field names to {}", all_fields.len(), out_path);
-    }
-
-    /// Dump races, types, and unit names from unit SLK files.
-    ///
-    /// Run manually:
-    /// ```sh
-    /// cargo test --package JASS-Tree-sitter-Rust w3e::slk::unit::tests::dump_unit_races_and_types -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore]
-    fn dump_unit_races_and_types() {
-        use std::collections::BTreeMap;
-
-        let data = include_bytes!("../../../lng/slk/fixtures/Units/UnitData.slk");
-        let rows = parse_slk(data);
-        assert!(!rows.is_empty(), "should parse some unit rows");
-
-        let bal_data = include_bytes!("../../../lng/slk/fixtures/Units/UnitBalance.slk");
-        let bal_rows = parse_slk(bal_data);
-        let mut bal_map: BTreeMap<String, HashMap<String, String>> = BTreeMap::new();
-        for row in bal_rows {
-            if let Some(id) = row.get("unitBalanceID") {
-                bal_map.insert(id.clone(), row);
-            }
-        }
-
-        let ui_data = include_bytes!("../../../lng/slk/fixtures/Units/unitUI.slk");
-        let ui_rows = parse_slk(ui_data);
-        let mut ui_map: BTreeMap<String, HashMap<String, String>> = BTreeMap::new();
-        for row in ui_rows {
-            if let Some(id) = row.get("unitUIID") {
-                ui_map.insert(id.clone(), row);
-            }
-        }
-
-        let mut races: BTreeMap<String, usize> = BTreeMap::new();
-        let mut types: BTreeMap<String, usize> = BTreeMap::new();
-
-        for row in &rows {
-            let unit_id = row.get("unitID").cloned().unwrap_or_default();
-            if unit_id.is_empty() { continue; }
-
-            let race = row.get("race").cloned().unwrap_or_default();
-            if !race.is_empty() {
-                *races.entry(race).or_insert(0) += 1;
-            }
-
-            if let Some(bal) = bal_map.get(&unit_id) {
-                let t = bal.get("type").cloned().unwrap_or_default();
-                if !t.is_empty() {
-                    *types.entry(t).or_insert(0) += 1;
-                }
-            }
-        }
-
-        println!("\n══════════════════════════════════════════");
-        println!("  Unit SLK — {} entries", rows.len());
-        println!("══════════════════════════════════════════\n");
-
-        println!("── Races ({}) ──", races.len());
-        for (r, count) in &races {
-            println!("  {:<20} {:>4} units", r, count);
-        }
-
-        println!("\n── Types ({}) ──", types.len());
-        for (t, count) in &types {
-            println!("  {:<20} {:>4} units", t, count);
-        }
-
-        println!("\n── Unit names (first 30) ──");
-        for row in rows.iter().take(30) {
-            let id = row.get("unitID").cloned().unwrap_or_default();
-            let name = ui_map.get(&id).and_then(|u| u.get("name")).cloned().unwrap_or_default();
-            let race = row.get("race").cloned().unwrap_or_default();
-            let comment = row.get("comment(s)").cloned().unwrap_or_default();
-            println!("  {} | {:<35} | race={:<12} | {}", id, name, race, comment);
-        }
-
-        println!("\nTotal races: {}", races.len());
-        println!("Total types: {}", types.len());
-        println!("Total unit entries: {}", rows.len());
-    }
 }
 

@@ -1,6 +1,6 @@
 use crate::lng::w3e::parse::W3eData;
-use crate::lng::w3e::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk, load_doodad_metadata, merge_w3d_into_doodads};
-use crate::lng::w3e::textures::load_tile_textures;
+use crate::lng::map_editor::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk, load_doodad_metadata, merge_w3d_into_doodads};
+use crate::lng::map_editor::textures::load_tile_textures;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{json, to_value};
@@ -108,7 +108,7 @@ async fn _send(
 
         let (data, meta) = W3eData::read(&buf)?;
         // Store the tileset globally so all file lookups include {tileset}.mpq
-        super::game_path::set_tileset(&data.tileset);
+        crate::lng::map_editor::game_path::set_tileset(&data.tileset);
         let tileset_for_cliff = data.tileset.clone();
         let tileset_for_water = data.tileset.clone();
         let ground_tiles = data.ground_tiles.clone();
@@ -189,7 +189,7 @@ async fn _send(
         let buf = tokio::fs::read(&path).await?;
         let (data, meta) = W3eData::read(&buf)?;
         // Store the tileset globally so all file lookups include {tileset}.mpq
-        super::game_path::set_tileset(&data.tileset);
+        crate::lng::map_editor::game_path::set_tileset(&data.tileset);
         let tileset_for_cliff = data.tileset.clone();
         let tileset_for_water2 = data.tileset.clone();
         let ground_tiles = data.ground_tiles.clone();

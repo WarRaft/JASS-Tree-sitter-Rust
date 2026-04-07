@@ -32,7 +32,7 @@ pub async fn file_lookup_handler(
     let tileset = params.tileset.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        crate::lng::w3e::file_lookup::lookup_file_resolved_ext(&path, archive.as_deref(), tileset.as_deref())
+        crate::lng::map_editor::file_lookup::lookup_file_resolved_ext(&path, archive.as_deref(), tileset.as_deref())
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?;

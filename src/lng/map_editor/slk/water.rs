@@ -40,7 +40,7 @@ pub fn load_water_slk(archive_path: Option<&str>, tileset: &str) -> Option<Water
     let row_key = format!("{}Sha", tileset);
     log::info!("load_water_slk: looking for TerrainArt\\Water.slk, row={}", row_key);
 
-    let (buf, source) = crate::lng::w3e::file_lookup::lookup_file(
+    let (buf, source) = crate::lng::map_editor::file_lookup::lookup_file(
         "TerrainArt\\Water.slk",
         archive_path,
     ).unwrap_or_else(|| {

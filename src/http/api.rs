@@ -330,7 +330,7 @@ pub async fn w3e_terrain_slk(
     auth.check()?;
     let ap = params.archive_path.clone();
     let slk = tokio::task::spawn_blocking(move || {
-        crate::lng::w3e::slk::load_terrain_slk(ap.as_deref())
+        crate::lng::map_editor::slk::load_terrain_slk(ap.as_deref())
     }).await.ok().flatten();
     Ok(Json(match slk {
         Some(data) => serde_json::to_value(data).unwrap_or_default(),
@@ -345,7 +345,7 @@ pub async fn w3e_doodads_slk(
     auth.check()?;
     let ap = params.archive_path.clone();
     let slk = tokio::task::spawn_blocking(move || {
-        crate::lng::w3e::slk::load_doodads_slk(ap.as_deref())
+        crate::lng::map_editor::slk::load_doodads_slk(ap.as_deref())
     }).await.ok().flatten();
     Ok(Json(match slk {
         Some(data) => serde_json::to_value(data).unwrap_or_default(),
@@ -360,7 +360,7 @@ pub async fn w3e_units_slk(
     auth.check()?;
     let ap = params.archive_path.clone();
     let slk = tokio::task::spawn_blocking(move || {
-        crate::lng::w3e::slk::load_units_slk(ap.as_deref())
+        crate::lng::map_editor::slk::load_units_slk(ap.as_deref())
     }).await.ok().flatten();
     Ok(Json(match slk {
         Some(data) => serde_json::to_value(data).unwrap_or_default(),
@@ -375,7 +375,7 @@ pub async fn w3e_destructables_slk(
     auth.check()?;
     let ap = params.archive_path.clone();
     let slk = tokio::task::spawn_blocking(move || {
-        crate::lng::w3e::slk::load_destructables_slk(ap.as_deref())
+        crate::lng::map_editor::slk::load_destructables_slk(ap.as_deref())
     }).await.ok().flatten();
     Ok(Json(match slk {
         Some(data) => serde_json::to_value(data).unwrap_or_default(),
@@ -400,7 +400,7 @@ pub async fn w3e_lookup_file(
     let path = params.path.clone();
     let ap = params.archive_path.clone();
     let result = tokio::task::spawn_blocking(move || {
-        crate::lng::w3e::file_lookup::lookup_file_resolved(&path, ap.as_deref())
+        crate::lng::map_editor::file_lookup::lookup_file_resolved(&path, ap.as_deref())
     }).await.ok().flatten();
     let result_val = match result {
         Some((buf, source, resolved_path)) => {
@@ -1261,32 +1261,52 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) ->
 
     // ── Section 0x09: Code lenses (reference counts) ────────────
     {
-        let ref_map = &snap.ref_map;
-        let mut lenses: Vec<_> = ref_map.groups.values()
-            .filter_map(|group| {
-                let decl = group.occurrences.iter().find(|o| o.is_decl)?;
-                let refs: Vec<_> = group.occurrences.iter().filter(|o| !o.is_decl).collect();
-                Some((decl.range.clone(), refs))
-            })
-            .collect();
-        lenses.sort_by_key(|(r, _)| (r.start.line, r.start.character));
+        let lens_value = snap.file_symbols.file_settings
+            .get("lens")
+            .map(|v| v.as_str())
+            .unwrap_or("");
+        let lens_fn = lens_value.split_whitespace().any(|w| w == "fn");
+        let lens_var = lens_value.split_whitespace().any(|w| w == "var");
+        let lens_arg = lens_value.split_whitespace().any(|w| w == "arg");
 
-        if !lenses.is_empty() {
-            let mut section_buf = Vec::new();
-            for (decl_range, refs) in &lenses {
-                section_buf.extend_from_slice(&(decl_range.start.line as u32).to_le_bytes());
-                section_buf.extend_from_slice(&(decl_range.start.character as u32).to_le_bytes());
-                section_buf.extend_from_slice(&(refs.len() as u32).to_le_bytes());
-                for r in refs {
-                    section_buf.extend_from_slice(&(r.range.start.line as u32).to_le_bytes());
-                    section_buf.extend_from_slice(&(r.range.start.character as u32).to_le_bytes());
-                    section_buf.extend_from_slice(&(r.range.end.line as u32).to_le_bytes());
-                    section_buf.extend_from_slice(&(r.range.end.character as u32).to_le_bytes());
+        if lens_fn || lens_var || lens_arg {
+            let ref_map = &snap.ref_map;
+            let mut lenses: Vec<_> = ref_map.groups.iter()
+                .filter_map(|(&key, group)| {
+                    let dominated = if snap.func_decl_keys.contains(&key) {
+                        lens_fn
+                    } else if snap.arg_decl_keys.contains(&key) {
+                        lens_arg
+                    } else if snap.var_decl_keys.contains(&key) {
+                        lens_var
+                    } else {
+                        false
+                    };
+                    if !dominated { return None; }
+                    let decl = group.occurrences.iter().find(|o| o.is_decl)?;
+                    let refs: Vec<_> = group.occurrences.iter().filter(|o| !o.is_decl).collect();
+                    Some((decl.range.clone(), refs))
+                })
+                .collect();
+            lenses.sort_by_key(|(r, _)| (r.start.line, r.start.character));
+
+            if !lenses.is_empty() {
+                let mut section_buf = Vec::new();
+                for (decl_range, refs) in &lenses {
+                    section_buf.extend_from_slice(&(decl_range.start.line as u32).to_le_bytes());
+                    section_buf.extend_from_slice(&(decl_range.start.character as u32).to_le_bytes());
+                    section_buf.extend_from_slice(&(refs.len() as u32).to_le_bytes());
+                    for r in refs {
+                        section_buf.extend_from_slice(&(r.range.start.line as u32).to_le_bytes());
+                        section_buf.extend_from_slice(&(r.range.start.character as u32).to_le_bytes());
+                        section_buf.extend_from_slice(&(r.range.end.line as u32).to_le_bytes());
+                        section_buf.extend_from_slice(&(r.range.end.character as u32).to_le_bytes());
+                    }
                 }
+                buf.push(section::CODE_LENSES);
+                buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
+                buf.extend_from_slice(&section_buf);
             }
-            buf.push(section::CODE_LENSES);
-            buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&section_buf);
         }
     }
 
@@ -1367,9 +1387,9 @@ pub async fn document_update(
     let lang = params.language_id.as_str();
     let version = params.version;
 
-    /// Build a response that only contains the echoed version prefix (no TLV
-    /// sections).  Used when there is nothing to return — cancelled parse,
-    /// unrecognised language, empty body, etc.
+    // Build a response that only contains the echoed version prefix (no TLV
+    // sections).  Used when there is nothing to return — cancelled parse,
+    // unrecognised language, empty body, etc.
     let empty = |v: u32| Ok((
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
         v.to_le_bytes().to_vec(),

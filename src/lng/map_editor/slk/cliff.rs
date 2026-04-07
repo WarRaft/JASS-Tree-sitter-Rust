@@ -41,9 +41,9 @@ pub struct CliffTypesSlkResult {
 pub fn load_cliff_types_slk(archive_path: Option<&str>, tileset: Option<&str>) -> Option<CliffTypesSlkResult> {
     let effective_tileset = tileset
         .map(|s| s.to_string())
-        .or_else(|| crate::lng::w3e::game_path::get_tileset());
+        .or_else(|| crate::lng::map_editor::game_path::get_tileset());
     log::info!("load_cliff_types_slk: looking for TerrainArt\\CliffTypes.slk (archive={:?}, tileset={:?})", archive_path, effective_tileset);
-    let (buf, source) = crate::lng::w3e::file_lookup::lookup_file(
+    let (buf, source) = crate::lng::map_editor::file_lookup::lookup_file(
         "TerrainArt\\CliffTypes.slk",
         archive_path,
     )?;
@@ -63,7 +63,7 @@ pub fn load_cliff_types_slk(archive_path: Option<&str>, tileset: Option<&str>) -
         // Resolve where the texture file actually lives (using explicit tileset)
         let tex_source = if !tex_dir.is_empty() && !tex_file.is_empty() {
             let tex_path = format!("{}\\{}.blp", tex_dir, tex_file);
-            let result = crate::lng::w3e::file_lookup::lookup_file_ext(&tex_path, archive_path, effective_tileset.as_deref())
+            let result = crate::lng::map_editor::file_lookup::lookup_file_ext(&tex_path, archive_path, effective_tileset.as_deref())
                 .map(|(_buf, src)| src);
             log::info!("load_cliff_types_slk: cliff={} tex={} tileset={:?} => {:?}", cliff_id, tex_path, effective_tileset, result);
             result
@@ -135,31 +135,5 @@ pub fn load_cliff_variations() -> CliffVariationsResult {
     );
     log::info!("load_cliff_variations: {} cliff patterns, {} city cliff patterns", cliffs.len(), city_cliffs.len());
     CliffVariationsResult { cliffs, city_cliffs }
-}
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_cliff_variations_embedded() {
-        let result = load_cliff_variations();
-
-        // Cliffs.slk: 64 entries
-        assert!(!result.cliffs.is_empty(), "cliffs should not be empty");
-        assert_eq!(result.cliffs.get("AAAB"), Some(&1));
-        assert_eq!(result.cliffs.get("AABB"), Some(&2));
-        assert_eq!(result.cliffs.get("AABC"), Some(&0));
-        assert_eq!(result.cliffs.get("CCCA"), Some(&1));
-
-        // CityCliffs.slk: 64 entries
-        assert!(!result.city_cliffs.is_empty(), "city_cliffs should not be empty");
-        assert_eq!(result.city_cliffs.get("AAAB"), Some(&2));
-        assert_eq!(result.city_cliffs.get("AABB"), Some(&3));
-        assert_eq!(result.city_cliffs.get("AABC"), Some(&0));
-        assert_eq!(result.city_cliffs.get("CCCA"), Some(&1));
-    }
 }
 

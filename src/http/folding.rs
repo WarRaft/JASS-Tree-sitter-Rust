@@ -6,6 +6,7 @@ pub struct FoldingRange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum FoldingRangeKind {
     Comment,
     Imports,

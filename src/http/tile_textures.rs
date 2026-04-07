@@ -29,8 +29,8 @@ pub async fn tile_textures_handler(
     let codes: Vec<String> = params.codes.split(',').map(|s| s.to_string()).collect();
 
     let result = tokio::task::spawn_blocking(move || {
-        use crate::lng::w3e::slk::load_terrain_slk;
-        use crate::lng::w3e::textures::load_tile_textures;
+        use crate::lng::map_editor::slk::load_terrain_slk;
+        use crate::lng::map_editor::textures::load_tile_textures;
         use crate::util::bin_reader::Rawcode;
 
         let rawcodes: Vec<Rawcode> = codes.into_iter().map(|s| {

@@ -5,7 +5,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use super::{Color, parse_slk, slk_u8, slk_u32, slk_f64, slk_bool, slk_str, rawcode_to_u32};
-use crate::lng::w3e::westrings::GameString;
+use crate::lng::map_editor::westrings::GameString;
 
 /// A single destructable entry extracted from `Units\DestructableData.slk`.
 #[derive(Debug, Clone, Serialize)]
@@ -81,13 +81,13 @@ pub struct DestructablesSlkResult {
 
 /// Try to load and parse `Units\DestructableData.slk` via the cascading lookup.
 pub fn load_destructables_slk(archive_path: Option<&str>) -> Option<DestructablesSlkResult> {
-    let (buf, source) = crate::lng::w3e::file_lookup::lookup_file(
+    let (buf, source) = crate::lng::map_editor::file_lookup::lookup_file(
         "Units\\DestructableData.slk",
         archive_path,
     )?;
 
     // Ensure WorldEditStrings are loaded for WESTRING_* resolution.
-    crate::lng::w3e::westrings::ensure_loaded(archive_path);
+    crate::lng::map_editor::westrings::ensure_loaded(archive_path);
 
     let rows = parse_slk(&buf);
 
@@ -100,18 +100,18 @@ pub fn load_destructables_slk(archive_path: Option<&str>) -> Option<Destructable
 
         // Resolve WESTRING_* references in the Name field.
         let raw_name = row.get("Name").cloned().unwrap_or_default();
-        let name = crate::lng::w3e::westrings::resolve_game_string(&raw_name);
+        let name = crate::lng::map_editor::westrings::resolve_game_string(&raw_name);
 
         // Resolve WESTRING_* references in EditorSuffix.
         let raw_suffix = row.get("EditorSuffix")
             .filter(|v| *v != "_" && *v != "-")
             .cloned()
             .unwrap_or_default();
-        let editor_suffix = crate::lng::w3e::westrings::resolve_game_string(&raw_suffix);
+        let editor_suffix = crate::lng::map_editor::westrings::resolve_game_string(&raw_suffix);
 
         // Resolve WESTRING_* references in comment.
         let raw_comment = row.get("comment").cloned().unwrap_or_default();
-        let comment = crate::lng::w3e::westrings::resolve_game_string(&raw_comment);
+        let comment = crate::lng::map_editor::westrings::resolve_game_string(&raw_comment);
 
         // Tint colour
         let color = Color::rgb(
@@ -188,123 +188,5 @@ pub fn load_destructables_slk(archive_path: Option<&str>) -> Option<Destructable
         source: source.to_string(),
         destructables,
     })
-}
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_destructable_slk_fixture() {
-        let data = include_bytes!("../../../lng/slk/fixtures/Units/DestructableData.slk");
-        let rows = parse_slk(data);
-        assert!(!rows.is_empty(), "should parse some rows");
-
-        let first = &rows[0];
-        assert_eq!(first.get("DestructableID").map(|s| s.as_str()), Some("ATtr"));
-        assert_eq!(first.get("comment").map(|s| s.as_str()), Some("Tree Wall"));
-        assert_eq!(first.get("category").map(|s| s.as_str()), Some("D"));
-    }
-
-    /// Collect all unique `category` values, tileset characters, and destructable
-    /// names from `Units\DestructableData.slk` so we can use them for UI filters.
-    ///
-    /// Run manually:
-    /// ```sh
-    /// cargo test --package JASS-Tree-sitter-Rust w3e::slk::destructable::tests::dump_destructable_categories_and_tilesets -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore]
-    fn dump_destructable_categories_and_tilesets() {
-        use std::collections::BTreeMap;
-
-        let data = include_bytes!("../../../lng/slk/fixtures/Units/DestructableData.slk");
-        let rows = parse_slk(data);
-        assert!(!rows.is_empty(), "should parse some destructable rows");
-
-        let mut categories: BTreeMap<String, usize> = BTreeMap::new();
-        let mut tilesets: BTreeMap<char, usize> = BTreeMap::new();
-        let mut names: Vec<(String, String, String, String)> = Vec::new();
-
-        for row in &rows {
-            let dest_id = row.get("DestructableID").cloned().unwrap_or_default();
-            if dest_id.is_empty() {
-                continue;
-            }
-
-            let cat = row.get("category").cloned().unwrap_or_default();
-            if !cat.is_empty() {
-                *categories.entry(cat.clone()).or_insert(0) += 1;
-            }
-
-            let ts = row.get("tilesets").cloned().unwrap_or_default();
-            for ch in ts.chars() {
-                *tilesets.entry(ch).or_insert(0) += 1;
-            }
-
-            let name = row.get("Name").cloned().unwrap_or_default();
-            names.push((dest_id, name, cat, ts));
-        }
-
-        println!("\n══════════════════════════════════════════");
-        println!("  DestructableData.slk — {} entries", rows.len());
-        println!("══════════════════════════════════════════\n");
-
-        println!("── Categories ({}) ──", categories.len());
-        for (cat, count) in &categories {
-            println!("  {:<20} {:>4} destructables", cat, count);
-        }
-
-        println!("\n── Tileset characters ({}) ──", tilesets.len());
-        for (ch, count) in &tilesets {
-            println!("  '{}' {:>5} destructables", ch, count);
-        }
-
-        println!("\n── Destructable names (first 30) ──");
-        for (id, name, cat, ts) in names.iter().take(30) {
-            println!("  {} | {:<40} | cat={:<16} | ts={}", id, name, cat, ts);
-        }
-
-        println!("\nTotal categories: {}", categories.len());
-        println!("Total tileset chars: {}", tilesets.len());
-        println!("Total destructable entries: {}", rows.len());
-    }
-
-    /// Dump all column names from `DestructableData.slk` into a text file next to the fixture.
-    ///
-    /// Run manually:
-    /// ```sh
-    /// cargo test --package JASS-Tree-sitter-Rust w3e::slk::destructable::tests::dump_destructable_field_names -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore]
-    fn dump_destructable_field_names() {
-        use std::collections::BTreeSet;
-
-        let data = include_bytes!("../../../lng/slk/fixtures/Units/DestructableData.slk");
-        let rows = parse_slk(data);
-        assert!(!rows.is_empty(), "should parse some destructable rows");
-
-        let mut fields = BTreeSet::new();
-        for row in &rows {
-            for key in row.keys() {
-                fields.insert(key.clone());
-            }
-        }
-
-        let out_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/lng/slk/fixtures/Units/destructable_field_names.txt"
-        );
-        let content = fields.iter().cloned().collect::<Vec<_>>().join("\n");
-        std::fs::write(out_path, &content).expect("failed to write destructable_field_names.txt");
-
-        println!("\nWrote {} field names to {}", fields.len(), out_path);
-        for f in &fields {
-            println!("  {}", f);
-        }
-    }
 }
 

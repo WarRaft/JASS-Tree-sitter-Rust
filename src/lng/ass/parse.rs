@@ -276,6 +276,8 @@ fn _parse(
 
     // 7. Build ref_map
     let func_decl_keys = cursor.func_decl_keys;
+    let var_decl_keys = cursor.var_decl_keys;
+    let arg_decl_keys = cursor.arg_decl_keys;
     let ref_map = build_ref_map(cursor.ref_groups, cursor.ref_names, cursor.external_decls, rope);
 
     // 8. Build file_symbols for export diff and scope resolver
@@ -305,6 +307,8 @@ fn _parse(
         type_hints: vec![],
         ujapi_hints,
         func_decl_keys,
+        var_decl_keys,
+        arg_decl_keys,
         colors: cursor.colors,
     });
 

@@ -19,6 +19,7 @@ alongside `//import` directives, before any language statements.
 ```jass
 //import common/natives.j
 //set hint ref type
+//set lens fn
 
 globals
     integer count = 0
@@ -30,6 +31,7 @@ endglobals
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `hint` | `ref` `type` | | Inlay hint types to display. `ref` — reference ID hints next to each identifier (useful for debugging symbol resolution and rename refactoring), `type` — type-annotation hints for variables and parameters (e.g. `: integer`, `: constant real array`). Without the directive no hints are shown (except ujapi). |
+| `lens` | `fn` `var` `arg` | | Code lenses to display above declarations. `fn` — reference count above functions and natives, `var` — reference count above variables (globals + locals), `arg` — reference count above function parameters. Without the directive no code lenses are shown. |
 | `build-jass` | `<path>` | `./` | Output path for the JASS build. Merges the entire import tree into a single `.j` file: types → natives → globals → functions (topologically sorted) → `main`. If the path is a directory, `war3map.j` is appended. When the path points to a `.w3x` or `.w3m` archive, the script is injected directly into the map. |
 | `build-as` | `<path>` | `./` | Output path for the AngelScript build. Same merge logic, but emits `.as` syntax. Reserved-word conflicts are resolved by appending a numeric suffix. When the path points to a `.w3x` or `.w3m` archive, the script is injected directly into the map. |
 | `backup` | `<path>` | `./` | Backup path for the map archive. Before injecting the script into a `.w3x` / `.w3m` file, a copy of the original archive is saved to this path with a date prefix: `YYYY_MM_DD_FileName.w3x`. If the path is a directory, the date-prefixed archive filename is appended. |

@@ -5,6 +5,7 @@ use url::Url;
 
 
 /// Serialize partial W3iData + meta + optional error into a JSON value.
+#[allow(dead_code)]
 fn build_w3i_json(
     data: W3iData,
     meta: crate::util::bin_reader::BinReaderMeta,

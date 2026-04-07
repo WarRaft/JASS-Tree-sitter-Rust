@@ -17,6 +17,7 @@ pub struct Color {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct ColorPresentationParams {
     pub uri: Url,
     pub color: Color,

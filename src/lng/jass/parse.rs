@@ -268,6 +268,8 @@ fn _parse(
 
     // 7. Build ref_map.
     let func_decl_keys = cursor.func_decl_keys;
+    let var_decl_keys = cursor.var_decl_keys;
+    let arg_decl_keys = cursor.arg_decl_keys;
     let ref_map = build_ref_map(
         cursor.ref_groups,
         cursor.ref_names,
@@ -299,6 +301,8 @@ fn _parse(
         type_hints: Vec::new(),
         ujapi_hints: Vec::new(),
         func_decl_keys: func_decl_keys.clone(),
+        var_decl_keys: var_decl_keys.clone(),
+        arg_decl_keys: arg_decl_keys.clone(),
         colors: Vec::new(),
     });
     FILE_STORE.insert(uri.clone(), preliminary);
@@ -488,6 +492,8 @@ fn _parse(
         type_hints: cursor.type_hints,
         ujapi_hints,
         func_decl_keys,
+        var_decl_keys,
+        arg_decl_keys,
         colors: cursor.colors,
     });
 
@@ -500,6 +506,8 @@ fn _parse(
             &new_snapshot.file_symbols,
             &new_snapshot.ref_map,
             &new_snapshot.func_decl_keys,
+            &new_snapshot.var_decl_keys,
+            &new_snapshot.arg_decl_keys,
         );
     }
 

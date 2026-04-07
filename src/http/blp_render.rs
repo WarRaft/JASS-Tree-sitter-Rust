@@ -38,7 +38,7 @@ pub async fn blp_render_handler(
 
     let result = tokio::task::spawn_blocking(move || {
         let (buf, _source, resolved) =
-            crate::lng::w3e::file_lookup::lookup_file_resolved(&path, archive.as_deref())
+            crate::lng::map_editor::file_lookup::lookup_file_resolved(&path, archive.as_deref())
                 .ok_or_else(|| "File not found".to_string())?;
 
         let mut image = ImageBlp::from_buf(&buf).map_err(|e| format!("BLP parse error: {e}"))?;

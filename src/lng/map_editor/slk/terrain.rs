@@ -28,7 +28,7 @@ pub struct TerrainSlkResult {
 /// Try to load and parse `TerrainArt\Terrain.slk` via the cascading lookup.
 pub fn load_terrain_slk(archive_path: Option<&str>) -> Option<TerrainSlkResult> {
     log::info!("load_terrain_slk: looking for TerrainArt\\Terrain.slk (archive={:?})", archive_path);
-    let (buf, source) = crate::lng::w3e::file_lookup::lookup_file(
+    let (buf, source) = crate::lng::map_editor::file_lookup::lookup_file(
         "TerrainArt\\Terrain.slk",
         archive_path,
     )?;
@@ -48,12 +48,12 @@ pub fn load_terrain_slk(archive_path: Option<&str>) -> Option<TerrainSlkResult> 
             // Resolve texture extension: .tga first, then .blp
             let ext = if !dir.is_empty() && !file.is_empty() {
                 let base = format!("{}\\{}", dir, file);
-                if crate::lng::w3e::file_lookup::lookup_file_exists(
+                if crate::lng::map_editor::file_lookup::lookup_file_exists(
                     &format!("{}.tga", base),
                     archive_path,
                 ) {
                     ".tga".to_string()
-                } else if crate::lng::w3e::file_lookup::lookup_file_exists(
+                } else if crate::lng::map_editor::file_lookup::lookup_file_exists(
                     &format!("{}.blp", base),
                     archive_path,
                 ) {

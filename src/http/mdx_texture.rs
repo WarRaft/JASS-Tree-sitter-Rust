@@ -68,7 +68,7 @@ fn render_texture_png(relative_path: &str, archive_path: Option<&str>, tileset: 
         return render_texture_png(&blp_path, archive_path, tileset);
     }
 
-    let (buf, _source) = crate::lng::w3e::file_lookup::lookup_file_ext(relative_path, archive_path, tileset)
+    let (buf, _source) = crate::lng::map_editor::file_lookup::lookup_file_ext(relative_path, archive_path, tileset)
         .ok_or_else(|| format!("Texture not found: {relative_path}"))?;
 
     // Determine format by extension

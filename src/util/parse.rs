@@ -562,6 +562,8 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             type_hints: Vec::new(),
             ujapi_hints: Vec::new(),
             func_decl_keys: cached.func_decl_keys,
+            var_decl_keys: cached.var_decl_keys,
+            arg_decl_keys: cached.arg_decl_keys,
             colors: Vec::new(),
         });
         FILE_STORE.insert(dep_uri.clone(), snapshot);
@@ -605,6 +607,8 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
 
         // Build a RefMap for cross-file go-to-definition.
         let func_decl_keys = cursor.func_decl_keys;
+        let var_decl_keys = cursor.var_decl_keys;
+        let arg_decl_keys = cursor.arg_decl_keys;
         let ref_map = crate::http::ref_map::build_ref_map(
             cursor.ref_groups,
             cursor.ref_names,
@@ -627,6 +631,8 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             type_hints: Vec::new(),
             ujapi_hints: Vec::new(),
             func_decl_keys: func_decl_keys.clone(),
+            var_decl_keys: var_decl_keys.clone(),
+            arg_decl_keys: arg_decl_keys.clone(),
             colors: cursor.colors,
         });
 
@@ -645,6 +651,8 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
     // Build a full RefMap so that go-to-definition can find declaration
     // positions and `find_decl_key_by_name` can resolve the real DeclKey.
     let func_decl_keys = cursor.func_decl_keys;
+    let var_decl_keys = cursor.var_decl_keys;
+    let arg_decl_keys = cursor.arg_decl_keys;
     let ref_map = crate::http::ref_map::build_ref_map(
         cursor.ref_groups,
         cursor.ref_names,
@@ -665,6 +673,8 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         type_hints: cursor.type_hints,
         ujapi_hints: Vec::new(),
         func_decl_keys: func_decl_keys.clone(),
+        var_decl_keys: var_decl_keys.clone(),
+        arg_decl_keys: arg_decl_keys.clone(),
         colors: cursor.colors,
     });
 
@@ -677,6 +687,8 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             &file_symbols,
             &snapshot.ref_map,
             &func_decl_keys,
+            &var_decl_keys,
+            &arg_decl_keys,
         );
     }
 

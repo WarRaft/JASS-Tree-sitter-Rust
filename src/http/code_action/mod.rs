@@ -17,6 +17,7 @@ pub struct CodeActionParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 pub struct CodeActionContext {
     pub diagnostics: Vec<Diagnostic>,
 

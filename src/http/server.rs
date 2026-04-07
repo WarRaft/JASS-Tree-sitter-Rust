@@ -8,7 +8,7 @@ use crate::http::file_lookup::file_lookup_handler;
 use crate::http::game_path::{game_path_set_handler, game_path_status_handler};
 use crate::http::mdx_texture::mdx_texture_handler;
 use crate::http::path_tex::path_tex_handler;
-use crate::http::slk::tile_textures_handler;
+use crate::http::tile_textures::tile_textures_handler;
 use crate::http::snapshot::snapshot_handler;
 use crate::http::terrain::terrain_handler;
 use axum::{Router, http::StatusCode, routing::{get, post}, serve::{Listener, ListenerExt}};

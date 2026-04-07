@@ -10,7 +10,7 @@
 //! 6.  `War3x.mpq`
 //! 7.  `War3.mpq`
 
-use crate::lng::w3e::game_path::get_game_path;
+use crate::lng::map_editor::game_path::get_game_path;
 use log::debug;
 use std::path::Path;
 

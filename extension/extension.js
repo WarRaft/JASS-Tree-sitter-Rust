@@ -13,6 +13,23 @@ const {
     ColorInformation, Color, ColorPresentation: VscColorPresentation, TextEdit,
     CodeLens: VscCodeLens,
     WorkspaceEdit: VscWorkspaceEdit,
+    CompletionItem: VscCompletionItem,
+    CompletionList: VscCompletionList,
+    Hover: VscHover,
+    MarkdownString,
+    Location: VscLocation,
+    DocumentHighlight: VscDocumentHighlight,
+    DocumentHighlightKind: VscDocumentHighlightKind,
+    SignatureHelp: VscSignatureHelp,
+    SignatureInformation: VscSignatureInformation,
+    ParameterInformation: VscParameterInformation,
+    CodeAction: VscCodeAction,
+    CodeActionKind: VscCodeActionKind,
+    CallHierarchyItem: VscCallHierarchyItem,
+    CallHierarchyIncomingCall: VscCallHierarchyIncomingCall,
+    CallHierarchyOutgoingCall: VscCallHierarchyOutgoingCall,
+    TypeHierarchyItem: VscTypeHierarchyItem,
+    SymbolKind: VscSymbolKind,
 } = require('vscode')
 
 const {ServerClient} = require('./serverClient.js')
@@ -462,6 +479,278 @@ module.exports = {
                 return edit
             }
         })
+
+        // ── Helpers for LSP → VS Code type conversions ────────────
+        function _pos(p) { return new Position(p.line, p.character) }
+        function _range(r) { return new Range(_pos(r.start), _pos(r.end)) }
+        function _location(loc) { return new VscLocation(Uri.parse(loc.uri), _range(loc.range)) }
+        function _posParam(position) { return {line: position.line, character: position.character} }
+
+        // ── Completion provider ───────────────────────────────────
+        const completionProvider = languages.registerCompletionItemProvider(renameSelector, {
+            async provideCompletionItems(document, position) {
+                const result = await client.sendRequest('lsp/completion', {
+                    uri: document.uri.toString(),
+                    position: _posParam(position),
+                })
+                if (!result || !result.items) return undefined
+                const items = result.items.map(item => {
+                    const ci = new VscCompletionItem(item.label, item.kind)
+                    if (item.detail) ci.detail = item.detail
+                    if (item.insertText) ci.insertText = item.insertText
+                    if (item.insertTextFormat === 2) {
+                        const {SnippetString} = require('vscode')
+                        ci.insertText = new SnippetString(item.insertText || item.label)
+                    }
+                    if (item.sortText) ci.sortText = item.sortText
+                    return ci
+                })
+                return new VscCompletionList(items, result.isIncomplete)
+            }
+        }, '.', '/', '\\')
+
+        // ── Hover provider ────────────────────────────────────────
+        const hoverProvider = languages.registerHoverProvider(renameSelector, {
+            async provideHover(document, position) {
+                const result = await client.sendRequest('lsp/hover', {
+                    uri: document.uri.toString(),
+                    position: _posParam(position),
+                })
+                if (!result || !result.contents) return undefined
+                const md = new MarkdownString(result.contents.value)
+                md.isTrusted = true
+                const hover = new VscHover([md])
+                if (result.range) hover.range = _range(result.range)
+                return hover
+            }
+        })
+
+        // ── Definition provider ───────────────────────────────────
+        const definitionProvider = languages.registerDefinitionProvider(renameSelector, {
+            async provideDefinition(document, position) {
+                const result = await client.sendRequest('lsp/definition', {
+                    uri: document.uri.toString(),
+                    position: _posParam(position),
+                })
+                if (!result || !Array.isArray(result) || result.length === 0) return undefined
+                return result.map(_location)
+            }
+        })
+
+        // ── References provider ───────────────────────────────────
+        const referencesProvider = languages.registerReferenceProvider(renameSelector, {
+            async provideReferences(document, position, context) {
+                const result = await client.sendRequest('lsp/references', {
+                    uri: document.uri.toString(),
+                    position: _posParam(position),
+                    context: {includeDeclaration: context.includeDeclaration},
+                })
+                if (!result || !Array.isArray(result)) return undefined
+                return result.map(_location)
+            }
+        })
+
+        // ── Document Highlight provider ───────────────────────────
+        const highlightProvider = languages.registerDocumentHighlightProvider(renameSelector, {
+            async provideDocumentHighlights(document, position) {
+                const result = await client.sendRequest('lsp/highlight', {
+                    uri: document.uri.toString(),
+                    position: _posParam(position),
+                })
+                if (!result || !Array.isArray(result)) return undefined
+                return result.map(h => {
+                    const kind = h.kind === 3 ? VscDocumentHighlightKind.Write
+                        : h.kind === 2 ? VscDocumentHighlightKind.Read
+                            : VscDocumentHighlightKind.Text
+                    return new VscDocumentHighlight(_range(h.range), kind)
+                })
+            }
+        })
+
+        // ── Formatting provider ───────────────────────────────────
+        const formattingProvider = languages.registerDocumentFormattingEditProvider(renameSelector, {
+            async provideDocumentFormattingEdits(document, options) {
+                const result = await client.sendRequest('lsp/formatting', {
+                    uri: document.uri.toString(),
+                    options: {
+                        tabSize: options.tabSize,
+                        insertSpaces: options.insertSpaces,
+                    },
+                })
+                if (!result || !Array.isArray(result)) return undefined
+                return result.map(e => new TextEdit(_range(e.range), e.newText))
+            }
+        })
+
+        // ── Signature Help provider ───────────────────────────────
+        const signatureHelpProvider = languages.registerSignatureHelpProvider(renameSelector, {
+            async provideSignatureHelp(document, position) {
+                const result = await client.sendRequest('lsp/signatureHelp', {
+                    uri: document.uri.toString(),
+                    position: _posParam(position),
+                })
+                if (!result || !result.signatures) return undefined
+                const help = new VscSignatureHelp()
+                help.signatures = result.signatures.map(sig => {
+                    const si = new VscSignatureInformation(sig.label,
+                        sig.documentation ? new MarkdownString(sig.documentation.value) : undefined)
+                    if (sig.parameters) {
+                        si.parameters = sig.parameters.map(p => {
+                            const label = Array.isArray(p.label) ? [p.label[0], p.label[1]] : p.label
+                            return new VscParameterInformation(label,
+                                p.documentation ? new MarkdownString(p.documentation.value) : undefined)
+                        })
+                    }
+                    if (sig.activeParameter !== undefined && sig.activeParameter !== null) {
+                        si.activeParameter = sig.activeParameter
+                    }
+                    return si
+                })
+                help.activeSignature = result.activeSignature ?? 0
+                help.activeParameter = result.activeParameter ?? 0
+                return help
+            }
+        }, '(', ',')
+
+        // ── Code Action provider ──────────────────────────────────
+        const codeActionProvider = languages.registerCodeActionsProvider(renameSelector, {
+            async provideCodeActions(document, range, context) {
+                const result = await client.sendRequest('lsp/codeAction', {
+                    uri: document.uri.toString(),
+                    range: {
+                        start: _posParam(range.start),
+                        end: _posParam(range.end),
+                    },
+                    context: {
+                        diagnostics: context.diagnostics.map(d => ({
+                            range: {start: _posParam(d.range.start), end: _posParam(d.range.end)},
+                            message: d.message,
+                            severity: d.severity,
+                            code: d.code,
+                        })),
+                    },
+                })
+                if (!result || !Array.isArray(result) || result.length === 0) return undefined
+                return result.map(action => {
+                    const ca = new VscCodeAction(action.title,
+                        action.kind === 'quickfix' ? VscCodeActionKind.QuickFix : VscCodeActionKind.Refactor)
+                    if (action.edit && action.edit.changes) {
+                        const we = new VscWorkspaceEdit()
+                        for (const [docUri, edits] of Object.entries(action.edit.changes)) {
+                            const fileUri = Uri.parse(docUri)
+                            for (const e of edits) {
+                                we.replace(fileUri, _range(e.range), e.newText)
+                            }
+                        }
+                        ca.edit = we
+                    }
+                    return ca
+                })
+            }
+        })
+
+        // ── Call Hierarchy provider ───────────────────────────────
+        const callHierarchyProvider = languages.registerCallHierarchyProvider(renameSelector, {
+            async prepareCallHierarchy(document, position) {
+                const result = await client.sendRequest('lsp/callHierarchy/prepare', {
+                    uri: document.uri.toString(),
+                    position: _posParam(position),
+                })
+                if (!result || !Array.isArray(result) || result.length === 0) return undefined
+                return result.map(item => _makeCallHierarchyItem(item))
+            },
+            async provideCallHierarchyIncomingCalls(item) {
+                const result = await client.sendRequest('lsp/callHierarchy/incoming', {
+                    item: _serializeHierarchyItem(item),
+                })
+                if (!result || !Array.isArray(result)) return []
+                return result.map(call => new VscCallHierarchyIncomingCall(
+                    _makeCallHierarchyItem(call.from),
+                    call.fromRanges.map(_range),
+                ))
+            },
+            async provideCallHierarchyOutgoingCalls(item) {
+                const result = await client.sendRequest('lsp/callHierarchy/outgoing', {
+                    item: _serializeHierarchyItem(item),
+                })
+                if (!result || !Array.isArray(result)) return []
+                return result.map(call => new VscCallHierarchyOutgoingCall(
+                    _makeCallHierarchyItem(call.to),
+                    call.fromRanges.map(_range),
+                ))
+            },
+        })
+
+        // ── Type Hierarchy provider ───────────────────────────────
+        const typeHierarchyProvider = languages.registerTypeHierarchyProvider(renameSelector, {
+            async prepareTypeHierarchy(document, position) {
+                const result = await client.sendRequest('lsp/typeHierarchy/prepare', {
+                    uri: document.uri.toString(),
+                    position: _posParam(position),
+                })
+                if (!result || !Array.isArray(result) || result.length === 0) return undefined
+                return result.map(item => _makeTypeHierarchyItem(item))
+            },
+            async provideTypeHierarchySupertypes(item) {
+                const result = await client.sendRequest('lsp/typeHierarchy/supertypes', {
+                    item: _serializeHierarchyItem(item),
+                })
+                if (!result || !Array.isArray(result)) return []
+                return result.map(i => _makeTypeHierarchyItem(i))
+            },
+            async provideTypeHierarchySubtypes(item) {
+                const result = await client.sendRequest('lsp/typeHierarchy/subtypes', {
+                    item: _serializeHierarchyItem(item),
+                })
+                if (!result || !Array.isArray(result)) return []
+                return result.map(i => _makeTypeHierarchyItem(i))
+            },
+        })
+
+        // ── Hierarchy helpers ─────────────────────────────────────
+        /** Map LSP SymbolKind (1-based int) to VS Code SymbolKind */
+        function _symbolKind(k) {
+            // LSP and VS Code use the same numbering for SymbolKind
+            return k ?? VscSymbolKind.Function
+        }
+
+        function _makeCallHierarchyItem(item) {
+            const chi = new VscCallHierarchyItem(
+                _symbolKind(item.kind),
+                item.name,
+                item.detail || '',
+                Uri.parse(item.uri),
+                _range(item.range),
+                _range(item.selectionRange),
+            )
+            if (item.data) chi._serverData = item.data
+            return chi
+        }
+
+        function _makeTypeHierarchyItem(item) {
+            const thi = new VscTypeHierarchyItem(
+                _symbolKind(item.kind),
+                item.name,
+                item.detail || '',
+                Uri.parse(item.uri),
+                _range(item.range),
+                _range(item.selectionRange),
+            )
+            if (item.data) thi._serverData = item.data
+            return thi
+        }
+
+        function _serializeHierarchyItem(item) {
+            return {
+                name: item.name,
+                kind: item.kind,
+                uri: item.uri.toString(),
+                range: {start: _posParam(item.range.start), end: _posParam(item.range.end)},
+                selectionRange: {start: _posParam(item.selectionRange.start), end: _posParam(item.selectionRange.end)},
+                detail: item.detail || undefined,
+                data: item._serverData || undefined,
+            }
+        }
 
         // ── Will / Did rename files ─────────────────────────────────
         const willRenameDisposable = workspace.onWillRenameFiles(event => {
@@ -1179,6 +1468,16 @@ module.exports = {
             codeLensProvider,
             codeLensChanged,
             renameProvider,
+            completionProvider,
+            hoverProvider,
+            definitionProvider,
+            referencesProvider,
+            highlightProvider,
+            formattingProvider,
+            signatureHelpProvider,
+            codeActionProvider,
+            callHierarchyProvider,
+            typeHierarchyProvider,
             willRenameDisposable,
             didRenameDisposable,
             docChangeDisposable,

@@ -16,6 +16,7 @@ pub struct DocumentFormattingParams {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct FormattingOptions {
     pub tab_size: u32,
     pub insert_spaces: bool,

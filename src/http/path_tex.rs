@@ -66,7 +66,7 @@ pub async fn path_tex_handler(
 
 fn decode_path_texture(path: &str, archive: Option<&str>) -> Option<PathTexResult> {
     let (buf, source) =
-        crate::lng::w3e::file_lookup::lookup_file(path, archive)?;
+        crate::lng::map_editor::file_lookup::lookup_file(path, archive)?;
 
     let img = image::load_from_memory_with_format(&buf, ImageFormat::Tga)
         .ok()

@@ -85,6 +85,12 @@ struct CacheEntry {
     ref_map: RefMap,
     /// DeclKeys of function/native declarations.
     func_decl_keys: HashSet<DeclKey>,
+    /// DeclKeys of variable declarations (globals + locals).
+    #[serde(default)]
+    var_decl_keys: HashSet<DeclKey>,
+    /// DeclKeys of function parameter declarations.
+    #[serde(default)]
+    arg_decl_keys: HashSet<DeclKey>,
 }
 
 /// Result of loading a cache entry.
@@ -94,6 +100,8 @@ pub struct CacheData {
     pub symbols: FileSymbols,
     pub ref_map: RefMap,
     pub func_decl_keys: HashSet<DeclKey>,
+    pub var_decl_keys: HashSet<DeclKey>,
+    pub arg_decl_keys: HashSet<DeclKey>,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -129,6 +137,8 @@ pub fn load(uri: &Url) -> Option<CacheData> {
         symbols: entry.symbols,
         ref_map: entry.ref_map,
         func_decl_keys: entry.func_decl_keys,
+        var_decl_keys: entry.var_decl_keys,
+        arg_decl_keys: entry.arg_decl_keys,
     })
 }
 
@@ -140,6 +150,8 @@ pub fn store(
     symbols: &FileSymbols,
     ref_map: &RefMap,
     func_decl_keys: &HashSet<DeclKey>,
+    var_decl_keys: &HashSet<DeclKey>,
+    arg_decl_keys: &HashSet<DeclKey>,
 ) {
     let Some(db) = cache_db::db() else { return };
 
@@ -149,6 +161,8 @@ pub fn store(
         symbols: symbols.clone(),
         ref_map: ref_map.clone(),
         func_decl_keys: func_decl_keys.clone(),
+        var_decl_keys: var_decl_keys.clone(),
+        arg_decl_keys: arg_decl_keys.clone(),
     };
 
     let data = match bitcode::serialize(&entry) {

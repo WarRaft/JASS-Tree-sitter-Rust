@@ -38,6 +38,7 @@ pub enum InlayHintKind {
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct InlayHint {
     /// Position where the hint is rendered (flattened to `line` + `character`).
     #[serde(flatten)]

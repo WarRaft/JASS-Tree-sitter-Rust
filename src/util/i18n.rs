@@ -793,6 +793,16 @@ pub fn set_def_hint() -> &'static str {
     )
 }
 
+pub fn set_def_lens() -> &'static str {
+    pick(
+        "Code lenses to show: `fn` (functions/natives) `var` (variables) `arg` (parameters)",
+        "Линзы кода: `fn` (функции/native) `var` (переменные) `arg` (параметры)",
+        "Лінзи коду: `fn` (функції/native) `var` (змінні) `arg` (параметри)",
+        "代码透镜：`fn`（函数/native）`var`（变量）`arg`（参数）",
+        "代碼透鏡：`fn`（函式/native）`var`（變數）`arg`（參數）",
+    )
+}
+
 pub fn set_def_build_jass() -> &'static str {
     pick(
         "Output path for the JASS build",
@@ -857,6 +867,7 @@ pub fn set_def_build_after() -> &'static str {
 pub fn set_def_detail(key: &str) -> &'static str {
     match key {
         "hint" => set_def_hint(),
+        "lens" => set_def_lens(),
         "build-jass" => set_def_build_jass(),
         "build-as" => set_def_build_as(),
         "backup" => set_def_backup(),

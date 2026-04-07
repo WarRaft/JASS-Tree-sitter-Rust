@@ -58,7 +58,7 @@ pub async fn terrain_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Parse error: {e}")))?;
 
     // Store the tileset globally so all file lookups include {tileset}.mpq
-    crate::lng::w3e::game_path::set_tileset(&data.tileset);
+    crate::lng::map_editor::game_path::set_tileset(&data.tileset);
 
     let binary = pack_terrain_binary(&data);
 

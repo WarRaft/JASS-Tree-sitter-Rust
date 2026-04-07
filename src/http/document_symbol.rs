@@ -61,6 +61,7 @@ pub enum SymbolKind {
 
 #[derive(Debug, Clone, Serialize_repr)]
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum SymbolTag {
     Deprecated = 1,
 }

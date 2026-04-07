@@ -24,15 +24,15 @@ pub async fn game_path_status_handler(
     // Ensure the snapshot is built if a game path is set but no snapshot exists
     // (e.g. first status check after restart before the background builder finishes).
     tokio::task::spawn_blocking(|| {
-        let gp = crate::lng::w3e::game_path::get_game_path();
-        if !gp.is_empty() && crate::lng::w3e::snapshot::get_snapshot_json().is_none() {
-            crate::lng::w3e::snapshot::build_snapshot(None);
+        let gp = crate::lng::map_editor::game_path::get_game_path();
+        if !gp.is_empty() && crate::lng::map_editor::snapshot::get_snapshot_json().is_none() {
+            crate::lng::map_editor::snapshot::build_snapshot(None);
         }
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?;
 
-    let status = crate::lng::w3e::game_path::build_status();
+    let status = crate::lng::map_editor::game_path::build_status();
     let json = serde_json::to_vec(&status)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("JSON error: {e}")))?;
 
@@ -53,14 +53,14 @@ pub async fn game_path_set_handler(
 
     let game_path = body.game_path.clone();
     tokio::task::spawn_blocking(move || {
-        crate::lng::w3e::game_path::set_game_path(&game_path);
+        crate::lng::map_editor::game_path::set_game_path(&game_path);
         // Eagerly build the full data snapshot so /w3e/snapshot is ready.
-        crate::lng::w3e::snapshot::build_snapshot(None);
+        crate::lng::map_editor::snapshot::build_snapshot(None);
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?;
 
-    let status = crate::lng::w3e::game_path::build_status();
+    let status = crate::lng::map_editor::game_path::build_status();
     let json = serde_json::to_vec(&status)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("JSON error: {e}")))?;
 

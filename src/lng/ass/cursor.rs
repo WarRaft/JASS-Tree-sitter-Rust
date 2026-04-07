@@ -92,6 +92,10 @@ pub struct Cursor {
     pub external_decls: HashMap<DeclKey, ExternalDecl>,
     /// DeclKeys that belong to function declarations (not variables/types).
     pub func_decl_keys: HashSet<DeclKey>,
+    /// DeclKeys that belong to variable declarations (globals + locals).
+    pub var_decl_keys: HashSet<DeclKey>,
+    /// DeclKeys that belong to function parameter declarations.
+    pub arg_decl_keys: HashSet<DeclKey>,
 
     /// Color information for `|cAARRGGBB` in strings and `0xAARRGGBB` hex literals.
     pub colors: Vec<crate::http::color::ColorInformation>,
@@ -139,6 +143,8 @@ impl Cursor {
             ref_names: HashMap::new(),
             external_decls: HashMap::new(),
             func_decl_keys: HashSet::new(),
+            var_decl_keys: HashSet::new(),
+            arg_decl_keys: HashSet::new(),
             colors: Vec::new(),
             file_settings: HashMap::new(),
             file_ignore_tags: HashSet::new(),
@@ -1108,7 +1114,8 @@ impl Cursor {
             if let Some(ref id) = p.name {
                 let pname = self.node_text(&id.node);
                 if pname.is_empty() { continue; }
-                self.hl_declare_var(&pname, &id.node);
+                let pk = self.hl_declare_var(&pname, &id.node);
+                self.arg_decl_keys.insert(pk);
                 self.id_roles.insert(id.node.start_byte(), IdRole::Param);
 
                 children.push(DocumentSymbol {
@@ -1168,7 +1175,8 @@ impl Cursor {
         for d in &v.decls {
             let dname = self.id_name(&d.name);
             if let Some(ref id) = d.name {
-                self.hl_declare_var(&dname, &id.node);
+                let vk = self.hl_declare_var(&dname, &id.node);
+                self.var_decl_keys.insert(vk);
                 self.id_roles.insert(id.node.start_byte(), IdRole::Variable);
             }
             if let Some(val) = &d.value {

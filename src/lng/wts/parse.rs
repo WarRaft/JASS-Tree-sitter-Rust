@@ -144,6 +144,8 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         type_hints: Vec::new(),
         ujapi_hints: Vec::new(),
         func_decl_keys: Default::default(),
+        var_decl_keys: Default::default(),
+        arg_decl_keys: Default::default(),
         colors,
     });
     FILE_STORE.insert(uri.clone(), snapshot);

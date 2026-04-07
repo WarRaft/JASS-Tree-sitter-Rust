@@ -25,7 +25,7 @@ pub(crate) mod rename;
 pub(crate) mod semantic;
 pub(crate) mod server;
 pub(crate) mod signature_help;
-pub(crate) mod slk;
+pub(crate) mod tile_textures;
 pub(crate) mod snapshot;
 pub(crate) mod terrain;
 pub(crate) mod type_hierarchy;

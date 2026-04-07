@@ -127,7 +127,7 @@ mod tests {
     fn extract_txt_fixtures() {
         let game_path = std::env::var("GAME_PATH").unwrap_or_else(|_| {
             // Fallback: try the global game path setting
-            crate::lng::w3e::game_path::get_game_path()
+            crate::lng::map_editor::game_path::get_game_path()
         });
         assert!(
             !game_path.is_empty(),

@@ -154,6 +154,10 @@ pub struct Cursor {
     /// DeclKeys that belong to function / native declarations (not variables).
     /// Used by call-graph diagnostics to avoid tagging same-named variables.
     pub func_decl_keys: HashSet<DeclKey>,
+    /// DeclKeys that belong to variable declarations (globals + locals).
+    pub var_decl_keys: HashSet<DeclKey>,
+    /// DeclKeys that belong to function parameter declarations.
+    pub arg_decl_keys: HashSet<DeclKey>,
 
     /// Color information for `|cAARRGGBB` in strings and `0xAARRGGBB` hex literals.
     pub colors: Vec<crate::http::color::ColorInformation>,
@@ -357,6 +361,8 @@ impl Cursor {
             ref_names: HashMap::new(),
             external_decls: HashMap::new(),
             func_decl_keys: HashSet::new(),
+            var_decl_keys: HashSet::new(),
+            arg_decl_keys: HashSet::new(),
             colors: Vec::new(),
             file_settings: HashMap::new(),
             file_ignore_tags: HashSet::new(),
@@ -1386,6 +1392,7 @@ impl Cursor {
                         }
                         // hl: declare param
                         let param_key = self.hl_declare_var(&pname, &name_id.node);
+                        self.arg_decl_keys.insert(param_key);
                         // TypeMap: record parameter
                         self.type_map.insert(param_key, DeclType::Var(VarType {
                             name: type_name.clone().unwrap_or_default(),
@@ -1559,6 +1566,7 @@ impl Cursor {
                         let var_decl_key = if let Some(name_id) = &d.name {
                             // hl: declare global variable
                             let key = self.hl_declare_var(&var_name, &name_id.node);
+                            self.var_decl_keys.insert(key);
                             Self::scope_define(
                                 vars.last_mut().unwrap(),
                                 &self.node_text(&name_id.node),
@@ -1662,6 +1670,7 @@ impl Cursor {
                     let lname = self.node_text(&name_id.node);
                     // hl: declare local variable
                     let local_key = self.hl_declare_var(&lname, &name_id.node);
+                    self.var_decl_keys.insert(local_key);
                     // TypeMap: record local variable type
                     if let Some(ref tid) = l.type_id {
                         let tn = self.node_text(&tid.node);
@@ -1734,6 +1743,7 @@ impl Cursor {
                         let vname = self.node_text(&name_id.node);
                         // hl: declare variable
                         let key = self.hl_declare_var(&vname, &name_id.node);
+                        self.var_decl_keys.insert(key);
                         // If inside a function, register in the local scope vars map
                         if in_function {
                             if let Some(scope) = vars.last_mut() {

@@ -25,10 +25,10 @@ async fn main() {
 
     // ── Eagerly build snapshot if game path already configured ──
     tokio::task::spawn_blocking(|| {
-        let gp = lng::w3e::game_path::get_game_path();
+        let gp = lng::map_editor::game_path::get_game_path();
         if !gp.is_empty() {
             log::info!("Game path found on startup, building snapshot…");
-            lng::w3e::snapshot::build_snapshot(None);
+            lng::map_editor::snapshot::build_snapshot(None);
         }
     });
 

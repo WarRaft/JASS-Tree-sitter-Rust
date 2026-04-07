@@ -61,7 +61,12 @@ pub struct ParseSnapshot {
     /// Inlay hints from `//import-ujapi!` — always visible (version tag).
     pub ujapi_hints: Vec<InlayHint>,
     /// DeclKeys that belong to function / native declarations.
+    /// DeclKeys that belong to function / native declarations.
     pub func_decl_keys: HashSet<DeclKey>,
+    /// DeclKeys that belong to variable declarations (globals + locals).
+    pub var_decl_keys: HashSet<DeclKey>,
+    /// DeclKeys that belong to function parameter declarations.
+    pub arg_decl_keys: HashSet<DeclKey>,
     /// Color information for `|cAARRGGBB` in strings and `0xAARRGGBB` hex literals.
     pub colors: Vec<ColorInformation>,
 }
@@ -130,6 +135,7 @@ impl ParseSnapshot {
 
     /// Like [`all_inlay_hints`] but uses a request-level override string
     /// (comma or space-separated tags: `ref`, `type`) instead of file settings.
+    #[allow(dead_code)]
     pub fn all_inlay_hints_filtered(&self, requested: &str) -> Vec<InlayHint> {
         let mut hints = Vec::new();
         hints.extend(self.ujapi_hints.iter().cloned());

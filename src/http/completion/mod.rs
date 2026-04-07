@@ -45,6 +45,7 @@ pub struct CompletionItem {
 
 #[derive(Debug, PartialEq, Serialize_repr)]
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum InsertTextFormat {
     PlainText = 1,
     Snippet = 2,
@@ -52,6 +53,7 @@ pub enum InsertTextFormat {
 
 #[derive(Debug, PartialEq, Serialize_repr)]
 #[repr(u8)]
+#[allow(dead_code)]
 pub enum CompletionItemKind {
     Text = 1,
     Method = 2,

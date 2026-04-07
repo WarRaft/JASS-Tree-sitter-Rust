@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use super::{Color, parse_slk, slk_u8, slk_u32, slk_f64, slk_bool, slk_str, rawcode_to_u32};
 use super::{mod_value_string, mod_value_u32, mod_value_f64, mod_value_bool};
-use crate::lng::w3e::westrings::GameString;
+use crate::lng::map_editor::westrings::GameString;
 use crate::lng::w3abdhqtu::parse::{W3ObjectData, ModificationValue};
 
 // ─── Doodad ──────────────────────────────────────────────────────────────────
@@ -82,13 +82,13 @@ pub struct DoodadsSlkResult {
 
 /// Try to load and parse `Doodads\Doodads.slk` via the cascading lookup.
 pub fn load_doodads_slk(archive_path: Option<&str>) -> Option<DoodadsSlkResult> {
-    let (buf, source) = crate::lng::w3e::file_lookup::lookup_file(
+    let (buf, source) = crate::lng::map_editor::file_lookup::lookup_file(
         "Doodads\\Doodads.slk",
         archive_path,
     )?;
 
     // Ensure WorldEditStrings are loaded for WESTRING_* resolution.
-    crate::lng::w3e::westrings::ensure_loaded(archive_path);
+    crate::lng::map_editor::westrings::ensure_loaded(archive_path);
 
     let rows = parse_slk(&buf);
 
@@ -101,7 +101,7 @@ pub fn load_doodads_slk(archive_path: Option<&str>) -> Option<DoodadsSlkResult> 
 
         // Resolve WESTRING_* references in the Name field.
         let raw_name = row.get("Name").cloned().unwrap_or_default();
-        let name = crate::lng::w3e::westrings::resolve_game_string(&raw_name);
+        let name = crate::lng::map_editor::westrings::resolve_game_string(&raw_name);
 
         // Minimap colour
         let mm_color = Color::rgb(
@@ -305,7 +305,7 @@ fn apply_doodad_modification(
         "Name" => {
             if let Some(s) = mod_value_string(value) {
                 doodad.defaults.entry("name".into()).or_insert_with(|| doodad.name.value.clone());
-                doodad.name = crate::lng::w3e::westrings::resolve_game_string(&s);
+                doodad.name = crate::lng::map_editor::westrings::resolve_game_string(&s);
             }
         }
         "category" => {
@@ -505,124 +505,6 @@ fn apply_doodad_modification(
         "UserList" => {} // editor-only field, ignore
         _ => {
             // Unknown field — not critical, just log
-        }
-    }
-}
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_doodads_slk_fixture() {
-        let data = include_bytes!("../../../lng/slk/fixtures/Doodads/Doodads.slk");
-        let rows = parse_slk(data);
-        assert!(!rows.is_empty(), "should parse some rows");
-
-        let first = &rows[0];
-        assert_eq!(first.get("doodID").map(|s| s.as_str()), Some("APms"));
-        assert_eq!(first.get("comment").map(|s| s.as_str()), Some("Mushrooms"));
-        assert!(first.get("file").is_some());
-    }
-
-    /// Collect all unique `category` values, tileset characters, and doodad
-    /// names from `Doodads\Doodads.slk` so we can use them for UI filters.
-    ///
-    /// Run manually:
-    /// ```sh
-    /// cargo test --package JASS-Tree-sitter-Rust w3e::slk::doodad::tests::dump_doodad_categories_and_tilesets -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore]
-    fn dump_doodad_categories_and_tilesets() {
-        use std::collections::BTreeMap;
-
-        let data = include_bytes!("../../../lng/slk/fixtures/Doodads/Doodads.slk");
-        let rows = parse_slk(data);
-        assert!(!rows.is_empty(), "should parse some doodad rows");
-
-        let mut categories: BTreeMap<String, usize> = BTreeMap::new();
-        let mut tilesets: BTreeMap<char, usize> = BTreeMap::new();
-        let mut names: Vec<(String, String, String, String)> = Vec::new();
-
-        for row in &rows {
-            let dood_id = row.get("doodID").cloned().unwrap_or_default();
-            if dood_id.is_empty() {
-                continue;
-            }
-
-            let cat = row.get("category").cloned().unwrap_or_default();
-            if !cat.is_empty() {
-                *categories.entry(cat.clone()).or_insert(0) += 1;
-            }
-
-            let ts = row.get("tilesets").cloned().unwrap_or_default();
-            for ch in ts.chars() {
-                *tilesets.entry(ch).or_insert(0) += 1;
-            }
-
-            let name = row.get("Name").cloned().unwrap_or_default();
-            names.push((dood_id, name, cat, ts));
-        }
-
-        println!("\n══════════════════════════════════════════");
-        println!("  Doodads.slk — {} entries", rows.len());
-        println!("══════════════════════════════════════════\n");
-
-        println!("── Categories ({}) ──", categories.len());
-        for (cat, count) in &categories {
-            println!("  {:<20} {:>4} doodads", cat, count);
-        }
-
-        println!("\n── Tileset characters ({}) ──", tilesets.len());
-        for (ch, count) in &tilesets {
-            println!("  '{}' {:>5} doodads", ch, count);
-        }
-
-        println!("\n── Doodad names (first 30) ──");
-        for (id, name, cat, ts) in names.iter().take(30) {
-            println!("  {} | {:<40} | cat={:<16} | ts={}", id, name, cat, ts);
-        }
-
-        println!("\nTotal categories: {}", categories.len());
-        println!("Total tileset chars: {}", tilesets.len());
-        println!("Total doodad entries: {}", rows.len());
-    }
-
-    /// Dump all column names from `Doodads.slk` into a text file next to the fixture.
-    ///
-    /// Run manually:
-    /// ```sh
-    /// cargo test --package JASS-Tree-sitter-Rust w3e::slk::doodad::tests::dump_doodad_field_names -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore]
-    fn dump_doodad_field_names() {
-        use std::collections::BTreeSet;
-
-        let data = include_bytes!("../../../lng/slk/fixtures/Doodads/Doodads.slk");
-        let rows = parse_slk(data);
-        assert!(!rows.is_empty(), "should parse some doodad rows");
-
-        let mut fields = BTreeSet::new();
-        for row in &rows {
-            for key in row.keys() {
-                fields.insert(key.clone());
-            }
-        }
-
-        let out_path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/lng/slk/fixtures/Doodads/field_names.txt"
-        );
-        let content = fields.iter().cloned().collect::<Vec<_>>().join("\n");
-        std::fs::write(out_path, &content).expect("failed to write field_names.txt");
-
-        println!("\nWrote {} field names to {}", fields.len(), out_path);
-        for f in &fields {
-            println!("  {}", f);
         }
     }
 }

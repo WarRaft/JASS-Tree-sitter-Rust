@@ -12,7 +12,7 @@ pub async fn snapshot_handler(
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     check_token(&params).map_err(|(s, m)| (s, m.to_string()))?;
 
-    let json = crate::lng::w3e::snapshot::get_snapshot_json()
+    let json = crate::lng::map_editor::snapshot::get_snapshot_json()
         .ok_or_else(|| {
             (StatusCode::SERVICE_UNAVAILABLE, "Snapshot not built yet — set a game path first".to_string())
         })?;
