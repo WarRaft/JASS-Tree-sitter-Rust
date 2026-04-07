@@ -32,7 +32,7 @@ async function showImportGraph(client, extensionUri, context, fileUri) {
     }
 
     /** @type {ImportGraphResult} */
-    const result = await client.sendRequest('importGraph/subgraph', {
+    const result = await client.sendRequest('graph/import', {
         uri: fileUri,
     })
 

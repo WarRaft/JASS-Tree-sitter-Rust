@@ -17,6 +17,36 @@ use url::Url;
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
 
+#[derive(Serialize)]
+pub struct Location {
+    pub uri: String,
+    pub range: crate::http::range::Range,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DidCloseTextDocumentParams {
+    text_document: DidCloseTextDocumentIdentifier,
+}
+
+#[derive(Deserialize)]
+struct DidCloseTextDocumentIdentifier {
+    uri: Url,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DidChangeWatchedFilesParams {
+    changes: Vec<FileEvent>,
+}
+
+#[derive(Deserialize)]
+struct FileEvent {
+    uri: Url,
+    #[serde(rename = "type")]
+    change_type: u8,
+}
+
+
 /// POST routes receive the auth token as a query parameter.
 #[derive(Deserialize)]
 pub struct AuthQuery {
@@ -628,12 +658,12 @@ pub async fn ujapi_download(
 
 pub async fn completion(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::completion::lsp::CompletionParams>,
+    Json(params): Json<crate::http::completion::CompletionParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let items = crate::lsp::completion::send::compute(&params.text_document.uri, &params.position);
-    let list = crate::lsp::completion::lsp::CompletionList {
-        is_incomplete: items.iter().any(|i| i.kind == Some(crate::lsp::completion::lsp::CompletionItemKind::Folder)),
+    let items = crate::http::completion::compute::compute(&params.uri, &params.position);
+    let list = crate::http::completion::CompletionList {
+        is_incomplete: items.iter().any(|i| i.kind == Some(crate::http::completion::CompletionItemKind::Folder)),
         items,
     };
     Ok(Json(serde_json::to_value(list).unwrap_or_default()))
@@ -643,10 +673,10 @@ pub async fn completion(
 
 pub async fn hover(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::hover::lsp::HoverParams>,
+    Json(params): Json<crate::http::hover::HoverParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::hover::send::compute(&params.text_document.uri, &params.position);
+    let result = crate::http::hover::compute(&params.uri, &params.position);
     Ok(Json(match result {
         Some(h) => serde_json::to_value(h).unwrap_or(Value::Null),
         None => Value::Null,
@@ -657,10 +687,10 @@ pub async fn hover(
 
 pub async fn document_highlight(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::highlight::lsp::DocumentHighlightParams>,
+    Json(params): Json<crate::http::highlight::DocumentHighlightParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::highlight::send::compute(&params.text_document.uri, &params.position);
+    let result = crate::http::highlight::compute_highlight(&params.uri, &params.position);
     Ok(Json(serde_json::to_value(result).unwrap_or_default()))
 }
 
@@ -668,10 +698,10 @@ pub async fn document_highlight(
 
 pub async fn definition(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::highlight::lsp::DefinitionParams>,
+    Json(params): Json<crate::http::highlight::DefinitionParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let uri = &params.text_document.uri;
+    let uri = &params.uri;
     let mut locs = Vec::new();
     if let Some(snapshot) = crate::util::file_store::FILE_STORE.get(uri) {
         if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
@@ -684,7 +714,7 @@ pub async fn definition(
                                 if group.name == ext.name {
                                     for occ in &group.occurrences {
                                         if occ.is_decl {
-                                            locs.push(crate::lsp::location::Location {
+                                            locs.push(Location {
                                                 uri: origin.uri.to_string(),
                                                 range: occ.range.clone(),
                                             });
@@ -696,7 +726,7 @@ pub async fn definition(
                     }
                 } else {
                     for def in ref_map.definitions_at(byte) {
-                        locs.push(crate::lsp::location::Location {
+                        locs.push(Location {
                             uri: uri.to_string(),
                             range: def.range.clone(),
                         });
@@ -712,10 +742,10 @@ pub async fn definition(
 
 pub async fn references(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::highlight::lsp::ReferenceParams>,
+    Json(params): Json<crate::http::highlight::ReferenceParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let uri = &params.text_document.uri;
+    let uri = &params.uri;
     let mut locs = Vec::new();
     if let Some(snapshot) = crate::util::file_store::FILE_STORE.get(uri) {
         if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
@@ -723,7 +753,7 @@ pub async fn references(
                 let include_decl = params.context.include_declaration;
                 for occ in snapshot.ref_map.occurrences_at(byte) {
                     if !include_decl && occ.is_decl { continue; }
-                    locs.push(crate::lsp::location::Location {
+                    locs.push(Location {
                         uri: uri.to_string(),
                         range: occ.range.clone(),
                     });
@@ -738,14 +768,14 @@ pub async fn references(
 
 pub async fn formatting(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::formatting::lsp::DocumentFormattingParams>,
+    Json(params): Json<crate::http::formatting::DocumentFormattingParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let uri = &params.text_document.uri;
-    let edits: Vec<crate::lsp::formatting::lsp::TextEdit> = if let Some(lng) = crate::util::uri_map::LNG_URI_MAP.get(uri) {
+    let uri = &params.uri;
+    let edits: Vec<crate::http::formatting::TextEdit> = if let Some(lng) = crate::util::uri_map::LNG_URI_MAP.get(uri) {
         match lng.value().as_str() {
-            "jass" => crate::lsp::formatting::jass::format(uri, &params.options),
-            "angelscript" => crate::lsp::formatting::ass::format(uri, &params.options),
+            "jass" => crate::http::formatting::jass::format(uri, &params.options),
+            "angelscript" => crate::http::formatting::ass::format(uri, &params.options),
             _ => vec![],
         }
     } else { vec![] };
@@ -844,10 +874,10 @@ pub async fn color_presentation(
 
 pub async fn code_action(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::code_action::lsp::CodeActionParams>,
+    Json(params): Json<crate::http::code_action::CodeActionParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let actions = crate::lsp::code_action::send::compute(&params);
+    let actions = crate::http::code_action::compute::compute(&params);
     Ok(Json(serde_json::to_value(actions).unwrap_or_default()))
 }
 
@@ -855,35 +885,24 @@ pub async fn code_action(
 
 pub async fn signature_help(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::signature_help::lsp::SignatureHelpParams>,
+    Json(params): Json<crate::http::signature_help::SignatureHelpParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::signature_help::send::compute(&params.text_document.uri, &params.position);
+    let result = crate::http::signature_help::compute(&params.uri, &params.position);
     Ok(Json(match result {
         Some(h) => serde_json::to_value(h).unwrap_or(Value::Null),
         None => Value::Null,
     }))
 }
 
-// ─── Code Lens ────────────────────────────────────────────────────────────────
-
-pub async fn code_lens(
-    Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::code_lens::lsp::CodeLensParams>,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    auth.check()?;
-    let result = crate::lsp::code_lens::send::compute(&params.text_document.uri);
-    Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
-}
-
 // ─── Call Hierarchy ───────────────────────────────────────────────────────────
 
 pub async fn call_hierarchy_prepare(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::call_hierarchy::lsp::CallHierarchyPrepareParams>,
+    Json(params): Json<crate::http::call_hierarchy::CallHierarchyPrepareParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::call_hierarchy::send::compute_prepare(&params.text_document.uri, &params.position);
+    let result = crate::http::call_hierarchy::compute_prepare(&params.uri, &params.position);
     Ok(Json(match result {
         Some(items) => serde_json::to_value(&items).unwrap_or(Value::Null),
         None => Value::Null,
@@ -892,19 +911,19 @@ pub async fn call_hierarchy_prepare(
 
 pub async fn call_hierarchy_incoming(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::call_hierarchy::lsp::CallHierarchyIncomingCallsParams>,
+    Json(params): Json<crate::http::call_hierarchy::CallHierarchyIncomingCallsParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::call_hierarchy::send::compute_incoming(&params.item);
+    let result = crate::http::call_hierarchy::compute_incoming(&params.item);
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
 
 pub async fn call_hierarchy_outgoing(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::call_hierarchy::lsp::CallHierarchyOutgoingCallsParams>,
+    Json(params): Json<crate::http::call_hierarchy::CallHierarchyOutgoingCallsParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::call_hierarchy::send::compute_outgoing(&params.item);
+    let result = crate::http::call_hierarchy::compute_outgoing(&params.item);
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
 
@@ -912,10 +931,10 @@ pub async fn call_hierarchy_outgoing(
 
 pub async fn type_hierarchy_prepare(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::type_hierarchy::lsp::TypeHierarchyPrepareParams>,
+    Json(params): Json<crate::http::type_hierarchy::TypeHierarchyPrepareParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::type_hierarchy::send::compute_prepare(&params.text_document.uri, &params.position);
+    let result = crate::http::type_hierarchy::compute_prepare(&params.uri, &params.position);
     Ok(Json(match result {
         Some(items) => serde_json::to_value(&items).unwrap_or(Value::Null),
         None => Value::Null,
@@ -924,19 +943,19 @@ pub async fn type_hierarchy_prepare(
 
 pub async fn type_hierarchy_supertypes(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::type_hierarchy::lsp::TypeHierarchySupertypesParams>,
+    Json(params): Json<crate::http::type_hierarchy::TypeHierarchySupertypesParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::type_hierarchy::send::compute_supertypes(&params.item);
+    let result = crate::http::type_hierarchy::compute_supertypes(&params.item);
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
 
 pub async fn type_hierarchy_subtypes(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::type_hierarchy::lsp::TypeHierarchySubtypesParams>,
+    Json(params): Json<crate::http::type_hierarchy::TypeHierarchySubtypesParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::lsp::type_hierarchy::send::compute_subtypes(&params.item);
+    let result = crate::http::type_hierarchy::compute_subtypes(&params.item);
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
 
@@ -993,6 +1012,10 @@ mod section {
     /// `[u32 startLine][u32 startChar][u32 endLine][u32 endChar]
     ///  [f32 red][f32 green][f32 blue][f32 alpha]`
     pub const COLORS: u8 = 0x08;
+    /// Code lenses (reference counts) — per lens:
+    /// `[u32 declLine][u32 declChar][u32 refCount]
+    ///  [u32 refStartLine][u32 refStartChar][u32 refEndLine][u32 refEndChar] × refCount`
+    pub const CODE_LENSES: u8 = 0x09;
 
     // ── Request sections (client → server) ───────────────────────
     /// Full document text (open) — raw UTF-8 bytes.
@@ -1148,8 +1171,8 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) ->
             }
             // Code: u16 len + UTF-8
             let code_str = d.code.as_ref().map(|c| match c {
-                crate::lsp::diagnostic::lsp::DiagnosticCode::String(s) => s.clone(),
-                crate::lsp::diagnostic::lsp::DiagnosticCode::Int(i) => i.to_string(),
+                crate::http::diagnostic::DiagnosticCode::String(s) => s.clone(),
+                crate::http::diagnostic::DiagnosticCode::Int(i) => i.to_string(),
             }).unwrap_or_default();
             let code_bytes = code_str.as_bytes();
             section_buf.extend_from_slice(&(code_bytes.len() as u16).to_le_bytes());
@@ -1236,6 +1259,37 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) ->
         buf.extend_from_slice(&section_buf);
     }
 
+    // ── Section 0x09: Code lenses (reference counts) ────────────
+    {
+        let ref_map = &snap.ref_map;
+        let mut lenses: Vec<_> = ref_map.groups.values()
+            .filter_map(|group| {
+                let decl = group.occurrences.iter().find(|o| o.is_decl)?;
+                let refs: Vec<_> = group.occurrences.iter().filter(|o| !o.is_decl).collect();
+                Some((decl.range.clone(), refs))
+            })
+            .collect();
+        lenses.sort_by_key(|(r, _)| (r.start.line, r.start.character));
+
+        if !lenses.is_empty() {
+            let mut section_buf = Vec::new();
+            for (decl_range, refs) in &lenses {
+                section_buf.extend_from_slice(&(decl_range.start.line as u32).to_le_bytes());
+                section_buf.extend_from_slice(&(decl_range.start.character as u32).to_le_bytes());
+                section_buf.extend_from_slice(&(refs.len() as u32).to_le_bytes());
+                for r in refs {
+                    section_buf.extend_from_slice(&(r.range.start.line as u32).to_le_bytes());
+                    section_buf.extend_from_slice(&(r.range.start.character as u32).to_le_bytes());
+                    section_buf.extend_from_slice(&(r.range.end.line as u32).to_le_bytes());
+                    section_buf.extend_from_slice(&(r.range.end.character as u32).to_le_bytes());
+                }
+            }
+            buf.push(section::CODE_LENSES);
+            buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
+            buf.extend_from_slice(&section_buf);
+        }
+    }
+
     buf
 }
 
@@ -1252,9 +1306,9 @@ fn encode_semantic_full(buf: &mut Vec<u8>, result_id: u32, tokens: &[u32]) {
 
 
 /// Parse content changes from binary TLV sections (type 0x11).
-fn parse_content_changes(body: &[u8]) -> Result<Vec<crate::lsp::text_document::TextDocumentContentChangeEvent>, String> {
-    use crate::lsp::position::Position;
-    use crate::lsp::range::Range;
+fn parse_content_changes(body: &[u8]) -> Result<Vec<crate::util::change::TextDocumentContentChangeEvent>, String> {
+    use crate::http::position::Position;
+    use crate::http::range::Range;
 
     let mut changes = Vec::new();
     let mut offset = 0usize;
@@ -1289,7 +1343,7 @@ fn parse_content_changes(body: &[u8]) -> Result<Vec<crate::lsp::text_document::T
             .map_err(|e| format!("invalid UTF-8: {e}"))?
             .to_string();
 
-        changes.push(crate::lsp::text_document::TextDocumentContentChangeEvent {
+        changes.push(crate::util::change::TextDocumentContentChangeEvent {
             range: Range {
                 start: Position { line: start_line, character: start_char },
                 end: Position { line: end_line, character: end_char },
@@ -1436,7 +1490,7 @@ pub async fn document_update(
 
 pub async fn document_close(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::text_document::DidCloseTextDocumentParams>,
+    Json(params): Json<DidCloseTextDocumentParams>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     auth.check()?;
     let uri = params.text_document.uri;
@@ -1447,7 +1501,7 @@ pub async fn document_close(
 
 pub async fn files_changed(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::lsp::text_document::DidChangeWatchedFilesParams>,
+    Json(params): Json<DidChangeWatchedFilesParams>,
 ) -> Result<StatusCode, (StatusCode, String)> {
     auth.check()?;
 

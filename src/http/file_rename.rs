@@ -1,6 +1,6 @@
 use crate::http::rename::{TextEdit, WorkspaceEdit};
-use crate::lsp::position::Position;
-use crate::lsp::range::Range;
+use crate::http::position::Position;
+use crate::http::range::Range;
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use log::error;

@@ -37,7 +37,7 @@ async function showTypeGraph(client, extensionUri, context, fileUri) {
     }
 
     /** @type {TypeGraphResult} */
-    const result = await client.sendRequest('typeGraph/subgraph', {uri: fileUri})
+    const result = await client.sendRequest('graph/type', {uri: fileUri})
 
     if (!result || !result.nodes || result.nodes.length === 0) {
         window.showInformationMessage('Type graph is empty for this file.')

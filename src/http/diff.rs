@@ -145,7 +145,7 @@ impl Item {
                     return None;
                 };
                 Some(InlayHint {
-                    position: crate::lsp::position::Position {
+                    position: crate::http::position::Position {
                         line: item.pos.line as usize,
                         character: item.pos.character as usize,
                     },
@@ -421,13 +421,13 @@ mod tests {
     fn hint_roundtrip() {
         let hints = vec![
             InlayHint {
-                position: crate::lsp::position::Position { line: 5, character: 10 },
+                position: crate::http::position::Position { line: 5, character: 10 },
                 label: ": integer".into(),
                 kind: InlayHintKind::Type,
                 byte_offset: 42,
             },
             InlayHint {
-                position: crate::lsp::position::Position { line: 12, character: 0 },
+                position: crate::http::position::Position { line: 12, character: 0 },
                 label: "x:".into(),
                 kind: InlayHintKind::Parameter,
                 byte_offset: 100,

@@ -43,7 +43,7 @@ async function showCallGraph(client, extensionUri, context, fileUri) {
     }
 
     /** @type {CallGraphResult} */
-    const result = await client.sendRequest('callGraph/subgraph', {uri: fileUri})
+    const result = await client.sendRequest('graph/call', {uri: fileUri})
 
     if (!result || !result.nodes || result.nodes.length === 0) {
         window.showInformationMessage('Call graph is empty for this file.')

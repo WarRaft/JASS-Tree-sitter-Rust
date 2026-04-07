@@ -10,12 +10,21 @@
 //! previously on that line, leading to stale / incorrect AST nodes.
 //! Full reparse is the only way to guarantee correctness.
 
-use crate::lsp::text_document::TextDocumentContentChangeEvent;
+use crate::http::range::Range;
 use crate::util::file_store::new_cancel_token;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::{PARSER_MAP, TREE_MAP};
+use serde::{Deserialize, Serialize};
 use std::error::Error;
 use url::Url;
+
+/// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#textDocumentContentChangeEvent
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextDocumentContentChangeEvent {
+    pub range: Range,
+    pub text: String,
+}
 
 /// Synchronous: optionally cancel any in-flight parse, apply incremental
 /// edits to the rope, then do a **full** tree-sitter reparse.

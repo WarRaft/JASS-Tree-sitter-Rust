@@ -1,5 +1,5 @@
 use crate::http::semantic::token::Kind;
-use crate::lsp::range::Range;
+use crate::http::range::Range;
 use lapce_xi_rope::Rope;
 use std::collections::BTreeMap;
 use tree_sitter::Node;

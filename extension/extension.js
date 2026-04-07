@@ -6,11 +6,12 @@ const {
     languages, InlayHint, InlayHintKind, Position, Range, EventEmitter,
     ShellExecution, Task, TaskScope, tasks,
     Diagnostic: VscDiagnostic,
-    DocumentSymbol: VscDocumentSymbol, SymbolKind,
+    DocumentSymbol: VscDocumentSymbol,
     FoldingRange, FoldingRangeKind,
     SemanticTokensLegend,
     DocumentLink: VscDocumentLink,
     ColorInformation, Color, ColorPresentation: VscColorPresentation, TextEdit,
+    CodeLens: VscCodeLens,
     WorkspaceEdit: VscWorkspaceEdit,
 } = require('vscode')
 
@@ -162,44 +163,6 @@ function _runHookTask(label, cmd, cwd) {
 }
 
 /** @type {ServerClient} */ let client
-/** @type {import('vscode').Disposable[]} */
-const fileWatcherDisposables = []
-
-
-/** Map SymbolKind (1-26) to VS Code SymbolKind */
-function _mapSymbolKind(kind) {
-    // SymbolKind values map 1:1 to VS Code SymbolKind
-    return kind || SymbolKind.Object
-}
-
-/** Recursively map a server DocumentSymbol to a VS Code DocumentSymbol */
-function _mapSymbol(s) {
-    const range = new Range(
-        s.range.start.line, s.range.start.character,
-        s.range.end.line, s.range.end.character
-    )
-    const selRange = new Range(
-        s.selectionRange.start.line, s.selectionRange.start.character,
-        s.selectionRange.end.line, s.selectionRange.end.character
-    )
-    const sym = new VscDocumentSymbol(
-        s.name,
-        s.detail || '',
-        _mapSymbolKind(s.kind),
-        range,
-        selRange
-    )
-    if (s.tags) {
-        sym.tags = s.tags
-    }
-    if (s.deprecated) {
-        sym.tags = [1] // SymbolTag.Deprecated = 1
-    }
-    if (s.children && s.children.length > 0) {
-        sym.children = s.children.map(c => _mapSymbol(c))
-    }
-    return sym
-}
 
 module.exports = {
 
@@ -266,6 +229,10 @@ module.exports = {
         /** @type {Map<string, import('vscode').ColorInformation[]>} */
         const colorsCache = new Map()
 
+        /** @type {Map<string, import('vscode').CodeLens[]>} */
+        const codeLensCache = new Map()
+        const codeLensChanged = new EventEmitter()
+
         // ── Semantic token legend (must match Rust Kind/Mod enums) ─────
         const tokenTypes = [
             'namespace', 'class', 'enum', 'interface', 'struct',
@@ -291,6 +258,7 @@ module.exports = {
         const SECTION_SYMBOLS = 0x06
         const SECTION_LINKS = 0x07
         const SECTION_COLORS = 0x08
+        const SECTION_CODE_LENSES = 0x09
         // Request sections (client → server)
         const SECTION_FULL_TEXT = 0x10
         const SECTION_CONTENT_CHANGE = 0x11
@@ -417,7 +385,7 @@ module.exports = {
             },
             provideColorPresentations(color, ctx) {
                 const uri = ctx.document.uri.toString()
-                return client.sendRequest('color/presentation', {
+                return client.sendRequest('lsp/colorPresentation', {
                     uri,
                     color: {red: color.red, green: color.green, blue: color.blue, alpha: color.alpha},
                     range: {
@@ -439,6 +407,13 @@ module.exports = {
                         return cp
                     })
                 }).catch(() => [])
+            }
+        })
+
+        const codeLensProvider = languages.registerCodeLensProvider(allSelector, {
+            onDidChangeCodeLenses: codeLensChanged.event,
+            provideCodeLenses(document) {
+                return codeLensCache.get(document.uri.toString()) || []
             }
         })
 
@@ -576,6 +551,10 @@ module.exports = {
                 if (colorsCache.has(oldKey)) {
                     colorsCache.set(newKey, colorsCache.get(oldKey))
                     colorsCache.delete(oldKey)
+                }
+                if (codeLensCache.has(oldKey)) {
+                    codeLensCache.set(newKey, codeLensCache.get(oldKey))
+                    codeLensCache.delete(oldKey)
                 }
 
                 // Swap diagnostics
@@ -884,6 +863,36 @@ module.exports = {
                         colorsCache.set(uri, colors)
                         break
                     }
+                    case SECTION_CODE_LENSES: {
+                        if (!fresh) break
+                        const lenses = []
+                        let p = 0
+                        while (p + 12 <= data.length) {
+                            const declLine = data.readUInt32LE(p); p += 4
+                            const declChar = data.readUInt32LE(p); p += 4
+                            const refCount = data.readUInt32LE(p); p += 4
+                            const refs = []
+                            for (let i = 0; i < refCount && p + 16 <= data.length; i++) {
+                                const sl = data.readUInt32LE(p); p += 4
+                                const sc = data.readUInt32LE(p); p += 4
+                                const el = data.readUInt32LE(p); p += 4
+                                const ec = data.readUInt32LE(p); p += 4
+                                refs.push({uri, range: {start: {line: sl, character: sc}, end: {line: el, character: ec}}})
+                            }
+                            const title = refCount === 1 ? '1 reference' : `${refCount} references`
+                            const pos = new Position(declLine, declChar)
+                            lenses.push(new VscCodeLens(
+                                new Range(pos, pos),
+                                {title, command: 'editor.action.showReferences', arguments: [Uri.parse(uri), pos, refs.map(r => ({
+                                    uri: Uri.parse(r.uri),
+                                    range: new Range(r.range.start.line, r.range.start.character, r.range.end.line, r.range.end.character)
+                                }))]}
+                            ))
+                        }
+                        codeLensCache.set(uri, lenses)
+                        codeLensChanged.fire()
+                        break
+                    }
                     // Future section types: just add cases here
                 }
             }
@@ -1143,6 +1152,7 @@ module.exports = {
             symbolsCache.delete(key)
             linksCache.delete(key)
             colorsCache.delete(key)
+            codeLensCache.delete(key)
             diagnosticCollection.delete(Uri.parse(key))
             client.http.post('/document/close', {
                 textDocument: {uri: key}
@@ -1166,6 +1176,8 @@ module.exports = {
             symbolProvider,
             linkProvider,
             colorProvider,
+            codeLensProvider,
+            codeLensChanged,
             renameProvider,
             willRenameDisposable,
             didRenameDisposable,
@@ -1405,7 +1417,7 @@ module.exports = {
                     },
                     async () => {
                         try {
-                            const result = await client.sendRequest('rescan/execute', {uri})
+                            const result = await client.sendRequest('rescan', {uri})
                             if (result && result.ok) {
                                 window.showInformationMessage(`↻ ${result.message}`)
                             } else if (result && result.errors && result.errors.length > 0) {
@@ -1541,7 +1553,6 @@ module.exports = {
 
     async deactivate() {
         if (!client) return
-        for (const d of fileWatcherDisposables) d.dispose()
         await client.stop()
         client = undefined
     }

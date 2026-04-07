@@ -5,7 +5,7 @@
 //! in `ParseSnapshot`.  Every `DeclKey` that represents a typed entity
 //! (variable, parameter, function, native, type alias) gets an entry.
 
-use crate::lsp::ref_map::DeclKey;
+use crate::http::ref_map::DeclKey;
 use std::collections::HashMap;
 
 // ─── Virtual / special type names ───────────────────────────────────────────

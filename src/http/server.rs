@@ -122,7 +122,6 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/lsp/colorPresentation", post(crate::http::api::color_presentation))
         .route("/lsp/codeAction", post(crate::http::api::code_action))
         .route("/lsp/signatureHelp", post(crate::http::api::signature_help))
-        .route("/lsp/codeLens", post(crate::http::api::code_lens))
         .route("/lsp/callHierarchy/prepare", post(crate::http::api::call_hierarchy_prepare))
         .route("/lsp/callHierarchy/incoming", post(crate::http::api::call_hierarchy_incoming))
         .route("/lsp/callHierarchy/outgoing", post(crate::http::api::call_hierarchy_outgoing))

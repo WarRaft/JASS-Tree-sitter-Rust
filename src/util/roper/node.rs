@@ -1,5 +1,5 @@
-use crate::lsp::position::Position;
-use crate::lsp::range::Range;
+use crate::http::position::Position;
+use crate::http::range::Range;
 use lapce_xi_rope::Rope;
 use std::borrow::Cow;
 use tree_sitter::Node;

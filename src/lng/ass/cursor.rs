@@ -6,12 +6,12 @@ use crate::lng::ass::symbol::{
     AsFileSymbols, ClassSym, EnumSym, FuncdefSym, FunctionSym, GlobalVarSym,
     InterfaceSym, MixinSym, NamespaceSym, ParamSym, TypedefSym,
 };
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
+use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
+use crate::http::document_symbol::{DocumentSymbol, SymbolKind};
 use crate::http::folding::{FoldingRange, FoldingRangeKind};
-use crate::lsp::highlight::lsp::DocumentHighlightKind;
-use crate::lsp::range::Range;
-use crate::lsp::ref_map::{DeclKey, ExternalDecl, RawOccurrence, EXTERNAL_KEY_BASE};
+use crate::http::highlight::DocumentHighlightKind;
+use crate::http::range::Range;
+use crate::http::ref_map::{DeclKey, ExternalDecl, RawOccurrence, EXTERNAL_KEY_BASE};
 use crate::http::semantic::hub::Hub;
 use crate::http::semantic::token::Kind as TokenKind;
 use crate::util::roper::node::NodeExt;
@@ -579,7 +579,7 @@ impl Cursor {
     /// imported symbols, or standalone groups.
     fn link_imports(&mut self, imported: &[ImportedSymbol]) {
         use std::collections::HashMap as Map;
-        use crate::lsp::ref_map::ExternalOrigin;
+        use crate::http::ref_map::ExternalOrigin;
 
         // Build lookup: (name, kind, qualifier) → matching ImportedSymbols.
         // For qualifier=None, match entries with any namespace (unqualified access).

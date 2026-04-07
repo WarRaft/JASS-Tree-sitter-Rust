@@ -2,7 +2,7 @@ use crate::lng::ass::ast::{build_ast, rewrite_directives, TopLevel};
 use crate::lng::ass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
-use crate::lsp::ref_map::{build_ref_map, DeclKey};
+use crate::http::ref_map::{build_ref_map, DeclKey};
 use crate::util::file_cache;
 use crate::util::file_store::{
     exports_changed, new_cancel_token, register_pending, ParseSnapshot, FILE_STORE,

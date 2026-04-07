@@ -2,10 +2,10 @@
 mod tests {
     use crate::lng::jass::ast::*;
     use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
-    use crate::lsp::document_symbol::lsp::SymbolKind;
+    use crate::http::document_symbol::SymbolKind;
     use crate::http::folding::FoldingRangeKind;
-    use crate::lsp::position::Position;
-    use crate::lsp::ref_map::{build_ref_map, EXTERNAL_KEY_BASE};
+    use crate::http::position::Position;
+    use crate::http::ref_map::{build_ref_map, EXTERNAL_KEY_BASE};
     use crate::http::semantic::token::Kind as TokenKind;
     use lapce_xi_rope::Rope;
     use url::Url;
@@ -575,7 +575,7 @@ endfunction
     // ─── Document Highlight tests ───────────────────────────────────────
 
     /// Build a `RefMap` from cursor data for test assertions.
-    fn ref_map_from(c: &Cursor, rope: &Rope) -> crate::lsp::ref_map::RefMap {
+    fn ref_map_from(c: &Cursor, rope: &Rope) -> crate::http::ref_map::RefMap {
         build_ref_map(c.ref_groups.clone(), c.ref_names.clone(), c.external_decls.clone(), rope)
     }
 
@@ -919,7 +919,7 @@ endfunction
     fn find_group<'a>(
         cursor: &'a Cursor,
         name: &str,
-    ) -> (&'a u32, &'a Vec<crate::lsp::ref_map::RawOccurrence>) {
+    ) -> (&'a u32, &'a Vec<crate::http::ref_map::RawOccurrence>) {
         let mut found: Vec<_> = cursor.ref_groups.iter()
             .filter(|(k, _)| cursor.ref_names.get(k).map(|n| n == name).unwrap_or(false))
             .collect();
@@ -936,14 +936,14 @@ endfunction
     fn find_groups<'a>(
         cursor: &'a Cursor,
         name: &str,
-    ) -> Vec<(&'a u32, &'a Vec<crate::lsp::ref_map::RawOccurrence>)> {
+    ) -> Vec<(&'a u32, &'a Vec<crate::http::ref_map::RawOccurrence>)> {
         cursor.ref_groups.iter()
             .filter(|(k, _)| cursor.ref_names.get(k).map(|n| n == name).unwrap_or(false))
             .collect()
     }
 
     /// Assert that `RefMap.span_at(byte)` returns a non-None span.
-    fn assert_span_at(rm: &crate::lsp::ref_map::RefMap, rope: &Rope, line: usize, ch: usize, desc: &str) {
+    fn assert_span_at(rm: &crate::http::ref_map::RefMap, rope: &Rope, line: usize, ch: usize, desc: &str) {
         let byte = Position { line, character: ch }
             .to_byte_offset(rope)
             .unwrap_or_else(|| panic!("{}: position ({},{}) has no byte offset", desc, line, ch));

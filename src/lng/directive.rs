@@ -12,7 +12,7 @@
 //! rewriting logic, and semantic-token helpers so that each language only
 //! needs a thin adapter.
 
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
+use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::http::semantic::hub::Hub;
 use crate::http::semantic::token::Kind as TokenKind;
 use crate::util::roper::node::NodeExt;
@@ -661,11 +661,11 @@ pub fn process_imports<'a>(
     rope: &Rope,
     imports: &mut HashSet<url::Url>,
     frozen_imports: &mut HashSet<url::Url>,
-    links: &mut Vec<crate::lsp::document_link::lsp::DocumentLink>,
+    links: &mut Vec<crate::http::document_link::DocumentLink>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    use crate::lsp::position::Position;
-    use crate::lsp::range::Range;
+    use crate::http::position::Position;
+    use crate::http::range::Range;
     use crate::util::import_graph::resolve_import;
 
     for imp in directives {
@@ -698,7 +698,7 @@ pub fn process_imports<'a>(
                     frozen_imports.insert(resolved.url.clone());
                 }
                 if resolved.exists {
-                    links.push(crate::lsp::document_link::lsp::DocumentLink {
+                    links.push(crate::http::document_link::DocumentLink {
                         range: path_range,
                         target: Some(resolved.url.to_string()),
                         tooltip: Some(resolved.url.to_string()),

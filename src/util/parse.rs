@@ -16,11 +16,11 @@
 use crate::lng::directive::ImportDirective;
 use crate::lng::directive::UjapiDirective;
 use crate::lng::jass::symbol::FileSymbols;
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::document_link::lsp::DocumentLink;
-use crate::lsp::position::Position;
-use crate::lsp::range::Range;
-use crate::lsp::ref_map::{DeclKey, RefMap};
+use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
+use crate::http::document_link::DocumentLink;
+use crate::http::position::Position;
+use crate::http::range::Range;
+use crate::http::ref_map::{DeclKey, RefMap};
 use crate::util::file_cache;
 use crate::util::file_store::{
     drain_pending, mark_parse_done,
@@ -605,7 +605,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
 
         // Build a RefMap for cross-file go-to-definition.
         let func_decl_keys = cursor.func_decl_keys;
-        let ref_map = crate::lsp::ref_map::build_ref_map(
+        let ref_map = crate::http::ref_map::build_ref_map(
             cursor.ref_groups,
             cursor.ref_names,
             cursor.external_decls,
@@ -645,7 +645,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
     // Build a full RefMap so that go-to-definition can find declaration
     // positions and `find_decl_key_by_name` can resolve the real DeclKey.
     let func_decl_keys = cursor.func_decl_keys;
-    let ref_map = crate::lsp::ref_map::build_ref_map(
+    let ref_map = crate::http::ref_map::build_ref_map(
         cursor.ref_groups,
         cursor.ref_names,
         cursor.external_decls,

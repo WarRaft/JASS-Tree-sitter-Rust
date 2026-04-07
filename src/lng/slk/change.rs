@@ -1,4 +1,4 @@
-use crate::lsp::text_document::TextDocumentContentChangeEvent;
+use crate::util::change::TextDocumentContentChangeEvent;
 use std::error::Error;
 use url::Url;
 

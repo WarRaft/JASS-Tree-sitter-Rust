@@ -1,4 +1,4 @@
-use crate::lsp::position::Position;
+use crate::http::position::Position;
 use lapce_xi_rope::{LinesMetric, Rope};
 
 impl Position {

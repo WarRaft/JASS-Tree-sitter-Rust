@@ -1,4 +1,4 @@
-use crate::lsp::range::Range;
+use crate::http::range::Range;
 use serde::{Deserialize, Serialize};
 use url::Url;
 

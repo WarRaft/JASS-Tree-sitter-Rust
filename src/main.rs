@@ -1,5 +1,4 @@
 pub(crate) mod http;
-pub(crate) mod lsp;
 pub(crate) mod util;
 
 pub(crate) mod lng;

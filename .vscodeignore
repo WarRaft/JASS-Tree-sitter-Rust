@@ -4,6 +4,7 @@
 !extension/**
 !bin/**
 !dist/**
+!docs/**
 !sdk/**
 !icons/**
 !images/**

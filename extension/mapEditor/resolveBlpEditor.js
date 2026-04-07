@@ -30,7 +30,7 @@ async function resolveBlpEditor(document, webviewPanel, _token, client) {
     /** @type {BlpRenderResult} */
     let result
     try {
-        result = await client.sendRequest('blp/render', {
+        result = await client.sendRequest('render/blp', {
             uri: document.uri.toString()
         })
     } catch (e) {

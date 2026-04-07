@@ -9,7 +9,7 @@
 //! so multiple WTS files can coexist without collisions and removing a
 //! file from the map is O(1).
 
-use crate::lsp::range::Range;
+use crate::http::range::Range;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;

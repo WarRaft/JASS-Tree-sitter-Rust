@@ -1,5 +1,5 @@
-use crate::lsp::position::Position;
-use crate::lsp::range::Range;
+use crate::http::position::Position;
+use crate::http::range::Range;
 use crate::util::file_store::{is_uri_frozen, FILE_STORE};
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;

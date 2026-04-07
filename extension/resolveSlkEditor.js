@@ -146,7 +146,7 @@ async function resolveSlkEditor(document, webviewPanel, _token, client, context)
      */
     async function fetchData() {
         /** @type {SlkRenderResult} */
-        const result = await client.sendRequest('slk/render', {
+        const result = await client.sendRequest('render/slk', {
             uri: document.uri.toString()
         })
 

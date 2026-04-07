@@ -15,7 +15,7 @@
 //! Database table: `file_cache` in the shared `redb` database.
 
 use crate::lng::jass::symbol::FileSymbols;
-use crate::lsp::ref_map::{DeclKey, RefMap};
+use crate::http::ref_map::{DeclKey, RefMap};
 use crate::util::cache_db;
 use log::{error, info};
 use redb::ReadableDatabase;

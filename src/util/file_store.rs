@@ -26,12 +26,12 @@ use url::Url;
 use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
 use crate::http::color::ColorInformation;
-use crate::lsp::diagnostic::lsp::Diagnostic;
-use crate::lsp::document_link::lsp::DocumentLink;
-use crate::lsp::document_symbol::lsp::DocumentSymbol;
+use crate::http::diagnostic::Diagnostic;
+use crate::http::document_link::DocumentLink;
+use crate::http::document_symbol::DocumentSymbol;
 use crate::http::folding::FoldingRange;
 use crate::http::inlay_hint::{InlayHint, InlayHintKind};
-use crate::lsp::ref_map::{DeclKey, RefMap};
+use crate::http::ref_map::{DeclKey, RefMap};
 use crate::http::semantic::hub::Hub;
 use std::sync::RwLock;
 

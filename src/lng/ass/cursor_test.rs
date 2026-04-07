@@ -236,7 +236,7 @@ namespace MyNs {
 
     // ─── Document symbols ────────────────────────────────────────────────
 
-    use crate::lsp::document_symbol::lsp::SymbolKind;
+    use crate::http::document_symbol::SymbolKind;
 
     #[test]
     fn function_symbol() {

@@ -8,14 +8,14 @@ use crate::lng::jass::symbol::{
 use crate::lng::jass::type_map::{
     ComptimeValue, DeclType, FuncType, ParamPair, TypeDeclInfo, TypeMap, VarType, UNKNOWN_TYPE,
 };
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
-use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
+use crate::http::diagnostic::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
+use crate::http::document_symbol::{DocumentSymbol, SymbolKind};
 use crate::http::folding::{FoldingRange, FoldingRangeKind};
-use crate::lsp::highlight::lsp::DocumentHighlightKind;
+use crate::http::highlight::DocumentHighlightKind;
 use crate::http::inlay_hint::{InlayHint, InlayHintKind};
-use crate::lsp::position::Position;
-use crate::lsp::range::Range;
-use crate::lsp::ref_map::{DeclKey, ExternalDecl, RawOccurrence, EXTERNAL_KEY_BASE};
+use crate::http::position::Position;
+use crate::http::range::Range;
+use crate::http::ref_map::{DeclKey, ExternalDecl, RawOccurrence, EXTERNAL_KEY_BASE};
 use crate::http::semantic::hub::Hub;
 use crate::http::semantic::token::Kind as TokenKind;
 use crate::util::roper::node::NodeExt;
@@ -554,7 +554,7 @@ impl Cursor {
     ///    `start_byte`, **and emit "Undeclared" diagnostics**.
     fn link_imports(&mut self, imported: &[ImportedSymbol]) {
         use std::collections::HashMap as Map;
-        use crate::lsp::ref_map::ExternalOrigin;
+        use crate::http::ref_map::ExternalOrigin;
 
         // Build lookup: (name, namespace) → ALL matching ImportedSymbols
         let mut import_lookup: Map<(&str, ImportedKind), Vec<&ImportedSymbol>> = Map::new();
@@ -2986,7 +2986,7 @@ impl Cursor {
                         range: diag_range,
                         message: crate::util::i18n::empty_else().to_string(),
                         severity: Some(DiagnosticSeverity::Hint),
-                        tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                        tags: Some(vec![crate::http::diagnostic::DiagnosticTag::Unnecessary]),
                         source: Some("jass".into()),
                         code: Some(DiagnosticCode::String("empty-else".into())),
                         data: Some(serde_json::json!({
@@ -3031,7 +3031,7 @@ impl Cursor {
                     range: node.to_range(&self.rope),
                     message: crate::util::i18n::dead_code().to_string(),
                     severity: Some(DiagnosticSeverity::Hint),
-                    tags: Some(vec![crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary]),
+                    tags: Some(vec![crate::http::diagnostic::DiagnosticTag::Unnecessary]),
                     ..Diagnostic::new("jass", "dead-code")
                 });
                 // Still recurse so we don't miss nested checks,

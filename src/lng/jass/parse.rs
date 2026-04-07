@@ -1,7 +1,7 @@
 use crate::lng::jass::ast::{Statement, build_ast, rewrite_imports};
 use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::ref_map::{DeclKey, RefMap, build_ref_map};
+use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
+use crate::http::ref_map::{DeclKey, RefMap, build_ref_map};
 use crate::util::file_cache;
 use crate::util::file_store::{
     FILE_STORE, ParseSnapshot, exports_changed, new_cancel_token, register_pending,
@@ -347,10 +347,10 @@ fn _parse(
                             message: crate::util::i18n::unused_function(&group.name),
                             severity: Some(DiagnosticSeverity::Hint),
                             tags: Some(vec![
-                                crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary,
+                                crate::http::diagnostic::DiagnosticTag::Unnecessary,
                             ]),
                             source: Some("jass".into()),
-                            code: Some(crate::lsp::diagnostic::lsp::DiagnosticCode::String("unused-function".into())),
+                            code: Some(crate::http::diagnostic::DiagnosticCode::String("unused-function".into())),
                             data: Some(serde_json::json!({
                                 "unused_func_range": func_range,
                             })),
@@ -422,10 +422,10 @@ fn _parse(
                             message: crate::util::i18n::inlinable_function(&group.name),
                             severity: Some(DiagnosticSeverity::Hint),
                             tags: Some(vec![
-                                crate::lsp::diagnostic::lsp::DiagnosticTag::Unnecessary,
+                                crate::http::diagnostic::DiagnosticTag::Unnecessary,
                             ]),
                             source: Some("jass".into()),
-                            code: Some(crate::lsp::diagnostic::lsp::DiagnosticCode::String("inline".into())),
+                            code: Some(crate::http::diagnostic::DiagnosticCode::String("inline".into())),
                             data: Some(data),
                             ..Default::default()
                         });

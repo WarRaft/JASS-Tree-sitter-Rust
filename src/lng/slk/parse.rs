@@ -1,8 +1,8 @@
 use crate::lng::slk::kind::Kind;
-use crate::lsp::diagnostic::lsp::{Diagnostic, DiagnosticSeverity};
-use crate::lsp::document_symbol::lsp::{DocumentSymbol, SymbolKind};
+use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
+use crate::http::document_symbol::{DocumentSymbol, SymbolKind};
 use crate::http::folding::{FoldingRange, FoldingRangeKind};
-use crate::lsp::ref_map::RefMap;
+use crate::http::ref_map::RefMap;
 use crate::http::semantic::hub::Hub;
 use crate::http::semantic::token::Kind as TokenKind;
 use crate::util::dfs_node::Dfs;

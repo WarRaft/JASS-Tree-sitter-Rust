@@ -56,7 +56,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
         // ── 2. Load terrain from archive ────────────────────────
         try {
-            const result = await client.sendRequest('w3e/render', {
+            const result = await client.sendRequest('render/w3e', {
                 uri: document.uri.toString(),
                 archivePath: filePath,
             })
@@ -66,7 +66,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
         // ── 3. Load w3i from archive ────────────────────────────
         try {
-            const result = await client.sendRequest('w3i/render', {
+            const result = await client.sendRequest('render/w3i', {
                 uri: document.uri.toString(),
                 archivePath: filePath,
             })
@@ -77,7 +77,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
         // ── 4. Load unit DOO from archive ─────────────────────────
         try {
-            const result = await client.sendRequest('doo/render', {
+            const result = await client.sendRequest('render/doo', {
                 uri: document.uri.toString(),
                 isUnit: true,
                 archivePath: filePath,
@@ -88,7 +88,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
         // ── 5. Load doodad DOO from archive ───────────────────────
         try {
-            const result = await client.sendRequest('doo/render', {
+            const result = await client.sendRequest('render/doo', {
                 uri: document.uri.toString(),
                 isUnit: false,
                 archivePath: filePath,
@@ -112,7 +112,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         const params = {uri: document.uri.toString()}
         if (document._mpqArchivePath) params.archivePath = document._mpqArchivePath
 
-        const result = await client.sendRequest('w3i/render', params)
+        const result = await client.sendRequest('render/w3i', params)
         if (result.error && result.format == null) {
             webviewPanel.webview.html = errorHtml(result.error.message)
             return
@@ -129,7 +129,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const w3ePath = path.join(mapRoot, 'war3map.w3e')
             if (fs.existsSync(w3ePath)) {
                 try {
-                    const tResult = await client.sendRequest('w3e/render', {
+                    const tResult = await client.sendRequest('render/w3e', {
                         uri: Uri.file(w3ePath).toString(),
                     })
                     if (!tResult.error) terrainData = tResult
@@ -145,7 +145,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         const params = {uri: document.uri.toString(), isUnit: isDooUnit}
         if (document._mpqArchivePath) params.archivePath = document._mpqArchivePath
 
-        const result = await client.sendRequest('doo/render', params)
+        const result = await client.sendRequest('render/doo', params)
         if (result.error) {
             webviewPanel.webview.html = errorHtml(result.error.message)
             return
@@ -163,7 +163,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const w3ePath = path.join(mapRoot, 'war3map.w3e')
             if (fs.existsSync(w3ePath)) {
                 try {
-                    const tResult = await client.sendRequest('w3e/render', {
+                    const tResult = await client.sendRequest('render/w3e', {
                         uri: Uri.file(w3ePath).toString(),
                     })
                     if (!tResult.error) terrainData = tResult
@@ -175,7 +175,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const w3iPath = path.join(mapRoot, 'war3map.w3i')
             if (fs.existsSync(w3iPath)) {
                 try {
-                    const iResult = await client.sendRequest('w3i/render', {
+                    const iResult = await client.sendRequest('render/w3i', {
                         uri: Uri.file(w3iPath).toString(),
                     })
                     if (!iResult.error) w3iData = iResult
@@ -192,7 +192,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         // Render immediately; the model data will be sent to the
         // webview after the HTML is built so the viewer opens it.
         try {
-            const renderResult = await client.sendRequest('mdx/render', {
+            const renderResult = await client.sendRequest('render/mdx', {
                 uri: document.uri.toString()
             })
             if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
@@ -226,7 +226,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         const params = {uri: document.uri.toString()}
         if (document._mpqArchivePath) params.archivePath = document._mpqArchivePath
 
-        const result = await client.sendRequest('w3e/render', params)
+        const result = await client.sendRequest('render/w3e', params)
         if (result.error) {
             webviewPanel.webview.html = errorHtml(result.error.message)
             return
@@ -243,7 +243,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const w3iPath = path.join(mapRoot, 'war3map.w3i')
             if (fs.existsSync(w3iPath)) {
                 try {
-                    const iResult = await client.sendRequest('w3i/render', {
+                    const iResult = await client.sendRequest('render/w3i', {
                         uri: Uri.file(w3iPath).toString(),
                     })
                     if (!iResult.error) w3iData = iResult
@@ -266,7 +266,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const unitPath = path.join(mapRoot, 'war3mapUnits.doo')
             if (fs.existsSync(unitPath)) {
                 try {
-                    const r = await client.sendRequest('doo/render', {
+                    const r = await client.sendRequest('render/doo', {
                         uri: Uri.file(unitPath).toString(),
                         isUnit: true,
                     })
@@ -280,7 +280,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const doodadPath = path.join(mapRoot, 'war3map.doo')
             if (fs.existsSync(doodadPath)) {
                 try {
-                    const r = await client.sendRequest('doo/render', {
+                    const r = await client.sendRequest('render/doo', {
                         uri: Uri.file(doodadPath).toString(),
                         isUnit: false,
                     })
@@ -360,8 +360,9 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             if (resp.ok) gamePathStatus = await resp.json()
         }
         if (!gamePathStatus.hasPath) {
-            gamePathStatus = await client.sendRequest('w3e/gamePath/status', {})
-        }
+                    const buf = await client.http.getBinary('/w3e/gamePath/status')
+                    gamePathStatus = JSON.parse(buf.toString('utf8'))
+                }
     } catch (_) {
     }
 
@@ -610,7 +611,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 if (ext === 'mdx') {
                     // Render MDX via server and send result to webview
                     try {
-                        const renderResult = await client.sendRequest('mdx/render', {
+                        const renderResult = await client.sendRequest('render/mdx', {
                             uri: tmpUri.toString()
                         })
 
@@ -765,7 +766,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     fs.writeFileSync(tmpPath, buf)
 
                     try {
-                        const renderResult = await client.sendRequest('mdx/render', {
+                        const renderResult = await client.sendRequest('render/mdx', {
                             uri: Uri.file(tmpPath).toString()
                         })
                         if (renderResult && !renderResult.error && renderResult.geosets) {
@@ -820,7 +821,8 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     if (resp.ok) status = await resp.json()
                 }
                 if (!status) {
-                    status = await client.sendRequest('w3e/gamePath/status', {})
+                    const buf = await client.http.getBinary('/w3e/gamePath/status')
+                    status = JSON.parse(buf.toString('utf8'))
                 }
                 await emitGamePathChanged(status)
             } catch (_) {

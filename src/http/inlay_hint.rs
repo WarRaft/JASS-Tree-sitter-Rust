@@ -11,7 +11,7 @@
 //! - `kind` is a plain `u8` (`0` = none, `1` = type, `2` = parameter)
 //!   instead of `Option<enum>`.
 
-use crate::lsp::position::Position;
+use crate::http::position::Position;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 
