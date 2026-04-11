@@ -171,21 +171,22 @@ pub enum Kind {
     UnaryExpression = 162,              // sym_unary_expression
     PostfixExpression = 163,            // sym_postfix_expression
     CastExpression = 164,              // sym_cast_expression
-    FunctionCall = 165,                 // sym_function_call
-    ArgumentList = 166,                 // sym_argument_list
-    SubscriptExpression = 167,          // sym_subscript_expression
-    MemberAccess = 168,                 // sym_member_access
-    NamespaceAccess = 169,              // sym_namespace_access
-    HandleOfExpression = 170,           // sym_handle_of_expression
-    LambdaExpression = 171,             // sym_lambda_expression
-    PrimaryExpression = 172,            // sym_primary_expression
-    ParenthesizedExpression = 173,      // sym_parenthesized_expression
-    InitializerList = 174,              // sym_initializer_list
-    NewExpression = 175,                // sym_new_expression
-    Type = 176,                         // sym_type
-    ArrayTypeSuffix = 177,              // sym_array_type_suffix
-    ScopedName = 178,                   // sym_scoped_name
-    StringLiteral = 179,                // sym_string_literal
+    ConstructExpression = 165,          // sym_construct_expression
+    FunctionCall = 166,                 // sym_function_call
+    ArgumentList = 167,                 // sym_argument_list
+    SubscriptExpression = 168,          // sym_subscript_expression
+    MemberAccess = 169,                 // sym_member_access
+    NamespaceAccess = 170,              // sym_namespace_access
+    HandleOfExpression = 171,           // sym_handle_of_expression
+    LambdaExpression = 172,             // sym_lambda_expression
+    PrimaryExpression = 173,            // sym_primary_expression
+    ParenthesizedExpression = 174,      // sym_parenthesized_expression
+    InitializerList = 175,              // sym_initializer_list
+    NewExpression = 176,                // sym_new_expression
+    Type = 177,                         // sym_type
+    ArrayTypeSuffix = 178,              // sym_array_type_suffix
+    ScopedName = 179,                   // sym_scoped_name
+    StringLiteral = 180,                // sym_string_literal
 }
 
 /// Field IDs from `ts_field_identifiers` enum in tree-sitter-as `parser.c`.

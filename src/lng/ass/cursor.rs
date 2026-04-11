@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::lng::ass::ast::*;
-use crate::lng::ass::kind::Kind;
+use crate::lng::ass::kind::{Field, Kind};
 use crate::lng::ass::symbol::{
     AsFileSymbols, ClassSym, EnumSym, FuncdefSym, FunctionSym, GlobalVarSym,
     InterfaceSym, MethodSym, MixinSym, NamespaceSym, ParamSym, PropertySym, TypedefSym,
@@ -650,6 +650,10 @@ impl Cursor {
         match kind {
             Some(Kind::Identifier) => {
                 let name = self.node_text(node);
+                // Skip empty identifiers (tree-sitter artifacts).
+                if name.is_empty() {
+                    return;
+                }
                 self.hl_reference_type(&name, node, DocumentHighlightKind::Read);
                 self.id_roles.insert(node.start_byte(), IdRole::TypeRef);
             }
@@ -1739,16 +1743,32 @@ impl Cursor {
         match expr {
             Expr::Id(id) => {
                 let name = self.node_text(&id.node);
+                // Skip empty identifiers produced by tree-sitter parse
+                // artifacts (e.g. empty `()` in misparse of generics).
+                if name.is_empty() {
+                    return;
+                }
                 match id.role {
                     IdRole::Variable => {
-                        self.hl_reference_var(&name, &id.node, DocumentHighlightKind::Read);
+                        // If the identifier is actually a known type name
+                        // (e.g. `array` in misparse of `array<T>()`),
+                        // treat it as a type reference.
+                        if self.is_known_type(&name) {
+                            self.hl_reference_type(&name, &id.node, DocumentHighlightKind::Read);
+                            self.id_roles.insert(id.node.start_byte(), IdRole::TypeRef);
+                        } else {
+                            self.hl_reference_var(&name, &id.node, DocumentHighlightKind::Read);
+                            self.id_roles.insert(id.node.start_byte(), id.role);
+                        }
                     }
                     IdRole::TypeRef => {
                         self.hl_reference_type(&name, &id.node, DocumentHighlightKind::Read);
+                        self.id_roles.insert(id.node.start_byte(), id.role);
                     }
-                    _ => {}
+                    _ => {
+                        self.id_roles.insert(id.node.start_byte(), id.role);
+                    }
                 }
-                self.id_roles.insert(id.node.start_byte(), id.role);
             }
             Expr::Call { callee, callee_expr, args, .. } => {
                 if let Some(id) = callee {
@@ -1843,7 +1863,10 @@ impl Cursor {
                                 self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
                             }
                         }
-                        _ => {}
+                        // Complex callee expression (e.g. subscript: arr[i]())
+                        _ => {
+                            self.visit_expr(expr);
+                        }
                     }
                 }
                 for arg in args {
@@ -1907,7 +1930,28 @@ impl Cursor {
             Expr::StringLiteral(_) | Expr::NumberLiteral(_) | Expr::KeywordLiteral(_)
             | Expr::Cast { .. } | Expr::New { .. }
             | Expr::Lambda { .. } | Expr::Other(_) => {}
-            Expr::HandleOf { operand, .. } => {
+            Expr::Construct { node, .. } => {
+                // `Type<TypeArgs>(args)` — walk all `type` field children as type refs.
+                if let Some(field_type) = std::num::NonZero::new(Field::Type as u16) {
+                    let mut tc = node.walk();
+                    for child in node.children_by_field_id(field_type, &mut tc) {
+                        self.visit_type_node(&child);
+                    }
+                }
+            }
+            Expr::HandleOf { operand, is_postfix, .. } => {
+                if *is_postfix {
+                    // Postfix `Type@` — handle type annotation.
+                    // Treat the operand as a type reference.
+                    match operand.as_ref() {
+                        Expr::Id(id) => {
+                            let name = self.node_text(&id.node);
+                            self.hl_reference_type(&name, &id.node, DocumentHighlightKind::Read);
+                            self.id_roles.insert(id.node.start_byte(), IdRole::TypeRef);
+                        }
+                        other => self.visit_expr(other),
+                    }
+                } else {
                 // `@FuncName` — function reference (compatible with JASS `code` type)
                 // `@var = expr` — handle assignment (assign handle to a variable)
                 // `@this` / `@super` — handle-to-self reference
@@ -1942,6 +1986,7 @@ impl Cursor {
                         }
                     }
                     other => self.visit_expr(other),
+                }
                 }
             }
         }

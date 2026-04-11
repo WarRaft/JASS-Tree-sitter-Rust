@@ -1,4 +1,3 @@
-use crate::debug_log;
 use crate::lng::jass::ast::{Statement, build_ast, rewrite_imports};
 use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
@@ -117,8 +116,6 @@ fn _parse(
     tree: &tree_sitter::Tree,
     cancel: &CancellationToken,
 ) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
-    let fname = uri.path().rsplit('/').next().unwrap_or("?");
-    debug_log!("[jass] parse start: {}", fname);
     let root = tree.root_node();
 
     // 1. Build AST from CST
@@ -548,7 +545,6 @@ fn _parse(
 
     // ── Atomic store — single source of truth ──
     PARSE_CACHE.insert(uri.clone(), new_snapshot.clone());
-    debug_log!("[jass] parse done: {}", fname);
 
     // ── Persist entry-point status so it survives server restarts ──
     IMPORT_GRAPH.mark_entry(uri, new_snapshot.file_symbols.is_entry);

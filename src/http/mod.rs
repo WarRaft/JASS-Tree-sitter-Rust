@@ -29,4 +29,5 @@ pub(crate) mod tile_textures;
 pub(crate) mod snapshot;
 pub(crate) mod terrain;
 pub(crate) mod type_hierarchy;
+pub(crate) mod ws;
 

@@ -4,7 +4,6 @@
 //! uses `POST /document/update` with a binary TLV body. All other
 //! requests use JSON.
 
-use crate::debug_log;
 use crate::http::server::{TokenParam, check_token};
 use axum::extract::{Json, Query};
 use axum::http::StatusCode;
@@ -515,93 +514,9 @@ pub async fn graph_type(
     Ok(Json(json!(result)))
 }
 
-pub async fn graph_diagnostics(
-    Query(auth): Query<AuthQuery>,
-    Json(params): Json<DiagnosticsParam>,
-) -> Result<axum::response::Response, (StatusCode, String)> {
-    auth.check()?;
-    use axum::response::sse::{Event, Sse};
-    use crate::util::import_graph::IMPORT_GRAPH;
-    use crate::util::parse_cache::PARSE_CACHE;
-
-    let tree_list = IMPORT_GRAPH.tree_for_uri_sorted(&params.uri);
-    if tree_list.is_empty() {
-        let body = json!({ "done": true, "files": [] });
-        return Ok(Json(body).into_response());
-    }
-
-    let total = tree_list.len();
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
-
-    tokio::spawn(async move {
-        let mut files = Vec::new();
-
-        for (index, peer) in tree_list.iter().enumerate() {
-            let file_name = peer.to_file_path()
-                .ok()
-                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
-                .unwrap_or_else(|| peer.to_string());
-
-            let progress = json!({
-                "progress": true,
-                "index": index,
-                "total": total,
-                "file": &file_name,
-            });
-            let _ = tx.send(Ok(Event::default().data(progress.to_string()))).await;
-
-            // Open files → read full diagnostics from PARSE_CACHE
-            // Closed files → isolated parse, no side effects
-            let (errors, warnings, hints, info_count) = if let Some(snap) = PARSE_CACHE.get(peer) {
-                count_snap_diagnostics(&snap)
-            } else {
-                let peer_clone = peer.clone();
-                tokio::task::spawn_blocking(move || count_diagnostics_isolated(&peer_clone))
-                    .await
-                    .unwrap_or((0, 0, 0, 0))
-            };
-
-            let is_frozen = IMPORT_GRAPH.is_frozen(peer);
-
-            let file_entry = json!({
-                "uri": peer.to_string(),
-                "file": file_name,
-                "errors": errors,
-                "warnings": warnings,
-                "hints": hints,
-                "info": info_count,
-                "frozen": is_frozen,
-            });
-
-            let file_event = json!({
-                "file_result": true,
-                "entry": &file_entry,
-                "index": index,
-                "total": total,
-            });
-            let _ = tx.send(Ok(Event::default().data(file_event.to_string()))).await;
-
-            files.push(file_entry);
-        }
-
-
-        let done = json!({
-            "done": true,
-            "files": files,
-        });
-        let _ = tx.send(Ok(Event::default().data(done.to_string()))).await;
-    });
-
-    let event_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let sse = Sse::new(event_stream)
-        .keep_alive(axum::response::sse::KeepAlive::default());
-
-    Ok(sse.into_response())
-}
 
 /// Count diagnostics from an already-parsed snapshot.
-fn count_snap_diagnostics(snap: &crate::util::parse_cache::ParseSnapshot) -> (u32, u32, u32, u32) {
+pub fn count_snap_diagnostics(snap: &crate::util::parse_cache::ParseSnapshot) -> (u32, u32, u32, u32) {
     use crate::http::diagnostic::DiagnosticSeverity;
     let (mut e, mut w, mut h, mut i) = (0u32, 0u32, 0u32, 0u32);
     for d in &snap.diagnostics {
@@ -621,7 +536,7 @@ fn count_snap_diagnostics(snap: &crate::util::parse_cache::ParseSnapshot) -> (u3
 /// Reads the file from disk, parses with tree-sitter, runs cursor walk
 /// using symbols from PARSE_CACHE/file_cache (read-only), counts diagnostics.
 /// Does NOT modify PARSE_CACHE or IMPORT_GRAPH.
-fn count_diagnostics_isolated(uri: &Url) -> (u32, u32, u32, u32) {
+pub fn count_diagnostics_isolated(uri: &Url) -> (u32, u32, u32, u32) {
     use crate::http::diagnostic::DiagnosticSeverity;
     use crate::util::import_graph::IMPORT_GRAPH;
     use crate::util::parse::all_visible_entries;
@@ -1111,188 +1026,6 @@ pub async fn build_hooks(
     auth.check()?;
     let (before_cmd, after_cmd, cwd) = crate::lng::jass::build::resolve_hooks(&params.uri);
     Ok(Json(json!({ "before_cmd": before_cmd, "after_cmd": after_cmd, "cwd": cwd })))
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  Rescan endpoint (SSE with singleton guard)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-pub async fn rescan_execute(
-    Query(auth): Query<AuthQuery>,
-    Json(params): Json<UriParam>,
-) -> Result<axum::response::Response, (StatusCode, String)> {
-    auth.check()?;
-    use axum::response::sse::{Event, Sse};
-    use crate::util::import_graph::IMPORT_GRAPH;
-    use crate::util::parse_cache::PARSE_CACHE;
-    use crate::util::rescan::RescanGuard;
-
-    // Only one rescan at a time — if busy, reply immediately.
-    let guard = match RescanGuard::try_acquire() {
-        Some(g) => g,
-        None => {
-            let body = json!({ "busy": true, "message": "Rescan already in progress" });
-            return Ok(Json(body).into_response());
-        }
-    };
-
-    let uri = params.uri.clone();
-
-    let tree_uris = IMPORT_GRAPH.tree_for_uri(&uri);
-    if tree_uris.is_empty() {
-        drop(guard);
-        let body = json!({ "ok": false, "message": "No files in tree" });
-        return Ok(Json(body).into_response());
-    }
-
-    let total = tree_uris.len();
-    let tree_list: Vec<Url> = tree_uris.iter().cloned().collect();
-
-    // Purge caches before the scan loop.
-    crate::util::file_cache::purge_set(&tree_uris);
-    for u in &tree_list { PARSE_CACHE.remove(u); }
-
-    // Create a channel so the background task can push SSE events.
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
-
-    // Spawn the heavy work so the SSE response starts streaming immediately.
-    tokio::spawn(async move {
-        let _guard = guard; // move guard into spawned task — dropped when done
-
-        // Collect absolute paths for common-parent computation.
-        let abs_paths: Vec<std::path::PathBuf> = tree_list
-            .iter()
-            .filter_map(|u| u.to_file_path().ok())
-            .collect();
-
-        // Compute nearest common parent directory.
-        let common_parent = if abs_paths.is_empty() {
-            std::path::PathBuf::new()
-        } else {
-            let mut common = abs_paths[0].parent().unwrap_or(&abs_paths[0]).to_path_buf();
-            for p in &abs_paths[1..] {
-                let dir = p.parent().unwrap_or(p);
-                common = common
-                    .ancestors()
-                    .find(|a| dir.starts_with(a))
-                    .unwrap_or(std::path::Path::new("/"))
-                    .to_path_buf();
-            }
-            common
-        };
-
-        let mut errors: Vec<String> = Vec::new();
-        let mut scanned_files: Vec<String> = Vec::new();
-        // File contents read from disk in pass 1, reused in pass 2.
-        let mut contents: Vec<Option<String>> = Vec::with_capacity(tree_list.len());
-
-        // ── Pass 1: init (rope + tree) + lightweight symbol collection ──
-        for (index, u) in tree_list.iter().enumerate() {
-            let fname = u.path().rsplit('/').next().unwrap_or("");
-
-            let progress = json!({
-                "step": 1,
-                "file": fname,
-                "index": index,
-                "total": total,
-            });
-            let _ = tx.send(Ok(Event::default().data(progress.to_string()))).await;
-
-            match u.to_file_path() {
-                Ok(path) if path.is_dir() => { contents.push(None); continue; }
-                Ok(path) => {
-                    let rel = path
-                        .strip_prefix(&common_parent)
-                        .unwrap_or(&path)
-                        .display()
-                        .to_string();
-                    scanned_files.push(rel);
-
-                    match std::fs::read_to_string(&path) {
-                        Ok(content) => {
-                            // Init: rope + parser + tree (no diagnostics).
-                            if let Err(e) = crate::util::open::init_by_uri(u, &content) {
-                                errors.push(format!("{}: init — {}", fname, e));
-                                contents.push(None);
-                                continue;
-                            }
-                            // Lightweight symbol extraction → file_cache.
-                            let ts_lang: tree_sitter::Language = if crate::util::open::is_as_uri(u) {
-                                tree_sitter_as::language().into()
-                            } else {
-                                tree_sitter_jass::language().into()
-                            };
-                            crate::util::parse::ensure_file_symbols(u, ts_lang);
-                            contents.push(Some(content));
-                        }
-                        Err(e) => {
-                            errors.push(format!("{}: cannot read — {}", fname, e));
-                            contents.push(None);
-                        }
-                    }
-                }
-                Err(_) => {
-                    errors.push(format!("{}: invalid file path", fname));
-                    contents.push(None);
-                }
-            }
-        }
-
-        // ── Pass 2: full parse (all symbols now in scope resolver) ──────
-        let mut ok_count = 0usize;
-
-        for (index, u) in tree_list.iter().enumerate() {
-            let content = match contents.get(index).and_then(|c| c.as_deref()) {
-                Some(c) => c,
-                None => continue,
-            };
-            let fname = u.path().rsplit('/').next().unwrap_or("");
-
-            let progress = json!({
-                "step": 2,
-                "file": fname,
-                "index": index,
-                "total": total,
-            });
-            let _ = tx.send(Ok(Event::default().data(progress.to_string()))).await;
-
-            if let Err(e) = crate::util::open::parse_only_by_uri(u, content).await {
-                errors.push(format!("{}: parse — {}", fname, e));
-            } else {
-                ok_count += 1;
-            }
-        }
-
-        // Collect URI + languageId pairs for client-side refresh.
-        let uri_entries: Vec<serde_json::Value> = tree_list.iter().map(|u| {
-            let lang = if crate::util::open::is_as_uri(u) { "angelscript" } else { "jass" };
-            json!({ "uri": u.to_string(), "languageId": lang })
-        }).collect();
-
-        let msg = if errors.is_empty() {
-            format!("Rescanned {} files", ok_count)
-        } else {
-            format!("Rescanned {} files ({} errors)\n{}", ok_count, errors.len(), errors.join("\n"))
-        };
-
-        let done = json!({
-            "done": true,
-            "ok": errors.is_empty(),
-            "message": msg,
-            "errors": errors,
-            "files": scanned_files,
-            "entries": uri_entries,
-            "root": common_parent.display().to_string(),
-        });
-        let _ = tx.send(Ok(Event::default().data(done.to_string()))).await;
-    });
-
-    // Convert the receiver into a stream for axum SSE.
-    let event_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let sse = Sse::new(event_stream)
-        .keep_alive(axum::response::sse::KeepAlive::default());
-
-    Ok(sse.into_response())
 }
 
 pub async fn rescan_status(
@@ -2163,17 +1896,13 @@ pub async fn document_update(
 
     // ── Parse TLV request body ───────────────────────────────────
     let mut has_work = false;
-    let fname = uri.path().rsplit('/').next().unwrap_or("?");
-    debug_log!("[update] start lang={} file={}", lang, fname);
 
     if body.len() >= 5 && body[0] == section::OPEN_URI {
         // ── Open by URI — server reads from disk ──────────────────
-        debug_log!("[update] OPEN_URI reading from disk");
         let file_path = uri.to_file_path()
             .map_err(|_| (StatusCode::BAD_REQUEST, "URI is not a file:// path".into()))?;
         let text = tokio::fs::read_to_string(&file_path).await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read {}: {e}", file_path.display())))?;
-        debug_log!("[update] read {} bytes", text.len());
 
         let init_result = match lang {
             "bni" => crate::lng::bni::open::init(&uri, &text),
@@ -2234,14 +1963,12 @@ pub async fn document_update(
     }
 
     if !has_work {
-        debug_log!("[update] no work, returning empty");
         return empty(version);
     }
 
     // ── Parse ─────────────────────────────────────────────────────
     // The client-side serial queue guarantees only one in-flight request
     // per URI, so no server-side cancellation race is needed.
-    debug_log!("[update] starting parse");
     let parse_gen = crate::util::parse_cache::mark_parse_pending(&uri);
     let res = match lang {
         "bni" => crate::lng::bni::parse::parse_and_notify(&uri).await,
@@ -2253,10 +1980,8 @@ pub async fn document_update(
     };
     if let Err(e) = res {
         log::error!("{} parse: {}", lang, e);
-        debug_log!("[update] parse ERROR: {}", e);
     }
     crate::util::parse_cache::mark_parse_done(&uri, parse_gen);
-    debug_log!("[update] parse done, building response");
 
     // ── Build binary TLV response ────────────────────────────────
     // The first 4 bytes are the echoed client version (u32 LE) so the
@@ -2406,34 +2131,3 @@ pub async fn semantic_tokens(
     ))
 }
 
-// ─── SSE debug log ───────────────────────────────────────────────────────────
-
-pub async fn sse_debug_log(
-    Query(auth): Query<AuthQuery>,
-) -> Result<impl IntoResponse, (StatusCode, &'static str)> {
-    check_token(&TokenParam { token: auth.token })?;
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::response::sse::Event, std::convert::Infallible>>(64);
-
-    tokio::spawn(async move {
-        let mut rx_log = crate::util::debug_log::subscribe();
-        loop {
-            match rx_log.recv().await {
-                Ok(msg) => {
-                    let event = axum::response::sse::Event::default().data(msg);
-                    if tx.send(Ok(event)).await.is_err() {
-                        break;
-                    }
-                }
-                Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(_) => break,
-            }
-        }
-    });
-
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    Ok(axum::response::sse::Sse::new(stream)
-        .keep_alive(axum::response::sse::KeepAlive::default()))
-}
-
-use tokio::sync::broadcast;

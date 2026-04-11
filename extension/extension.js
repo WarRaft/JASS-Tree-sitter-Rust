@@ -146,101 +146,192 @@ async function _collectFiles(mpqProvider, archivePath, dirPath, result) {
  */
 
 /**
- * Consume SSE stream from `/rescan` endpoint and report progress.
+ * Connect a raw WebSocket (using built-in `http` module) and return
+ * helpers to send/receive JSON text frames.
  *
- * If the response is a plain JSON (not SSE), it means the server replied
- * synchronously (e.g. `{ busy: true }`).
+ * @param {number} port
+ * @param {string} path  e.g. `/ws/rescan?token=xxx`
+ * @returns {Promise<{send: (obj: any) => void, onMessage: (cb: (data: any) => void) => void, onClose: (cb: () => void) => void, close: () => void}>}
+ */
+function _connectWS(port, path) {
+    const http = require('http')
+    const crypto = require('crypto')
+
+    return new Promise((resolve, reject) => {
+        const key = crypto.randomBytes(16).toString('base64')
+        const req = http.request({
+            hostname: '127.0.0.1',
+            port,
+            path,
+            headers: {
+                'Connection': 'Upgrade',
+                'Upgrade': 'websocket',
+                'Sec-WebSocket-Version': '13',
+                'Sec-WebSocket-Key': key,
+            },
+        })
+
+        req.on('upgrade', (_res, socket) => {
+            let buf = Buffer.alloc(0)
+            const messageCbs = []
+            const closeCbs = []
+            let closed = false
+
+            function fireClose() {
+                if (closed) return
+                closed = true
+                for (const cb of closeCbs) cb()
+            }
+
+            socket.on('data', chunk => {
+                buf = Buffer.concat([buf, chunk])
+
+                while (buf.length >= 2) {
+                    const opcode = buf[0] & 0x0f
+                    const len0 = buf[1] & 0x7f
+                    let payloadLen, headerLen
+
+                    if (len0 <= 125) {
+                        payloadLen = len0
+                        headerLen = 2
+                    } else if (len0 === 126) {
+                        if (buf.length < 4) return
+                        payloadLen = buf.readUInt16BE(2)
+                        headerLen = 4
+                    } else {
+                        if (buf.length < 10) return
+                        payloadLen = Number(buf.readBigUInt64BE(2))
+                        headerLen = 10
+                    }
+
+                    if (buf.length < headerLen + payloadLen) return
+
+                    const payload = buf.slice(headerLen, headerLen + payloadLen)
+                    buf = buf.slice(headerLen + payloadLen)
+
+                    if (opcode === 0x1) { // text
+                        const text = payload.toString('utf8')
+                        try {
+                            const data = JSON.parse(text)
+                            for (const cb of messageCbs) cb(data)
+                        } catch { /* not JSON — ignore */ }
+                    } else if (opcode === 0x8) { // close
+                        socket.end()
+                        fireClose()
+                        return
+                    } else if (opcode === 0x9) { // ping → pong
+                        const pong = Buffer.alloc(2 + payload.length)
+                        pong[0] = 0x8a
+                        pong[1] = payload.length
+                        payload.copy(pong, 2)
+                        socket.write(pong)
+                    }
+                }
+            })
+
+            socket.on('close', fireClose)
+            socket.on('error', e => reject(e))
+
+            /** Send a masked WS text frame */
+            function send(obj) {
+                const data = Buffer.from(JSON.stringify(obj), 'utf8')
+                const mask = crypto.randomBytes(4)
+                let header
+                if (data.length <= 125) {
+                    header = Buffer.alloc(6)
+                    header[0] = 0x81 // fin + text
+                    header[1] = 0x80 | data.length
+                    mask.copy(header, 2)
+                } else if (data.length <= 65535) {
+                    header = Buffer.alloc(8)
+                    header[0] = 0x81
+                    header[1] = 0x80 | 126
+                    header.writeUInt16BE(data.length, 2)
+                    mask.copy(header, 4)
+                } else {
+                    header = Buffer.alloc(14)
+                    header[0] = 0x81
+                    header[1] = 0x80 | 127
+                    header.writeBigUInt64BE(BigInt(data.length), 2)
+                    mask.copy(header, 10)
+                }
+                const masked = Buffer.alloc(data.length)
+                for (let i = 0; i < data.length; i++) masked[i] = data[i] ^ mask[i & 3]
+                socket.write(Buffer.concat([header, masked]))
+            }
+
+            resolve({
+                send,
+                onMessage: cb => messageCbs.push(cb),
+                onClose: cb => closeCbs.push(cb),
+                close: () => { try { socket.end() } catch (_) {} },
+            })
+        })
+
+        req.on('error', reject)
+        req.end()
+    })
+}
+
+/**
+ * Run a rescan via WebSocket and report progress.
+ *
+ * The server upgrades `/ws/rescan?token=...` to WS.
+ * Client sends `{"uri":"..."}` as the first frame, then receives
+ * progress and result frames.
  *
  * @param {ServerClient} client
  * @param {string} uri
  * @param {import('vscode').Progress<{increment?: number, message?: string}>} progress
  * @returns {Promise<{ok?: boolean, busy?: boolean, message?: string, errors?: string[]}>}
  */
-function _consumeRescanSSE(client, uri, progress) {
-    const http = require('http')
+function _consumeRescanWS(client, uri, progress) {
     const info = client.getServerInfo()
     if (!info) return Promise.reject(new Error('Server not started'))
 
-    const body = Buffer.from(JSON.stringify({uri}), 'utf8')
     const qs = new (require('url').URLSearchParams)({token: info.token})
 
-    return new Promise((resolve, reject) => {
-        const req = http.request({
-            hostname: '127.0.0.1',
-            port: info.port,
-            path: `/rescan?${qs.toString()}`,
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': body.length,
-                'Accept': 'text/event-stream',
-            },
-        }, res => {
-            const contentType = res.headers['content-type'] || ''
+    return new Promise(async (resolve, reject) => {
+        try {
+            const ws = await _connectWS(info.port, `/ws/rescan?${qs.toString()}`)
 
-            // If the server replied with JSON (not SSE), parse as a single response.
-            if (contentType.includes('application/json')) {
-                const chunks = []
-                res.on('data', chunk => chunks.push(chunk))
-                res.on('end', () => {
-                    try {
-                        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-                    } catch (e) {
-                        reject(e)
-                    }
-                })
-                return
-            }
-
-            // Parse SSE stream
-            let buffer = ''
             let lastResult = null
 
-            res.on('data', chunk => {
-                buffer += chunk.toString('utf8')
-                const lines = buffer.split('\n')
-                buffer = lines.pop() || '' // keep incomplete line
-
-                for (const line of lines) {
-                    if (!line.startsWith('data:')) continue
-                    const dataStr = line.slice(5).trim()
-                    if (!dataStr) continue
-                    try {
-                        const data = JSON.parse(dataStr)
-                        if (data.done) {
-                            lastResult = data
-                        } else if (data.total) {
-                            const step = data.step || 1
-                            const stepTotal = 2
-                            // Each step is 50% of total progress
-                            const stepBase = (step - 1) * 50
-                            const stepPct = ((data.index + 1) / data.total) * 50
-                            const totalPct = stepBase + stepPct
-                            const prevPct = stepBase + (data.index / data.total) * 50
-                            progress.report({
-                                increment: totalPct - prevPct,
-                                message: `Step ${step}/${stepTotal} (${data.index + 1}/${data.total}) ${data.file}`,
-                            })
-                        }
-                    } catch { /* ignore parse errors */ }
+            ws.onMessage(data => {
+                if (data.busy || data.done || (data.ok === false && data.message)) {
+                    lastResult = data
+                    return
+                }
+                if (data.total) {
+                    const step = data.step || 1
+                    const stepBase = (step - 1) * 50
+                    const stepPct = ((data.index + 1) / data.total) * 50
+                    const totalPct = stepBase + stepPct
+                    const prevPct = stepBase + (data.index / data.total) * 50
+                    progress.report({
+                        increment: totalPct - prevPct,
+                        message: `Step ${step}/2 (${data.index + 1}/${data.total}) ${data.file}`,
+                    })
                 }
             })
 
-            res.on('end', () => {
+            ws.onClose(() => {
                 resolve(lastResult || {ok: true, message: 'Rescan completed'})
             })
-        })
 
-        req.on('error', reject)
-        req.write(body)
-        req.end()
+            // Send the URI payload
+            ws.send({uri})
 
-        // Safety timeout (5 min for large projects)
-        const timeout = setTimeout(() => {
-            req.destroy()
-            reject(new Error('Rescan timeout (5 min)'))
-        }, 300_000)
-        req.on('close', () => clearTimeout(timeout))
+            // Safety timeout (5 min for large projects)
+            const timeout = setTimeout(() => {
+                ws.close()
+                reject(new Error('Rescan timeout (5 min)'))
+            }, 300_000)
+
+            ws.onClose(() => clearTimeout(timeout))
+        } catch (e) {
+            reject(e)
+        }
     })
 }
 
@@ -1070,36 +1161,85 @@ module.exports = {
             }
         })
 
-        // ── SSE debug log ───────────────────────────────────────────
+        // ── WebSocket debug log ────────────────────────────────────
         clientReady.then(() => {
             const info = getBinaryServer()
             if (!info) {
-                debugLog('no server info, SSE skipped')
+                debugLog('no server info, WS skipped')
                 return
             }
-            debugLog(`connecting SSE to port ${info.port}`)
+            debugLog(`connecting WS to port ${info.port}`)
             const http = require('http')
-            const req = http.get(
-                `http://127.0.0.1:${info.port}/debug/log?token=${info.token}`,
-                res => {
-                    debugLog(`SSE connected (${res.statusCode})`)
-                    let buf = ''
-                    res.on('data', chunk => {
-                        buf += chunk.toString()
-                        let nl
-                        while ((nl = buf.indexOf('\n')) !== -1) {
-                            const line = buf.slice(0, nl).trim()
-                            buf = buf.slice(nl + 1)
-                            if (line.startsWith('data:')) {
-                                debugLog(line.slice(5).trim())
-                            }
-                        }
-                    })
-                }
-            )
-            req.on('error', e => {
-                debugLog(`SSE error: ${e.message}`)
+            const crypto = require('crypto')
+
+            const key = crypto.randomBytes(16).toString('base64')
+            const req = http.request({
+                hostname: '127.0.0.1',
+                port: info.port,
+                path: `/ws/log?token=${info.token}`,
+                headers: {
+                    'Connection': 'Upgrade',
+                    'Upgrade': 'websocket',
+                    'Sec-WebSocket-Version': '13',
+                    'Sec-WebSocket-Key': key,
+                },
             })
+
+            req.on('upgrade', (res, socket) => {
+                debugLog('WS connected')
+                let buf = Buffer.alloc(0)
+
+                socket.on('data', chunk => {
+                    buf = Buffer.concat([buf, chunk])
+
+                    while (buf.length >= 2) {
+                        const opcode = buf[0] & 0x0f
+                        const len0 = buf[1] & 0x7f
+                        let payloadLen, headerLen
+
+                        if (len0 <= 125) {
+                            payloadLen = len0
+                            headerLen = 2
+                        } else if (len0 === 126) {
+                            if (buf.length < 4) return
+                            payloadLen = buf.readUInt16BE(2)
+                            headerLen = 4
+                        } else {
+                            if (buf.length < 10) return
+                            payloadLen = Number(buf.readBigUInt64BE(2))
+                            headerLen = 10
+                        }
+
+                        if (buf.length < headerLen + payloadLen) return
+
+                        const payload = buf.slice(headerLen, headerLen + payloadLen)
+                        buf = buf.slice(headerLen + payloadLen)
+
+                        if (opcode === 0x1) { // text frame
+                            debugLog(payload.toString('utf8'))
+                        } else if (opcode === 0x8) { // close
+                            socket.end()
+                            return
+                        } else if (opcode === 0x9) { // ping → pong
+                            const pong = Buffer.alloc(2 + payload.length)
+                            pong[0] = 0x8a // fin + pong
+                            pong[1] = payload.length
+                            payload.copy(pong, 2)
+                            socket.write(pong)
+                        }
+                    }
+                })
+
+                socket.on('close', () => debugLog('WS closed'))
+                socket.on('error', e => debugLog(`WS socket error: ${e.message}`))
+
+                context.subscriptions.push({dispose: () => {
+                    try { socket.end() } catch (_) {}
+                }})
+            })
+
+            req.on('error', e => debugLog(`WS error: ${e.message}`))
+            req.end()
             context.subscriptions.push({dispose: () => req.destroy()})
         })
 
@@ -1746,9 +1886,7 @@ module.exports = {
                 if (!openedDocs.has(key)) continue
 
                 // Check if any remaining tab still shows this URI
-                const stillOpen = window.tabGroups.all.some(group =>
-                    group.tabs.some(t => t.input?.uri?.toString() === key)
-                )
+                const stillOpen = window.tabGroups.activeTabGroup.tabs.some(t => t.input?.uri?.toString() === key)
                 if (stillOpen) continue
 
                 _handleDocClose(key)
@@ -2039,7 +2177,7 @@ module.exports = {
                             cancellable: false
                         },
                         async (progress) => {
-                            const res = await _consumeRescanSSE(client, uri, progress)
+                            const res = await _consumeRescanWS(client, uri, progress)
                             if (res && res.busy) return res
 
                             // ── Re-request document/update only for open files ──

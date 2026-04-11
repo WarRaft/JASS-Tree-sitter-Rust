@@ -60,70 +60,113 @@ async function showDiagnostics(client, extensionUri, context, fileUri) {
     // Set initial HTML with loading state
     panel.webview.html = buildHtml(fileUri)
 
-    // Stream results via SSE
+    // Stream results via WebSocket
     const info = client.getServerInfo()
     if (!info) return
 
-    const body = Buffer.from(JSON.stringify({uri: fileUri}), 'utf8')
     const qs = new (require('url').URLSearchParams)({token: info.token})
+    const crypto = require('crypto')
 
-    const req = http.request({
+    const key = crypto.randomBytes(16).toString('base64')
+    const wsReq = http.request({
         hostname: '127.0.0.1',
         port: info.port,
-        path: `/graph/diagnostics?${qs.toString()}`,
-        method: 'POST',
+        path: `/ws/diagnostics?${qs.toString()}`,
         headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': body.length,
-            'Accept': 'text/event-stream',
+            'Connection': 'Upgrade',
+            'Upgrade': 'websocket',
+            'Sec-WebSocket-Version': '13',
+            'Sec-WebSocket-Key': key,
         },
-    }, res => {
-        let buffer = ''
+    })
 
-        res.on('data', chunk => {
+    wsReq.on('upgrade', (_res, socket) => {
+        let buf = Buffer.alloc(0)
+
+        // Send the URI payload as first masked frame
+        const payload = Buffer.from(JSON.stringify({uri: fileUri}), 'utf8')
+        const mask = crypto.randomBytes(4)
+        let header
+        if (payload.length <= 125) {
+            header = Buffer.alloc(6)
+            header[0] = 0x81
+            header[1] = 0x80 | payload.length
+            mask.copy(header, 2)
+        } else if (payload.length <= 65535) {
+            header = Buffer.alloc(8)
+            header[0] = 0x81
+            header[1] = 0x80 | 126
+            header.writeUInt16BE(payload.length, 2)
+            mask.copy(header, 4)
+        } else {
+            header = Buffer.alloc(14)
+            header[0] = 0x81
+            header[1] = 0x80 | 127
+            header.writeBigUInt64BE(BigInt(payload.length), 2)
+            mask.copy(header, 10)
+        }
+        const masked = Buffer.alloc(payload.length)
+        for (let i = 0; i < payload.length; i++) masked[i] = payload[i] ^ mask[i & 3]
+        socket.write(Buffer.concat([header, masked]))
+
+        socket.on('data', chunk => {
             if (!panel) {
-                res.destroy()
+                socket.end()
                 return
             }
-            buffer += chunk.toString('utf8')
-            const lines = buffer.split('\n')
-            buffer = lines.pop() || ''
+            buf = Buffer.concat([buf, chunk])
 
-            for (const line of lines) {
-                if (!line.startsWith('data:')) continue
-                const dataStr = line.slice(5).trim()
-                if (!dataStr) continue
-                try {
-                    const data = JSON.parse(dataStr)
-                    if (panel) {
-                        panel.webview.postMessage(data)
-                    }
-                } catch { /* ignore parse errors */ }
-            }
-        })
+            while (buf.length >= 2) {
+                const opcode = buf[0] & 0x0f
+                const len0 = buf[1] & 0x7f
+                let payloadLen, headerLen
 
-        res.on('end', () => {
-            // flush remaining buffer
-            if (buffer.startsWith('data:')) {
-                const dataStr = buffer.slice(5).trim()
-                if (dataStr) {
+                if (len0 <= 125) {
+                    payloadLen = len0
+                    headerLen = 2
+                } else if (len0 === 126) {
+                    if (buf.length < 4) return
+                    payloadLen = buf.readUInt16BE(2)
+                    headerLen = 4
+                } else {
+                    if (buf.length < 10) return
+                    payloadLen = Number(buf.readBigUInt64BE(2))
+                    headerLen = 10
+                }
+
+                if (buf.length < headerLen + payloadLen) return
+
+                const frame = buf.slice(headerLen, headerLen + payloadLen)
+                buf = buf.slice(headerLen + payloadLen)
+
+                if (opcode === 0x1) { // text
                     try {
-                        const data = JSON.parse(dataStr)
+                        const data = JSON.parse(frame.toString('utf8'))
                         if (panel) panel.webview.postMessage(data)
                     } catch { /* ignore */ }
+                } else if (opcode === 0x8) { // close
+                    socket.end()
+                    return
+                } else if (opcode === 0x9) { // ping → pong
+                    const pong = Buffer.alloc(2 + frame.length)
+                    pong[0] = 0x8a
+                    pong[1] = frame.length
+                    frame.copy(pong, 2)
+                    socket.write(pong)
                 }
             }
         })
+
+        socket.on('error', () => {})
     })
 
-    req.on('error', (e) => {
+    wsReq.on('error', (e) => {
         if (panel) {
             panel.webview.postMessage({done: true, files: [], error: e.message})
         }
     })
 
-    req.write(body)
-    req.end()
+    wsReq.end()
 }
 
 /**

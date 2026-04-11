@@ -104,12 +104,10 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/graph/call", post(crate::http::api::graph_call))
         .route("/graph/type", post(crate::http::api::graph_type))
         .route("/graph/exports", post(crate::http::api::graph_exports))
-        .route("/graph/diagnostics", post(crate::http::api::graph_diagnostics))
         // ── Build ────────────────────────────────────────────────────
         .route("/build/execute", post(crate::http::api::build_execute))
         .route("/build/hooks", post(crate::http::api::build_hooks))
         // ── Rescan & UJAPI ───────────────────────────────────────────
-        .route("/rescan", post(crate::http::api::rescan_execute))
         .route("/rescan/status", get(crate::http::api::rescan_status))
         .route("/ujapi/download", post(crate::http::api::ujapi_download))
         // ── Language features ────────────────────────────────────────
@@ -136,8 +134,10 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/files/changed", post(crate::http::api::files_changed))
         // ── Binary data ─────────────────────────────────────────
         .route("/semantic", get(crate::http::api::semantic_tokens))
-        // ── Debug log (SSE) ───────────────────────────────────────
-        .route("/debug/log", get(crate::http::api::sse_debug_log))
+        // ── WebSocket streams ────────────────────────────────────
+        .route("/ws/log", get(crate::http::ws::ws_debug_log))
+        .route("/ws/rescan", get(crate::http::ws::ws_rescan))
+        .route("/ws/diagnostics", get(crate::http::ws::ws_diagnostics))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?

@@ -348,15 +348,16 @@ mod tests {
         g.update(&d, HashSet::new());
 
         let (nodes, edges) = g.subgraph_for(&b);
-        // b is root (index 0), reachable: a (dependent), c (dependency)
+        // Without //entry, tree_for_uri returns only outgoing deps.
+        // b→c, so subgraph is {b, c}.  a (dependent of b) is not included.
         assert_eq!(nodes[0], b.to_string());
-        assert_eq!(nodes.len(), 3);
-        assert!(nodes.contains(&a.to_string()));
+        assert_eq!(nodes.len(), 2);
         assert!(nodes.contains(&c.to_string()));
-        // d should not appear
+        // a and d should not appear
+        assert!(!nodes.contains(&a.to_string()));
         assert!(!nodes.contains(&d.to_string()));
-        // edges: a→b, b→c
-        assert_eq!(edges.len(), 2);
+        // edges: b→c
+        assert_eq!(edges.len(), 1);
     }
 
     #[test]
@@ -563,5 +564,163 @@ mod tests {
         let removed = g.gc_orphans();
         assert_eq!(removed.len(), 2, "both dead cyclic nodes should be GC'd");
         assert!(g.all_uris().is_empty());
+    }
+
+    // ── tree_for_uri ─────────────────────────────────────────────────────
+
+    #[test]
+    fn tree_for_uri_no_entry_returns_outgoing_only() {
+        // Without //entry, tree = self + outgoing transitive deps.
+        // A → B → C.  tree_for_uri(B) = {B, C}, NOT {A, B, C}.
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+        g.update(&a, HashSet::from([b.clone()]));
+        g.update(&b, HashSet::from([c.clone()]));
+
+        let tree = g.tree_for_uri(&b);
+        assert!(tree.contains(&b));
+        assert!(tree.contains(&c));
+        assert!(!tree.contains(&a), "without entry, dependents should not be included");
+    }
+
+    #[test]
+    fn tree_for_uri_entry_root_returns_full_tree() {
+        // A(entry) → B → C.  tree_for_uri(A) = {A, B, C}.
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+        g.update(&a, HashSet::from([b.clone()]));
+        g.update(&b, HashSet::from([c.clone()]));
+        g.mark_entry(&a, true);
+        g.recompute_entry_cache();
+
+        let tree = g.tree_for_uri(&a);
+        assert_eq!(tree.len(), 3);
+        assert!(tree.contains(&a));
+        assert!(tree.contains(&b));
+        assert!(tree.contains(&c));
+    }
+
+    #[test]
+    fn tree_for_uri_leaf_climbs_to_entry() {
+        // A(entry) → B → C.  tree_for_uri(C) should climb to A
+        // and return the full tree {A, B, C}.
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+        g.update(&a, HashSet::from([b.clone()]));
+        g.update(&b, HashSet::from([c.clone()]));
+        g.mark_entry(&a, true);
+        g.recompute_entry_cache();
+
+        let tree = g.tree_for_uri(&c);
+        assert_eq!(tree.len(), 3);
+        assert!(tree.contains(&a));
+        assert!(tree.contains(&b));
+        assert!(tree.contains(&c));
+    }
+
+    #[test]
+    fn tree_for_uri_middle_node_climbs_to_entry() {
+        // A(entry) → B → C.  tree_for_uri(B) = {A, B, C}.
+        let g = new_graph();
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+        let c = u("file:///c.j");
+        g.update(&a, HashSet::from([b.clone()]));
+        g.update(&b, HashSet::from([c.clone()]));
+        g.mark_entry(&a, true);
+        g.recompute_entry_cache();
+
+        let tree = g.tree_for_uri(&b);
+        assert_eq!(tree.len(), 3);
+        assert!(tree.contains(&a));
+        assert!(tree.contains(&b));
+        assert!(tree.contains(&c));
+    }
+
+    #[test]
+    fn tree_for_uri_shared_file_belongs_to_multiple_trees() {
+        // Two entries share a common library file:
+        //   E1(entry) → shared
+        //   E2(entry) → shared
+        //   E1 → leaf1
+        //   E2 → leaf2
+        //
+        // tree_for_uri(shared) should return the union of BOTH trees:
+        //   {E1, E2, shared, leaf1, leaf2}
+        let g = new_graph();
+        let e1 = u("file:///e1.j");
+        let e2 = u("file:///e2.j");
+        let shared = u("file:///shared.j");
+        let leaf1 = u("file:///leaf1.j");
+        let leaf2 = u("file:///leaf2.j");
+
+        g.update(&e1, HashSet::from([shared.clone(), leaf1.clone()]));
+        g.update(&e2, HashSet::from([shared.clone(), leaf2.clone()]));
+        g.mark_entry(&e1, true);
+        g.mark_entry(&e2, true);
+        g.recompute_entry_cache();
+
+        let tree = g.tree_for_uri(&shared);
+        assert_eq!(tree.len(), 5, "shared file should belong to both trees");
+        assert!(tree.contains(&e1));
+        assert!(tree.contains(&e2));
+        assert!(tree.contains(&shared));
+        assert!(tree.contains(&leaf1));
+        assert!(tree.contains(&leaf2));
+    }
+
+    #[test]
+    fn tree_for_uri_separate_entries_separate_trees() {
+        // E1(entry) → A
+        // E2(entry) → B
+        // tree_for_uri(A) = {E1, A}, not {E1, E2, A, B}
+        let g = new_graph();
+        let e1 = u("file:///e1.j");
+        let e2 = u("file:///e2.j");
+        let a = u("file:///a.j");
+        let b = u("file:///b.j");
+
+        g.update(&e1, HashSet::from([a.clone()]));
+        g.update(&e2, HashSet::from([b.clone()]));
+        g.mark_entry(&e1, true);
+        g.mark_entry(&e2, true);
+        g.recompute_entry_cache();
+
+        let tree_a = g.tree_for_uri(&a);
+        assert_eq!(tree_a.len(), 2);
+        assert!(tree_a.contains(&e1));
+        assert!(tree_a.contains(&a));
+        assert!(!tree_a.contains(&e2));
+        assert!(!tree_a.contains(&b));
+
+        let tree_b = g.tree_for_uri(&b);
+        assert_eq!(tree_b.len(), 2);
+        assert!(tree_b.contains(&e2));
+        assert!(tree_b.contains(&b));
+    }
+
+    #[test]
+    fn tree_for_uri_disconnected_from_entry() {
+        // E1(entry) → A.  D is disconnected.
+        // tree_for_uri(D) = {D} only (not part of any tree).
+        let g = new_graph();
+        let e1 = u("file:///e1.j");
+        let a = u("file:///a.j");
+        let d = u("file:///d.j");
+
+        g.update(&e1, HashSet::from([a.clone()]));
+        g.update(&d, HashSet::new());
+        g.mark_entry(&e1, true);
+        g.recompute_entry_cache();
+
+        let tree = g.tree_for_uri(&d);
+        assert_eq!(tree.len(), 1);
+        assert!(tree.contains(&d));
     }
 }

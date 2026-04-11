@@ -16,7 +16,6 @@
 //!   (CascadeGuard + pending-drain + peer re-parse) with pluggable
 //!   per-language parse functions.
 
-use crate::debug_log;
 use crate::lng::directive::ImportDirective;
 use crate::lng::directive::UjapiDirective;
 use crate::lng::symbol::FileSymbols;
@@ -989,9 +988,7 @@ pub async fn cascade_parse_and_notify(
     };
 
     // Pass 1: parse the current file.
-    debug_log!("[cascade] pass1 start");
     let mut cascade = parse_fn(uri.clone()).await?;
-    debug_log!("[cascade] pass1 done, cascade={} peers", cascade.len());
 
     // Drain pending-import waiters.
     let pending_waiters = drain_pending(uri);
@@ -1002,7 +999,6 @@ pub async fn cascade_parse_and_notify(
     }
 
     // Pass 2: cascade re-parse affected peers.
-    debug_log!("[cascade] pass2 start, {} peers total", cascade.len());
     let mut count = 0usize;
 
     for peer_uri in &cascade {
@@ -1043,7 +1039,6 @@ pub async fn cascade_parse_and_notify(
         }
     }
 
-    debug_log!("[cascade] pass2 done, re-parsed {} peers", count);
 
     // Signal that this parse generation is complete.
     if let Some(g) = generation {

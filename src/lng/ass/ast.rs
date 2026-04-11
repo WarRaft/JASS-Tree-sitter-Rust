@@ -375,15 +375,20 @@ pub enum Expr<'tree> {
     Cast { node: Node<'tree> },
     /// `new Type(...)`
     New { node: Node<'tree> },
+    /// `Type<TypeArgs>(args)` — generic type constructor
+    Construct { node: Node<'tree> },
     /// `(expr)`
     Parens {
         node: Node<'tree>,
         inner: Box<Expr<'tree>>,
     },
-    /// `@handle` or `@FuncName` — function/handle reference
+    /// `@handle` or `@FuncName` — function/handle reference (prefix)
+    /// `Type@` — handle type annotation (postfix)
     HandleOf {
         node: Node<'tree>,
         operand: Box<Expr<'tree>>,
+        /// `true` for postfix `Type@` (handle type), `false` for prefix `@expr`.
+        is_postfix: bool,
     },
     /// Lambda: `function(params) { ... }`
     Lambda { node: Node<'tree> },
@@ -1002,6 +1007,9 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
                 Some(cn) if Kind::try_from(cn.kind_id()) == Ok(Kind::MemberAccess) => {
                     (None, build_expr(&cn).map(Box::new))
                 }
+                Some(cn) if Kind::try_from(cn.kind_id()) == Ok(Kind::SubscriptExpression) => {
+                    (None, build_expr(&cn).map(Box::new))
+                }
                 _ => {
                     (callee_inner.map(|n| Id { node: n, role: IdRole::FunctionCall }), None)
                 }
@@ -1093,6 +1101,7 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
                 Some(Expr::HandleOf {
                     node: *node,
                     operand,
+                    is_postfix: false,
                 })
             } else {
                 Some(Expr::Unary {
@@ -1154,6 +1163,7 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
         }
         Kind::CastExpression => Some(Expr::Cast { node: *node }),
         Kind::NewExpression => Some(Expr::New { node: *node }),
+        Kind::ConstructExpression => Some(Expr::Construct { node: *node }),
         Kind::ParenthesizedExpression => {
             let mut inner = None;
             let count = node.child_count();
@@ -1176,7 +1186,7 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
                 .and_then(|n| build_expr(&n))
                 .map(Box::new)
                 .unwrap_or_else(|| Box::new(Expr::Other(*node)));
-            Some(Expr::HandleOf { node: *node, operand })
+            Some(Expr::HandleOf { node: *node, operand, is_postfix: true })
         }
         Kind::LambdaExpression => Some(Expr::Lambda { node: *node }),
         Kind::StringLiteral => Some(Expr::StringLiteral(*node)),

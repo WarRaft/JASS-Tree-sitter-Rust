@@ -1520,4 +1520,157 @@ void ComputeStatDerived(int heroClass) {
                 int_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
         });
     }
+
+    #[test]
+    fn subscript_call_no_undeclared_function() {
+        // Calling a function handle stored in an array: arr[i]()
+        // should NOT produce "Undeclared function `CF_PanelClosers[CF_ActivePanelId]`"
+        let src = "\
+funcdef void PanelCloseCallback();
+array<PanelCloseCallback@> CF_PanelClosers(16);
+int CF_ActivePanelId = 0;
+
+void CF_CloseActivePanel() {
+    if (CF_ActivePanelId > 0 && CF_ActivePanelId < 16) {
+        CF_PanelClosers[CF_ActivePanelId]();
+    }
+    CF_ActivePanelId = 0;
+}
+";
+        with_cursor(src, |cursor| {
+            let undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("CF_PanelClosers"))
+                .collect();
+            assert!(undeclared.is_empty(),
+                "Expected no 'undeclared' diagnostic for CF_PanelClosers[...]()\
+                 — subscript call should be recognized, got {:?}", undeclared);
+        });
+    }
+
+    #[test]
+    fn postfix_handle_type_not_function_call() {
+        // `UnitEventEntry@` (postfix @) is a handle type annotation,
+        // NOT a function reference. It should be treated as a type reference.
+        // `array<UnitEventEntry@>()` is parsed by tree-sitter as comparisons:
+        //   (array < UnitEventEntry@) > ()
+        // but `UnitEventEntry` should NOT produce "Undeclared function".
+        let src = "\
+class UnitEventEntry {}
+
+void test() {
+    @list = array<UnitEventEntry@>();
+}
+";
+        with_cursor(src, |cursor| {
+            let func_diags: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("UnitEventEntry") && d.message.contains("function"))
+                .collect();
+            assert!(func_diags.is_empty(),
+                "Expected no 'Undeclared function' for UnitEventEntry@ (postfix handle type), got {:?}",
+                func_diags);
+        });
+    }
+
+    #[test]
+    fn postfix_handle_type_colored_as_type() {
+        // `UnitEventEntry@` — the operand should be colored as Type, not Function
+        let src = "\
+class UnitEventEntry {}
+
+void test() {
+    @list = array<UnitEventEntry@>();
+}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+            let ue_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "UnitEventEntry")
+                .collect();
+            // At least one occurrence (the class decl) should be Type;
+            // the postfix handle @ operand should also be Type.
+            assert!(ue_tokens.iter().all(|(_, k)| *k == TokenKind::Type),
+                "Expected all 'UnitEventEntry' tokens to be Type, got {:?}", ue_tokens);
+        });
+    }
+
+    #[test]
+    fn generic_misparse_no_empty_identifier_diagnostic() {
+        // tree-sitter parses `array<UnitEventEntry@>()` as binary comparisons:
+        //   (array < UnitEventEntry@) > ()
+        // The `()` produces a parenthesized_expression with an empty identifier.
+        // That empty identifier must NOT produce any diagnostics.
+        let src = "\
+class UnitEventEntry {}
+
+void test() {
+    @list = array<UnitEventEntry@>();
+}
+";
+        with_cursor(src, |cursor| {
+            let empty_diags: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("``") || d.message.contains("''"))
+                .collect();
+            assert!(empty_diags.is_empty(),
+                "Expected no diagnostics for empty identifier, got {:?}", empty_diags);
+        });
+    }
+
+    #[test]
+    fn builtin_type_in_expr_colored_as_type() {
+        // `array` in `array<UnitEventEntry@>()` is a builtin type name.
+        // Even though tree-sitter puts it in a binary expression as an identifier,
+        // it should be colored as Type, not Variable.
+        let src = "\
+class UnitEventEntry {}
+
+void test() {
+    @list = array<UnitEventEntry@>();
+}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+            let arr_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "array")
+                .collect();
+            assert!(!arr_tokens.is_empty(), "Expected to find 'array' tokens");
+            assert!(arr_tokens.iter().all(|(_, k)| *k == TokenKind::Type),
+                "Expected 'array' to be colored as Type, got {:?}", arr_tokens);
+        });
+    }
+
+    #[test]
+    fn construct_expression_types_colored_no_diagnostics() {
+        // `array<UnitEventEntry@>()` is now a proper construct_expression.
+        // Both `array` and `UnitEventEntry` should be colored as Type,
+        // and there should be no undeclared diagnostics for them.
+        let src = "\
+class UnitEventEntry {}
+
+void test() {
+    UnitEventEntry@ list = array<UnitEventEntry@>();
+}
+";
+        with_cursor(src, |cursor| {
+            // No undeclared diagnostics for `array` or `UnitEventEntry`.
+            let type_undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.has_code("undeclared")
+                    && (d.message.contains("array") || d.message.contains("UnitEventEntry")))
+                .collect();
+            assert!(type_undeclared.is_empty(),
+                "Expected no 'undeclared' diagnostics for construct_expression types, got {:?}", type_undeclared);
+
+            let tokens = collect_tokens(src, cursor);
+            let arr_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "array")
+                .collect();
+            assert!(arr_tokens.iter().all(|(_, k)| *k == TokenKind::Type),
+                "Expected 'array' to be Type, got {:?}", arr_tokens);
+
+            let ue_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "UnitEventEntry")
+                .collect();
+            assert!(ue_tokens.iter().all(|(_, k)| *k == TokenKind::Type),
+                "Expected 'UnitEventEntry' to be Type, got {:?}", ue_tokens);
+        });
+    }
 }

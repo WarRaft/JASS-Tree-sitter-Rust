@@ -23,11 +23,10 @@ pub fn subscribe() -> broadcast::Receiver<String> {
     TX.subscribe()
 }
 
-/// Convenience macro — works like `format!` but sends via the debug WS.
+/// Convenience macro — works like `format!` but sends via the debug WS stream.
 #[macro_export]
 macro_rules! debug_log {
     ($($arg:tt)*) => {
         $crate::util::debug_log::send(format!($($arg)*))
     };
 }
-
