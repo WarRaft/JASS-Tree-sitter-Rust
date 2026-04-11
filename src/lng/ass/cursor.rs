@@ -4,7 +4,7 @@ use crate::lng::ass::ast::*;
 use crate::lng::ass::kind::Kind;
 use crate::lng::ass::symbol::{
     AsFileSymbols, ClassSym, EnumSym, FuncdefSym, FunctionSym, GlobalVarSym,
-    InterfaceSym, MixinSym, NamespaceSym, ParamSym, TypedefSym,
+    InterfaceSym, MethodSym, MixinSym, NamespaceSym, ParamSym, PropertySym, TypedefSym,
 };
 use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::http::document_symbol::{DocumentSymbol, SymbolKind};
@@ -60,6 +60,11 @@ struct UnresolvedRef {
     /// Explicit namespace qualifier (e.g. `"Jass"` from `Jass::Foo`).
     /// `None` for unqualified references.
     qualifier: Option<String>,
+    /// For `Something(args)` — byte offset of the callee identifier.
+    /// When set, `link_imports` checks types first (constructor/cast)
+    /// before falling back to function resolution. The resolved role is
+    /// written into `id_roles`.
+    call_site_byte: Option<usize>,
 }
 
 /// Three-namespace scope for AS: variables, functions, and types can
@@ -72,6 +77,155 @@ struct HlScope {
     types: HashMap<String, DeclKey>,
     /// Known namespace names (from `namespace Foo { ... }` or `using namespace Foo`).
     namespaces: HashMap<String, DeclKey>,
+}
+
+// ─── Doc-comment extraction ──────────────────────────────────────────────────
+
+/// Strip the `//*` prefix from a single comment line and return the doc text.
+///
+/// Rules:
+/// - `//* foo` → `foo`   (strip `//*` + one trailing space)
+/// - `//*foo`  → `foo`   (strip `//*` only)
+/// - `//*`     → ``      (empty line)
+fn strip_doc_prefix(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("//*") {
+        return None;
+    }
+    let after = &trimmed[3..];
+    if after.starts_with(' ') {
+        Some(&after[1..])
+    } else {
+        Some(after)
+    }
+}
+
+/// Strip the `/** ... */` block-comment delimiters and return the doc body.
+///
+/// Handles both single-line (`/** text */`) and multi-line forms.
+/// Leading `*` on continuation lines are stripped (Javadoc style).
+fn strip_block_doc(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("/**") {
+        return None;
+    }
+    // Must end with `*/`
+    if !trimmed.ends_with("*/") {
+        return None;
+    }
+    // Exclude `/**/` — empty block doc
+    let inner = &trimmed[3..trimmed.len() - 2];
+    let mut lines = Vec::new();
+    for line in inner.lines() {
+        let stripped = line.trim();
+        // Strip leading `*` (common Javadoc continuation)
+        let stripped = if stripped.starts_with('*') {
+            let after = &stripped[1..];
+            if after.starts_with(' ') { &after[1..] } else { after }
+        } else {
+            stripped
+        };
+        lines.push(stripped.to_string());
+    }
+    // Trim leading/trailing blank lines
+    while lines.first().map_or(false, |l| l.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().map_or(false, |l| l.is_empty()) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(lines.join("\n"))
+}
+
+/// Extract a doc comment from the comment block directly above a declaration
+/// at the given `row`.
+///
+/// Supports two forms:
+/// 1. `//*` single-line doc comments (consecutive lines joined).
+/// 2. `/** ... */` block doc comments (Javadoc-style).
+///
+/// Walks upward from `row - 1`.  For `//*` lines, collects consecutive doc
+/// lines.  For a block comment ending on `row - 1`, extracts the body.
+fn extract_doc_comment(rope: &Rope, row: usize) -> Option<String> {
+    if row == 0 {
+        return None;
+    }
+    let line_count = rope.line_of_offset(rope.len()) + 1;
+
+    // ── Phase 1: try consecutive `//*` lines walking upward ──────────
+    let mut doc_lines = Vec::new();
+    let mut r = row;
+    while r > 0 {
+        r -= 1;
+        if r >= line_count {
+            break;
+        }
+        let line_start = rope.offset_of_line(r);
+        let line_end = if r + 1 < line_count {
+            rope.offset_of_line(r + 1)
+        } else {
+            rope.len()
+        };
+        let text = rope.slice_to_cow(line_start..line_end);
+        let text = text.trim_end_matches('\n').trim_end_matches('\r');
+        if let Some(doc) = strip_doc_prefix(text) {
+            doc_lines.push(doc.to_string());
+        } else {
+            break;
+        }
+    }
+    if !doc_lines.is_empty() {
+        doc_lines.reverse();
+        return Some(doc_lines.join("\n"));
+    }
+
+    // ── Phase 2: try `/** ... */` block comment on the preceding line(s)
+    // Look at the line just above the declaration and see if it (or the
+    // block ending there) is a block-doc comment.
+    let prev_row = row - 1;
+    if prev_row >= line_count {
+        return None;
+    }
+    let prev_line_start = rope.offset_of_line(prev_row);
+    let prev_line_end = if prev_row + 1 < line_count {
+        rope.offset_of_line(prev_row + 1)
+    } else {
+        rope.len()
+    };
+    let prev_line_text = rope.slice_to_cow(prev_line_start..prev_line_end);
+    let prev_trimmed = prev_line_text.trim();
+    // Single-line: `/** ... */` entirely on one line
+    if prev_trimmed.starts_with("/**") && prev_trimmed.ends_with("*/") {
+        return strip_block_doc(prev_trimmed);
+    }
+    // Multi-line: the line above ends with `*/` — scan backwards for `/**`
+    if prev_trimmed.ends_with("*/") {
+        let mut start_row = prev_row;
+        while start_row > 0 {
+            start_row -= 1;
+            let ls = rope.offset_of_line(start_row);
+            let le = if start_row + 1 < line_count {
+                rope.offset_of_line(start_row + 1)
+            } else {
+                rope.len()
+            };
+            let lt = rope.slice_to_cow(ls..le);
+            if lt.trim().starts_with("/**") {
+                // Found the start — extract the whole block
+                let block_end = prev_line_end.min(rope.len());
+                let block_text = rope.slice_to_cow(ls..block_end);
+                return strip_block_doc(&block_text);
+            }
+            // If we hit a line that isn't part of the block comment, stop
+            if !lt.trim().starts_with('*') && !lt.trim().is_empty() {
+                break;
+            }
+        }
+    }
+    None
 }
 
 // ─── Cursor ──────────────────────────────────────────────────────────────────
@@ -292,6 +446,15 @@ impl Cursor {
         self.namespace_stack.join("::")
     }
 
+    /// Check if an expression is the `this` or `super` keyword.
+    fn expr_is_this(&self, expr: &Expr) -> bool {
+        if let Expr::Id(id) = expr {
+            let name = self.node_text(&id.node);
+            return name == "this" || name == "super";
+        }
+        false
+    }
+
     fn params_to_sym(&self, params: &[Param]) -> Vec<ParamSym> {
         params
             .iter()
@@ -341,6 +504,17 @@ impl Cursor {
         key
     }
 
+    /// Like [`hl_declare_var`] but reuses an existing key if the name was
+    /// already pre-declared in the current scope (two-pass class resolution).
+    fn hl_declare_var_or_reuse(&mut self, name: &str, node: &Node) -> DeclKey {
+        if let Some(scope) = self.hl_scopes.last() {
+            if let Some(&existing) = scope.vars.get(name) {
+                return existing;
+            }
+        }
+        self.hl_declare_var(name, node)
+    }
+
     /// Declare a **function / method**.
     fn hl_declare_func(&mut self, name: &str, node: &Node) -> DeclKey {
         let key = self.alloc_key();
@@ -361,6 +535,17 @@ impl Cursor {
             scope.funcs.insert(name.to_string(), key);
         }
         key
+    }
+
+    /// Like [`hl_declare_func`] but reuses an existing key if the name was
+    /// already pre-declared in the current scope (two-pass class resolution).
+    fn hl_declare_func_or_reuse(&mut self, name: &str, node: &Node) -> DeclKey {
+        if let Some(scope) = self.hl_scopes.last() {
+            if let Some(&existing) = scope.funcs.get(name) {
+                return existing;
+            }
+        }
+        self.hl_declare_func(name, node)
     }
 
     /// Declare a **type** (class, interface, enum, mixin, typedef, funcdef).
@@ -384,6 +569,17 @@ impl Cursor {
         key
     }
 
+    /// Like [`hl_declare_type`] but reuses an existing key if the name was
+    /// already pre-declared in the current scope (two-pass resolution).
+    fn hl_declare_type_or_reuse(&mut self, name: &str, node: &Node) -> DeclKey {
+        if let Some(scope) = self.hl_scopes.last() {
+            if let Some(&existing) = scope.types.get(name) {
+                return existing;
+            }
+        }
+        self.hl_declare_type(name, node)
+    }
+
     /// Declare a **namespace** name in the current scope.
     fn hl_declare_namespace(&mut self, name: &str, node: &Node) -> DeclKey {
         let key = self.alloc_key();
@@ -405,6 +601,17 @@ impl Cursor {
         key
     }
 
+    /// Like [`hl_declare_namespace`] but reuses an existing key if the name
+    /// was already pre-declared in the current scope (two-pass resolution).
+    fn hl_declare_namespace_or_reuse(&mut self, name: &str, node: &Node) -> DeclKey {
+        if let Some(scope) = self.hl_scopes.last() {
+            if let Some(&existing) = scope.namespaces.get(name) {
+                return existing;
+            }
+        }
+        self.hl_declare_namespace(name, node)
+    }
+
     /// AS built-in types that have no user declaration (primitives + template containers + funcdefs).
     const BUILTIN_TYPES: &'static [&'static str] = &[
         "void", "int", "int8", "int16", "int32", "int64",
@@ -414,6 +621,25 @@ impl Cursor {
         // Built-in funcdef (delegate) types
         "CallbackFunc", "BoolexprFunc",
     ];
+
+    /// Check if `name` is a known type — built-in, locally declared, or imported.
+    ///
+    /// Used to distinguish `TypeName(expr)` (type cast / constructor) from
+    /// `funcName(expr)` (function call) in `Expr::Call`.
+    fn is_known_type(&self, name: &str) -> bool {
+        if Self::BUILTIN_TYPES.contains(&name) {
+            return true;
+        }
+        // Check local scope type declarations (classes, interfaces, enums, mixins, typedefs)
+        if self.hl_scopes.iter().rev().any(|scope| scope.types.contains_key(name)) {
+            return true;
+        }
+        // Imported types arrive as ImportedKind::Var — check imported_var_types
+        if self.imported_var_types.contains_key(name) {
+            return true;
+        }
+        false
+    }
 
     /// Recursively walk a `type` CST node (kind_id=193) and mark every
     /// inner identifier as `TypeRef`, calling `hl_reference_type` for each
@@ -463,7 +689,7 @@ impl Cursor {
                     is_decl: false,
                 });
             self.ref_names.entry(key).or_insert_with(|| name.to_string());
-        } else if !Self::BUILTIN_VALUES.contains(&name) {
+        } else if !Self::BUILTIN_VALUES.contains(&name) && !Self::BUILTIN_TYPES.contains(&name) {
             self.unresolved_refs.push(UnresolvedRef {
                 name: name.to_string(),
                 range: node.to_range(&self.rope),
@@ -471,6 +697,7 @@ impl Cursor {
                 namespace: ImportedKind::Var,
                 is_type_ref: false,
                 qualifier: None,
+                call_site_byte: None,
             });
         }
     }
@@ -503,6 +730,7 @@ impl Cursor {
                 namespace: ImportedKind::Var,
                 is_type_ref: true,
                 qualifier: None,
+                call_site_byte: None,
             });
         }
     }
@@ -534,6 +762,7 @@ impl Cursor {
                 namespace: ImportedKind::Func,
                 is_type_ref: false,
                 qualifier: None,
+                call_site_byte: None,
             });
         }
     }
@@ -576,6 +805,7 @@ impl Cursor {
             namespace: if is_func { ImportedKind::Func } else { ImportedKind::Var },
             is_type_ref: !is_func,
             qualifier: Some(ns_name.to_string()),
+            call_site_byte: None,
         });
     }
 
@@ -602,14 +832,26 @@ impl Cursor {
         let mut ext_counter: u32 = 0;
 
         for ((name, ns, qualifier), refs) in by_key {
+            // Check if any ref in this group is a call-site (ambiguous
+            // func-vs-constructor).  All refs in the same group share
+            // (name, ns, qualifier) so the call-site flag propagates.
+            let is_call_site = refs.iter().any(|r| r.call_site_byte.is_some());
+
             // 1. For unqualified refs, check local forward declarations.
             if qualifier.is_none() {
                 let local_key = if let Some(scope) = self.hl_scopes.first() {
-                    match ns {
-                        ImportedKind::Func => scope.funcs.get(name.as_str()).copied(),
-                        ImportedKind::Var => {
-                            scope.types.get(name.as_str()).copied()
-                                .or_else(|| scope.vars.get(name.as_str()).copied())
+                    if is_call_site {
+                        // Ambiguous call: check types first (constructor),
+                        // then funcs.
+                        scope.types.get(name.as_str()).copied()
+                            .or_else(|| scope.funcs.get(name.as_str()).copied())
+                    } else {
+                        match ns {
+                            ImportedKind::Func => scope.funcs.get(name.as_str()).copied(),
+                            ImportedKind::Var => {
+                                scope.types.get(name.as_str()).copied()
+                                    .or_else(|| scope.vars.get(name.as_str()).copied())
+                            }
                         }
                     }
                 } else {
@@ -617,15 +859,27 @@ impl Cursor {
                 };
 
                 if let Some(key) = local_key {
-                    for uref in refs {
+                    // Determine whether the resolved key is a type
+                    // (constructor) or a function, and fix up id_roles.
+                    let resolved_as_type = self.hl_scopes.first()
+                        .map(|scope| scope.types.get(name.as_str()).copied() == Some(key))
+                        .unwrap_or(false);
+
+                    for uref in &refs {
                         self.ref_groups
                             .entry(key)
                             .or_default()
                             .push(RawOccurrence {
-                                range: uref.range,
+                                range: uref.range.clone(),
                                 kind: uref.kind,
                                 is_decl: false,
                             });
+                        if let Some(byte) = uref.call_site_byte {
+                            self.id_roles.insert(
+                                byte,
+                                if resolved_as_type { IdRole::TypeRef } else { IdRole::FunctionCall },
+                            );
+                        }
                     }
                     continue;
                 }
@@ -636,10 +890,19 @@ impl Cursor {
                 .iter()
                 .filter(|sym| {
                     if sym.name != name { return false; }
-                    let kind_matches = match (ns, sym.kind) {
-                        (ImportedKind::Func, ImportedKind::Func) => true,
-                        (ImportedKind::Var, ImportedKind::Var) => true,
-                        _ => false,
+                    let kind_matches = if is_call_site {
+                        // Ambiguous call: accept both Func and Var (type)
+                        // imports — we'll decide func-vs-constructor below.
+                        true
+                    } else {
+                        match (ns, sym.kind) {
+                            (ImportedKind::Func, ImportedKind::Func) => true,
+                            (ImportedKind::Var, ImportedKind::Var) => true,
+                            // funcdef is SymbolNS::Func but is also used as a type name,
+                            // so type references (Var) must also match Func imports.
+                            (ImportedKind::Var, ImportedKind::Func) => true,
+                            _ => false,
+                        }
                     };
                     if !kind_matches { return false; }
 
@@ -651,6 +914,11 @@ impl Cursor {
                 .collect();
 
             if !matching.is_empty() {
+                // For call-site refs, determine whether the import is a type
+                // (constructor/cast) or a function.
+                let resolved_as_type_import = is_call_site
+                    && matching.iter().any(|sym| sym.kind == ImportedKind::Var);
+
                 let key = EXTERNAL_KEY_BASE + ext_counter;
                 ext_counter += 1;
                 self.ref_names.insert(key, name.clone());
@@ -673,15 +941,21 @@ impl Cursor {
                         origins,
                     },
                 );
-                for uref in refs {
+                for uref in &refs {
                     self.ref_groups
                         .entry(key)
                         .or_default()
                         .push(RawOccurrence {
-                            range: uref.range,
+                            range: uref.range.clone(),
                             kind: uref.kind,
                             is_decl: false,
                         });
+                    if let Some(byte) = uref.call_site_byte {
+                        self.id_roles.insert(
+                            byte,
+                            if resolved_as_type_import { IdRole::TypeRef } else { IdRole::FunctionCall },
+                        );
+                    }
                 }
             } else {
                 // 3. No match → standalone group + diagnostics.
@@ -698,6 +972,10 @@ impl Cursor {
                             kind: uref.kind,
                             is_decl: i == 0,
                         });
+                    // For unresolved call-sites, default to FunctionCall.
+                    if let Some(byte) = uref.call_site_byte {
+                        self.id_roles.insert(byte, IdRole::FunctionCall);
+                    }
                     self.diagnostics.push(Diagnostic {
                         range: uref.range.clone(),
                         message: crate::util::i18n::undeclared_symbol(
@@ -717,7 +995,85 @@ impl Cursor {
 
     // ─── Top-level visitors ──────────────────────────────────────────────
 
+    /// Recursively pre-declare all names at this scope level.
+    /// Enters nested namespaces (push/pop child scopes) so their items
+    /// are also pre-declared.  Does NOT resolve references or emit
+    /// diagnostics — that happens in the full visit pass.
+    fn predeclare_items(&mut self, items: &[TopLevel]) {
+        for item in items {
+            match item {
+                TopLevel::Function(f) => {
+                    if let Some(ref id) = f.name {
+                        let name = self.node_text(&id.node);
+                        self.hl_declare_func(&name, &id.node);
+                    }
+                }
+                TopLevel::Class(cls) => {
+                    if let Some(ref id) = cls.name {
+                        let name = self.node_text(&id.node);
+                        self.hl_declare_type(&name, &id.node);
+                    }
+                }
+                TopLevel::Interface(iface) => {
+                    if let Some(ref id) = iface.name {
+                        let name = self.node_text(&id.node);
+                        self.hl_declare_type(&name, &id.node);
+                    }
+                }
+                TopLevel::Mixin(mx) => {
+                    if let Some(ref id) = mx.name {
+                        let name = self.node_text(&id.node);
+                        self.hl_declare_type(&name, &id.node);
+                    }
+                }
+                TopLevel::Enum(en) => {
+                    if let Some(ref id) = en.name {
+                        let name = self.node_text(&id.node);
+                        self.hl_declare_type(&name, &id.node);
+                    }
+                }
+                TopLevel::Typedef(td) => {
+                    if let Some(ref id) = td.alias {
+                        let name = self.node_text(&id.node);
+                        self.hl_declare_type(&name, &id.node);
+                    }
+                }
+                TopLevel::Funcdef(fd) => {
+                    if let Some(ref id) = fd.name {
+                        let name = self.node_text(&id.node);
+                        self.hl_declare_type(&name, &id.node);
+                    }
+                }
+                TopLevel::VarDecl(v) => {
+                    for d in &v.decls {
+                        if let Some(ref id) = d.name {
+                            let dname = self.node_text(&id.node);
+                            self.hl_declare_var(&dname, &id.node);
+                        }
+                    }
+                }
+                TopLevel::Namespace(ns) => {
+                    // Pre-declare the namespace name in the parent scope.
+                    // The namespace body items are pre-declared when
+                    // visit_top_levels is called recursively for the body.
+                    if let Some(ref id) = ns.name {
+                        let ns_name = self.node_text(&id.node);
+                        self.hl_declare_namespace(&ns_name, &id.node);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn visit_top_levels(&mut self, items: &[TopLevel]) -> Vec<DocumentSymbol> {
+        // ── Pass 0 (declaration collection): recursively pre-declare all
+        // names at this scope level AND enter nested namespaces so that
+        // their children are also pre-declared in child scopes.
+        // This runs before any expression/reference resolution.
+        self.predeclare_items(items);
+
+        // ── Pass 1 (full visit): declarations reuse pre-registered keys.
         let mut syms = Vec::new();
         for item in items {
             if let Some(sym) = self.visit_top_level(item) {
@@ -819,9 +1175,9 @@ impl Cursor {
             TopLevel::Namespace(ns) => {
                 let ns_name = self.id_name(&ns.name);
 
-                // Declare the namespace name in the current scope
+                // Declare or reuse the namespace name (pre-declared in pass 0)
                 if let Some(ref id) = ns.name {
-                    self.hl_declare_namespace(&ns_name, &id.node);
+                    self.hl_declare_namespace_or_reuse(&ns_name, &id.node);
                     self.id_roles.insert(id.node.start_byte(), IdRole::NamespaceDecl);
                 }
 
@@ -854,7 +1210,7 @@ impl Cursor {
                 let type_name = self.id_name(&td.type_id);
 
                 if let Some(ref id) = td.alias {
-                    self.hl_declare_type(&alias_name, &id.node);
+                    self.hl_declare_type_or_reuse(&alias_name, &id.node);
                     self.id_roles.insert(id.node.start_byte(), IdRole::TypedefAlias);
                 }
                 if let Some(ref id) = td.type_id {
@@ -865,7 +1221,7 @@ impl Cursor {
                     alias: alias_name.clone(),
                     original: type_name,
                     namespace: self.current_namespace(),
-                    doc_comment: None,
+                    doc_comment: extract_doc_comment(&self.rope, td.node.start_position().row),
                     decl_byte: td.node.start_byte(),
                 });
 
@@ -881,7 +1237,7 @@ impl Cursor {
                 let name = self.id_name(&fd.name);
 
                 if let Some(ref id) = fd.name {
-                    self.hl_declare_type(&name, &id.node);
+                    self.hl_declare_type_or_reuse(&name, &id.node);
                     self.id_roles.insert(id.node.start_byte(), IdRole::FuncdefName);
                 }
                 if let Some(ref id) = fd.return_type {
@@ -899,7 +1255,7 @@ impl Cursor {
                     params: self.params_to_sym(&fd.params),
                     return_type: fd.return_type.as_ref().map(|id| self.node_text(&id.node)),
                     namespace: self.current_namespace(),
-                    doc_comment: None,
+                    doc_comment: extract_doc_comment(&self.rope, fd.node.start_position().row),
                     decl_byte: fd.node.start_byte(),
                 });
 
@@ -915,7 +1271,7 @@ impl Cursor {
                 let name = self.id_name(&en.name);
 
                 if let Some(ref id) = en.name {
-                    self.hl_declare_type(&name, &id.node);
+                    self.hl_declare_type_or_reuse(&name, &id.node);
                     self.id_roles.insert(id.node.start_byte(), IdRole::EnumDecl);
                 }
 
@@ -944,7 +1300,7 @@ impl Cursor {
                 self.file_symbols.enums.push(EnumSym {
                     name: name.clone(),
                     namespace: self.current_namespace(),
-                    doc_comment: None,
+                    doc_comment: extract_doc_comment(&self.rope, en.node.start_position().row),
                     decl_byte: en.node.start_byte(),
                     members: member_names,
                 });
@@ -962,23 +1318,45 @@ impl Cursor {
                 let name = self.id_name(&iface.name);
 
                 if let Some(ref id) = iface.name {
-                    self.hl_declare_type(&name, &id.node);
+                    self.hl_declare_type_or_reuse(&name, &id.node);
                     self.id_roles.insert(id.node.start_byte(), IdRole::InterfaceDecl);
                 }
 
                 self.push_fold_region(&iface.node);
-                let mut children = Vec::new();
+                self.hl_push_scope();
+
+                // Pass 1: pre-declare all interface methods
                 for m in &iface.methods {
+                    let method_name = self.id_name(&m.name);
+                    if let Some(ref id) = m.name {
+                        self.hl_declare_func(&method_name, &id.node);
+                    }
+                }
+
+                // Pass 2: visit method bodies
+                let mut children = Vec::new();
+                let mut methods = Vec::new();
+                for m in &iface.methods {
+                    let method_name = self.id_name(&m.name);
+                    methods.push(MethodSym {
+                        name: method_name,
+                        params: self.params_to_sym(&m.params),
+                        return_type: m.return_type.as_ref().map(|id| self.node_text(&id.node)),
+                        doc_comment: extract_doc_comment(&self.rope, m.node.start_position().row),
+                        decl_byte: m.node.start_byte(),
+                    });
                     if let Some(sym) = self.visit_function(m) {
                         children.push(sym);
                     }
                 }
+                self.hl_pop_scope();
 
                 self.file_symbols.interfaces.push(InterfaceSym {
                     name: name.clone(),
                     namespace: self.current_namespace(),
-                    doc_comment: None,
+                    doc_comment: extract_doc_comment(&self.rope, iface.node.start_position().row),
                     decl_byte: iface.node.start_byte(),
+                    methods,
                 });
 
                 Some(DocumentSymbol {
@@ -994,20 +1372,22 @@ impl Cursor {
                 let name = self.id_name(&mx.name);
 
                 if let Some(ref id) = mx.name {
-                    self.hl_declare_type(&name, &id.node);
+                    self.hl_declare_type_or_reuse(&name, &id.node);
                     self.id_roles.insert(id.node.start_byte(), IdRole::MixinDecl);
                 }
 
                 self.push_fold_region(&mx.node);
                 self.hl_push_scope();
-                let children = self.visit_class_members(&mx.members);
+                let (children, methods, properties) = self.visit_class_members(&mx.members);
                 self.hl_pop_scope();
 
                 self.file_symbols.mixins.push(MixinSym {
                     name: name.clone(),
                     namespace: self.current_namespace(),
-                    doc_comment: None,
+                    doc_comment: extract_doc_comment(&self.rope, mx.node.start_position().row),
                     decl_byte: mx.node.start_byte(),
+                    methods,
+                    properties,
                 });
 
                 Some(DocumentSymbol {
@@ -1023,20 +1403,22 @@ impl Cursor {
                 let name = self.id_name(&cls.name);
 
                 if let Some(ref id) = cls.name {
-                    self.hl_declare_type(&name, &id.node);
+                    self.hl_declare_type_or_reuse(&name, &id.node);
                     self.id_roles.insert(id.node.start_byte(), IdRole::ClassDecl);
                 }
 
                 self.push_fold_region(&cls.node);
                 self.hl_push_scope();
-                let children = self.visit_class_members(&cls.members);
+                let (children, methods, properties) = self.visit_class_members(&cls.members);
                 self.hl_pop_scope();
 
                 self.file_symbols.classes.push(ClassSym {
                     name: name.clone(),
                     namespace: self.current_namespace(),
-                    doc_comment: None,
+                    doc_comment: extract_doc_comment(&self.rope, cls.node.start_position().row),
                     decl_byte: cls.node.start_byte(),
+                    methods,
+                    properties,
                 });
 
                 Some(DocumentSymbol {
@@ -1062,16 +1444,64 @@ impl Cursor {
 
     // ─── Class member visitors ───────────────────────────────────────────
 
-    fn visit_class_members(&mut self, members: &[ClassMember]) -> Vec<DocumentSymbol> {
+    fn visit_class_members(
+        &mut self,
+        members: &[ClassMember],
+    ) -> (Vec<DocumentSymbol>, Vec<MethodSym>, Vec<PropertySym>) {
         let mut syms = Vec::new();
+        let mut methods = Vec::new();
+        let mut properties = Vec::new();
+
+        // ── Pass 1: pre-declare ALL methods and properties into the class scope
+        // so that every method body can see siblings declared below it.
         for m in members {
             match m {
                 ClassMember::Function(f) => {
+                    let method_name = self.id_name(&f.name);
+                    if let Some(ref id) = f.name {
+                        self.hl_declare_func(&method_name, &id.node);
+                    }
+                }
+                ClassMember::Variable(v) => {
+                    for d in &v.decls {
+                        let dname = self.id_name(&d.name);
+                        if let Some(ref id) = d.name {
+                            self.hl_declare_var(&dname, &id.node);
+                        }
+                    }
+                }
+                ClassMember::Other(_) => {}
+            }
+        }
+
+        // ── Pass 2: visit bodies — declarations reuse pre-registered keys.
+        for m in members {
+            match m {
+                ClassMember::Function(f) => {
+                    let method_name = self.id_name(&f.name);
+                    methods.push(MethodSym {
+                        name: method_name,
+                        params: self.params_to_sym(&f.params),
+                        return_type: f.return_type.as_ref().map(|id| self.node_text(&id.node)),
+                        doc_comment: extract_doc_comment(&self.rope, f.node.start_position().row),
+                        decl_byte: f.node.start_byte(),
+                    });
                     if let Some(sym) = self.visit_function(f) {
                         syms.push(sym);
                     }
                 }
                 ClassMember::Variable(v) => {
+                    let type_name = v.type_id.as_ref().map(|id| self.node_text(&id.node));
+                    let var_doc = extract_doc_comment(&self.rope, v.node.start_position().row);
+                    for d in &v.decls {
+                        let dname = self.id_name(&d.name);
+                        properties.push(PropertySym {
+                            name: dname,
+                            type_name: type_name.clone(),
+                            doc_comment: var_doc.clone(),
+                            decl_byte: d.node.start_byte(),
+                        });
+                    }
                     if let Some(sym) = self.visit_var_decl(v) {
                         syms.push(sym);
                     }
@@ -1079,7 +1509,7 @@ impl Cursor {
                 ClassMember::Other(_) => {}
             }
         }
-        syms
+        (syms, methods, properties)
     }
 
     /// Visit a function declaration inside a class/interface (no symbol export).
@@ -1096,7 +1526,7 @@ impl Cursor {
         let name = self.id_name(&f.name);
 
         if let Some(ref id) = f.name {
-            self.hl_declare_func(&name, &id.node);
+            self.hl_declare_func_or_reuse(&name, &id.node);
             self.id_roles.insert(id.node.start_byte(), IdRole::FunctionDecl);
         }
         if let Some(ref id) = f.return_type {
@@ -1140,7 +1570,7 @@ impl Cursor {
                 params: self.params_to_sym(&f.params),
                 return_type: f.return_type.as_ref().map(|id| self.node_text(&id.node)),
                 namespace: self.current_namespace(),
-                doc_comment: None,
+                doc_comment: extract_doc_comment(&self.rope, f.node.start_position().row),
                 decl_byte: f.node.start_byte(),
             });
         }
@@ -1175,7 +1605,7 @@ impl Cursor {
         for d in &v.decls {
             let dname = self.id_name(&d.name);
             if let Some(ref id) = d.name {
-                let vk = self.hl_declare_var(&dname, &id.node);
+                let vk = self.hl_declare_var_or_reuse(&dname, &id.node);
                 self.var_decl_keys.insert(vk);
                 self.id_roles.insert(id.node.start_byte(), IdRole::Variable);
             }
@@ -1192,7 +1622,7 @@ impl Cursor {
                     name: dname,
                     type_name: type_name.clone(),
                     namespace: self.current_namespace(),
-                    doc_comment: None,
+                    doc_comment: extract_doc_comment(&self.rope, v.node.start_position().row),
                     decl_byte: d.node.start_byte(),
                 });
             }
@@ -1250,6 +1680,15 @@ impl Cursor {
             Stmt::For(f) => {
                 self.push_fold_region(&f.node);
                 self.hl_push_scope();
+                // Visit init: declare variables or visit expression
+                match &f.init {
+                    Some(ForInit::VarDecl(v)) => { self.visit_var_decl(v); }
+                    Some(ForInit::Expr(e)) => { self.visit_expr(e); }
+                    None => {}
+                }
+                // Visit condition and update expressions
+                if let Some(c) = &f.condition { self.visit_expr(c); }
+                for u in &f.update { self.visit_expr(u); }
                 self.visit_stmts(&f.body);
                 self.hl_pop_scope();
                 None
@@ -1314,22 +1753,97 @@ impl Cursor {
             Expr::Call { callee, callee_expr, args, .. } => {
                 if let Some(id) = callee {
                     let name = self.node_text(&id.node);
-                    self.hl_reference_func(&name, &id.node, DocumentHighlightKind::Read);
-                    self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
-                } else if let Some(expr) = callee_expr {
-                    // Namespace-qualified function call: Jass::Func(...)
-                    if let Expr::NamespaceAccess { namespace, name, .. } = expr.as_ref() {
-                        if let (Some(ns_id), Some(name_id)) = (namespace, name) {
-                            let ns_name = self.node_text(&ns_id.node);
-                            let member_name = self.node_text(&name_id.node);
-                            self.hl_reference_ns_qualified(
-                                &ns_name, &ns_id.node,
-                                &member_name, &name_id.node,
-                                true,
-                            );
-                            self.id_roles.insert(ns_id.node.start_byte(), IdRole::NamespaceRef);
-                            self.id_roles.insert(name_id.node.start_byte(), IdRole::FunctionCall);
+                    // Check if this is a type constructor/cast: `TypeName(expr)`
+                    if self.is_known_type(&name) {
+                        self.hl_reference_type(&name, &id.node, DocumentHighlightKind::Read);
+                        self.id_roles.insert(id.node.start_byte(), IdRole::TypeRef);
+                    } else {
+                        // Try local func scope first
+                        let local_func = self
+                            .hl_scopes
+                            .iter()
+                            .rev()
+                            .find_map(|scope| scope.funcs.get(name.as_str()).copied());
+
+                        if let Some(key) = local_func {
+                            // Resolved to a locally-declared function.
+                            let range = id.node.to_range(&self.rope);
+                            self.ref_groups
+                                .entry(key)
+                                .or_default()
+                                .push(RawOccurrence {
+                                    range,
+                                    kind: DocumentHighlightKind::Read,
+                                    is_decl: false,
+                                });
+                            self.ref_names.entry(key).or_insert_with(|| name.to_string());
+                            self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
+                        } else {
+                            // Check if it's a local variable (funcdef-typed variable
+                            // being called, e.g. `DamageCallbackFn@ cb; cb(...);`).
+                            let local_var = self
+                                .hl_scopes
+                                .iter()
+                                .rev()
+                                .find_map(|scope| scope.vars.get(name.as_str()).copied());
+
+                            if let Some(key) = local_var {
+                                let range = id.node.to_range(&self.rope);
+                                self.ref_groups
+                                    .entry(key)
+                                    .or_default()
+                                    .push(RawOccurrence {
+                                        range,
+                                        kind: DocumentHighlightKind::Read,
+                                        is_decl: false,
+                                    });
+                                self.ref_names.entry(key).or_insert_with(|| name.to_string());
+                                self.id_roles.insert(id.node.start_byte(), IdRole::Variable);
+                            } else {
+                                // Ambiguous: could be a forward-declared type
+                                // constructor or an imported function.  Defer to
+                                // link_imports (Phase 2) which checks types first.
+                                self.unresolved_refs.push(UnresolvedRef {
+                                    name: name.to_string(),
+                                    range: id.node.to_range(&self.rope),
+                                    kind: DocumentHighlightKind::Read,
+                                    namespace: ImportedKind::Func,
+                                    is_type_ref: false,
+                                    qualifier: None,
+                                    call_site_byte: Some(id.node.start_byte()),
+                                });
+                            }
                         }
+                    }
+                } else if let Some(expr) = callee_expr {
+                    match expr.as_ref() {
+                        // Namespace-qualified function call: Jass::Func(...)
+                        Expr::NamespaceAccess { namespace, name, .. } => {
+                            if let (Some(ns_id), Some(name_id)) = (namespace, name) {
+                                let ns_name = self.node_text(&ns_id.node);
+                                let member_name = self.node_text(&name_id.node);
+                                self.hl_reference_ns_qualified(
+                                    &ns_name, &ns_id.node,
+                                    &member_name, &name_id.node,
+                                    true,
+                                );
+                                self.id_roles.insert(ns_id.node.start_byte(), IdRole::NamespaceRef);
+                                self.id_roles.insert(name_id.node.start_byte(), IdRole::FunctionCall);
+                            }
+                        }
+                        // Member method call: obj.method(...) / this.method(...)
+                        Expr::MemberAccess { object, member, .. } => {
+                            let is_this = self.expr_is_this(object);
+                            self.visit_expr(object);
+                            if let Some(id) = member {
+                                if is_this {
+                                    let name = self.node_text(&id.node);
+                                    self.hl_reference_func(&name, &id.node, DocumentHighlightKind::Read);
+                                }
+                                self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 for arg in args {
@@ -1337,8 +1851,13 @@ impl Cursor {
                 }
             }
             Expr::MemberAccess { object, member, .. } => {
+                let is_this = self.expr_is_this(object);
                 self.visit_expr(object);
                 if let Some(id) = member {
+                    if is_this {
+                        let name = self.node_text(&id.node);
+                        self.hl_reference_var(&name, &id.node, DocumentHighlightKind::Read);
+                    }
                     self.id_roles.insert(id.node.start_byte(), IdRole::Property);
                 }
             }
@@ -1391,29 +1910,35 @@ impl Cursor {
             Expr::HandleOf { operand, .. } => {
                 // `@FuncName` — function reference (compatible with JASS `code` type)
                 // `@var = expr` — handle assignment (assign handle to a variable)
+                // `@this` / `@super` — handle-to-self reference
                 match operand.as_ref() {
                     Expr::Id(id) => {
                         let name = self.node_text(&id.node);
-                        // Check if the name is a known function.
-                        let is_func = self
-                            .hl_scopes
-                            .iter()
-                            .rev()
-                            .any(|scope| scope.funcs.contains_key(&name));
-                        // Check if the name is a known variable.
-                        let is_var = !is_func && self
-                            .hl_scopes
-                            .iter()
-                            .rev()
-                            .any(|scope| scope.vars.contains_key(&name));
-                        if is_var {
-                            // Handle assignment: @var = expr
-                            self.hl_reference_var(&name, &id.node, DocumentHighlightKind::Write);
+                        // Built-in keywords (`this`, `super`, etc.) — not a real reference.
+                        if Self::BUILTIN_VALUES.contains(&name.as_str()) {
                             self.id_roles.insert(id.node.start_byte(), IdRole::Variable);
                         } else {
-                            // Function reference (@FuncName) or unresolved forward reference
-                            self.hl_reference_func(&name, &id.node, DocumentHighlightKind::Read);
-                            self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
+                            // Check if the name is a known function.
+                            let is_func = self
+                                .hl_scopes
+                                .iter()
+                                .rev()
+                                .any(|scope| scope.funcs.contains_key(&name));
+                            // Check if the name is a known variable.
+                            let is_var = !is_func && self
+                                .hl_scopes
+                                .iter()
+                                .rev()
+                                .any(|scope| scope.vars.contains_key(&name));
+                            if is_var {
+                                // Handle assignment: @var = expr
+                                self.hl_reference_var(&name, &id.node, DocumentHighlightKind::Write);
+                                self.id_roles.insert(id.node.start_byte(), IdRole::Variable);
+                            } else {
+                                // Function reference (@FuncName) or unresolved forward reference
+                                self.hl_reference_func(&name, &id.node, DocumentHighlightKind::Read);
+                                self.id_roles.insert(id.node.start_byte(), IdRole::FunctionCall);
+                            }
                         }
                     }
                     other => self.visit_expr(other),
@@ -1511,7 +2036,7 @@ impl Cursor {
                             | Kind::Return | Kind::Break | Kind::Continue | Kind::Try
                             | Kind::Catch | Kind::Throw | Kind::Cast | Kind::OpImplCast
                             | Kind::Function | Kind::New | Kind::Is | Kind::Not | Kind::And
-                            | Kind::Or | Kind::Xor => TokenKind::Keyword,
+                            | Kind::Or | Kind::Xor | Kind::Out | Kind::Inout => TokenKind::Keyword,
 
                             // literals
                             Kind::IntegerLiteral | Kind::HexLiteral | Kind::BitsLiteral
@@ -1539,6 +2064,24 @@ impl Cursor {
                                     if rest_start < eb {
                                         self.semantic.add_range(rest_start, eb - rest_start, &self.rope, TokenKind::String, 0u32);
                                     }
+                                    if cursor.goto_next_sibling() { continue; }
+                                    while !cursor.goto_next_sibling() {
+                                        if !cursor.goto_parent() { return; }
+                                    }
+                                    continue;
+                                } else if trimmed.starts_with("/**") {
+                                    // /** ... */ block doc comment: delimiters as Comment, body as String
+                                    let ws_before = text.len() - trimmed.len();
+                                    let abs_start = sb + ws_before;
+                                    // Opening `/**`
+                                    self.semantic.add_range(abs_start, 3, &self.rope, TokenKind::Comment, 0u32);
+                                    // Closing `*/`
+                                    let close_start = eb - 2;
+                                    if close_start > abs_start + 3 {
+                                        // Body between `/**` and `*/`
+                                        self.semantic.add_range(abs_start + 3, close_start - (abs_start + 3), &self.rope, TokenKind::String, 0u32);
+                                    }
+                                    self.semantic.add_range(close_start, 2, &self.rope, TokenKind::Comment, 0u32);
                                     if cursor.goto_next_sibling() { continue; }
                                     while !cursor.goto_next_sibling() {
                                         if !cursor.goto_parent() { return; }

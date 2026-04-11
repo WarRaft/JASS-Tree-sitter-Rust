@@ -31,6 +31,7 @@ const FIELD_ALIAS: u16 = Field::Alias as u16;
 const FIELD_MODULE: u16 = Field::Module as u16;
 const FIELD_NAMESPACE: u16 = Field::Namespace as u16;
 const FIELD_OPERATOR: u16 = Field::Operator as u16;
+const FIELD_INIT: u16 = Field::Init as u16;
 
 // ─── Semantic role for identifiers ───────────────────────────────────────────
 
@@ -239,7 +240,17 @@ pub struct DoWhileStmt<'tree> {
 #[derive(Debug, Clone)]
 pub struct ForStmt<'tree> {
     pub node: Node<'tree>,
+    pub init: Option<ForInit<'tree>>,
+    pub condition: Option<Expr<'tree>>,
+    pub update: Vec<Expr<'tree>>,
     pub body: Vec<Stmt<'tree>>,
+}
+
+/// Initializer part of a `for` statement.
+#[derive(Debug, Clone)]
+pub enum ForInit<'tree> {
+    VarDecl(VarDeclStmt<'tree>),
+    Expr(Expr<'tree>),
 }
 
 /// `for (var : iterable) stmt`
@@ -433,6 +444,9 @@ pub struct Ast<'tree> {
 pub fn build_ast(root: Node) -> Ast {
     let mut errors = Vec::new();
     let items = build_top_level_children(&root, &mut errors);
+    // Full-tree scan: collect ERROR/MISSING nodes that may be nested
+    // deep inside expressions (e.g. `!is` inside an `if` condition).
+    collect_errors(&root, &mut errors);
     Ast { items, errors }
 }
 
@@ -502,9 +516,6 @@ fn build_top_level_children<'tree>(
     let count = node.child_count();
     for i in 0..count {
         if let Some(child) = node.child(i as u32) {
-            if child.is_error() || child.is_missing() {
-                collect_errors(&child, errors);
-            }
             items.push(build_top_level(&child, errors));
         }
     }
@@ -585,9 +596,6 @@ fn build_body_stmts<'tree>(
         let count = body.child_count();
         for i in 0..count {
             if let Some(child) = body.child(i as u32) {
-                if child.is_error() || child.is_missing() {
-                    collect_errors(&child, errors);
-                }
                 stmts.push(build_stmt(&child, errors));
             }
         }
@@ -603,9 +611,6 @@ fn build_block_stmts<'tree>(
     let count = node.child_count();
     for i in 0..count {
         if let Some(child) = node.child(i as u32) {
-            if child.is_error() || child.is_missing() {
-                collect_errors(&child, errors);
-            }
             stmts.push(build_stmt(&child, errors));
         }
     }
@@ -637,9 +642,6 @@ fn build_namespace<'tree>(
     let count = node.child_count();
     for i in 0..count {
         if let Some(child) = node.child(i as u32) {
-            if child.is_error() || child.is_missing() {
-                collect_errors(&child, errors);
-            }
             let kind = Kind::try_from(child.kind_id());
             // Skip braces, keywords, name — only process body statements
             if matches!(kind, Ok(k) if k != Kind::Namespace && k != Kind::LeftBrace
@@ -735,9 +737,6 @@ fn build_class_members<'tree>(
     let count = node.child_count();
     for i in 0..count {
         if let Some(child) = node.child(i as u32) {
-            if child.is_error() || child.is_missing() {
-                collect_errors(&child, errors);
-            }
             match Kind::try_from(child.kind_id()) {
                 Ok(Kind::FunctionDeclaration) => {
                     members.push(ClassMember::Function(build_function(&child, errors)));
@@ -870,10 +869,41 @@ fn build_stmt<'tree>(node: &Node<'tree>, errors: &mut Vec<CstError<'tree>>) -> S
                 .and_then(|n| build_expr(&n)),
             body: build_block_stmts(node, errors),
         }),
-        Ok(Kind::ForStatement) => Stmt::For(ForStmt {
-            node: *node,
-            body: build_block_stmts(node, errors),
-        }),
+        Ok(Kind::ForStatement) => {
+            let init = node.child_by_field_id(FIELD_INIT).and_then(|n| {
+                match Kind::try_from(n.kind_id()) {
+                    Ok(Kind::VariableDeclaration) => {
+                        Some(ForInit::VarDecl(build_var_decl_stmt(&n)))
+                    }
+                    _ => build_expr(&n).map(ForInit::Expr),
+                }
+            });
+            let condition = node
+                .child_by_field_id(FIELD_CONDITION)
+                .and_then(|n| build_expr(&n));
+            let mut update = Vec::new();
+            if let Some(ul) = node.child_by_field_id(FIELD_UPDATE) {
+                let count = ul.child_count();
+                for i in 0..count {
+                    if let Some(child) = ul.child(i as u32) {
+                        if let Some(e) = build_expr(&child) {
+                            update.push(e);
+                        }
+                    }
+                }
+            }
+            let body = node
+                .child_by_field_id(FIELD_BODY)
+                .map(|n| build_block_stmts(&n, errors))
+                .unwrap_or_default();
+            Stmt::For(ForStmt {
+                node: *node,
+                init,
+                condition,
+                update,
+                body,
+            })
+        }
         Ok(Kind::ForeachStatement) => Stmt::Foreach(ForeachStmt {
             node: *node,
             body: build_block_stmts(node, errors),
@@ -967,6 +997,9 @@ fn build_expr<'tree>(node: &Node<'tree>) -> Option<Expr<'tree>> {
             });
             let (callee, callee_expr) = match callee_inner {
                 Some(cn) if Kind::try_from(cn.kind_id()) == Ok(Kind::NamespaceAccess) => {
+                    (None, build_expr(&cn).map(Box::new))
+                }
+                Some(cn) if Kind::try_from(cn.kind_id()) == Ok(Kind::MemberAccess) => {
                     (None, build_expr(&cn).map(Box::new))
                 }
                 _ => {

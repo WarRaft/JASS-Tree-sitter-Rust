@@ -104,21 +104,24 @@ async function showTypeGraph(client, extensionUri, context, fileUri) {
                 await showTypeGraph(client, extensionUri, context, msg.uri)
             } else if (msg.type === 'saveSettings') {
                 if (context && context.globalState) {
-                    await context.globalState.update('d3TypeGraphSettings', msg.settings)
+                    await context.globalState.update('visTypePhysics', msg.settings)
                 }
             }
         })
     }
 
-    const d3Uri = panel.webview.asWebviewUri(
-        Uri.joinPath(extensionUri, 'extension', 'vendor', 'd3.v7.min.js')
+    const visUri = panel.webview.asWebviewUri(
+        Uri.joinPath(extensionUri, 'extension', 'vendor', 'vis-network.min.js')
+    )
+    const ppUri = panel.webview.asWebviewUri(
+        Uri.joinPath(extensionUri, 'extension', 'vendor', 'physics-panel.js')
     )
 
-    const savedSettings = context.globalState.get('d3TypeGraphSettings', null)
+    const savedSettings = context.globalState.get('visTypePhysics', null)
 
     const basename = path.basename(decodeURIComponent(new URL(fileUri).pathname))
     panel.title = `Type Graph — ${basename}`
-    panel.webview.html = buildHtml(result, d3Uri.toString(), fileUri, savedSettings)
+    panel.webview.html = buildHtml(result, visUri.toString(), ppUri.toString(), fileUri, savedSettings)
 }
 
 /** @param {string} s */
@@ -128,12 +131,13 @@ function escapeRegex(s) {
 
 /**
  * @param {TypeGraphResult} data
- * @param {string} d3Src
+ * @param {string} visSrc
+ * @param {string} ppSrc
  * @param {string} rootUri
  * @param {Object|null} savedSettings
  * @returns {string}
  */
-function buildHtml(data, d3Src, rootUri, savedSettings) {
+function buildHtml(data, visSrc, ppSrc, rootUri, savedSettings) {
     const graphJSON = JSON.stringify({
         nodes: data.nodes.map((n, i) => ({
             id: i,
@@ -142,15 +146,10 @@ function buildHtml(data, d3Src, rootUri, savedSettings) {
             isRoot: n.is_root,
             isFrozen: n.is_frozen,
         })),
-        links: data.edges.map(([s, t]) => ({source: s, target: t})),
+        edges: data.edges.map(([s, t]) => ({from: s, to: t})),
     })
 
-    const settingsJSON = JSON.stringify(savedSettings || {
-        linkDistance: 80,
-        chargeStrength: -300,
-        collisionRadius: 30,
-        centerStrength: 0.05,
-    })
+    const settingsJSON = JSON.stringify(savedSettings || null)
 
     return /*html*/`<!DOCTYPE html>
 <html lang="en">
@@ -166,209 +165,45 @@ function buildHtml(data, d3Src, rootUri, savedSettings) {
         font-family: var(--vscode-font-family, 'Segoe UI', sans-serif);
         font-size: 12px;
     }
-    svg { display: block; width: 100vw; height: 100vh; }
-
-    .link-hit {
-        stroke: transparent;
-        stroke-width: 12;
-        fill: none;
-        cursor: pointer;
-    }
-    .link {
-        stroke: var(--vscode-editorWidget-border, #555);
-        stroke-width: 1.2;
-        fill: none;
-        pointer-events: none;
-        marker-end: url(#arrow);
-    }
-    .link.highlighted {
-        stroke: #dcdcaa;
-        stroke-width: 2.5;
-        marker-end: url(#arrow-highlight);
-    }
-
-    .node-rect {
-        rx: 4; ry: 4;
-        cursor: pointer;
-        transition: opacity 0.15s;
-    }
-    .node-rect:hover { opacity: 0.85; }
-    .node-rect.root {
-        fill: #1e2a1e;
-        stroke: #4ec9b0;
-        stroke-width: 2;
-    }
-    .node-rect.normal {
-        fill: var(--vscode-editor-background, #1e1e1e);
-        stroke: var(--vscode-focusBorder, #007acc);
-        stroke-width: 1.5;
-    }
-    .node-rect.frozen {
-        fill: #1e2a1e;
-        stroke: #4ec9b0;
-        stroke-width: 1.5;
-    }
-    .node-rect.synthetic {
-        fill: #2d2d2d;
-        stroke: #666;
-        stroke-width: 1.5;
-        stroke-dasharray: 4 2;
-    }
-    .node-rect.highlighted {
-        stroke: #dcdcaa;
-        stroke-width: 2.5;
-    }
-    .node-rect.dimmed {
-        opacity: 0.25;
-    }
-
-    .node-label {
-        fill: var(--vscode-editor-foreground, #d4d4d4);
-        font-size: 11px;
-        pointer-events: none;
-        dominant-baseline: central;
-        text-anchor: middle;
-    }
-    .node-label.root { fill: #4ec9b0; font-weight: bold; }
-    .node-label.frozen { fill: #4ec9b0; }
-    .node-label.dimmed { opacity: 0.25; }
-
-    .depth-badge {
-        fill: #888;
-        font-size: 8px;
-        pointer-events: none;
-        dominant-baseline: central;
-        text-anchor: middle;
-    }
+    #graph { width: 100vw; height: 100vh; }
 
     .toolbar {
-        position: fixed;
-        top: 8px;
-        right: 8px;
-        display: flex;
-        gap: 6px;
-        z-index: 10;
+        position: fixed; top: 8px; right: 8px;
+        display: flex; gap: 6px; z-index: 10;
     }
     .toolbar button {
         background: var(--vscode-button-background, #0e639c);
         color: var(--vscode-button-foreground, #fff);
-        border: none;
-        border-radius: 4px;
-        padding: 4px 10px;
-        cursor: pointer;
-        font-size: 12px;
+        border: none; border-radius: 4px;
+        padding: 4px 10px; cursor: pointer; font-size: 12px;
     }
     .toolbar button:hover {
         background: var(--vscode-button-hoverBackground, #1177bb);
     }
 
     .status-bar {
-        position: fixed;
-        top: 8px;
-        left: 8px;
-        font-size: 13px;
-        font-weight: bold;
-        z-index: 10;
-        padding: 4px 10px;
-        border-radius: 4px;
-        color: #4ec9b0;
-        background: rgba(78, 201, 176, 0.1);
+        position: fixed; top: 8px; left: 8px;
+        font-size: 13px; font-weight: bold; z-index: 10;
+        padding: 4px 10px; border-radius: 4px;
+        color: #4ec9b0; background: rgba(78,201,176,0.1);
     }
 
     .legend {
-        position: fixed;
-        bottom: 8px;
-        left: 8px;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        align-items: center;
-        font-size: 11px;
-        opacity: 0.8;
+        position: fixed; bottom: 8px; left: 8px;
+        display: flex; flex-wrap: wrap; gap: 12px;
+        align-items: center; font-size: 11px; opacity: 0.8; z-index: 10;
     }
     .legend-box {
-        display: inline-block;
-        width: 14px; height: 10px;
-        border-radius: 2px;
-        margin-right: 3px;
-        vertical-align: middle;
+        display: inline-block; width: 14px; height: 10px;
+        border-radius: 2px; margin-right: 3px; vertical-align: middle;
     }
-    .legend-box.root {
-        background: #1e2a1e;
-        border: 2px solid #4ec9b0;
-    }
+    .legend-box.root { background: #1e2a1e; border: 2px solid #4ec9b0; }
     .legend-box.normal {
         background: var(--vscode-editor-background, #1e1e1e);
         border: 1.5px solid var(--vscode-focusBorder, #007acc);
     }
-    .legend-box.frozen {
-        background: #1e2a1e;
-        border: 1.5px solid #4ec9b0;
-    }
-    .legend-box.synthetic {
-        background: #2d2d2d;
-        border: 1.5px dashed #666;
-    }
-
-    /* ── Settings panel ── */
-    #settingsBtn {
-        position: fixed;
-        bottom: 8px;
-        right: 8px;
-        z-index: 20;
-        background: var(--vscode-button-background, #0e639c);
-        color: var(--vscode-button-foreground, #fff);
-        border: none;
-        border-radius: 50%;
-        width: 32px;
-        height: 32px;
-        font-size: 16px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-    }
-    #settingsBtn:hover {
-        background: var(--vscode-button-hoverBackground, #1177bb);
-    }
-    #settingsPanel {
-        display: none;
-        position: fixed;
-        bottom: 48px;
-        right: 8px;
-        z-index: 20;
-        background: var(--vscode-sideBar-background, #252526);
-        border: 1px solid var(--vscode-editorWidget-border, #454545);
-        border-radius: 6px;
-        padding: 12px 14px;
-        width: 240px;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-    }
-    #settingsPanel.open { display: block; }
-    #settingsPanel h3 {
-        margin: 0 0 10px 0;
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--vscode-editor-foreground, #d4d4d4);
-    }
-    .setting-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        margin-bottom: 8px;
-        font-size: 11px;
-    }
-    .setting-row label { flex: 1; }
-    .setting-row input[type=range] {
-        width: 100px;
-        accent-color: var(--vscode-focusBorder, #007acc);
-    }
-    .setting-row .val {
-        width: 36px;
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-    }
+    .legend-box.frozen { background: #1e2a1e; border: 1.5px solid #4ec9b0; }
+    .legend-box.synthetic { background: #2d2d2d; border: 1.5px dashed #666; }
 </style>
 </head>
 <body>
@@ -378,6 +213,7 @@ function buildHtml(data, d3Src, rootUri, savedSettings) {
 <div class="toolbar">
     <button id="btnFit" title="Fit to view">⊞ Fit</button>
     <button id="btnRefresh" title="Refresh graph">↻ Refresh</button>
+    <button id="btnPhysics" title="Toggle physics config">⚙ Physics</button>
 </div>
 
 <div class="legend">
@@ -388,63 +224,45 @@ function buildHtml(data, d3Src, rootUri, savedSettings) {
     <span>→ extends</span>
 </div>
 
-<button id="settingsBtn" title="D3 Physics Settings">⚙</button>
-<div id="settingsPanel">
-    <h3>⚙ Physics Settings</h3>
-    <div class="setting-row">
-        <label>Link distance</label>
-        <input type="range" id="sLinkDist" min="20" max="300" step="5"/>
-        <span class="val" id="vLinkDist"></span>
-    </div>
-    <div class="setting-row">
-        <label>Charge</label>
-        <input type="range" id="sCharge" min="-1000" max="0" step="10"/>
-        <span class="val" id="vCharge"></span>
-    </div>
-    <div class="setting-row">
-        <label>Collision</label>
-        <input type="range" id="sCollision" min="5" max="80" step="1"/>
-        <span class="val" id="vCollision"></span>
-    </div>
-    <div class="setting-row">
-        <label>Center</label>
-        <input type="range" id="sCenter" min="0" max="1" step="0.01"/>
-        <span class="val" id="vCenter"></span>
-    </div>
-</div>
+<div id="graph"></div>
+<physics-panel id="pp"></physics-panel>
 
-<svg id="graph"></svg>
-
-<script src="${d3Src}"></script>
+<script src="${ppSrc}"></script>
+<script src="${visSrc}"></script>
 <script>
 const vscode = acquireVsCodeApi();
 const graphData = ${graphJSON};
-let settings = ${settingsJSON};
+const savedPhysics = ${settingsJSON};
 
-// ── Compute depth from root (BFS) ──────────────────────────────────────────
+const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--vscode-editor-background').trim() || '#1e1e1e';
+const fgColor = getComputedStyle(document.documentElement).getPropertyValue('--vscode-editor-foreground').trim() || '#d4d4d4';
+const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--vscode-focusBorder').trim() || '#007acc';
+const borderColor = getComputedStyle(document.documentElement).getPropertyValue('--vscode-editorWidget-border').trim() || '#555';
+
+// ── Build parent/children maps ──
 const childrenOf = {};
 const parentOf = {};
-graphData.links.forEach(l => {
-    const s = typeof l.source === 'object' ? l.source.id : l.source;
-    const t = typeof l.target === 'object' ? l.target.id : l.target;
+graphData.edges.forEach(e => {
+    const s = e.from, t = e.to;
     if (!childrenOf[s]) childrenOf[s] = [];
     childrenOf[s].push(t);
     parentOf[t] = s;
 });
 
+// ── Compute depth from root (BFS) ──
 const depthMap = {};
 let maxDepth = 0;
 const rootNode = graphData.nodes.find(n => n.isRoot);
 if (rootNode) {
-    const queue = [{id: rootNode.id, depth: 0}];
+    const queue = [{ id: rootNode.id, depth: 0 }];
     depthMap[rootNode.id] = 0;
     while (queue.length > 0) {
-        const {id, depth} = queue.shift();
+        const { id, depth } = queue.shift();
         (childrenOf[id] || []).forEach(cid => {
             if (depthMap[cid] === undefined) {
                 depthMap[cid] = depth + 1;
                 if (depth + 1 > maxDepth) maxDepth = depth + 1;
-                queue.push({id: cid, depth: depth + 1});
+                queue.push({ id: cid, depth: depth + 1 });
             }
         });
     }
@@ -454,7 +272,14 @@ graphData.nodes.forEach(n => {
     n.depth = depthMap[n.id];
 });
 
-// ── Ancestor path + subtree (for highlighting) ────────────────────────────
+// ── Status bar ──
+const statusBar = document.getElementById('statusBar');
+const leafCount = graphData.nodes.filter(n =>
+    !childrenOf[n.id] || childrenOf[n.id].length === 0
+).length;
+statusBar.textContent = graphData.nodes.length + ' types · depth ' + maxDepth + ' · ' + leafCount + ' leaf types';
+
+// ── Ancestor / subtree helpers for highlighting ──
 function getAncestorPath(nodeId) {
     const p = new Set();
     let cur = nodeId;
@@ -472,249 +297,180 @@ function getSubtree(nodeId) {
     return t;
 }
 
-// ── Status bar ─────────────────────────────────────────────────────────────
-const statusBar = document.getElementById('statusBar');
-const leafCount = graphData.nodes.filter(n =>
-    !childrenOf[n.id] || childrenOf[n.id].length === 0
-).length;
-statusBar.textContent = graphData.nodes.length + ' types · depth ' + maxDepth + ' · ' + leafCount + ' leaf types';
-
-const svg = d3.select('#graph');
-const width = window.innerWidth;
-const height = window.innerHeight;
-
-// ── Settings panel ─────────────────────────────────────────────────────────
-document.getElementById('settingsBtn').addEventListener('click', () => {
-    document.getElementById('settingsPanel').classList.toggle('open');
-});
-
-function initSliders() {
-    const ids = [
-        ['sLinkDist', 'vLinkDist', 'linkDistance'],
-        ['sCharge',   'vCharge',   'chargeStrength'],
-        ['sCollision','vCollision','collisionRadius'],
-        ['sCenter',   'vCenter',  'centerStrength'],
-    ];
-    ids.forEach(([sid, vid, key]) => {
-        const slider = document.getElementById(sid);
-        const valEl = document.getElementById(vid);
-        slider.value = settings[key];
-        valEl.textContent = settings[key];
-        slider.addEventListener('input', () => {
-            const v = parseFloat(slider.value);
-            settings[key] = v;
-            valEl.textContent = v;
-            applySettings();
-            vscode.postMessage({type: 'saveSettings', settings});
-        });
-    });
+function nodeStyle(n) {
+    if (n.isRoot) return { bg: '#1e2a1e', border: '#4ec9b0', fontColor: '#4ec9b0', dashes: false, bw: 2 };
+    if (n.isFrozen) return { bg: '#1e2a1e', border: '#4ec9b0', fontColor: '#4ec9b0', dashes: false, bw: 1.5 };
+    if (!n.uri) return { bg: '#2d2d2d', border: '#666', fontColor: '#888', dashes: [4, 2], bw: 1.5 };
+    return { bg: bgColor, border: accentColor, fontColor: fgColor, dashes: false, bw: 1.5 };
 }
 
-function applySettings() {
-    simulation.force('link').distance(settings.linkDistance);
-    simulation.force('charge').strength(settings.chargeStrength);
-    simulation.force('collision').radius(d => d.boxWidth / 2 + settings.collisionRadius);
-    simulation.force('center').strength(settings.centerStrength);
-    simulation.alpha(0.5).restart();
+const nodes = new vis.DataSet(graphData.nodes.map(n => {
+    const s = nodeStyle(n);
+    return {
+        id: n.id,
+        label: n.name + (n.depth > 0 ? '\\nL' + n.depth : ''),
+        title: buildTooltip(n),
+        uri: n.uri,
+        name: n.name,
+        depth: n.depth,
+        shape: 'box',
+        color: {
+            background: s.bg, border: s.border,
+            highlight: { background: s.bg, border: '#dcdcaa' },
+            hover: { background: s.bg, border: '#dcdcaa' },
+        },
+        font: { color: s.fontColor, size: 12, face: 'monospace', bold: n.isRoot ? { color: s.fontColor } : undefined },
+        borderWidth: s.bw,
+        borderWidthSelected: 2.5,
+        shapeProperties: { borderDashes: s.dashes },
+        level: n.depth,
+    };
+}));
+
+function buildTooltip(n) {
+    let t = n.name;
+    if (n.isRoot) t += ' (root)';
+    if (n.isFrozen) t += ' [frozen]';
+    if (!n.uri && !n.isRoot) t += ' (synthetic)';
+    t += '\\ndepth: ' + n.depth;
+    const ch = childrenOf[n.id] || [];
+    if (ch.length > 0) t += '\\nchildren: ' + ch.length;
+    return t;
 }
 
-// ── Arrow markers ──────────────────────────────────────────────────────────
-const defs = svg.append('defs');
-const edgeColor = getComputedStyle(document.documentElement)
-    .getPropertyValue('--vscode-editorWidget-border').trim() || '#555';
+const edges = new vis.DataSet(graphData.edges.map((e, i) => ({
+    id: i,
+    from: e.from,
+    to: e.to,
+    arrows: 'to',
+    color: { color: borderColor, highlight: '#dcdcaa', hover: '#dcdcaa' },
+    width: 1.2,
+    smooth: { type: 'cubicBezier', forceDirection: 'vertical', roundness: 0.4 },
+})));
 
-function addMarker(id, color) {
-    defs.append('marker')
-        .attr('id', id)
-        .attr('viewBox', '0 -5 10 10')
-        .attr('refX', 10).attr('refY', 0)
-        .attr('markerWidth', 7).attr('markerHeight', 7)
-        .attr('orient', 'auto')
-        .append('path')
-        .attr('d', 'M0,-4L10,0L0,4')
-        .attr('fill', color);
-}
-addMarker('arrow', edgeColor);
-addMarker('arrow-highlight', '#dcdcaa');
+const container = document.getElementById('graph');
 
-const g = svg.append('g');
-const zoom = d3.zoom()
-    .scaleExtent([0.1, 5])
-    .on('zoom', e => g.attr('transform', e.transform));
-svg.call(zoom);
+const defaultPhysics = {
+    enabled: true,
+    solver: 'barnesHut',
+    barnesHut: {
+        gravitationalConstant: -3000,
+        centralGravity: 0.05,
+        springLength: 80,
+        springConstant: 0.04,
+        damping: 0.09,
+        avoidOverlap: 0.3,
+    },
+    stabilization: { enabled: true, iterations: 200, updateInterval: 25 },
+};
 
-// ── Measure text ───────────────────────────────────────────────────────────
-const tempSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-document.body.appendChild(tempSvg);
-const tempText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-tempText.style.fontSize = '11px';
-tempText.style.fontFamily = getComputedStyle(document.body).fontFamily;
-tempSvg.appendChild(tempText);
-graphData.nodes.forEach(n => {
-    tempText.textContent = n.name;
-    n.boxWidth = Math.max(tempText.getComputedTextLength() + 16, 40);
-    n.boxHeight = 22;
-});
-document.body.removeChild(tempSvg);
-
-// ── Force simulation with depth-based Y ────────────────────────────────────
-const levelSpacing = Math.min(100, (height - 120) / (maxDepth + 1 || 1));
-
-const simulation = d3.forceSimulation(graphData.nodes)
-    .force('link', d3.forceLink(graphData.links)
-        .id(d => d.id)
-        .distance(settings.linkDistance)
-        .strength(0.4))
-    .force('charge', d3.forceManyBody().strength(settings.chargeStrength))
-    .force('center', d3.forceCenter(width / 2, height / 2).strength(settings.centerStrength))
-    .force('collision', d3.forceCollide().radius(d => d.boxWidth / 2 + settings.collisionRadius))
-    .force('y', d3.forceY(d => 60 + d.depth * levelSpacing).strength(0.8));
-
-// ── Edge hit areas ─────────────────────────────────────────────────────────
-const linkHit = g.append('g')
-    .selectAll('line')
-    .data(graphData.links)
-    .join('line')
-    .attr('class', 'link-hit')
-    .on('click', (e, d) => {
-        e.stopPropagation();
-        const tgt = typeof d.target === 'object' ? d.target : graphData.nodes[d.target];
-        if (tgt && tgt.uri) {
-            vscode.postMessage({ type: 'openEdge', childUri: tgt.uri, childName: tgt.name });
+const network = new vis.Network(container, { nodes, edges }, {
+    physics: savedPhysics || defaultPhysics,
+    interaction: { hover: true, tooltipDelay: 200, keyboard: { enabled: true } },
+    layout: {
+        hierarchical: {
+            enabled: true,
+            direction: 'UD',
+            sortMethod: 'directed',
+            levelSeparation: 100,
+            nodeSpacing: 150,
+            treeSpacing: 200,
         }
-    });
+    },
+});
 
-// ── Visible edges ──────────────────────────────────────────────────────────
-const link = g.append('g')
-    .selectAll('line')
-    .data(graphData.links)
-    .join('line')
-    .attr('class', 'link');
-
-// ── Nodes ──────────────────────────────────────────────────────────────────
-const node = g.append('g')
-    .selectAll('g')
-    .data(graphData.nodes)
-    .join('g')
-    .call(d3.drag()
-        .on('start', (e, d) => { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-        .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
-        .on('end', (e, d) => { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; })
-    );
-
-node.append('rect')
-    .attr('class', d => {
-        if (d.isRoot) return 'node-rect root';
-        if (d.isFrozen) return 'node-rect frozen';
-        if (!d.uri) return 'node-rect synthetic';
-        return 'node-rect normal';
-    })
-    .attr('width', d => d.boxWidth)
-    .attr('height', d => d.boxHeight)
-    .attr('x', d => -d.boxWidth / 2)
-    .attr('y', d => -d.boxHeight / 2)
-    .on('click', (e, d) => {
-        e.stopPropagation();
-        if (d.uri) vscode.postMessage({type: 'openFile', uri: d.uri, name: d.name});
-    });
-
-node.append('title')
-    .text(d => {
-        let t = d.name;
-        if (d.isRoot) t += ' (root)';
-        if (d.isFrozen) t += ' [frozen]';
-        if (!d.uri && !d.isRoot) t += ' (synthetic)';
-        t += '\\ndepth: ' + d.depth;
-        const ch = childrenOf[d.id] || [];
-        if (ch.length > 0) t += '\\nchildren: ' + ch.length;
-        return t;
-    });
-
-node.append('text')
-    .attr('class', d => {
-        if (d.isRoot) return 'node-label root';
-        if (d.isFrozen) return 'node-label frozen';
-        return 'node-label';
-    })
-    .text(d => d.name);
-
-// Depth badge
-node.filter(d => d.depth > 0)
-    .append('text')
-    .attr('class', 'depth-badge')
-    .attr('dy', d => d.boxHeight / 2 + 10)
-    .text(d => 'L' + d.depth);
-
-// ── Highlight on hover ─────────────────────────────────────────────────────
-node.on('mouseenter', (e, d) => {
-    const ancestors = getAncestorPath(d.id);
-    const subtree = getSubtree(d.id);
+// ── Highlight subtree/ancestor on hover ──
+let highlightActive = false;
+network.on('hoverNode', params => {
+    const nodeId = params.node;
+    const ancestors = getAncestorPath(nodeId);
+    const subtree = getSubtree(nodeId);
     const hl = new Set([...ancestors, ...subtree]);
 
-    node.select('rect')
-        .classed('dimmed', n => !hl.has(n.id))
-        .classed('highlighted', n => hl.has(n.id) && n.id !== d.id);
-    node.select('text.node-label')
-        .classed('dimmed', n => !hl.has(n.id));
-    link.classed('highlighted', l => {
-        const si = typeof l.source === 'object' ? l.source.id : l.source;
-        const ti = typeof l.target === 'object' ? l.target.id : l.target;
-        return hl.has(si) && hl.has(ti);
-    });
-}).on('mouseleave', () => {
-    node.select('rect').classed('dimmed', false).classed('highlighted', false);
-    node.select('text.node-label').classed('dimmed', false);
-    link.classed('highlighted', false);
-});
-
-svg.on('click', () => {
-    node.select('rect').classed('dimmed', false).classed('highlighted', false);
-    node.select('text.node-label').classed('dimmed', false);
-    link.classed('highlighted', false);
-});
-
-// ── Tick ───────────────────────────────────────────────────────────────────
-simulation.on('tick', () => {
-    link
-        .attr('x1', d => d.source.x)
-        .attr('y1', d => d.source.y)
-        .attr('x2', d => {
-            const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
-            const len = Math.sqrt(dx*dx + dy*dy) || 1;
-            return d.target.x - (dx/len) * (d.target.boxWidth/2 + 4);
-        })
-        .attr('y2', d => {
-            const dx = d.target.x - d.source.x, dy = d.target.y - d.source.y;
-            const len = Math.sqrt(dx*dx + dy*dy) || 1;
-            return d.target.y - (dy/len) * (d.target.boxHeight/2 + 4);
+    const updatedNodes = [];
+    nodes.forEach(n => {
+        const isHighlighted = hl.has(n.id);
+        updatedNodes.push({
+            id: n.id,
+            opacity: isHighlighted ? 1.0 : 0.15,
         });
-    linkHit
-        .attr('x1', d => d.source.x)
-        .attr('y1', d => d.source.y)
-        .attr('x2', d => d.target.x)
-        .attr('y2', d => d.target.y);
-    node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+    });
+    nodes.update(updatedNodes);
+
+    const updatedEdges = [];
+    edges.forEach(e => {
+        const isHL = hl.has(e.from) && hl.has(e.to);
+        updatedEdges.push({
+            id: e.id,
+            color: isHL
+                ? { color: '#dcdcaa', highlight: '#dcdcaa', hover: '#dcdcaa' }
+                : { color: borderColor, highlight: '#dcdcaa', hover: '#dcdcaa' },
+            width: isHL ? 2.5 : 1.2,
+        });
+    });
+    edges.update(updatedEdges);
+    highlightActive = true;
 });
 
-// ── Fit ────────────────────────────────────────────────────────────────────
+network.on('blurNode', () => {
+    if (!highlightActive) return;
+    const updatedNodes = [];
+    nodes.forEach(n => { updatedNodes.push({ id: n.id, opacity: 1.0 }); });
+    nodes.update(updatedNodes);
+
+    const updatedEdges = [];
+    edges.forEach(e => {
+        updatedEdges.push({
+            id: e.id,
+            color: { color: borderColor, highlight: '#dcdcaa', hover: '#dcdcaa' },
+            width: 1.2,
+        });
+    });
+    edges.update(updatedEdges);
+    highlightActive = false;
+});
+
+// Click to open file
+network.on('click', params => {
+    if (params.nodes.length > 0) {
+        const n = nodes.get(params.nodes[0]);
+        if (n && n.uri) vscode.postMessage({ type: 'openFile', uri: n.uri, name: n.name });
+    }
+});
+
+// Double-click edge to open extends declaration
+network.on('doubleClick', params => {
+    if (params.edges.length > 0 && params.nodes.length === 0) {
+        const e = edges.get(params.edges[0]);
+        if (e) {
+            const tgt = nodes.get(e.to);
+            if (tgt && tgt.uri) {
+                vscode.postMessage({ type: 'openEdge', childUri: tgt.uri, childName: tgt.name });
+            }
+        }
+    }
+});
+
 document.getElementById('btnFit').addEventListener('click', () => {
-    const b = g.node().getBBox();
-    if (!b.width || !b.height) return;
-    const pad = 60;
-    const sc = Math.min(width/(b.width+pad*2), height/(b.height+pad*2), 2);
-    const tx = width/2 - sc*(b.x+b.width/2);
-    const ty = height/2 - sc*(b.y+b.height/2);
-    svg.transition().duration(500)
-        .call(zoom.transform, d3.zoomIdentity.translate(tx,ty).scale(sc));
+    network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
 });
 
 document.getElementById('btnRefresh').addEventListener('click', () => {
-    vscode.postMessage({type:'refresh', uri:'${rootUri}'});
+    vscode.postMessage({ type: 'refresh', uri: '${rootUri}' });
 });
 
-simulation.on('end', () => document.getElementById('btnFit').click());
+const pp = document.getElementById('pp');
+pp.physics = savedPhysics || defaultPhysics;
+pp.addEventListener('change', e => {
+    network.setOptions({ physics: e.detail });
+    vscode.postMessage({ type: 'saveSettings', settings: e.detail });
+});
 
-initSliders();
+document.getElementById('btnPhysics').addEventListener('click', () => pp.toggle());
+
+network.once('stabilized', () => {
+    network.fit({ animation: { duration: 500, easingFunction: 'easeInOutQuad' } });
+});
 </script>
 </body>
 </html>`

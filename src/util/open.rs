@@ -40,6 +40,35 @@ pub async fn open_by_uri(
     }
 }
 
+/// Synchronous init dispatched by URI extension.
+///
+/// Sets up rope, tree-sitter parser and initial tree — no diagnostics.
+/// Used by the first pass of rescan.
+pub fn init_by_uri(
+    uri: &Url,
+    content: &str,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    if is_as_uri(uri) {
+        crate::lng::ass::open::init(uri, content)
+    } else {
+        crate::lng::jass::open::init(uri, content)
+    }
+}
+
+/// Init + parse without cascade.
+///
+/// Used by rescan pass 2: all symbols are already in the scope resolver,
+/// so we only need to produce diagnostics and PARSE_CACHE snapshots
+/// without triggering cascade re-parses of dependent files.
+pub async fn parse_only_by_uri(
+    uri: &Url,
+    content: &str,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    init_by_uri(uri, content)?;
+    crate::util::parse::parse_by_uri(uri).await?;
+    Ok(())
+}
+
 // ─── Synchronous init ───────────────────────────────────────────────────────
 
 /// Synchronous initialisation: set up rope, tree-sitter parser and initial tree.

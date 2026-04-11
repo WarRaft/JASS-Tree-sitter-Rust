@@ -673,6 +673,7 @@ pub fn process_imports<'a>(
     use crate::http::position::Position;
     use crate::http::range::Range;
     use crate::util::import_graph::resolve_import;
+    use crate::util::parse_cache::PARSE_CACHE;
 
     for imp in directives {
         if imp.path.is_empty() {
@@ -705,10 +706,21 @@ pub fn process_imports<'a>(
                 }
                 if resolved.exists {
                     links.push(crate::http::document_link::DocumentLink {
-                        range: path_range,
+                        range: path_range.clone(),
                         target: Some(resolved.url.to_string()),
                         tooltip: Some(resolved.url.to_string()),
                     });
+                    if !PARSE_CACHE.contains_key(&resolved.url) {
+                        diagnostics.push(Diagnostic {
+                            range: path_range,
+                            message: crate::util::i18n::import_file_not_opened(&imp.path),
+                            severity: Some(DiagnosticSeverity::Hint),
+                            data: Some(serde_json::json!({
+                                "open_uri": resolved.url.to_string(),
+                            })),
+                            ..Diagnostic::new("jass", "import-not-opened")
+                        });
+                    }
                 } else {
                     diagnostics.push(Diagnostic {
                         range: path_range,

@@ -86,6 +86,10 @@ pub struct GlobalEntry {
 struct ScopeFileData {
     hash: [u8; 32],
     entries: Vec<GlobalEntry>,
+    /// Version key at the time the entry was written.
+    /// Old entries without this field deserialize to `""` and are skipped.
+    #[serde(default)]
+    version: String,
 }
 
 // ─── Inner storage ───────────────────────────────────────────────────────────
@@ -147,6 +151,11 @@ impl ScopeResolver {
                                     Err(_) => continue,
                                 };
 
+                            // Skip entries written by a different version.
+                            if file_data.version != cache_db::version_key() {
+                                continue;
+                            }
+
                             let mut names = HashSet::new();
                             for entry in file_data.entries {
                                 names.insert(entry.name.clone());
@@ -181,6 +190,7 @@ impl ScopeResolver {
         let file_data = ScopeFileData {
             hash,
             entries: entries.to_vec(),
+            version: cache_db::version_key(),
         };
         let data = match bitcode::serialize(&file_data) {
             Ok(d) => d,
@@ -439,6 +449,26 @@ impl ScopeResolver {
         inner.by_uri.keys().cloned().collect()
     }
 
+    /// Return all entries for a single `uri`.
+    pub fn entries_for_uri(&self, uri: &Url) -> Vec<GlobalEntry> {
+        let inner = self.inner.read().unwrap();
+        let names = match inner.by_uri.get(uri) {
+            Some(n) => n,
+            None => return Vec::new(),
+        };
+        let mut result = Vec::new();
+        for name in names {
+            if let Some(entries) = inner.by_name.get(name) {
+                for e in entries {
+                    if &e.uri == uri {
+                        result.push(e.clone());
+                    }
+                }
+            }
+        }
+        result
+    }
+
     /// Total number of indexed symbols.
     pub fn symbol_count(&self) -> usize {
         let inner = self.inner.read().unwrap();
@@ -511,6 +541,16 @@ impl ScopeResolver {
         }
 
         info!("scope_resolver: gc removed {} stale files", to_remove.len());
+    }
+
+    /// Return **all** entries across every indexed file.
+    pub fn all_entries(&self) -> Vec<GlobalEntry> {
+        let inner = self.inner.read().unwrap();
+        inner
+            .by_name
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect()
     }
 }
 

@@ -1,19 +1,20 @@
+use crate::debug_log;
 use crate::lng::jass::ast::{Statement, build_ast, rewrite_imports};
 use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::http::ref_map::{DeclKey, RefMap, build_ref_map};
 use crate::util::file_cache;
-use crate::util::file_store::{
-    FILE_STORE, ParseSnapshot, exports_changed, new_cancel_token, register_pending,
+use crate::util::parse_cache::{
+    PARSE_CACHE, ParseSnapshot, exports_changed, new_cancel_token, register_pending,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
-    ParseFn, cascade_parse_and_notify, ensure_file_symbols, file_symbols_to_entries,
+    ParseFn, cascade_parse_and_notify, ensure_file_symbols,
     find_decl_key_by_name, resolve_import_directive,
+    all_visible_entries, SymbolNS,
 };
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::scope_resolver::{SCOPE_RESOLVER, SymbolNS};
 use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
@@ -116,10 +117,13 @@ fn _parse(
     tree: &tree_sitter::Tree,
     cancel: &CancellationToken,
 ) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    let fname = uri.path().rsplit('/').next().unwrap_or("?");
+    debug_log!("[_parse] start file={}", fname);
     let root = tree.root_node();
 
     // 1. Build AST from CST
     let mut ast = build_ast(root);
+    debug_log!("[_parse] AST built");
 
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() {
@@ -175,7 +179,15 @@ fn _parse(
     // so we can detect peers that lost visibility after import removal.
     let old_component = IMPORT_GRAPH.visible_component(uri);
 
+
+    // Register frozen targets eagerly — before visible_component — so
+    // tree_for_uri can prune incoming edges even when PARSE_CACHE doesn't
+    // have this file's snapshot yet (first parse / cold start).
+    IMPORT_GRAPH.mark_frozen(&frozen_imports);
+
     IMPORT_GRAPH.update(uri, imports.clone());
+
+    debug_log!("[_parse] imports resolved, graph updated");
 
     // Refresh entry cache so that visible_component reads the updated graph.
     IMPORT_GRAPH.recompute_entry_cache();
@@ -185,6 +197,7 @@ fn _parse(
     let mut component: HashSet<Url>;
     {
         component = IMPORT_GRAPH.visible_component(uri);
+        debug_log!("[_parse] visible_component: {} peers", component.len());
 
         // Iteratively ensure every peer is in the scope resolver.
         // `ensure_file_symbols` may register new import edges in the graph
@@ -200,6 +213,8 @@ fn _parse(
                 if !ensured.insert(peer_uri.clone()) {
                     continue;
                 }
+                let peer_name = peer_uri.path().rsplit('/').next().unwrap_or("?");
+                debug_log!("[_parse] ensure_file_symbols: {}", peer_name);
                 let ts_lang = if crate::util::open::is_as_uri(&peer_uri) {
                     tree_sitter_as::language().into()
                 } else {
@@ -230,17 +245,18 @@ fn _parse(
         }
 
         // O(1)-per-name: get all symbols from the connected component.
-        let visible_entries = SCOPE_RESOLVER.all_visible(&component);
+        debug_log!("[_parse] ensure loop done, {} peers total", component.len());
+        let visible_entries = all_visible_entries(&component);
 
         for entry in &visible_entries {
             // Skip entries from the file being parsed — cursor builds them locally.
             if &entry.uri == uri {
                 continue;
             }
-            // Try to get the precise DeclKey from FILE_STORE; fall back to
-            // the scope resolver's `decl_key` (which is always available,
-            // even when the origin file hasn't been fully parsed into FILE_STORE yet).
-            let origin_snapshot = FILE_STORE.get(&entry.uri);
+            // Try to get the precise DeclKey from the snapshot (in-memory
+            // or lazy-loaded from disk cache); fall back to the scope
+            // resolver's `decl_key` which is always available.
+            let origin_snapshot = crate::util::parse_cache::peek_or_load(&entry.uri);
             let origin_decl_key = origin_snapshot
                 .as_ref()
                 .and_then(|snap| {
@@ -273,7 +289,9 @@ fn _parse(
     }
 
     // 5. Single-pass cursor: diagnostics + symbols + folding + id_roles + scopes
+    debug_log!("[_parse] Cursor::walk start");
     let mut cursor = Cursor::walk(&ast, rope, &imported_symbols);
+    debug_log!("[_parse] Cursor::walk done");
     cursor.file_symbols.frozen_imports = frozen_imports;
     cursor.file_symbols.file_settings = cursor.file_settings.clone();
     cursor.file_symbols.file_ignore_tags = cursor.file_ignore_tags.clone();
@@ -300,15 +318,15 @@ fn _parse(
     let hash = file_cache::content_hash(rope);
 
     // 8. Call-graph diagnostics: unused functions & cyclic calls.
-    //    We need FILE_STORE populated for the current file, so write a
+    //    We need PARSE_CACHE populated for the current file, so write a
     //    preliminary snapshot first (it will be replaced below).
     //
     // IMPORTANT: capture the true old snapshot BEFORE inserting the preliminary.
     // If cancellation fires at the final checkpoint we restore it so that
-    // FILE_STORE is never left with the empty preliminary (which would cause
+    // PARSE_CACHE is never left with the empty preliminary (which would cause
     // the SemanticTokens handler to return an empty token list).
     let true_old_snapshot: Option<Arc<ParseSnapshot>> =
-        FILE_STORE.get(uri).map(|e| Arc::clone(e.value()));
+        PARSE_CACHE.get(uri).map(|e| Arc::clone(e.value()));
 
     let preliminary = Arc::new(ParseSnapshot {
         folding: Vec::new(),
@@ -326,11 +344,12 @@ fn _parse(
         arg_decl_keys: arg_decl_keys.clone(),
         colors: Vec::new(),
     });
-    FILE_STORE.insert(uri.clone(), preliminary);
+    PARSE_CACHE.insert(uri.clone(), preliminary);
     {
         use crate::util::call_graph::diagnose_functions;
-
+        debug_log!("[_parse] diagnose_functions start");
         let func_diag = diagnose_functions(uri);
+        debug_log!("[_parse] diagnose_functions done");
 
         // File-level `//ignore unused` suppresses all unused-function diagnostics.
         let file_unused_suppressed = cursor.file_ignore_tags.contains("unused");
@@ -489,17 +508,17 @@ fn _parse(
         // never reads an empty placeholder.
         match true_old_snapshot {
             Some(snap) => {
-                FILE_STORE.insert(uri.clone(), snap);
+                PARSE_CACHE.insert(uri.clone(), snap);
             }
             None => {
-                FILE_STORE.remove(uri);
+                PARSE_CACHE.remove(uri);
             }
         }
         return Ok(vec![]);
     }
 
     // 9. Build snapshot and store atomically.
-    let old_snapshot = FILE_STORE.get(uri).map(|e| Arc::clone(e.value()));
+    let old_snapshot = PARSE_CACHE.get(uri).map(|e| Arc::clone(e.value()));
 
     let new_snapshot = Arc::new(ParseSnapshot {
         folding: cursor.folding,
@@ -520,7 +539,6 @@ fn _parse(
 
     // Persist to unified disk cache.
     if let Some(meta) = file_cache::FileMeta::from_uri(uri) {
-        let (de, dw) = file_cache::diag_counts(&new_snapshot.diagnostics);
         file_cache::store(
             uri,
             meta,
@@ -530,23 +548,21 @@ fn _parse(
             &new_snapshot.func_decl_keys,
             &new_snapshot.var_decl_keys,
             &new_snapshot.arg_decl_keys,
-            de,
-            dw,
         );
     }
 
     // ── Atomic store — single source of truth ──
-    FILE_STORE.insert(uri.clone(), new_snapshot.clone());
+    PARSE_CACHE.insert(uri.clone(), new_snapshot.clone());
+    debug_log!("[_parse] snapshot stored");
 
-    // ── Recompute entry-point cache after FILE_STORE update ──
+    // ── Persist entry-point status so it survives server restarts ──
+    IMPORT_GRAPH.mark_entry(uri, new_snapshot.file_symbols.is_entry);
+
+    // ── Recompute entry-point cache after PARSE_CACHE update ──
     IMPORT_GRAPH.recompute_entry_cache();
 
     // 10. Export diff — decide on cascade.
     let did_change = exports_changed(old_snapshot.as_deref(), &new_snapshot);
-    {
-        let entries = file_symbols_to_entries(uri, &new_snapshot.file_symbols);
-        SCOPE_RESOLVER.update_file(uri, hash, entries);
-    }
 
     let cascade = if did_change || old_component != component {
         let mut all_affected = old_component;
@@ -563,11 +579,11 @@ fn _parse(
 }
 
 /// Parse a **closed** file from disk, produce a full [`ParseSnapshot`], and
-/// store it in [`FILE_STORE`].  Diagnostics are delivered via the pull model
+/// store it in [`PARSE_CACHE`].  Diagnostics are delivered via the pull model
 /// when the client re-requests them after `workspace/diagnostics/refresh`.
 ///
 /// **Fast path:** if the file's metadata (size + mtime) hasn't changed since
-/// the last successful parse AND we already have a snapshot in [`FILE_STORE`],
+/// the last successful parse AND we already have a snapshot in [`PARSE_CACHE`],
 /// the function returns immediately — no `read_to_string`, no tree-sitter
 /// parse, no cursor walk.
 ///
@@ -581,7 +597,7 @@ pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send
     // Cheap stat()-based skip: if file unchanged and we have results, skip.
     if let Some(current_meta) = file_cache::FileMeta::from_path(&path) {
         if let Some(cached) = file_cache::load(uri) {
-            if cached.meta == current_meta && FILE_STORE.contains_key(uri) {
+            if cached.meta == current_meta && PARSE_CACHE.contains_key(uri) {
                 return Ok(vec![]);
             }
         }

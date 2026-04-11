@@ -1,8 +1,8 @@
 use crate::http::position::Position;
 use crate::http::range::Range;
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::PARSE_CACHE;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
+use crate::util::parse::{SymbolNS, resolve_entries};
 use crate::util::uri_map::LNG_URI_MAP;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -11,11 +11,6 @@ use url::Url;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
-pub struct HoverParams {
-    pub uri: Url,
-    pub position: Position,
-}
 
 #[derive(Debug, Serialize)]
 pub struct Hover {
@@ -79,7 +74,8 @@ fn ignore_doc() -> String { localized_doc("jass", "ignore") }
 
 pub(crate) fn compute(uri: &Url, position: &Position) -> Option<Hover> {
     let lng = LNG_URI_MAP.get(uri)?;
-    if lng.value() != "jass" {
+    let lng_str = lng.value().clone();
+    if lng_str != "jass" && lng_str != "as" {
         return None;
     }
 
@@ -105,7 +101,7 @@ pub(crate) fn compute(uri: &Url, position: &Position) -> Option<Hover> {
         return Some(hover);
     }
 
-    compute_symbol_hover(uri, position)
+    compute_symbol_hover(uri, position, &lng_str)
 }
 
 fn compute_directive_hover(
@@ -353,9 +349,40 @@ fn build_global_decl(
     parts.join(" ")
 }
 
+/// Build an AS C-style signature for a function/method.
+fn build_as_signature(
+    name: &str,
+    params: &[(String, String)],
+    return_type: &Option<String>,
+) -> String {
+    let ret = return_type.as_deref().unwrap_or("void");
+    let params_str = if params.is_empty() {
+        String::new()
+    } else {
+        params
+            .iter()
+            .map(|(pname, ptype)| format!("{} {}", ptype, pname))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    format!("{} {}({})", ret, name, params_str)
+}
+
+/// Build an AS declaration string for a global variable.
+fn build_as_global_decl(
+    name: &str,
+    type_name: &Option<String>,
+) -> String {
+    if let Some(tn) = type_name {
+        format!("{} {}", tn, name)
+    } else {
+        name.to_string()
+    }
+}
+
 /// Symbol hover: look up the symbol under cursor and show its doc comment.
-fn compute_symbol_hover(uri: &Url, position: &Position) -> Option<Hover> {
-    let snapshot = FILE_STORE.get(uri)?;
+fn compute_symbol_hover(uri: &Url, position: &Position, lng: &str) -> Option<Hover> {
+    let snapshot = PARSE_CACHE.get(uri)?;
     let snap = Arc::clone(snapshot.value());
 
     let rope_entry = ROPE_MAP.get(uri)?;
@@ -374,7 +401,7 @@ fn compute_symbol_hover(uri: &Url, position: &Position) -> Option<Hover> {
         let mut best_doc = None;
         let mut best_sig = None;
         for origin in &ext.origins {
-            let (doc, sig) = lookup_symbol_info(&origin.uri, &ext.name);
+            let (doc, sig) = lookup_symbol_info(&origin.uri, &ext.name, lng);
             if best_sig.is_none() {
                 best_sig = sig;
             }
@@ -385,12 +412,13 @@ fn compute_symbol_hover(uri: &Url, position: &Position) -> Option<Hover> {
         }
         (best_doc, best_sig)
     } else {
-        lookup_symbol_info(uri, name)
+        lookup_symbol_info(uri, name, lng)
     };
 
     let mut md = String::new();
     if let Some(sig) = &signature {
-        md.push_str("```jass\n");
+        let code_lang = if lng == "as" { "cpp" } else { "jass" };
+        md.push_str(&format!("```{}\n", code_lang));
         md.push_str(sig);
         md.push_str("\n```");
     }
@@ -416,32 +444,40 @@ fn compute_symbol_hover(uri: &Url, position: &Position) -> Option<Hover> {
     })
 }
 
-fn lookup_symbol_info(uri: &Url, name: &str) -> (Option<String>, Option<String>) {
-    if let Some(snap_entry) = FILE_STORE.get(uri) {
+fn lookup_symbol_info(uri: &Url, name: &str, lng: &str) -> (Option<String>, Option<String>) {
+    if let Some(snap_entry) = PARSE_CACHE.get(uri) {
         let fs = &snap_entry.value().file_symbols;
+        let is_as = lng == "as" || fs.lang == crate::lng::symbol::Lang::As;
+
         if let Some(f) = fs.find_function(name) {
             let params: Vec<(String, String)> = f.params.iter()
                 .map(|p| (p.name.clone(), p.type_name.clone()))
                 .collect();
-            return (
-                f.doc_comment.clone(),
-                Some(build_signature(name, &params, &f.return_type)),
-            );
+            let sig = if is_as {
+                build_as_signature(name, &params, &f.return_type)
+            } else {
+                build_signature(name, &params, &f.return_type)
+            };
+            return (f.doc_comment.clone(), Some(sig));
         }
         if let Some(n) = fs.find_native(name) {
             let params: Vec<(String, String)> = n.params.iter()
                 .map(|p| (p.name.clone(), p.type_name.clone()))
                 .collect();
-            return (
-                n.doc_comment.clone(),
-                Some(build_signature(name, &params, &n.return_type)),
-            );
+            let sig = if is_as {
+                build_as_signature(name, &params, &n.return_type)
+            } else {
+                build_signature(name, &params, &n.return_type)
+            };
+            return (n.doc_comment.clone(), Some(sig));
         }
         if let Some(g) = fs.find_global(name) {
-            return (
-                g.doc_comment.clone(),
-                Some(build_global_decl(name, &g.type_name, g.is_constant, g.is_array)),
-            );
+            let sig = if is_as {
+                build_as_global_decl(name, &g.type_name)
+            } else {
+                build_global_decl(name, &g.type_name, g.is_constant, g.is_array)
+            };
+            return (g.doc_comment.clone(), Some(sig));
         }
         if let Some(t) = fs.find_type(name) {
             let sig = if let Some(ref base) = t.base {
@@ -451,22 +487,109 @@ fn lookup_symbol_info(uri: &Url, name: &str) -> (Option<String>, Option<String>)
             };
             return (t.doc_comment.clone(), Some(sig));
         }
+
+        // ── AS-specific collections ──────────────────────────────────
+        for c in &fs.classes {
+            if c.name == name {
+                return (c.doc_comment.clone(), Some(format!("class {}", name)));
+            }
+        }
+        for i in &fs.interfaces {
+            if i.name == name {
+                return (i.doc_comment.clone(), Some(format!("interface {}", name)));
+            }
+        }
+        for e in &fs.enums {
+            if e.name == name {
+                return (e.doc_comment.clone(), Some(format!("enum {}", name)));
+            }
+        }
+        for m in &fs.mixins {
+            if m.name == name {
+                return (m.doc_comment.clone(), Some(format!("mixin {}", name)));
+            }
+        }
+        for td in &fs.typedefs {
+            if td.alias == name {
+                return (td.doc_comment.clone(), Some(format!("typedef {} = {}", name, td.original)));
+            }
+        }
+        for fd in &fs.funcdefs {
+            if fd.name == name {
+                let params: Vec<(String, String)> = fd.params.iter()
+                    .map(|p| (p.name.clone(), p.type_name.clone()))
+                    .collect();
+                let sig = build_as_signature(name, &params, &fd.return_type);
+                return (fd.doc_comment.clone(), Some(format!("funcdef {}", sig)));
+            }
+        }
+
+        // ── Search class/interface/mixin methods and properties ──────
+        for c in &fs.classes {
+            for method in &c.methods {
+                if method.name == name {
+                    let params: Vec<(String, String)> = method.params.iter()
+                        .map(|p| (p.name.clone(), p.type_name.clone()))
+                        .collect();
+                    let sig = build_as_signature(name, &params, &method.return_type);
+                    return (method.doc_comment.clone(), Some(format!("{}::{}", c.name, sig)));
+                }
+            }
+            for prop in &c.properties {
+                if prop.name == name {
+                    let sig = build_as_global_decl(name, &prop.type_name);
+                    return (prop.doc_comment.clone(), Some(format!("{}::{}", c.name, sig)));
+                }
+            }
+        }
+        for iface in &fs.interfaces {
+            for method in &iface.methods {
+                if method.name == name {
+                    let params: Vec<(String, String)> = method.params.iter()
+                        .map(|p| (p.name.clone(), p.type_name.clone()))
+                        .collect();
+                    let sig = build_as_signature(name, &params, &method.return_type);
+                    return (method.doc_comment.clone(), Some(format!("{}::{}", iface.name, sig)));
+                }
+            }
+        }
+        for mx in &fs.mixins {
+            for method in &mx.methods {
+                if method.name == name {
+                    let params: Vec<(String, String)> = method.params.iter()
+                        .map(|p| (p.name.clone(), p.type_name.clone()))
+                        .collect();
+                    let sig = build_as_signature(name, &params, &method.return_type);
+                    return (method.doc_comment.clone(), Some(format!("{}::{}", mx.name, sig)));
+                }
+            }
+            for prop in &mx.properties {
+                if prop.name == name {
+                    let sig = build_as_global_decl(name, &prop.type_name);
+                    return (prop.doc_comment.clone(), Some(format!("{}::{}", mx.name, sig)));
+                }
+            }
+        }
     }
 
     let all_uris: std::collections::HashSet<Url> = std::iter::once(uri.clone()).collect();
-    let entries = SCOPE_RESOLVER.resolve(name, SymbolNS::Func, &all_uris);
+    let entries = resolve_entries(name, SymbolNS::Func, &all_uris);
     if let Some(e) = entries.first() {
-        return (
-            e.doc_comment.clone(),
-            Some(build_signature(name, &e.params, &e.return_type)),
-        );
+        let sig = if lng == "as" {
+            build_as_signature(name, &e.params, &e.return_type)
+        } else {
+            build_signature(name, &e.params, &e.return_type)
+        };
+        return (e.doc_comment.clone(), Some(sig));
     }
-    let entries = SCOPE_RESOLVER.resolve(name, SymbolNS::Var, &all_uris);
+    let entries = resolve_entries(name, SymbolNS::Var, &all_uris);
     if let Some(e) = entries.first() {
-        return (
-            e.doc_comment.clone(),
-            Some(build_global_decl(name, &e.type_name, e.is_constant, e.is_array)),
-        );
+        let sig = if lng == "as" {
+            build_as_global_decl(name, &e.type_name)
+        } else {
+            build_global_decl(name, &e.type_name, e.is_constant, e.is_array)
+        };
+        return (e.doc_comment.clone(), Some(sig));
     }
 
     (None, None)

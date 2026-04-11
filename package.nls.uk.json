@@ -2,6 +2,8 @@
   "command.importGraph.show": "Показати граф імпортів",
   "command.callGraph.show": "Показати граф викликів",
   "command.typeGraph.show": "Показати граф типів",
+  "command.exportTable.show": "Показати експортовані символи",
+  "command.diagnosticSummary.show": "Показати зведення діагностик",
   "command.rescan.execute": "Перечитати всі файли",
   "command.build.execute": "Збірка",
   "command.ujapi.download": "Завантажити UjAPI common.j",

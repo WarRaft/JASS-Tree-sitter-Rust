@@ -14,12 +14,11 @@
 //!
 //! Database table: `file_cache` in the shared `redb` database.
 
-use crate::lng::jass::symbol::FileSymbols;
-use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
+use crate::lng::symbol::FileSymbols;
 use crate::http::ref_map::{DeclKey, RefMap};
 use crate::util::cache_db;
 use log::{error, info};
-use redb::{ReadableDatabase, ReadableTable};
+use redb::ReadableDatabase;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -28,19 +27,6 @@ use url::Url;
 
 // ─── File metadata ───────────────────────────────────────────────────────────
 
-/// Count `(errors, warnings)` in a diagnostics slice.
-pub fn diag_counts(diags: &[Diagnostic]) -> (u32, u32) {
-    let mut errors = 0u32;
-    let mut warnings = 0u32;
-    for d in diags {
-        match d.severity {
-            Some(DiagnosticSeverity::Error) => errors += 1,
-            Some(DiagnosticSeverity::Warning) => warnings += 1,
-            _ => {}
-        }
-    }
-    (errors, warnings)
-}
 
 /// Lightweight file metadata used for staleness checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -106,12 +92,9 @@ struct CacheEntry {
     /// DeclKeys of function parameter declarations.
     #[serde(default)]
     arg_decl_keys: HashSet<DeclKey>,
-    /// Number of Error-severity diagnostics at parse time.
+    /// Version key at the time the entry was written.
     #[serde(default)]
-    diag_errors: u32,
-    /// Number of Warning-severity diagnostics at parse time.
-    #[serde(default)]
-    diag_warnings: u32,
+    version: String,
 }
 
 /// Result of loading a cache entry.
@@ -124,8 +107,6 @@ pub struct CacheData {
     pub func_decl_keys: HashSet<DeclKey>,
     pub var_decl_keys: HashSet<DeclKey>,
     pub arg_decl_keys: HashSet<DeclKey>,
-    pub diag_errors: u32,
-    pub diag_warnings: u32,
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -155,6 +136,15 @@ pub fn load(uri: &Url) -> Option<CacheData> {
         }
     };
 
+    // Version guard — stale entries survive if purge_data_tables failed.
+    if entry.version != cache_db::version_key() {
+        drop(guard);
+        drop(table);
+        drop(read_txn);
+        remove_entry(uri);
+        return None;
+    }
+
     Some(CacheData {
         meta: entry.meta,
         content_hash: entry.content_hash,
@@ -163,8 +153,6 @@ pub fn load(uri: &Url) -> Option<CacheData> {
         func_decl_keys: entry.func_decl_keys,
         var_decl_keys: entry.var_decl_keys,
         arg_decl_keys: entry.arg_decl_keys,
-        diag_errors: entry.diag_errors,
-        diag_warnings: entry.diag_warnings,
     })
 }
 
@@ -178,8 +166,6 @@ pub fn store(
     func_decl_keys: &HashSet<DeclKey>,
     var_decl_keys: &HashSet<DeclKey>,
     arg_decl_keys: &HashSet<DeclKey>,
-    diag_errors: u32,
-    diag_warnings: u32,
 ) {
     let Some(db) = cache_db::db() else { return };
 
@@ -191,8 +177,7 @@ pub fn store(
         func_decl_keys: func_decl_keys.clone(),
         var_decl_keys: var_decl_keys.clone(),
         arg_decl_keys: arg_decl_keys.clone(),
-        diag_errors,
-        diag_warnings,
+        version: cache_db::version_key(),
     };
 
     let data = match bitcode::serialize(&entry) {
@@ -228,48 +213,6 @@ pub fn store(
     }
 }
 
-
-/// Diagnostic summary — lightweight counts for file decoration badges.
-pub struct DiagSummary {
-    pub uri: String,
-    pub errors: u32,
-    pub warnings: u32,
-}
-
-/// Load diagnostic summaries for **all** cached files.
-///
-/// Returns `(uri_string, errors, warnings)` for every entry in the
-/// `file_cache` table that has at least one error or warning.
-pub fn load_all_diag_summaries() -> Vec<DiagSummary> {
-    let Some(db) = cache_db::db() else { return vec![] };
-    let Ok(read_txn) = db.begin_read() else { return vec![] };
-    let Ok(table) = read_txn.open_table(cache_db::FILE_CACHE_TABLE) else { return vec![] };
-    let Ok(iter) = table.iter() else { return vec![] };
-
-    let mut result = Vec::new();
-    for entry_result in iter {
-        let (key_guard, val_guard) = match entry_result {
-            Ok(kv) => kv,
-            Err(_) => continue,
-        };
-        let uri_str: &str = key_guard.value();
-        let bytes: &[u8] = val_guard.value();
-
-        let entry: CacheEntry = match bitcode::deserialize(bytes) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        if entry.diag_errors > 0 || entry.diag_warnings > 0 {
-            result.push(DiagSummary {
-                uri: uri_str.to_string(),
-                errors: entry.diag_errors,
-                warnings: entry.diag_warnings,
-            });
-        }
-    }
-    result
-}
 
 
 /// Delete **all** cache entries.

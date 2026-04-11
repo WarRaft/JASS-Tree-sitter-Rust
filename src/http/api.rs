@@ -4,6 +4,7 @@
 //! uses `POST /document/update` with a binary TLV body. All other
 //! requests use JSON.
 
+use crate::debug_log;
 use crate::http::server::{TokenParam, check_token};
 use axum::extract::{Json, Query};
 use axum::http::StatusCode;
@@ -68,6 +69,18 @@ impl AuthQuery {
 
 #[derive(Deserialize)]
 pub struct UriParam {
+    pub uri: Url,
+}
+
+#[derive(Deserialize)]
+pub struct ExportsParam {
+    pub uri: Url,
+    /// "file" | "tree" | "all"  (default = "tree")
+    pub mode: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DiagnosticsParam {
     pub uri: Url,
 }
 
@@ -502,6 +515,565 @@ pub async fn graph_type(
     Ok(Json(json!(result)))
 }
 
+pub async fn graph_diagnostics(
+    Query(auth): Query<AuthQuery>,
+    Json(params): Json<DiagnosticsParam>,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    auth.check()?;
+    use axum::response::sse::{Event, Sse};
+    use crate::util::import_graph::IMPORT_GRAPH;
+    use crate::util::parse_cache::PARSE_CACHE;
+
+    let tree_list = IMPORT_GRAPH.tree_for_uri_sorted(&params.uri);
+    if tree_list.is_empty() {
+        let body = json!({ "done": true, "files": [] });
+        return Ok(Json(body).into_response());
+    }
+
+    let total = tree_list.len();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
+
+    tokio::spawn(async move {
+        let mut files = Vec::new();
+
+        for (index, peer) in tree_list.iter().enumerate() {
+            let file_name = peer.to_file_path()
+                .ok()
+                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+                .unwrap_or_else(|| peer.to_string());
+
+            let progress = json!({
+                "progress": true,
+                "index": index,
+                "total": total,
+                "file": &file_name,
+            });
+            let _ = tx.send(Ok(Event::default().data(progress.to_string()))).await;
+
+            // Open files → read full diagnostics from PARSE_CACHE
+            // Closed files → isolated parse, no side effects
+            let (errors, warnings, hints, info_count) = if let Some(snap) = PARSE_CACHE.get(peer) {
+                count_snap_diagnostics(&snap)
+            } else {
+                let peer_clone = peer.clone();
+                tokio::task::spawn_blocking(move || count_diagnostics_isolated(&peer_clone))
+                    .await
+                    .unwrap_or((0, 0, 0, 0))
+            };
+
+            let is_frozen = IMPORT_GRAPH.is_frozen(peer);
+
+            let file_entry = json!({
+                "uri": peer.to_string(),
+                "file": file_name,
+                "errors": errors,
+                "warnings": warnings,
+                "hints": hints,
+                "info": info_count,
+                "frozen": is_frozen,
+            });
+
+            let file_event = json!({
+                "file_result": true,
+                "entry": &file_entry,
+                "index": index,
+                "total": total,
+            });
+            let _ = tx.send(Ok(Event::default().data(file_event.to_string()))).await;
+
+            files.push(file_entry);
+        }
+
+
+        let done = json!({
+            "done": true,
+            "files": files,
+        });
+        let _ = tx.send(Ok(Event::default().data(done.to_string()))).await;
+    });
+
+    let event_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let sse = Sse::new(event_stream)
+        .keep_alive(axum::response::sse::KeepAlive::default());
+
+    Ok(sse.into_response())
+}
+
+/// Count diagnostics from an already-parsed snapshot.
+fn count_snap_diagnostics(snap: &crate::util::parse_cache::ParseSnapshot) -> (u32, u32, u32, u32) {
+    use crate::http::diagnostic::DiagnosticSeverity;
+    let (mut e, mut w, mut h, mut i) = (0u32, 0u32, 0u32, 0u32);
+    for d in &snap.diagnostics {
+        match d.severity {
+            Some(DiagnosticSeverity::Error) => e += 1,
+            Some(DiagnosticSeverity::Warning) => w += 1,
+            Some(DiagnosticSeverity::Hint) => h += 1,
+            Some(DiagnosticSeverity::Information) => i += 1,
+            None => {}
+        }
+    }
+    (e, w, h, i)
+}
+
+/// Isolated diagnostic count for a closed file.
+///
+/// Reads the file from disk, parses with tree-sitter, runs cursor walk
+/// using symbols from PARSE_CACHE/file_cache (read-only), counts diagnostics.
+/// Does NOT modify PARSE_CACHE or IMPORT_GRAPH.
+fn count_diagnostics_isolated(uri: &Url) -> (u32, u32, u32, u32) {
+    use crate::http::diagnostic::DiagnosticSeverity;
+    use crate::util::import_graph::IMPORT_GRAPH;
+    use crate::util::parse::all_visible_entries;
+
+    let path = match uri.to_file_path() {
+        Ok(p) if p.exists() => p,
+        _ => return (0, 0, 0, 0),
+    };
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return (0, 0, 0, 0),
+    };
+    let rope = lapce_xi_rope::Rope::from(content.as_str());
+
+    let is_as = crate::util::open::is_as_uri(uri);
+
+    // Parse with tree-sitter
+    let mut parser = tree_sitter::Parser::new();
+    let lang: tree_sitter::Language = if is_as {
+        tree_sitter_as::language().into()
+    } else {
+        tree_sitter_jass::language().into()
+    };
+    if parser.set_language(&lang).is_err() {
+        return (0, 0, 0, 0);
+    }
+    let tree = match parser.parse(&content, None) {
+        Some(t) => t,
+        None => return (0, 0, 0, 0),
+    };
+
+    // Get visible component from existing IMPORT_GRAPH (read-only)
+    let component = IMPORT_GRAPH.visible_component(uri);
+
+    // Get imported symbols from PARSE_CACHE/file_cache (read-only)
+    let visible_entries = all_visible_entries(&component);
+
+    let diagnostics = if is_as {
+        // ── AngelScript ──
+        use crate::lng::ass::ast::{build_ast, rewrite_directives};
+        use crate::lng::ass::cursor::{Cursor, ImportedSymbol, ImportedKind};
+        use crate::util::parse::SymbolNS;
+        use crate::http::ref_map::DeclKey;
+
+        let mut ast = build_ast(tree.root_node());
+        let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
+        rewrite_directives(&mut ast, &src);
+
+        let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
+        for entry in &visible_entries {
+            if &entry.uri == uri { continue; }
+            let is_jass_file = !crate::util::open::is_as_uri(&entry.uri);
+            let sym_kind = match entry.ns {
+                SymbolNS::Func => ImportedKind::Func,
+                SymbolNS::Var => ImportedKind::Var,
+            };
+            let origin_decl_key = Some(entry.decl_key as DeclKey);
+
+            if is_jass_file {
+                imported_symbols.push(ImportedSymbol {
+                    origin_uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                    kind: sym_kind,
+                    origin_decl_key,
+                    return_type: entry.return_type.clone(),
+                    type_name: entry.type_name.clone(),
+                    namespace: "Jass".to_string(),
+                });
+                imported_symbols.push(ImportedSymbol {
+                    origin_uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                    kind: sym_kind,
+                    origin_decl_key,
+                    return_type: entry.return_type.clone(),
+                    type_name: entry.type_name.clone(),
+                    namespace: String::new(),
+                });
+            } else {
+                imported_symbols.push(ImportedSymbol {
+                    origin_uri: entry.uri.clone(),
+                    name: entry.name.clone(),
+                    kind: sym_kind,
+                    origin_decl_key,
+                    return_type: entry.return_type.clone(),
+                    type_name: entry.type_name.clone(),
+                    namespace: entry.namespace.clone(),
+                });
+            }
+        }
+
+        let cursor = Cursor::walk(&ast, &rope, &imported_symbols);
+        cursor.diagnostics
+    } else {
+        // ── JASS ──
+        use crate::lng::jass::ast::{build_ast, rewrite_imports};
+        use crate::lng::jass::cursor::Cursor;
+
+        let mut ast = build_ast(tree.root_node());
+        let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
+        rewrite_imports(&mut ast, &src);
+
+        let cursor = Cursor::walk(&ast, &rope, &[]);
+        cursor.diagnostics
+    };
+
+    let (mut e, mut w, mut h, mut i) = (0u32, 0u32, 0u32, 0u32);
+    for d in &diagnostics {
+        match d.severity {
+            Some(DiagnosticSeverity::Error) => e += 1,
+            Some(DiagnosticSeverity::Warning) => w += 1,
+            Some(DiagnosticSeverity::Hint) => h += 1,
+            Some(DiagnosticSeverity::Information) => i += 1,
+            None => {}
+        }
+    }
+    (e, w, h, i)
+}
+
+
+pub async fn graph_exports(
+    Query(auth): Query<AuthQuery>,
+    Json(params): Json<ExportsParam>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    auth.check()?;
+    use crate::util::parse::{SymbolNS, all_entries, entries_for_uri};
+    use crate::util::import_graph::IMPORT_GRAPH;
+
+    let mode = params.mode.as_deref().unwrap_or("tree");
+
+    /// Collect type names for `uri`.
+    ///
+    /// Tries `PARSE_CACHE` first (cheapest — in-memory); falls back to the
+    /// persistent **disk cache** when the snapshot hasn't been loaded yet.
+    fn type_names_for(uri: &Url) -> std::collections::HashSet<String> {
+        if let Some(snap) = crate::util::parse_cache::peek_or_load(uri) {
+            return snap.file_symbols.types.iter().map(|t| t.name.clone()).collect();
+        }
+        std::collections::HashSet::new()
+    }
+
+    // Helper: emit class/interface/mixin/enum declarations + their members from a file snapshot.
+    fn collect_members(uri: &Url, entries: &mut Vec<Value>) {
+        let Some(snap) = crate::util::parse_cache::peek_or_load(uri) else { return };
+        let fs = &snap.file_symbols;
+        let file_name = uri.to_file_path()
+            .ok()
+            .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+            .unwrap_or_else(|| uri.to_string());
+
+        // Get the rope for correct byte→Position conversion (handles multi-byte / Cyrillic).
+        let rope_ref = crate::util::roper::uri_map::ROPE_MAP.get(uri);
+        let rope_opt = rope_ref.as_ref().map(|r| r.value());
+
+        /// Convert a byte offset to `(line, character)` JSON fields using the rope.
+        /// Falls back to `(0, 0)` when the rope is unavailable.
+        fn decl_pos_fields(rope_opt: Option<&lapce_xi_rope::Rope>, byte: usize) -> (usize, usize) {
+            if let Some(rope) = rope_opt {
+                if let Some(pos) = crate::http::position::Position::from_byte_offset(rope, byte) {
+                    return (pos.line, pos.character);
+                }
+            }
+            (0, 0)
+        }
+
+        for c in &fs.classes {
+            let (dl, dc) = decl_pos_fields(rope_opt, c.decl_byte);
+            // Class declaration itself
+            entries.push(json!({
+                "name": c.name,
+                "ns": "class",
+                "class_name": null,
+                "namespace": c.namespace,
+                "type_name": null,
+                "return_type": null,
+                "params": "",
+                "is_constant": false,
+                "is_array": false,
+                "uri": uri.to_string(),
+                "file": file_name,
+                "decl_line": dl,
+                "decl_char": dc,
+            }));
+            for m in &c.methods {
+                let (dl, dc) = decl_pos_fields(rope_opt, m.decl_byte);
+                entries.push(json!({
+                    "name": m.name,
+                    "ns": "method",
+                    "class_name": c.name,
+                    "namespace": c.namespace,
+                    "type_name": null,
+                    "return_type": m.return_type,
+                    "params": m.params.iter().map(|p| format!("{} {}", p.type_name, p.name)).collect::<Vec<_>>().join(", "),
+                    "is_constant": false,
+                    "is_array": false,
+                    "uri": uri.to_string(),
+                    "file": file_name,
+                    "decl_line": dl,
+                    "decl_char": dc,
+                }));
+            }
+            for p in &c.properties {
+                let (dl, dc) = decl_pos_fields(rope_opt, p.decl_byte);
+                entries.push(json!({
+                    "name": p.name,
+                    "ns": "property",
+                    "class_name": c.name,
+                    "namespace": c.namespace,
+                    "type_name": p.type_name,
+                    "return_type": null,
+                    "params": "",
+                    "is_constant": false,
+                    "is_array": false,
+                    "uri": uri.to_string(),
+                    "file": file_name,
+                    "decl_line": dl,
+                    "decl_char": dc,
+                }));
+            }
+        }
+        for i in &fs.interfaces {
+            let (dl, dc) = decl_pos_fields(rope_opt, i.decl_byte);
+            // Interface declaration itself
+            entries.push(json!({
+                "name": i.name,
+                "ns": "interface",
+                "class_name": null,
+                "namespace": i.namespace,
+                "type_name": null,
+                "return_type": null,
+                "params": "",
+                "is_constant": false,
+                "is_array": false,
+                "uri": uri.to_string(),
+                "file": file_name,
+                "decl_line": dl,
+                "decl_char": dc,
+            }));
+            for m in &i.methods {
+                let (dl, dc) = decl_pos_fields(rope_opt, m.decl_byte);
+                entries.push(json!({
+                    "name": m.name,
+                    "ns": "method",
+                    "class_name": i.name,
+                    "namespace": i.namespace,
+                    "type_name": null,
+                    "return_type": m.return_type,
+                    "params": m.params.iter().map(|p| format!("{} {}", p.type_name, p.name)).collect::<Vec<_>>().join(", "),
+                    "is_constant": false,
+                    "is_array": false,
+                    "uri": uri.to_string(),
+                    "file": file_name,
+                    "decl_line": dl,
+                    "decl_char": dc,
+                }));
+            }
+        }
+        for en in &fs.enums {
+            let (dl, dc) = decl_pos_fields(rope_opt, en.decl_byte);
+            // Enum declaration itself
+            entries.push(json!({
+                "name": en.name,
+                "ns": "enum",
+                "class_name": null,
+                "namespace": en.namespace,
+                "type_name": null,
+                "return_type": null,
+                "params": "",
+                "is_constant": false,
+                "is_array": false,
+                "uri": uri.to_string(),
+                "file": file_name,
+                "decl_line": dl,
+                "decl_char": dc,
+            }));
+        }
+        for mx in &fs.mixins {
+            let (dl, dc) = decl_pos_fields(rope_opt, mx.decl_byte);
+            // Mixin declaration itself
+            entries.push(json!({
+                "name": mx.name,
+                "ns": "mixin",
+                "class_name": null,
+                "namespace": mx.namespace,
+                "type_name": null,
+                "return_type": null,
+                "params": "",
+                "is_constant": false,
+                "is_array": false,
+                "uri": uri.to_string(),
+                "file": file_name,
+                "decl_line": dl,
+                "decl_char": dc,
+            }));
+            for m in &mx.methods {
+                let (dl, dc) = decl_pos_fields(rope_opt, m.decl_byte);
+                entries.push(json!({
+                    "name": m.name,
+                    "ns": "method",
+                    "class_name": mx.name,
+                    "namespace": mx.namespace,
+                    "type_name": null,
+                    "return_type": m.return_type,
+                    "params": m.params.iter().map(|p| format!("{} {}", p.type_name, p.name)).collect::<Vec<_>>().join(", "),
+                    "is_constant": false,
+                    "is_array": false,
+                    "uri": uri.to_string(),
+                    "file": file_name,
+                    "decl_line": dl,
+                    "decl_char": dc,
+                }));
+            }
+            for p in &mx.properties {
+                let (dl, dc) = decl_pos_fields(rope_opt, p.decl_byte);
+                entries.push(json!({
+                    "name": p.name,
+                    "ns": "property",
+                    "class_name": mx.name,
+                    "namespace": mx.namespace,
+                    "type_name": p.type_name,
+                    "return_type": null,
+                    "params": "",
+                    "is_constant": false,
+                    "is_array": false,
+                    "uri": uri.to_string(),
+                    "file": file_name,
+                    "decl_line": dl,
+                    "decl_char": dc,
+                }));
+            }
+        }
+    }
+
+    let uris_to_scan: Vec<Url> = match mode {
+        "file" => vec![params.uri.clone()],
+        "all" => {
+            // Return all indexed entries
+            let all = all_entries();
+            let mut entries = Vec::with_capacity(all.len());
+            let mut seen_uris = std::collections::HashSet::new();
+
+            // Collect type names per URI so we can label them as "type" instead of "variable".
+            let mut type_names_cache: std::collections::HashMap<Url, std::collections::HashSet<String>> = std::collections::HashMap::new();
+
+            for e in &all {
+                seen_uris.insert(e.uri.clone());
+
+                // Determine ns label: check if this Var entry is actually a type.
+                let ns_str = match e.ns {
+                    SymbolNS::Func => "function",
+                    SymbolNS::Var => {
+                        let is_type = type_names_cache
+                            .entry(e.uri.clone())
+                            .or_insert_with(|| type_names_for(&e.uri))
+                            .contains(&e.name);
+                        if is_type { "type" } else { "variable" }
+                    }
+                };
+                let file_name = e.uri.to_file_path()
+                    .ok()
+                    .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| e.uri.to_string());
+                let (dl, dc) = {
+                    let rr = crate::util::roper::uri_map::ROPE_MAP.get(&e.uri);
+                    let ro = rr.as_ref().map(|r| r.value());
+                    if let Some(rope) = ro {
+                        if let Some(pos) = crate::http::position::Position::from_byte_offset(rope, e.decl_key) {
+                            (pos.line, pos.character)
+                        } else { (0, 0) }
+                    } else { (0, 0) }
+                };
+                entries.push(json!({
+                    "name": e.name,
+                    "ns": ns_str,
+                    "class_name": null,
+                    "namespace": e.namespace,
+                    "type_name": e.type_name,
+                    "return_type": e.return_type,
+                    "params": e.params.iter().map(|(n, t)| format!("{} {}", t, n)).collect::<Vec<_>>().join(", "),
+                    "is_constant": e.is_constant,
+                    "is_array": e.is_array,
+                    "uri": e.uri.to_string(),
+                    "file": file_name,
+                    "decl_line": dl,
+                    "decl_char": dc,
+                }));
+            }
+            // Also emit class/interface/mixin/enum declarations + members from snapshots.
+            for uri in &seen_uris {
+                collect_members(uri, &mut entries);
+            }
+            return Ok(Json(json!({ "entries": entries })));
+        }
+        _ => {
+            // "tree" (default)
+            let tree_uris = IMPORT_GRAPH.tree_for_uri(&params.uri);
+            if tree_uris.is_empty() {
+                vec![params.uri.clone()]
+            } else {
+                tree_uris.into_iter().collect()
+            }
+        }
+    };
+
+    let mut entries = Vec::new();
+    for uri in &uris_to_scan {
+        let rope_ref = crate::util::roper::uri_map::ROPE_MAP.get(uri);
+        let rope_opt = rope_ref.as_ref().map(|r| r.value());
+
+        // Collect type names from the snapshot (or disk cache) to label them as "type".
+        let type_names = type_names_for(uri);
+
+        for e in entries_for_uri(uri) {
+            let ns_str = match e.ns {
+                SymbolNS::Func => "function",
+                SymbolNS::Var => {
+                    if type_names.contains(&e.name) { "type" } else { "variable" }
+                }
+            };
+            let file_name = uri.to_file_path()
+                .ok()
+                .and_then(|p| p.file_name().map(|f| f.to_string_lossy().to_string()))
+                .unwrap_or_else(|| uri.to_string());
+
+            let (dl, dc) = if let Some(rope) = rope_opt {
+                if let Some(pos) = crate::http::position::Position::from_byte_offset(rope, e.decl_key) {
+                    (pos.line, pos.character)
+                } else { (0, 0) }
+            } else { (0, 0) };
+
+            entries.push(json!({
+                "name": e.name,
+                "ns": ns_str,
+                "class_name": null,
+                "namespace": e.namespace,
+                "type_name": e.type_name,
+                "return_type": e.return_type,
+                "params": e.params.iter().map(|(n, t)| format!("{} {}", t, n)).collect::<Vec<_>>().join(", "),
+                "is_constant": e.is_constant,
+                "is_array": e.is_array,
+                "uri": uri.to_string(),
+                "file": file_name,
+                "decl_line": dl,
+                "decl_char": dc,
+            }));
+        }
+        // Also emit class/interface/mixin/enum declarations + members.
+        collect_members(uri, &mut entries);
+    }
+
+    Ok(Json(json!({ "entries": entries })))
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Build endpoints
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -552,7 +1124,7 @@ pub async fn rescan_execute(
     auth.check()?;
     use axum::response::sse::{Event, Sse};
     use crate::util::import_graph::IMPORT_GRAPH;
-    use crate::util::file_store::FILE_STORE;
+    use crate::util::parse_cache::PARSE_CACHE;
     use crate::util::rescan::RescanGuard;
 
     // Only one rescan at a time — if busy, reply immediately.
@@ -578,8 +1150,7 @@ pub async fn rescan_execute(
 
     // Purge caches before the scan loop.
     crate::util::file_cache::purge_set(&tree_uris);
-    crate::util::scope_resolver::SCOPE_RESOLVER.remove_files(&tree_uris);
-    for u in &tree_list { FILE_STORE.remove(u); }
+    for u in &tree_list { PARSE_CACHE.remove(u); }
 
     // Create a channel so the background task can push SSE events.
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
@@ -588,14 +1159,39 @@ pub async fn rescan_execute(
     tokio::spawn(async move {
         let _guard = guard; // move guard into spawned task — dropped when done
 
-        let mut ok_count = 0usize;
-        let mut errors: Vec<String> = Vec::new();
+        // Collect absolute paths for common-parent computation.
+        let abs_paths: Vec<std::path::PathBuf> = tree_list
+            .iter()
+            .filter_map(|u| u.to_file_path().ok())
+            .collect();
 
+        // Compute nearest common parent directory.
+        let common_parent = if abs_paths.is_empty() {
+            std::path::PathBuf::new()
+        } else {
+            let mut common = abs_paths[0].parent().unwrap_or(&abs_paths[0]).to_path_buf();
+            for p in &abs_paths[1..] {
+                let dir = p.parent().unwrap_or(p);
+                common = common
+                    .ancestors()
+                    .find(|a| dir.starts_with(a))
+                    .unwrap_or(std::path::Path::new("/"))
+                    .to_path_buf();
+            }
+            common
+        };
+
+        let mut errors: Vec<String> = Vec::new();
+        let mut scanned_files: Vec<String> = Vec::new();
+        // File contents read from disk in pass 1, reused in pass 2.
+        let mut contents: Vec<Option<String>> = Vec::with_capacity(tree_list.len());
+
+        // ── Pass 1: init (rope + tree) + lightweight symbol collection ──
         for (index, u) in tree_list.iter().enumerate() {
             let fname = u.path().rsplit('/').next().unwrap_or("");
 
-            // Send progress event.
             let progress = json!({
+                "step": 1,
                 "file": fname,
                 "index": index,
                 "total": total,
@@ -603,20 +1199,75 @@ pub async fn rescan_execute(
             let _ = tx.send(Ok(Event::default().data(progress.to_string()))).await;
 
             match u.to_file_path() {
-                Ok(path) if path.is_dir() => continue,
-                Ok(path) => match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        if let Err(e) = crate::util::open::open_by_uri(u, &content).await {
-                            errors.push(format!("{}: {}", fname, e));
-                        } else {
-                            ok_count += 1;
+                Ok(path) if path.is_dir() => { contents.push(None); continue; }
+                Ok(path) => {
+                    let rel = path
+                        .strip_prefix(&common_parent)
+                        .unwrap_or(&path)
+                        .display()
+                        .to_string();
+                    scanned_files.push(rel);
+
+                    match std::fs::read_to_string(&path) {
+                        Ok(content) => {
+                            // Init: rope + parser + tree (no diagnostics).
+                            if let Err(e) = crate::util::open::init_by_uri(u, &content) {
+                                errors.push(format!("{}: init — {}", fname, e));
+                                contents.push(None);
+                                continue;
+                            }
+                            // Lightweight symbol extraction → file_cache.
+                            let ts_lang: tree_sitter::Language = if crate::util::open::is_as_uri(u) {
+                                tree_sitter_as::language().into()
+                            } else {
+                                tree_sitter_jass::language().into()
+                            };
+                            crate::util::parse::ensure_file_symbols(u, ts_lang);
+                            contents.push(Some(content));
+                        }
+                        Err(e) => {
+                            errors.push(format!("{}: cannot read — {}", fname, e));
+                            contents.push(None);
                         }
                     }
-                    Err(e) => errors.push(format!("{}: cannot read — {}", fname, e)),
-                },
-                Err(_) => errors.push(format!("{}: invalid file path", fname)),
+                }
+                Err(_) => {
+                    errors.push(format!("{}: invalid file path", fname));
+                    contents.push(None);
+                }
             }
         }
+
+        // ── Pass 2: full parse (all symbols now in scope resolver) ──────
+        let mut ok_count = 0usize;
+
+        for (index, u) in tree_list.iter().enumerate() {
+            let content = match contents.get(index).and_then(|c| c.as_deref()) {
+                Some(c) => c,
+                None => continue,
+            };
+            let fname = u.path().rsplit('/').next().unwrap_or("");
+
+            let progress = json!({
+                "step": 2,
+                "file": fname,
+                "index": index,
+                "total": total,
+            });
+            let _ = tx.send(Ok(Event::default().data(progress.to_string()))).await;
+
+            if let Err(e) = crate::util::open::parse_only_by_uri(u, content).await {
+                errors.push(format!("{}: parse — {}", fname, e));
+            } else {
+                ok_count += 1;
+            }
+        }
+
+        // Collect URI + languageId pairs for client-side refresh.
+        let uri_entries: Vec<serde_json::Value> = tree_list.iter().map(|u| {
+            let lang = if crate::util::open::is_as_uri(u) { "angelscript" } else { "jass" };
+            json!({ "uri": u.to_string(), "languageId": lang })
+        }).collect();
 
         let msg = if errors.is_empty() {
             format!("Rescanned {} files", ok_count)
@@ -629,6 +1280,9 @@ pub async fn rescan_execute(
             "ok": errors.is_empty(),
             "message": msg,
             "errors": errors,
+            "files": scanned_files,
+            "entries": uri_entries,
+            "root": common_parent.display().to_string(),
         });
         let _ = tx.send(Ok(Event::default().data(done.to_string()))).await;
     });
@@ -719,29 +1373,73 @@ pub async fn completion(
     Ok(Json(serde_json::to_value(list).unwrap_or_default()))
 }
 
-// ─── Hover ────────────────────────────────────────────────────────────────────
 
-pub async fn hover(
-    Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::http::hover::HoverParams>,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    auth.check()?;
-    let result = crate::http::hover::compute(&params.uri, &params.position);
-    Ok(Json(match result {
-        Some(h) => serde_json::to_value(h).unwrap_or(Value::Null),
-        None => Value::Null,
-    }))
+// ─── Combined cursor context (hover + highlight + codeAction) ─────────────────
+
+#[derive(Deserialize)]
+pub struct CursorContextParams {
+    pub uri: Url,
+    pub position: crate::http::position::Position,
+    /// Non-zero selection range for code actions. When absent, a zero-width
+    /// range at `position` is used and diagnostics are taken from the snapshot.
+    #[serde(default)]
+    pub range: Option<crate::http::range::Range>,
+    #[serde(default)]
+    pub context: Option<crate::http::code_action::CodeActionContext>,
 }
 
-// ─── Document Highlight ───────────────────────────────────────────────────────
-
-pub async fn document_highlight(
+pub async fn cursor_context(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::http::highlight::DocumentHighlightParams>,
+    Json(params): Json<CursorContextParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let result = crate::http::highlight::compute_highlight(&params.uri, &params.position);
-    Ok(Json(serde_json::to_value(result).unwrap_or_default()))
+    let uri = &params.uri;
+    let position = &params.position;
+
+    let hover_result = crate::http::hover::compute(uri, position);
+    let highlights = crate::http::highlight::compute_highlight(uri, position);
+
+    // Code actions: use client-provided range/context if present,
+    // otherwise build from server-side diagnostics at cursor position.
+    let (range, diagnostics) = match (params.range, params.context) {
+        (Some(r), Some(ctx)) => (r, ctx.diagnostics),
+        _ => {
+            let r = crate::http::range::Range {
+                start: position.clone(),
+                end: position.clone(),
+            };
+            let diags = crate::util::parse_cache::PARSE_CACHE
+                .get(uri)
+                .map(|snap| {
+                    snap.diagnostics
+                        .iter()
+                        .filter(|d| {
+                            d.range.start.line <= position.line
+                                && d.range.end.line >= position.line
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            (r, diags)
+        }
+    };
+
+    let ca_params = crate::http::code_action::CodeActionParams {
+        uri: uri.clone(),
+        range,
+        context: crate::http::code_action::CodeActionContext {
+            diagnostics,
+            only: None,
+        },
+    };
+    let code_actions = crate::http::code_action::compute::compute(&ca_params);
+
+    Ok(Json(json!({
+        "hover": hover_result,
+        "highlights": highlights,
+        "codeActions": code_actions,
+    })))
 }
 
 // ─── Definition ───────────────────────────────────────────────────────────────
@@ -753,13 +1451,13 @@ pub async fn definition(
     auth.check()?;
     let uri = &params.uri;
     let mut locs = Vec::new();
-    if let Some(snapshot) = crate::util::file_store::FILE_STORE.get(uri) {
+    if let Some(snapshot) = crate::util::parse_cache::PARSE_CACHE.get(uri) {
         if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
             if let Some(byte) = params.position.to_byte_offset(rope_entry.value()) {
                 let ref_map = &snapshot.ref_map;
                 if let Some(ext) = ref_map.external_at(byte) {
                     for origin in &ext.origins {
-                        if let Some(ext_snap) = crate::util::file_store::FILE_STORE.get(&origin.uri) {
+                        if let Some(ext_snap) = crate::util::parse_cache::peek_or_load(&origin.uri) {
                             for group in ext_snap.ref_map.groups.values() {
                                 if group.name == ext.name {
                                     for occ in &group.occurrences {
@@ -797,7 +1495,7 @@ pub async fn references(
     auth.check()?;
     let uri = &params.uri;
     let mut locs = Vec::new();
-    if let Some(snapshot) = crate::util::file_store::FILE_STORE.get(uri) {
+    if let Some(snapshot) = crate::util::parse_cache::PARSE_CACHE.get(uri) {
         if let Some(rope_entry) = crate::util::roper::uri_map::ROPE_MAP.get(uri) {
             if let Some(byte) = params.position.to_byte_offset(rope_entry.value()) {
                 let include_decl = params.context.include_declaration;
@@ -843,7 +1541,7 @@ pub async fn formatting(
             }
         }
         if !deltas.is_empty() {
-            if let Some(snap) = crate::util::file_store::FILE_STORE.get(uri) {
+            if let Some(snap) = crate::util::parse_cache::PARSE_CACHE.get(uri) {
                 if let Ok(mut hub) = snap.value().semantic.write() {
                     hub.adjust_columns(&deltas);
                 }
@@ -920,16 +1618,6 @@ pub async fn color_presentation(
     Ok(Json(serde_json::to_value(&presentations).unwrap_or_default()))
 }
 
-// ─── Code Action ──────────────────────────────────────────────────────────────
-
-pub async fn code_action(
-    Query(auth): Query<AuthQuery>,
-    Json(params): Json<crate::http::code_action::CodeActionParams>,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    auth.check()?;
-    let actions = crate::http::code_action::compute::compute(&params);
-    Ok(Json(serde_json::to_value(actions).unwrap_or_default()))
-}
 
 // ─── Signature Help ───────────────────────────────────────────────────────────
 
@@ -1066,10 +1754,6 @@ mod section {
     /// `[u32 declLine][u32 declChar][u32 refCount]
     ///  [u32 refStartLine][u32 refStartChar][u32 refEndLine][u32 refEndChar] × refCount`
     pub const CODE_LENSES: u8 = 0x09;
-    /// Peer diagnostic summaries — per peer file in the import tree:
-    /// `[u16 uriLen][…uri UTF-8…][u32 errors][u32 warnings]`
-    /// Allows the client to show error/warning badges for closed files.
-    pub const PEER_DIAG_SUMMARY: u8 = 0x0A;
     /// All URIs in the import tree — per URI:
     /// `[u16 uriLen][…uri UTF-8…]`
     /// Allows the client to mark every file in the tree in the Explorer.
@@ -1125,7 +1809,7 @@ pub struct DocumentUpdateQuery {
     pub hints: String,
 }
 
-/// Build binary TLV response from the current `FILE_STORE` snapshot.
+/// Build binary TLV response from the current `PARSE_CACHE` snapshot.
 ///
 /// `prev_result_id` is the client's `lastResultId` — if it matches the
 /// server's `SEMANTIC_LAST`, a compact token-aware delta is sent instead of
@@ -1134,17 +1818,21 @@ pub struct DocumentUpdateQuery {
 /// `hints` controls which inlay hint types to include in the response.
 /// Empty string → no hints.  Space/comma-separated tags: `ref`, `type`.
 fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) -> Vec<u8> {
-    use crate::util::file_store::FILE_STORE;
+    use crate::util::parse_cache::PARSE_CACHE;
 
     let mut buf = Vec::new();
 
-    let snap = match FILE_STORE.get(uri) {
-        Some(s) => s,
+    // Clone the Arc and drop the DashMap guard immediately so we don't
+    // hold a shard lock while later acquiring IMPORT_GRAPH locks
+    // (IMPORT_GRAPH.update() can call PARSE_CACHE.remove() under its
+    // own write lock, causing a lock-ordering deadlock).
+    let snap = match PARSE_CACHE.get(uri) {
+        Some(s) => std::sync::Arc::clone(s.value()),
         None => return buf,
     };
 
     // ── Section 0x01/0x03: Semantic tokens (full or delta) ────────
-    let semantic = snap.value().semantic.read().unwrap().data(None);
+    let semantic = snap.semantic.read().unwrap().data(None);
 
     // Try to compute a token-aware delta against the previous result.
     let diff: Option<Vec<u32>> = prev_result_id
@@ -1368,28 +2056,10 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) ->
         }
     }
 
-    // ── Section 0x0A: Peer diagnostic summaries ──────────────────
+    // ── Section 0x0B: All tree URIs ──────────────────────────────
     {
         use crate::util::import_graph::IMPORT_GRAPH;
         let tree_uris = IMPORT_GRAPH.tree_for_uri(uri);
-        let mut section_buf = Vec::new();
-        for peer in &tree_uris {
-            if let Some(peer_snap) = FILE_STORE.get(peer) {
-                let (errors, warnings) = crate::util::file_cache::diag_counts(&peer_snap.diagnostics);
-                let uri_bytes = peer.as_str().as_bytes();
-                section_buf.extend_from_slice(&(uri_bytes.len() as u16).to_le_bytes());
-                section_buf.extend_from_slice(uri_bytes);
-                section_buf.extend_from_slice(&errors.to_le_bytes());
-                section_buf.extend_from_slice(&warnings.to_le_bytes());
-            }
-        }
-        if !section_buf.is_empty() {
-            buf.push(section::PEER_DIAG_SUMMARY);
-            buf.extend_from_slice(&(section_buf.len() as u32).to_le_bytes());
-            buf.extend_from_slice(&section_buf);
-        }
-
-        // ── Section 0x0B: All tree URIs ──────────────────────────────
         {
             let mut tree_buf = Vec::new();
             for peer in &tree_uris {
@@ -1483,26 +2153,27 @@ pub async fn document_update(
     let version = params.version;
 
     // Build a response that only contains the echoed version prefix (no TLV
-    // sections).  Used when there is nothing to return — cancelled parse,
-    // unrecognised language, empty body, etc.
+    // sections).  Used when there is nothing to return — unrecognised
+    // language, empty body, etc.
     let empty = |v: u32| Ok((
         [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
         v.to_le_bytes().to_vec(),
     ));
 
-    // ── Cancel any in-flight parse for this URI ──────────────────
-    crate::util::file_store::cancel_uri_requests(&uri);
-    let cancel = crate::util::file_store::uri_request_token(&uri);
 
     // ── Parse TLV request body ───────────────────────────────────
     let mut has_work = false;
+    let fname = uri.path().rsplit('/').next().unwrap_or("?");
+    debug_log!("[update] start lang={} file={}", lang, fname);
 
     if body.len() >= 5 && body[0] == section::OPEN_URI {
         // ── Open by URI — server reads from disk ──────────────────
+        debug_log!("[update] OPEN_URI reading from disk");
         let file_path = uri.to_file_path()
             .map_err(|_| (StatusCode::BAD_REQUEST, "URI is not a file:// path".into()))?;
         let text = tokio::fs::read_to_string(&file_path).await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read {}: {e}", file_path.display())))?;
+        debug_log!("[update] read {} bytes", text.len());
 
         let init_result = match lang {
             "bni" => crate::lng::bni::open::init(&uri, &text),
@@ -1515,6 +2186,7 @@ pub async fn document_update(
         if let Err(e) = init_result {
             return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{lang} init: {e}")));
         }
+        crate::util::import_graph::IMPORT_GRAPH.ensure_node_pub(&uri);
         has_work = true;
     } else if body.len() >= 5 && body[0] == section::FULL_TEXT {
         // ── Open (full text) ─────────────────────────────────────
@@ -1538,6 +2210,7 @@ pub async fn document_update(
         if let Err(e) = init_result {
             return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{lang} init: {e}")));
         }
+        crate::util::import_graph::IMPORT_GRAPH.ensure_node_pub(&uri);
         has_work = true;
     } else if body.len() >= 5 && body[0] == section::CONTENT_CHANGE {
         // ── Change (incremental edits) ───────────────────────────
@@ -1561,36 +2234,29 @@ pub async fn document_update(
     }
 
     if !has_work {
+        debug_log!("[update] no work, returning empty");
         return empty(version);
     }
 
-    // ── Parse — race against cancellation ────────────────────────
-    let parse_gen = crate::util::file_store::mark_parse_pending(&uri);
-    let lang_owned = lang.to_string();
-    let uri_clone = uri.clone();
-    let mut handle = tokio::spawn(async move {
-        let res = match lang_owned.as_str() {
-            "bni" => crate::lng::bni::parse::parse_and_notify(&uri_clone).await,
-            "jass" => crate::lng::jass::parse::parse_and_notify(&uri_clone, Some(parse_gen)).await,
-            "angelscript" => crate::lng::ass::parse::parse_and_notify(&uri_clone, Some(parse_gen)).await,
-            "wts" => crate::lng::wts::parse::parse_and_notify(&uri_clone).await,
-            "slk" => crate::lng::slk::parse::parse_and_notify(&uri_clone).await,
-            _ => Ok(()),
-        };
-        if let Err(e) = res {
-            log::error!("{} parse: {}", lang_owned, e);
-        }
-        crate::util::file_store::mark_parse_done(&uri_clone, parse_gen);
-    });
-
-    // Race: if a newer update cancels us, abort the parse task and return empty.
-    tokio::select! {
-        _ = &mut handle => {}
-        _ = cancel.cancelled() => {
-            handle.abort();
-            return empty(version);
-        }
+    // ── Parse ─────────────────────────────────────────────────────
+    // The client-side serial queue guarantees only one in-flight request
+    // per URI, so no server-side cancellation race is needed.
+    debug_log!("[update] starting parse");
+    let parse_gen = crate::util::parse_cache::mark_parse_pending(&uri);
+    let res = match lang {
+        "bni" => crate::lng::bni::parse::parse_and_notify(&uri).await,
+        "jass" => crate::lng::jass::parse::parse_and_notify(&uri, Some(parse_gen)).await,
+        "angelscript" => crate::lng::ass::parse::parse_and_notify(&uri, Some(parse_gen)).await,
+        "wts" => crate::lng::wts::parse::parse_and_notify(&uri).await,
+        "slk" => crate::lng::slk::parse::parse_and_notify(&uri).await,
+        _ => Ok(()),
+    };
+    if let Err(e) = res {
+        log::error!("{} parse: {}", lang, e);
+        debug_log!("[update] parse ERROR: {}", e);
     }
+    crate::util::parse_cache::mark_parse_done(&uri, parse_gen);
+    debug_log!("[update] parse done, building response");
 
     // ── Build binary TLV response ────────────────────────────────
     // The first 4 bytes are the echoed client version (u32 LE) so the
@@ -1610,7 +2276,7 @@ pub async fn document_close(
     auth.check()?;
     let uri = params.text_document.uri;
     SEMANTIC_LAST.remove(&uri);
-    crate::util::file_store::evict_closed_file(&uri);
+    crate::util::parse_cache::evict_closed_file(&uri);
     Ok(StatusCode::OK)
 }
 
@@ -1621,7 +2287,7 @@ pub async fn files_changed(
     auth.check()?;
 
     use crate::util::import_graph::IMPORT_GRAPH;
-    use crate::util::file_store::FILE_STORE;
+    use crate::util::parse_cache::PARSE_CACHE;
 
     let mut dependents_to_reparse: std::collections::HashSet<Url> =
         std::collections::HashSet::new();
@@ -1630,7 +2296,7 @@ pub async fn files_changed(
         let changed_uri = &event.uri;
 
         if event.change_type == 3 {
-            FILE_STORE.remove(changed_uri);
+            PARSE_CACHE.remove(changed_uri);
         }
 
         if event.change_type == 1 || event.change_type == 2 {
@@ -1674,7 +2340,7 @@ pub async fn did_rename_files(
 
     use crate::util::import_graph::IMPORT_GRAPH;
     use crate::util::roper::uri_map::ROPE_MAP;
-    use crate::util::file_store::FILE_STORE;
+    use crate::util::parse_cache::PARSE_CACHE;
 
     for rename in &params.files {
         let old_url = &rename.old_uri;
@@ -1685,9 +2351,9 @@ pub async fn did_rename_files(
             ROPE_MAP.insert(new_url.clone(), rope);
         }
 
-        // Swap URI in FILE_STORE
-        if let Some((_, snap)) = FILE_STORE.remove(old_url) {
-            FILE_STORE.insert(new_url.clone(), snap);
+        // Swap URI in PARSE_CACHE
+        if let Some((_, snap)) = PARSE_CACHE.remove(old_url) {
+            PARSE_CACHE.insert(new_url.clone(), snap);
         }
 
         // Swap URI in SEMANTIC_LAST
@@ -1726,7 +2392,7 @@ pub async fn semantic_tokens(
     let uri: Url = params.uri.parse()
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid URI".into()))?;
 
-    let data = match crate::util::file_store::FILE_STORE.get(&uri) {
+    let data = match crate::util::parse_cache::PARSE_CACHE.get(&uri) {
         Some(snap) => snap.value().semantic.read().unwrap().data(None),
         None => vec![],
     };
@@ -1740,45 +2406,34 @@ pub async fn semantic_tokens(
     ))
 }
 
-/// Returns diagnostic error/warning counts for all known files as binary:
-/// `[u16 uriLen][…uri UTF-8…][u32 errors][u32 warnings]` repeated.
-///
-/// Sources: live `FILE_STORE` snapshots take precedence, then falls back
-/// to cached counts from `redb`.
-pub async fn diagnostics_summary(
+// ─── SSE debug log ───────────────────────────────────────────────────────────
+
+pub async fn sse_debug_log(
     Query(auth): Query<AuthQuery>,
-) -> Result<impl IntoResponse, (StatusCode, String)> {
-    auth.check()?;
+) -> Result<impl IntoResponse, (StatusCode, &'static str)> {
+    check_token(&TokenParam { token: auth.token })?;
 
-    use crate::util::file_store::FILE_STORE;
-    use std::collections::HashMap;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<axum::response::sse::Event, std::convert::Infallible>>(64);
 
-    // Start with cached summaries from redb.
-    let mut summaries: HashMap<String, (u32, u32)> = HashMap::new();
-    for s in crate::util::file_cache::load_all_diag_summaries() {
-        summaries.insert(s.uri, (s.errors, s.warnings));
-    }
+    tokio::spawn(async move {
+        let mut rx_log = crate::util::debug_log::subscribe();
+        loop {
+            match rx_log.recv().await {
+                Ok(msg) => {
+                    let event = axum::response::sse::Event::default().data(msg);
+                    if tx.send(Ok(event)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(_) => break,
+            }
+        }
+    });
 
-    // Override with live FILE_STORE data (more up-to-date).
-    for entry in FILE_STORE.iter() {
-        let uri_str = entry.key().as_str().to_string();
-        let (e, w) = crate::util::file_cache::diag_counts(&entry.value().diagnostics);
-        summaries.insert(uri_str, (e, w));
-    }
-
-    // Encode as binary.
-    let mut buf = Vec::new();
-    for (uri, (errors, warnings)) in &summaries {
-        if *errors == 0 && *warnings == 0 { continue; }
-        let uri_bytes = uri.as_bytes();
-        buf.extend_from_slice(&(uri_bytes.len() as u16).to_le_bytes());
-        buf.extend_from_slice(uri_bytes);
-        buf.extend_from_slice(&errors.to_le_bytes());
-        buf.extend_from_slice(&warnings.to_le_bytes());
-    }
-
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        buf,
-    ))
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    Ok(axum::response::sse::Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default()))
 }
+
+use tokio::sync::broadcast;

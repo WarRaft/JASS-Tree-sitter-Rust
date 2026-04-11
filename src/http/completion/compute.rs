@@ -7,9 +7,9 @@ use std::path::Path;
 use url::Url;
 
 use crate::lng::jass::kind::{Field, Kind};
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::PARSE_CACHE;
 use crate::util::import_graph::IMPORT_GRAPH;
-use crate::util::scope_resolver::{SCOPE_RESOLVER, SymbolNS};
+use crate::util::parse::{SymbolNS, all_visible_entries};
 use crate::util::tree_map::TREE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
 
@@ -349,14 +349,13 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
     let inside_function;
     if let Some(tree_entry) = TREE_MAP.get(uri) {
         let tree = tree_entry.value();
-        let point = tree_sitter::Point {
-            row: position.line,
-            column: position.character,
-        };
+        let point = ROPE_MAP.get(uri)
+            .and_then(|r| position.to_point(r.value()));
         let root = tree.root_node();
 
         // Find the enclosing FunctionStatement node.
-        if let Some(func_node) = find_enclosing_function(root, point) {
+        let func_node = point.and_then(|pt| find_enclosing_function(root, pt));
+        if let Some(func_node) = func_node {
             inside_function = true;
             // Collect parameters.
             let params_node = func_node.child_by_field_id(Field::Parameters as u16);
@@ -416,7 +415,7 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
     }
 
     // ── Current file symbols ─────────────────────────────────────────────
-    if let Some(snap_entry) = FILE_STORE.get(uri) {
+    if let Some(snap_entry) = PARSE_CACHE.get(uri) {
         let fs = &snap_entry.value().file_symbols;
 
         // Functions
@@ -516,7 +515,7 @@ fn complete_jass_symbols(uri: &Url, position: &Position) -> Vec<CompletionItem> 
         if !component.is_empty() {
             let mut visible = component;
             visible.insert(uri.clone());
-            let entries = SCOPE_RESOLVER.all_visible(&visible);
+            let entries = all_visible_entries(&visible);
 
             for entry in &entries {
                 // Skip own file — already added above.

@@ -43,7 +43,7 @@ mod render_as;
 mod render_jass;
 mod uglify_ir;
 
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::peek_or_load;
 use crate::util::import_graph::IMPORT_GRAPH;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -620,7 +620,7 @@ pub fn build_as(uri: &Url) -> BuildResult {
 /// The build always starts from the entry file and follows its imports.
 fn find_build_setting(uri: &Url, key: &str) -> Option<(Url, String)> {
     // Check the current file first.
-    if let Some(fs) = FILE_STORE.get(uri) {
+    if let Some(fs) = peek_or_load(uri) {
         if fs.file_symbols.is_entry {
             if let Some(v) = fs.file_symbols.file_settings.get(key) {
                 return Some((uri.clone(), v.clone()));
@@ -630,7 +630,7 @@ fn find_build_setting(uri: &Url, key: &str) -> Option<(Url, String)> {
     // Search the visible component (entry-point-aware).
     let component = IMPORT_GRAPH.visible_component(uri);
     for u in &component {
-        if let Some(fs) = FILE_STORE.get(u) {
+        if let Some(fs) = peek_or_load(u) {
             if fs.file_symbols.is_entry {
                 if let Some(v) = fs.file_symbols.file_settings.get(key) {
                     return Some((u.clone(), v.clone()));

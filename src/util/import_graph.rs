@@ -28,6 +28,14 @@ pub struct ImportGraph {
     /// after every import-graph mutation so that callers don't need to BFS
     /// each time.
     entry_cache: RwLock<HashMap<Url, HashSet<Url>>>,
+    /// URIs that are imported via `//import!` (frozen) by at least one file.
+    /// Updated eagerly by [`mark_frozen`] so that [`tree_for_uri`] can prune
+    /// incoming edges without waiting for PARSE_CACHE snapshots.
+    frozen_targets: RwLock<HashSet<Url>>,
+    /// Persistent set of URIs that contain `//entry` directive.
+    /// Survives server restarts (persisted in redb alongside graph edges).
+    /// Updated by [`mark_entry`]; consumed by [`recompute_entry_cache`].
+    entry_nodes: RwLock<HashSet<Url>>,
 }
 
 struct GraphInner {
@@ -83,12 +91,15 @@ impl ImportGraph {
         Self {
             inner: RwLock::new(GraphInner::new()),
             entry_cache: RwLock::new(HashMap::new()),
+            frozen_targets: RwLock::new(HashSet::new()),
+            entry_nodes: RwLock::new(HashSet::new()),
         }
     }
 
     /// Load from the redb database, or create empty.
     fn load() -> Self {
         let mut inner = GraphInner::new();
+        let mut loaded_entry_nodes: HashSet<Url> = HashSet::new();
 
         if let Some(db) = cache_db::db() {
             if let Ok(read_txn) = db.begin_read() {
@@ -101,6 +112,14 @@ impl ImportGraph {
                             };
                             let from_str: &str = key_guard.value();
                             let bytes: &[u8] = val_guard.value();
+
+                            // Special key: persistent entry-point URIs.
+                            if from_str == "__entries__" {
+                                if let Ok(entries) = bitcode::deserialize::<Vec<Url>>(bytes) {
+                                    loaded_entry_nodes = entries.into_iter().collect();
+                                }
+                                continue;
+                            }
 
                             let from = match Url::parse(from_str) {
                                 Ok(u) => u,
@@ -119,9 +138,10 @@ impl ImportGraph {
                         }
 
                         info!(
-                            "import_graph: loaded {} files, {} edges from redb",
+                            "import_graph: loaded {} files, {} edges, {} entry points from redb",
                             inner.graph.node_count(),
                             inner.graph.edge_count(),
+                            loaded_entry_nodes.len(),
                         );
                     }
                 }
@@ -131,11 +151,13 @@ impl ImportGraph {
         Self {
             inner: RwLock::new(inner),
             entry_cache: RwLock::new(HashMap::new()),
+            frozen_targets: RwLock::new(HashSet::new()),
+            entry_nodes: RwLock::new(loaded_entry_nodes),
         }
     }
 
     /// Persist current state to the redb database.
-    fn save(inner: &GraphInner) {
+    fn save(inner: &GraphInner, entry_nodes: &HashSet<Url>) {
         let Some(db) = cache_db::db() else { return };
 
         let write_txn = match db.begin_write() {
@@ -173,6 +195,14 @@ impl ImportGraph {
                     }
                 }
             }
+
+            // Persist entry-point URIs as a special key.
+            if !entry_nodes.is_empty() {
+                let entry_vec: Vec<Url> = entry_nodes.iter().cloned().collect();
+                if let Ok(data) = bitcode::serialize(&entry_vec) {
+                    let _ = table.insert("__entries__", data.as_slice());
+                }
+            }
         }
 
         if let Err(e) = write_txn.commit() {
@@ -182,8 +212,44 @@ impl ImportGraph {
 
     // ─── Mutation ────────────────────────────────────────────────────────
 
+    /// Add `uri` as a node in the graph if it doesn't already exist.
+    ///
+    /// Called when a file is first opened by the editor so that it appears
+    /// in the graph even if nothing imports it and it imports nothing.
+    pub fn ensure_node_pub(&self, uri: &Url) {
+        let mut inner = self.inner.write().unwrap();
+        if inner.index.contains_key(uri) {
+            return;
+        }
+        inner.ensure_node(uri);
+        Self::save(&inner, &self.entry_nodes.read().unwrap());
+    }
+
+    /// `true` when the graph already has a node for `uri`.
+    pub fn contains(&self, uri: &Url) -> bool {
+        self.inner.read().unwrap().index.contains_key(uri)
+    }
+
     /// Update the import list for `uri`.
     ///
+    /// Register `targets` as frozen (imported via `//import!`).
+    ///
+    /// Called eagerly during parse — before `visible_component` — so that
+    /// `tree_for_uri` can prune incoming edges of frozen nodes even when
+    /// PARSE_CACHE doesn't have the importer's snapshot yet.
+    pub fn mark_frozen(&self, targets: &HashSet<Url>) {
+        if targets.is_empty() {
+            return;
+        }
+        let mut ft = self.frozen_targets.write().unwrap();
+        ft.extend(targets.iter().cloned());
+    }
+
+    /// Check if `uri` is frozen according to the graph's own bookkeeping.
+    pub fn is_frozen(&self, uri: &Url) -> bool {
+        self.frozen_targets.read().unwrap().contains(uri)
+    }
+
     /// Replaces all outgoing edges of `uri` with `new_imports`.
     /// Skips disk write if nothing changed.
     pub fn update(&self, uri: &Url, new_imports: HashSet<Url>) {
@@ -212,6 +278,12 @@ impl ImportGraph {
 
         // Garbage-collect removed targets that are now isolated
         // (zero in-degree AND zero out-degree).
+        // Collect URIs to evict from PARSE_CACHE *after* releasing the
+        // write lock — accessing PARSE_CACHE under the import-graph lock
+        // inverts the lock ordering and can deadlock with
+        // `build_update_response` (which reads PARSE_CACHE then
+        // IMPORT_GRAPH).
+        let mut evict_from_cache: Vec<Url> = Vec::new();
         for target_uri in &removed_targets {
             if let Some(&idx) = inner.index.get(target_uri) {
                 let in_deg = inner
@@ -230,18 +302,24 @@ impl ImportGraph {
                         .node_indices()
                         .map(|i| (inner.graph[i].clone(), i))
                         .collect();
-                    crate::util::file_store::FILE_STORE.remove(target_uri);
+                    evict_from_cache.push(target_uri.clone());
                 }
             }
         }
 
-        Self::save(&inner);
+        Self::save(&inner, &self.entry_nodes.read().unwrap());
+        drop(inner);
+
+        // Evict outside the write lock to avoid deadlock.
+        for uri in &evict_from_cache {
+            crate::util::parse_cache::PARSE_CACHE.remove(uri);
+        }
     }
 
     /// Remove a file node and all its edges (e.g. file deleted from disk).
     pub fn remove(&self, uri: &Url) {
         let mut inner = self.inner.write().unwrap();
-        if let Some(&idx) = inner.index.get(uri) {
+        let need_evict = if let Some(&idx) = inner.index.get(uri) {
             inner.graph.remove_node(idx);
             inner.index.remove(uri);
             // petgraph may swap indices on remove — rebuild index
@@ -251,9 +329,15 @@ impl ImportGraph {
                 .map(|idx| (inner.graph[idx].clone(), idx))
                 .collect();
             inner.index = rebuilt;
-            Self::save(&inner);
-            // Evict cached RefMap for the removed file.
-            crate::util::file_store::FILE_STORE.remove(uri);
+            Self::save(&inner, &self.entry_nodes.read().unwrap());
+            true
+        } else {
+            false
+        };
+        drop(inner);
+        // Evict outside the write lock to avoid deadlock.
+        if need_evict {
+            crate::util::parse_cache::PARSE_CACHE.remove(uri);
         }
     }
 
@@ -294,7 +378,6 @@ impl ImportGraph {
                     .node_indices()
                     .map(|i| (inner.graph[i].clone(), i))
                     .collect();
-                crate::util::file_store::FILE_STORE.remove(&uri);
                 removed.push(uri);
             }
         }
@@ -317,7 +400,6 @@ impl ImportGraph {
                         .node_indices()
                         .map(|i| (inner.graph[i].clone(), i))
                         .collect();
-                    crate::util::file_store::FILE_STORE.remove(&uri);
                     removed.push(uri);
                 }
                 None => break,
@@ -325,9 +407,16 @@ impl ImportGraph {
         }
 
         if !removed.is_empty() {
-            Self::save(&inner);
+            Self::save(&inner, &self.entry_nodes.read().unwrap());
             info!("import_graph: gc removed {} node(s)", removed.len());
         }
+        drop(inner);
+
+        // Evict outside the write lock to avoid deadlock.
+        for uri in &removed {
+            crate::util::parse_cache::PARSE_CACHE.remove(uri);
+        }
+
         removed
     }
 
@@ -346,10 +435,11 @@ impl ImportGraph {
         inner.index.remove(old_uri);
         inner.index.insert(new_uri.clone(), old_idx);
 
-        Self::save(&inner);
+        Self::save(&inner, &self.entry_nodes.read().unwrap());
+        drop(inner);
 
-        // Evict stale cache for the old URI.
-        crate::util::file_store::FILE_STORE.remove(old_uri);
+        // Evict stale cache for the old URI outside the write lock.
+        crate::util::parse_cache::PARSE_CACHE.remove(old_uri);
     }
 
     // ─── Queries (read lock) ─────────────────────────────────────────────
@@ -428,6 +518,7 @@ impl ImportGraph {
         let inner = self.inner.read().unwrap();
         inner.graph.node_indices().map(|n| inner.graph[n].clone()).collect()
     }
+
 
     /// Find all cycles that `uri` participates in.
     /// Returns a list of cycles, each cycle is a Vec<Url>.
@@ -526,15 +617,23 @@ impl ImportGraph {
 
     /// Recompute the per-file entry-point cache.
     ///
-    /// BFS forward from every known entry-point URI (files with `//entry`
-    /// in `FILE_STORE`) and record which entries can reach each node.
-    /// Call this after every import-graph or `is_entry` mutation.
+    /// Merges entry-point URIs from two sources:
+    /// 1. **Persistent** — `entry_nodes` (loaded from redb, survives restart).
+    /// 2. **In-memory** — `PARSE_CACHE` snapshots with `is_entry == true`.
+    ///
+    /// BFS forward from every entry-point and record which entries can reach
+    /// each node.  Call this after every import-graph or `is_entry` mutation.
     pub fn recompute_entry_cache(&self) {
-        let entry_uris = crate::util::file_store::entry_uris();
+        // Merge persistent entry nodes with PARSE_CACHE entries.
+        let mut all_entries: HashSet<Url> = self.entry_nodes.read().unwrap().clone();
+        for uri in crate::util::parse_cache::entry_uris() {
+            all_entries.insert(uri);
+        }
+
         let inner = self.inner.read().unwrap();
         let mut new_cache: HashMap<Url, HashSet<Url>> = HashMap::new();
 
-        for entry_uri in &entry_uris {
+        for entry_uri in &all_entries {
             if let Some(&start) = inner.index.get(entry_uri) {
                 let mut bfs = Bfs::new(&inner.graph, start);
                 while let Some(n) = bfs.next(&inner.graph) {
@@ -547,6 +646,44 @@ impl ImportGraph {
         }
 
         *self.entry_cache.write().unwrap() = new_cache;
+    }
+
+    /// Update the persistent entry-point status for `uri`.
+    ///
+    /// When `is_entry` is `true`, the URI is added to the persistent set.
+    /// When `false`, it is removed.  The change is persisted to redb.
+    pub fn mark_entry(&self, uri: &Url, is_entry: bool) {
+        let mut entries = self.entry_nodes.write().unwrap();
+        let changed = if is_entry {
+            entries.insert(uri.clone())
+        } else {
+            entries.remove(uri)
+        };
+        if changed {
+            self.save_entry_nodes(&entries);
+        }
+    }
+
+    /// Persist only the entry-node set (without rewriting the entire table).
+    fn save_entry_nodes(&self, entries: &HashSet<Url>) {
+        let Some(db) = cache_db::db() else { return };
+        let entry_vec: Vec<Url> = entries.iter().cloned().collect();
+        let data = match bitcode::serialize(&entry_vec) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let write_txn = match db.begin_write() {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        {
+            let mut table = match write_txn.open_table(cache_db::IMPORT_TABLE) {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            let _ = table.insert("__entries__", data.as_slice());
+        }
+        let _ = write_txn.commit();
     }
 
     /// Return the set of entry-point URIs that can reach `uri`.
@@ -652,7 +789,7 @@ impl ImportGraph {
                 }
             }
             let cur_uri = &inner.graph[cur];
-            if !crate::util::file_store::is_uri_frozen(cur_uri) {
+            if !self.is_frozen(cur_uri) {
                 for next in inner.graph.neighbors_directed(cur, Direction::Incoming) {
                     if visited.insert(next) {
                         queue.push_back(next);
@@ -686,6 +823,91 @@ impl ImportGraph {
             .keys()
             .cloned()
             .collect()
+    }
+
+    /// Same as [`tree_for_uri`] but returns a **deterministically ordered**
+    /// `Vec<Url>`:
+    ///
+    /// 1. Find the root(s) — nodes in the tree with no incoming edges from
+    ///    other tree members (i.e. entry points or top-level files).
+    /// 2. BFS from those roots; at every level children are sorted
+    ///    alphabetically by URL string.
+    /// 3. Any remaining nodes (cycles) are appended alphabetically.
+    ///
+    /// This guarantees that repeated calls always return the same order.
+    pub fn tree_for_uri_sorted(&self, uri: &Url) -> Vec<Url> {
+        let tree_set = self.tree_for_uri(uri);
+        if tree_set.is_empty() {
+            return vec![];
+        }
+
+        let inner = self.inner.read().unwrap();
+
+        // Find roots: tree members with no incoming edges from within the tree.
+        let mut roots: Vec<Url> = Vec::new();
+        for u in &tree_set {
+            if let Some(&idx) = inner.index.get(u) {
+                let has_internal_incoming = inner
+                    .graph
+                    .neighbors_directed(idx, Direction::Incoming)
+                    .any(|n| tree_set.contains(&inner.graph[n]));
+                if !has_internal_incoming {
+                    roots.push(u.clone());
+                }
+            } else {
+                roots.push(u.clone());
+            }
+        }
+
+        if roots.is_empty() {
+            // Every node has an internal predecessor (cycle) — start from `uri`.
+            roots.push(uri.clone());
+        }
+
+        roots.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        // BFS with alphabetically-sorted children at each level.
+        let mut result: Vec<Url> = Vec::with_capacity(tree_set.len());
+        let mut visited: HashSet<Url> = HashSet::new();
+        let mut queue: std::collections::VecDeque<Url> = std::collections::VecDeque::new();
+
+        for root in roots {
+            if visited.insert(root.clone()) {
+                queue.push_back(root);
+            }
+        }
+
+        while let Some(current) = queue.pop_front() {
+            result.push(current.clone());
+
+            if let Some(&idx) = inner.index.get(&current) {
+                let mut children: Vec<Url> = inner
+                    .graph
+                    .neighbors_directed(idx, Direction::Outgoing)
+                    .filter(|&n| {
+                        tree_set.contains(&inner.graph[n])
+                            && !visited.contains(&inner.graph[n])
+                    })
+                    .map(|n| inner.graph[n].clone())
+                    .collect();
+                children.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+                for child in children {
+                    if visited.insert(child.clone()) {
+                        queue.push_back(child);
+                    }
+                }
+            }
+        }
+
+        // Append remaining unreached nodes (e.g. cycles) alphabetically.
+        let mut remaining: Vec<Url> = tree_set
+            .into_iter()
+            .filter(|u| !visited.contains(u))
+            .collect();
+        remaining.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        result.extend(remaining);
+
+        result
     }
 
     /// Return the **connected subgraph** reachable from `uri`.
@@ -745,7 +967,51 @@ impl ImportGraph {
     }
 }
 
-// ─── Utility ─────────────────────────────────────────────────────────────────
+/// Collapse consecutive `/`, resolve `.` and `..` in a forward-slash path.
+///
+/// `..` past the root (or drive prefix) is silently ignored — the OS is the
+/// ultimate authority, but for URL construction we can't go higher.
+///
+/// Examples:
+/// * `/a/b/c/../../../a` → `/a`
+/// * `/a/b/c/../../../../x` → `/x`
+/// * `C:/a/../b` → (url-path) `/C:/b`
+fn normalize_path(path: &str) -> String {
+    // Separate optional Windows drive prefix ("C:" etc.)
+    let (prefix, rest) = if path.len() >= 2
+        && path.as_bytes()[0].is_ascii_alphabetic()
+        && path.as_bytes()[1] == b':'
+    {
+        (&path[..2], &path[2..])
+    } else if path.len() >= 4
+        && path.as_bytes()[0] == b'/'
+        && path.as_bytes()[1].is_ascii_alphabetic()
+        && path.as_bytes()[2] == b':'
+        && path.as_bytes()[3] == b'/'
+    {
+        // Already has leading / before drive letter (from base_uri.path()).
+        (&path[1..3], &path[3..])
+    } else {
+        ("", path)
+    };
+
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in rest.split('/') {
+        match seg {
+            "" | "." => continue,
+            ".." => { parts.pop(); }
+            _ => parts.push(seg),
+        }
+    }
+
+    if prefix.is_empty() {
+        // Unix absolute — leading /
+        format!("/{}", parts.join("/"))
+    } else {
+        // Windows drive — e.g. /C:/dir/file
+        format!("/{}/{}", prefix, parts.join("/"))
+    }
+}
 
 /// Result of [`resolve_import`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -821,49 +1087,5 @@ pub fn resolve_import(base_uri: &Url, raw_path: &str) -> Option<ResolvedImport> 
     Some(ResolvedImport { url, exists })
 }
 
-/// Collapse consecutive `/`, resolve `.` and `..` in a forward-slash path.
-///
-/// `..` past the root (or drive prefix) is silently ignored — the OS is the
-/// ultimate authority, but for URL construction we can't go higher.
-///
-/// Examples:
-/// * `/a/b/c/../../../a` → `/a`
-/// * `/a/b/c/../../../../x` → `/x`
-/// * `C:/a/../b` → (url-path) `/C:/b`
-fn normalize_path(path: &str) -> String {
-    // Separate optional Windows drive prefix ("C:" etc.)
-    let (prefix, rest) = if path.len() >= 2
-        && path.as_bytes()[0].is_ascii_alphabetic()
-        && path.as_bytes()[1] == b':'
-    {
-        (&path[..2], &path[2..])
-    } else if path.len() >= 4
-        && path.as_bytes()[0] == b'/'
-        && path.as_bytes()[1].is_ascii_alphabetic()
-        && path.as_bytes()[2] == b':'
-        && path.as_bytes()[3] == b'/'
-    {
-        // Already has leading / before drive letter (from base_uri.path()).
-        (&path[1..3], &path[3..])
-    } else {
-        ("", path)
-    };
 
-    let mut parts: Vec<&str> = Vec::new();
-    for seg in rest.split('/') {
-        match seg {
-            "" | "." => continue,
-            ".." => { parts.pop(); }
-            _ => parts.push(seg),
-        }
-    }
-
-    if prefix.is_empty() {
-        // Unix absolute — leading /
-        format!("/{}", parts.join("/"))
-    } else {
-        // Windows drive — e.g. /C:/dir/file
-        format!("/{}/{}", prefix, parts.join("/"))
-    }
-}
 

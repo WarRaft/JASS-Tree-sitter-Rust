@@ -103,6 +103,8 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/graph/import", post(crate::http::api::graph_import))
         .route("/graph/call", post(crate::http::api::graph_call))
         .route("/graph/type", post(crate::http::api::graph_type))
+        .route("/graph/exports", post(crate::http::api::graph_exports))
+        .route("/graph/diagnostics", post(crate::http::api::graph_diagnostics))
         // ── Build ────────────────────────────────────────────────────
         .route("/build/execute", post(crate::http::api::build_execute))
         .route("/build/hooks", post(crate::http::api::build_hooks))
@@ -112,8 +114,7 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/ujapi/download", post(crate::http::api::ujapi_download))
         // ── Language features ────────────────────────────────────────
         .route("/lsp/completion", post(crate::http::api::completion))
-        .route("/lsp/hover", post(crate::http::api::hover))
-        .route("/lsp/highlight", post(crate::http::api::document_highlight))
+        .route("/lsp/cursor", post(crate::http::api::cursor_context))
         .route("/lsp/definition", post(crate::http::api::definition))
         .route("/lsp/references", post(crate::http::api::references))
         .route("/lsp/formatting", post(crate::http::api::formatting))
@@ -121,7 +122,6 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/lsp/rename", post(crate::http::api::rename))
         .route("/lsp/willRenameFiles", post(crate::http::api::will_rename_files))
         .route("/lsp/colorPresentation", post(crate::http::api::color_presentation))
-        .route("/lsp/codeAction", post(crate::http::api::code_action))
         .route("/lsp/signatureHelp", post(crate::http::api::signature_help))
         .route("/lsp/callHierarchy/prepare", post(crate::http::api::call_hierarchy_prepare))
         .route("/lsp/callHierarchy/incoming", post(crate::http::api::call_hierarchy_incoming))
@@ -136,7 +136,8 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/files/changed", post(crate::http::api::files_changed))
         // ── Binary data ─────────────────────────────────────────
         .route("/semantic", get(crate::http::api::semantic_tokens))
-        .route("/diagnostics/summary", get(crate::http::api::diagnostics_summary))
+        // ── Debug log (SSE) ───────────────────────────────────────
+        .route("/debug/log", get(crate::http::api::sse_debug_log))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any));
 
     let listener = TcpListener::bind("127.0.0.1:0").await?

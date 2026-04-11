@@ -1,6 +1,6 @@
 //! Shared embedded key-value store backed by [`redb`].
 //!
-//! All persistent caches (`file_cache`, `scope_resolver`, `import_graph`)
+//! All persistent caches (`file_cache`, `import_graph`)
 //! share a single `redb` database file.  This gives us:
 //!
 //! * **ACID transactions** — no more corrupted half-written blobs.
@@ -8,7 +8,7 @@
 //! * **Per-key writes** — only the changed entry is written, not the entire
 //!   index.
 //! * **Built-in version stamping** — when the extension version changes
-//!   the `file_cache` and `scope` tables are purged automatically.
+//!   the `file_cache` table is purged automatically.
 //!   The `import_graph` table is **kept** because it holds structural
 //!   information (which files import which) that is independent of the
 //!   serialisation format.  Files are rescanned lazily — each tree is
@@ -31,10 +31,13 @@ pub const EXT_VERSION: &str = env!("EXT_VERSION");
 /// Cache schema version — bump when the on-disk format changes
 /// (new fields in `CacheEntry`, `GlobalEntry`, etc.) independently
 /// of the extension version.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Combined version key stored in the database.
-fn version_key() -> String {
+///
+/// Also used by [`file_cache`] to stamp individual entries so that stale
+/// rows are detected even if table-level purge failed.
+pub fn version_key() -> String {
     format!("{}-s{}", EXT_VERSION, SCHEMA_VERSION)
 }
 
@@ -52,9 +55,6 @@ fn db_path() -> Option<PathBuf> {
 pub const FILE_CACHE_TABLE: TableDefinition<&str, &[u8]> =
     TableDefinition::new("file_cache");
 
-/// Scope resolver entries: `URI string → bitcode(ScopeFileData)`.
-pub const SCOPE_TABLE: TableDefinition<&str, &[u8]> =
-    TableDefinition::new("scope");
 
 /// Import graph edges: `URI string → bitcode(Vec<Url>)`.
 pub const IMPORT_TABLE: TableDefinition<&str, &[u8]> =
@@ -164,7 +164,7 @@ fn write_meta_version(db: &Database, version: &str) {
     }
 }
 
-/// Purge format-dependent data tables (`file_cache`, `scope`).
+/// Purge format-dependent data tables (`file_cache`).
 ///
 /// The `import_graph` table is intentionally **kept** — it holds
 /// structural "who imports whom" information that does not depend on
@@ -181,7 +181,6 @@ fn purge_data_tables(db: &Database) {
     };
     // Delete data tables — ignore errors for non-existent tables.
     let _ = write_txn.delete_table(FILE_CACHE_TABLE);
-    let _ = write_txn.delete_table(SCOPE_TABLE);
     // NOTE: IMPORT_TABLE is kept intentionally.
     if let Err(e) = write_txn.commit() {
         error!("cache_db: commit purge: {}", e);

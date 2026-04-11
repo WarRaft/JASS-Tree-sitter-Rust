@@ -1,7 +1,7 @@
 use crate::http::document_symbol::SymbolKind;
 use crate::http::position::Position;
 use crate::http::range::Range;
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::peek_or_load;
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
@@ -64,8 +64,8 @@ pub(crate) fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<Call
         return None;
     }
 
-    let snapshot = FILE_STORE.get(uri)?;
-    let snap = snapshot.value();
+    let snapshot = peek_or_load(uri)?;
+    let snap = &*snapshot;
     let ref_map = &snap.ref_map;
 
     let rope_entry = ROPE_MAP.get(uri)?;
@@ -88,7 +88,7 @@ pub(crate) fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<Call
         if let Some(ext) = ref_map.external_decls.get(&span.decl_key) {
             let mut found = false;
             for origin in &ext.origins {
-                if let Some(ext_snap) = FILE_STORE.get(&origin.uri) {
+                if let Some(ext_snap) = peek_or_load(&origin.uri) {
                     let fs = &ext_snap.file_symbols;
                     if fs.find_function(&ext.name).is_some()
                         || fs.find_native(&ext.name).is_some()
@@ -134,7 +134,7 @@ pub(crate) fn compute_incoming(item: &CallHierarchyItem) -> Vec<CallHierarchyInc
     let mut calls = Vec::new();
 
     for peer_uri in &component {
-        if let Some(snap_entry) = FILE_STORE.get(peer_uri) {
+        if let Some(snap_entry) = peek_or_load(peer_uri) {
             let fs = &snap_entry.file_symbols;
 
             for func in &fs.functions {
@@ -172,7 +172,7 @@ pub(crate) fn compute_outgoing(item: &CallHierarchyItem) -> Vec<CallHierarchyOut
         Err(_) => return vec![],
     };
 
-    let snap_entry = match FILE_STORE.get(&item_uri) {
+    let snap_entry = match peek_or_load(&item_uri) {
         Some(s) => s,
         None => return vec![],
     };
@@ -194,7 +194,7 @@ pub(crate) fn compute_outgoing(item: &CallHierarchyItem) -> Vec<CallHierarchyOut
         let mut callee_range = None;
 
         for peer_uri in &component {
-            if let Some(peer_snap) = FILE_STORE.get(peer_uri) {
+            if let Some(peer_snap) = peek_or_load(peer_uri) {
                 let pfs = &peer_snap.file_symbols;
                 if pfs.find_function(callee_name).is_some()
                     || pfs.find_native(callee_name).is_some()
@@ -232,7 +232,7 @@ pub(crate) fn compute_outgoing(item: &CallHierarchyItem) -> Vec<CallHierarchyOut
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 fn find_func_decl_range(uri: &Url, name: &str) -> Option<Range> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = peek_or_load(uri)?;
     let ref_map = &snap.ref_map;
 
     for group in ref_map.groups.values() {
@@ -247,7 +247,7 @@ fn find_func_decl_range(uri: &Url, name: &str) -> Option<Range> {
 }
 
 fn find_call_ranges(uri: &Url, name: &str) -> Vec<Range> {
-    let snap = match FILE_STORE.get(uri) {
+    let snap = match peek_or_load(uri) {
         Some(s) => s,
         None => return vec![],
     };

@@ -3,7 +3,7 @@
 //! Provides the inline-candidate detection, single-call-site inlining pass,
 //! and compile-time `StringHash(…)` folding across all build fragments.
 
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::PARSE_CACHE;
 use crate::util::string_hash::{collect_constants, fold_string_hash, fold_string_integer_args};
 use std::collections::HashMap;
 
@@ -250,7 +250,7 @@ pub(super) fn fold_string_hash_in_fragments(fragments: &mut Fragments) {
 /// Build a map of `func_name → [param_type, …]` from all known functions/natives.
 fn build_signature_map() -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
-    for entry in FILE_STORE.iter() {
+    for entry in PARSE_CACHE.iter() {
         let symbols = &entry.value().file_symbols;
         for f in &symbols.functions {
             let types: Vec<String> = f.params.iter().map(|p| p.type_name.clone()).collect();

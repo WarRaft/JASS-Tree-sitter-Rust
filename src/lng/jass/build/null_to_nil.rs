@@ -8,13 +8,13 @@
 //! Type information comes from the IR itself:
 //! - `IRStmt::Local` / `IRStmt::VarDecl` carry `type_name`.
 //! - `IRFunc::params` and `IRFunc::return_type`.
-//! - Function signatures from `FILE_STORE` (natives, frozen-file functions).
+//! - Function signatures from `PARSE_CACHE` (natives, frozen-file functions).
 //!
 //! For `==` / `!=` comparisons the type of the *other* operand is inferred
 //! so that `u == null` becomes `u == nil` when `u` is a handle variable.
 
 use super::ir::*;
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::PARSE_CACHE;
 use std::collections::HashMap;
 
 // ─── Handle-type predicate ───────────────────────────────────────────────────
@@ -29,7 +29,7 @@ fn is_handle_type(type_name: &str) -> bool {
 
 // ─── Shared (global) type context ────────────────────────────────────────────
 
-/// Immutable context built once from the full [`BuildIR`] + `FILE_STORE`.
+/// Immutable context built once from the full [`BuildIR`] + `PARSE_CACHE`.
 struct GlobalCtx {
     /// `func_name → [param_type, …]`
     func_params: HashMap<String, Vec<String>>,
@@ -40,7 +40,7 @@ struct GlobalCtx {
 }
 
 impl GlobalCtx {
-    /// Build from the complete IR (after frozen-dep resolution) + FILE_STORE.
+    /// Build from the complete IR (after frozen-dep resolution) + PARSE_CACHE.
     fn from_ir(ir: &BuildIR) -> Self {
         let mut func_params = HashMap::new();
         let mut func_returns = HashMap::new();
@@ -53,8 +53,8 @@ impl GlobalCtx {
             func_returns.insert(name.clone(), func.return_type.clone());
         }
 
-        // FILE_STORE — natives and functions not yet in the IR.
-        for entry in FILE_STORE.iter() {
+        // PARSE_CACHE — natives and functions not yet in the IR.
+        for entry in PARSE_CACHE.iter() {
             let symbols = &entry.value().file_symbols;
             for f in &symbols.functions {
                 func_params.entry(f.name.clone()).or_insert_with(|| {
@@ -86,7 +86,7 @@ impl GlobalCtx {
         GlobalCtx { func_params, func_returns, global_vars }
     }
 
-    /// Minimal context without FILE_STORE (used in the test pipeline).
+    /// Minimal context without PARSE_CACHE (used in the test pipeline).
     #[cfg(test)]
     fn empty() -> Self {
         GlobalCtx {

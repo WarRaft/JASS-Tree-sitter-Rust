@@ -1,5 +1,6 @@
 use crate::http::position::Position;
 use lapce_xi_rope::{LinesMetric, Rope};
+use tree_sitter::Point;
 
 impl Position {
     /// Переводит LSP-позицию (line, character в UTF-16) в байтовый offset Rope
@@ -64,6 +65,16 @@ impl Position {
         Some(Self {
             line,
             character: utf16_col,
+        })
+    }
+
+    /// Переводит LSP-позицию в tree-sitter `Point` (row — строка, column — **байты** внутри строки).
+    pub fn to_point(&self, rope: &Rope) -> Option<Point> {
+        let byte = self.to_byte_offset(rope)?;
+        let line_start = rope.offset_of_line(self.line);
+        Some(Point {
+            row: self.line,
+            column: byte - line_start,
         })
     }
 }

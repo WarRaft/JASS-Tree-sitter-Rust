@@ -9,6 +9,19 @@ use serde_json::json;
 async fn main() {
     env_logger::init();
 
+    // ── Eagerly load persistent caches from redb ───────────────
+    // These are Lazy statics that normally init on first access.
+    // Force them now so that by the time we print the port (which
+    // tells the extension to start sending document/update), all
+    // import trees are ready.
+    {
+        use util::import_graph::IMPORT_GRAPH;
+
+        // Touch the Lazy static to trigger load from redb.
+        let _ = IMPORT_GRAPH.all_uris();
+        log::info!("Persistent caches loaded");
+    }
+
     // ── Start HTTP server ────────────────────────────────────────
     let http_port = http::server::start_server().await.ok();
 

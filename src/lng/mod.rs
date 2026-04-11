@@ -5,6 +5,7 @@ pub(crate) mod ass;
 pub(crate) mod directive;
 pub(crate) mod map_editor;
 pub(crate) mod mdx;
+pub(crate) mod symbol;
 pub(crate) mod w3e;
 pub(crate) mod w3i;
 pub(crate) mod doo;

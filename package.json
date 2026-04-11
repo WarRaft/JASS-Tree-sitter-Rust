@@ -482,6 +482,16 @@
         "icon": "$(symbol-class)"
       },
       {
+        "command": "exportTable.show",
+        "title": "%command.exportTable.show%",
+        "icon": "$(symbol-namespace)"
+      },
+      {
+        "command": "diagnosticSummary.show",
+        "title": "%command.diagnosticSummary.show%",
+        "icon": "$(checklist)"
+      },
+      {
         "command": "rescan.execute",
         "title": "%command.rescan.execute%",
         "icon": "$(refresh)"
@@ -567,6 +577,16 @@
         },
         {
           "command": "typeGraph.show",
+          "when": "resourceLangId == jass || resourceLangId == angelscript",
+          "group": "navigation"
+        },
+        {
+          "command": "exportTable.show",
+          "when": "resourceLangId == jass || resourceLangId == angelscript",
+          "group": "navigation"
+        },
+        {
+          "command": "diagnosticSummary.show",
           "when": "resourceLangId == jass || resourceLangId == angelscript",
           "group": "navigation"
         },

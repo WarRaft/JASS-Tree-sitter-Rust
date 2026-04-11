@@ -310,6 +310,8 @@ pub struct Ast<'tree> {
 pub fn build_ast<'tree>(root: Node<'tree>) -> Ast<'tree> {
     let mut errors = Vec::new();
     let items = build_children(&root, &mut errors, true);
+    // Full-tree scan: collect ERROR/MISSING nodes nested deep inside expressions.
+    collect_errors(&root, &mut errors);
 
     Ast { items, errors }
 }
@@ -387,9 +389,6 @@ fn build_children<'tree>(
     let count = node.child_count();
     for i in 0..count {
         if let Some(child) = node.child(i as u32) {
-            if child.is_error() || child.is_missing() {
-                collect_errors(&child, errors);
-            }
             if let Some(stmt) = build_statement(&child, errors) {
                 stmts.push(stmt);
             } else if capture_unknown && (child.is_error() || child.is_named()) {
@@ -798,9 +797,6 @@ fn build_if_stmt<'tree>(
             None => continue,
         };
 
-        if child.is_error() || child.is_missing() {
-            collect_errors(&child, errors);
-        }
 
         let kind = Kind::try_from(child.grammar_id()).ok();
         match (&phase, kind) {

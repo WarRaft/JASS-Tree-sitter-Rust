@@ -5,13 +5,12 @@ use crate::http::diagnostic::Diagnostic;
 use crate::http::position::Position;
 use crate::http::range::Range;
 use crate::http::rename::{TextEdit, WorkspaceEdit};
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::{PARSE_CACHE, peek_or_load};
 use crate::util::open::is_as_uri;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
 use serde_json::json;
 use std::collections::HashMap;
-use tree_sitter::Point;
 
 
 pub(crate) fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
@@ -161,6 +160,9 @@ pub(crate) fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         actions.extend(compute_array_set_no_index_fixes(params));
     }
 
+    // ── Open imported file quick fixes ────────────────────────────────────
+    actions.extend(compute_open_import_fixes(params));
+
     actions
 }
 
@@ -222,7 +224,7 @@ fn compute_simplify_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
 /// Build a single code action that fixes ALL redundant if-returns in the file.
 fn compute_simplify_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let simplify_diags: Vec<_> = all_diags
@@ -344,7 +346,7 @@ fn compute_parens_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 /// client applies them sequentially, later edits in the file don't shift the
 /// positions of earlier ones.
 fn compute_parens_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let parens_diags: Vec<_> = all_diags
@@ -438,7 +440,7 @@ fn compute_bool_cmp_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
 /// Build a code action that simplifies ALL redundant boolean comparisons in the file.
 fn compute_bool_cmp_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let bool_diags: Vec<_> = all_diags
@@ -502,10 +504,7 @@ fn compute_as_string_toggle(params: &CodeActionParams) -> Option<(CodeAction, Op
     let tree = TREE_MAP.get(uri)?;
     let tree = tree.value();
 
-    let point = Point {
-        row: params.range.start.line,
-        column: params.range.start.character,
-    };
+    let point = params.range.start.to_point(rope)?;
 
     let root = tree.root_node();
     let node = root.descendant_for_point_range(point, point)?;
@@ -987,8 +986,8 @@ fn compute_fix_all_leaks(
     uri: &url::Url,
     rope: &lapce_xi_rope::Rope,
 ) -> Option<CodeAction> {
-    // Get all diagnostics for this file from FILE_STORE.
-    let snap = FILE_STORE.get(uri)?;
+    // Get all diagnostics for this file from PARSE_CACHE.
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let leak_diags: Vec<_> = all_diags
@@ -1100,7 +1099,7 @@ fn compute_unused_func_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
 /// Build a single code action that removes ALL unused functions in the file.
 fn compute_unused_func_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let unused_diags: Vec<_> = all_diags
@@ -1338,7 +1337,7 @@ fn compute_inline_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 /// deleted, and only call sites *outside* any inline function body get a
 /// replacement edit.
 fn compute_inline_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let inline_diags: Vec<_> = all_diags
@@ -1660,7 +1659,7 @@ fn compute_collapse_and_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
 /// Build a single code action that collapses ALL and-chains in the file.
 fn compute_collapse_and_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let collapse_diags: Vec<_> = all_diags
@@ -1769,7 +1768,7 @@ fn compute_collapse_or_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
 /// Build a single code action that collapses ALL or-chains in the file.
 fn compute_collapse_or_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let collapse_diags: Vec<_> = all_diags
@@ -1871,7 +1870,7 @@ fn compute_empty_else_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
 /// Build a single code action that removes ALL empty else blocks in the file.
 fn compute_empty_else_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let empty_else_diags: Vec<_> = all_diags
@@ -1943,10 +1942,7 @@ fn compute_remove_else_action(params: &CodeActionParams) -> Option<CodeAction> {
     let tree = TREE_MAP.get(uri)?;
     let tree = tree.value();
 
-    let point = Point {
-        row: params.range.start.line,
-        column: params.range.start.character,
-    };
+    let point = params.range.start.to_point(rope)?;
 
     let root = tree.root_node();
     let node = root.descendant_for_point_range(point, point)?;
@@ -2116,7 +2112,7 @@ fn compute_execute_func_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
 /// Build a single code action that fixes ALL `ExecuteFunc` calls in the file.
 fn compute_execute_func_fix_all(uri: &url::Url) -> Option<CodeAction> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = PARSE_CACHE.get(uri)?;
     let all_diags = &snap.value().diagnostics;
 
     let exec_diags: Vec<_> = all_diags
@@ -2193,8 +2189,8 @@ fn build_signature_map_for_uri(uri: &url::Url) -> HashMap<String, Vec<String>> {
     // Collect from the file itself and all connected files.
     let component = crate::util::import_graph::IMPORT_GRAPH.visible_component(uri);
     for file_uri in &component {
-        if let Some(entry) = FILE_STORE.get(file_uri) {
-            let symbols = &entry.value().file_symbols;
+        if let Some(entry) = peek_or_load(file_uri) {
+            let symbols = &entry.file_symbols;
             for f in &symbols.functions {
                 let types: Vec<String> = f.params.iter().map(|p| p.type_name.clone()).collect();
                 map.insert(f.name.clone(), types);
@@ -2206,7 +2202,7 @@ fn build_signature_map_for_uri(uri: &url::Url) -> HashMap<String, Vec<String>> {
         }
     }
     // Also check the file itself in case it's not yet in the graph.
-    if let Some(entry) = FILE_STORE.get(uri) {
+    if let Some(entry) = PARSE_CACHE.get(uri) {
         let symbols = &entry.value().file_symbols;
         for f in &symbols.functions {
             let types: Vec<String> = f.params.iter().map(|p| p.type_name.clone()).collect();
@@ -2633,3 +2629,40 @@ fn compute_array_set_no_index_fixes(params: &CodeActionParams) -> Vec<CodeAction
 
     actions
 }
+
+// ─── Open imported file quick fixes ──────────────────────────────────────────
+
+/// Quick-fix actions for `import-not-opened` diagnostics.
+///
+/// Each matching diagnostic carries `{ "open_uri": "file://…" }` in `data`.
+/// The resulting code action sends a command to the client to open the file.
+fn compute_open_import_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
+    let mut actions = Vec::new();
+
+    for diag in &params.context.diagnostics {
+        if !diag.has_code("import-not-opened") {
+            continue;
+        }
+        let Some(data) = &diag.data else { continue };
+        let Some(open_uri) = data.get("open_uri").and_then(|v| v.as_str()) else { continue };
+        if open_uri.is_empty() {
+            continue;
+        }
+
+        let title = crate::util::i18n::open_imported_file().to_string();
+        actions.push(CodeAction {
+            title: title.clone(),
+            kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
+            diagnostics: Some(vec![diag.clone()]),
+            edit: None,
+            command: Some(Command {
+                title,
+                command: "jass.openImportedFile".into(),
+                arguments: Some(vec![json!(open_uri)]),
+            }),
+        });
+    }
+
+    actions
+}
+

@@ -130,5 +130,76 @@ enum Color {
             }
         });
     }
-}
 
+    #[test]
+    fn var_decl_after_method_call_with_comment() {
+        // Regression: a comment between a method call and a variable declaration
+        // caused tree-sitter to misparse the variable declaration as an expression
+        // statement, producing "Undeclared variable `int`" diagnostics.
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_as::language().into())
+            .expect("Failed to set language");
+
+        let cases = [
+            ("no comment", "\
+void f(int heroClass) {
+    statDerived.Reset();
+    int mainStatType = 0;
+}
+"),
+            ("blank line", "\
+void f(int heroClass) {
+    statDerived.Reset();
+
+    int mainStatType = 0;
+}
+"),
+            ("simple comment", "\
+void f(int heroClass) {
+    statDerived.Reset();
+    // hello
+    int mainStatType = 0;
+}
+"),
+            ("ASCII comment with parens", "\
+void f(int heroClass) {
+    statDerived.Reset();
+    // Main stat type (0=str, 1=agi, 2=int)
+    int mainStatType = 0;
+}
+"),
+            ("Cyrillic comment", "\
+void f(int heroClass) {
+    statDerived.Reset();
+
+    // Тип основного стата из базового шаблона (0=str, 1=agi, 2=int)
+    int mainStatType = Jass::R2I(baseStats.mainStat);
+}
+"),
+        ];
+
+        for (label, src) in &cases {
+            let tree = parser.parse(src, None).expect("Failed to parse");
+            let sexp = tree.root_node().to_sexp();
+            assert!(sexp.contains("variable_declaration_statement"),
+                "Case '{}': expected variable_declaration_statement in CST", label);
+
+            let ast = build_ast(tree.root_node());
+            assert!(ast.errors.is_empty(),
+                "Case '{}': unexpected errors: {:?}", label, ast.errors);
+
+            match &ast.items[0] {
+                TopLevel::Function(f) => {
+                    let var_decls: Vec<_> = f.body.iter()
+                        .filter(|s| matches!(s, Stmt::VarDecl(_)))
+                        .collect();
+                    assert_eq!(var_decls.len(), 1,
+                        "Case '{}': expected exactly 1 VarDecl in body, got {}",
+                        label, var_decls.len());
+                }
+                other => panic!("Case '{}': expected Function, got {:?}", label, other),
+            }
+        }
+    }
+}

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::lng::jass::ast::*;
 use crate::lng::jass::kind::Kind;
-use crate::lng::jass::symbol::{
+use crate::lng::symbol::{
     FileSymbols, FunctionSym, GlobalVarSym, NativeSym, ParamSym, TypeSym,
 };
 use crate::lng::jass::type_map::{
@@ -356,7 +356,7 @@ impl Cursor {
             folding: Vec::new(),
             semantic: Hub::default(),
             scopes: Vec::new(),
-            file_symbols: FileSymbols::new(),
+            file_symbols: FileSymbols::new_jass(),
             ref_groups: HashMap::new(),
             ref_names: HashMap::new(),
             external_decls: HashMap::new(),
@@ -893,16 +893,14 @@ impl Cursor {
     ///
     /// When `value` is `Some`, the hint is formatted as `: type(value)`.
     fn emit_type_hint(&mut self, node: &Node, label: &str, value: Option<&ComptimeValue>) {
-        let end = node.end_position();
         let display = match value {
             Some(v) => format!(": {}({})", label, v),
             None => format!(": {}", label),
         };
+        let position = Position::from_byte_offset(&self.rope, node.end_byte())
+            .unwrap_or_default();
         self.type_hints.push(InlayHint {
-            position: Position {
-                line: end.row,
-                character: end.column,
-            },
+            position,
             label: display,
             kind: InlayHintKind::Type,
             byte_offset: node.end_byte(),
@@ -1514,6 +1512,8 @@ impl Cursor {
                     name: func_name.clone(),
                     params: param_syms,
                     return_type,
+                    namespace: String::new(),
+                    decl_byte: 0,
                     is_constant: f.is_constant,
                     decl_index,
                     callees,
@@ -1586,6 +1586,8 @@ impl Cursor {
                         self.file_symbols.globals.push(GlobalVarSym {
                             name: var_name.clone(),
                             type_name: type_name.clone(),
+                            namespace: String::new(),
+                            decl_byte: 0,
                             is_constant: v.is_constant,
                             is_array: v.is_array,
                             has_initializer: d.value.is_some(),
@@ -1767,6 +1769,8 @@ impl Cursor {
                         self.file_symbols.globals.push(GlobalVarSym {
                             name: var_name.clone(),
                             type_name: type_name.clone(),
+                            namespace: String::new(),
+                            decl_byte: 0,
                             is_constant: v.is_constant,
                             is_array: v.is_array,
                             has_initializer: d.value.is_some(),
@@ -1956,10 +1960,10 @@ impl Cursor {
                 // `else if` detected → diagnostic with quick-fix data.
                 if let Some(fix) = &i.else_if_fix {
                     let if_range = fix.if_node.to_range(&self.rope);
-                    let else_start: Position = fix.else_node.start_position().into();
-                    let if_start: Position = fix.if_node.start_position().into();
-                    let if_end: Position = fix.if_node.end_position().into();
-                    let outer_end: Position = i.node.end_position().into();
+                    let else_start = Position::from_byte_offset(&self.rope, fix.else_node.start_byte()).unwrap_or_default();
+                    let if_start = Position::from_byte_offset(&self.rope, fix.if_node.start_byte()).unwrap_or_default();
+                    let if_end = Position::from_byte_offset(&self.rope, fix.if_node.end_byte()).unwrap_or_default();
+                    let outer_end = Position::from_byte_offset(&self.rope, i.node.end_byte()).unwrap_or_default();
 
                     let mut data = serde_json::json!({
                         "else_start_line": else_start.line,
@@ -1974,8 +1978,8 @@ impl Cursor {
 
                     // Inner endif position (needed for indentation adjustment).
                     if let Some(ei) = &fix.inner_endif {
-                        let ei_start: Position = ei.start_position().into();
-                        let ei_end: Position = ei.end_position().into();
+                        let ei_start = Position::from_byte_offset(&self.rope, ei.start_byte()).unwrap_or_default();
+                        let ei_end = Position::from_byte_offset(&self.rope, ei.end_byte()).unwrap_or_default();
                         data["inner_endif_start_line"] = serde_json::json!(ei_start.line);
                         data["inner_endif_start_char"] = serde_json::json!(ei_start.character);
                         data["inner_endif_end_line"] = serde_json::json!(ei_end.line);

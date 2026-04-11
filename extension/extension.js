@@ -41,6 +41,8 @@ const {resolveMapEditor} = require('./mapEditor/index.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
 const {showTypeGraph} = require('./typeGraphPanel.js')
+const {showExports} = require('./exportPanel.js')
+const {showDiagnostics} = require('./diagnosticPanel.js')
 
 const {MpqFileSystemProvider} = require('./mpqFileSystemProvider.js')
 const {resolveSlkEditor} = require('./resolveSlkEditor.js')
@@ -208,10 +210,16 @@ function _consumeRescanSSE(client, uri, progress) {
                         if (data.done) {
                             lastResult = data
                         } else if (data.total) {
-                            const pct = Math.round(((data.index + 1) / data.total) * 100)
+                            const step = data.step || 1
+                            const stepTotal = 2
+                            // Each step is 50% of total progress
+                            const stepBase = (step - 1) * 50
+                            const stepPct = ((data.index + 1) / data.total) * 50
+                            const totalPct = stepBase + stepPct
+                            const prevPct = stepBase + (data.index / data.total) * 50
                             progress.report({
-                                increment: data.index === 0 ? pct : (100 / data.total),
-                                message: `(${data.index + 1}/${data.total}) ${data.file}`,
+                                increment: totalPct - prevPct,
+                                message: `Step ${step}/${stepTotal} (${data.index + 1}/${data.total}) ${data.file}`,
                             })
                         }
                     } catch { /* ignore parse errors */ }
@@ -321,67 +329,21 @@ module.exports = {
         // ── Diagnostics collection ────────────────────────────────────
         const diagnosticCollection = languages.createDiagnosticCollection('jass')
 
-        // ── Diagnostic summary cache (for closed files — persisted in redb) ──
-        /** @type {Map<string, {errors: number, warnings: number}>} */
-        const diagSummaryCache = new Map()
 
         // ── Tree membership set (URIs belonging to any open import tree) ──
         /** @type {Set<string>} */
         const treeUris = new Set()
+
+        // ── Per-document tracking (for correct cleanup on close) ──
+        /** @type {Map<string, Set<string>>} doc URI → tree URIs contributed by that doc */
+        const perDocTreeUris = new Map()
 
         // ── File decoration provider (error/warning badges in Explorer) ──
         const fileDecoChanged = new EventEmitter()
         const fileDecorationProvider = window.registerFileDecorationProvider({
             onDidChangeFileDecorations: fileDecoChanged.event,
             provideFileDecoration(uri) {
-                // 1. Prefer live diagnostics for open files
-                const diags = diagnosticCollection.get(uri)
-                if (diags && diags.length > 0) {
-                    let errors = 0, warnings = 0
-                    for (const d of diags) {
-                        if (d.severity === VscDiagnosticSeverity.Error) errors++
-                        else if (d.severity === VscDiagnosticSeverity.Warning) warnings++
-                    }
-                    if (errors > 0) {
-                        const badge = errors > 99 ? '99' : String(errors)
-                        return new VscFileDecoration(
-                            badge,
-                            `${errors} error(s), ${warnings} warning(s)`,
-                            new ThemeColor('list.errorForeground')
-                        )
-                    }
-                    if (warnings > 0) {
-                        const badge = warnings > 99 ? '99' : String(warnings)
-                        return new VscFileDecoration(
-                            badge,
-                            `${warnings} warning(s)`,
-                            new ThemeColor('list.warningForeground')
-                        )
-                    }
-                    return undefined
-                }
-                // 2. Fall back to cached summary (for closed / peer files)
-                const summary = diagSummaryCache.get(uri.toString())
-                if (summary) {
-                    const {errors, warnings} = summary
-                    if (errors > 0) {
-                        const badge = errors > 99 ? '99' : String(errors)
-                        return new VscFileDecoration(
-                            badge,
-                            `${errors} error(s), ${warnings} warning(s)`,
-                            new ThemeColor('list.errorForeground')
-                        )
-                    }
-                    if (warnings > 0) {
-                        const badge = warnings > 99 ? '99' : String(warnings)
-                        return new VscFileDecoration(
-                            badge,
-                            `${warnings} warning(s)`,
-                            new ThemeColor('list.warningForeground')
-                        )
-                    }
-                }
-                // 3. Fall back to tree membership indicator
+                // Tree membership indicator
                 if (treeUris.has(uri.toString())) {
                     return new VscFileDecoration(
                         '🔗',
@@ -693,13 +655,45 @@ module.exports = {
             }
         }, '.', '/', '\\')
 
+        // ── Combined cursor context (hover + highlight + codeAction) ──
+        // All three fire on every mouse move. A shared cache ensures only
+        // one HTTP request per cursor position.
+        let _cursorCtx = { uri: '', line: -1, char: -1, hasRange: false, promise: null }
+        function _getCursorContext(uri, position, range, context) {
+            const line = position.line, char = position.character
+            const hasRange = !!(range && context)
+            // Cache hit only when params match (zero-width requests share cache)
+            if (_cursorCtx.uri === uri && _cursorCtx.line === line
+                && _cursorCtx.char === char && _cursorCtx.hasRange === hasRange
+                && _cursorCtx.promise) {
+                return _cursorCtx.promise
+            }
+            const body = { uri, position: _posParam(position) }
+            if (range) {
+                body.range = { start: _posParam(range.start), end: _posParam(range.end) }
+            }
+            if (context) {
+                body.context = {
+                    diagnostics: context.diagnostics.map(d => ({
+                        range: {start: _posParam(d.range.start), end: _posParam(d.range.end)},
+                        message: d.message,
+                        severity: d.severity != null ? d.severity + 1 : undefined,
+                        code: d.code != null ? (typeof d.code === 'object' ? d.code.value : d.code) : undefined,
+                    })),
+                }
+            }
+            _cursorCtx = {
+                uri, line, char, hasRange,
+                promise: client.sendRequest('lsp/cursor', body).catch(() => null),
+            }
+            return _cursorCtx.promise
+        }
+
         // ── Hover provider ────────────────────────────────────────
         const hoverProvider = languages.registerHoverProvider(renameSelector, {
             async provideHover(document, position) {
-                const result = await client.sendRequest('lsp/hover', {
-                    uri: document.uri.toString(),
-                    position: _posParam(position),
-                })
+                const ctx = await _getCursorContext(document.uri.toString(), position)
+                const result = ctx?.hover
                 if (!result || !result.contents) return undefined
                 const md = new MarkdownString(result.contents.value)
                 md.isTrusted = true
@@ -737,10 +731,8 @@ module.exports = {
         // ── Document Highlight provider ───────────────────────────
         const highlightProvider = languages.registerDocumentHighlightProvider(renameSelector, {
             async provideDocumentHighlights(document, position) {
-                const result = await client.sendRequest('lsp/highlight', {
-                    uri: document.uri.toString(),
-                    position: _posParam(position),
-                })
+                const ctx = await _getCursorContext(document.uri.toString(), position)
+                const result = ctx?.highlights
                 if (!result || !Array.isArray(result)) return undefined
                 return result.map(h => {
                     const kind = h.kind === 3 ? VscDocumentHighlightKind.Write
@@ -799,21 +791,15 @@ module.exports = {
         // ── Code Action provider ──────────────────────────────────
         const codeActionProvider = languages.registerCodeActionsProvider(renameSelector, {
             async provideCodeActions(document, range, context) {
-                const result = await client.sendRequest('lsp/codeAction', {
-                    uri: document.uri.toString(),
-                    range: {
-                        start: _posParam(range.start),
-                        end: _posParam(range.end),
-                    },
-                    context: {
-                        diagnostics: context.diagnostics.map(d => ({
-                            range: {start: _posParam(d.range.start), end: _posParam(d.range.end)},
-                            message: d.message,
-                            severity: d.severity != null ? d.severity + 1 : undefined,
-                            code: d.code != null ? (typeof d.code === 'object' ? d.code.value : d.code) : undefined,
-                        })),
-                    },
-                })
+                const isZeroWidth = range.start.line === range.end.line
+                    && range.start.character === range.end.character
+                const ctx = await _getCursorContext(
+                    document.uri.toString(),
+                    range.start,
+                    isZeroWidth ? undefined : range,
+                    isZeroWidth ? undefined : context,
+                )
+                const result = ctx?.codeActions
                 if (!result || !Array.isArray(result) || result.length === 0) return undefined
                 return result.map(action => {
                     const ca = new VscCodeAction(action.title,
@@ -827,6 +813,13 @@ module.exports = {
                             }
                         }
                         ca.edit = we
+                    }
+                    if (action.command) {
+                        ca.command = {
+                            title: action.command.title,
+                            command: action.command.command,
+                            arguments: action.command.arguments || [],
+                        }
                     }
                     return ca
                 })
@@ -1037,7 +1030,6 @@ module.exports = {
                     diagnosticCollection.delete(oldDiagUri)
                     const newDiagUri = Uri.parse(newKey)
                     diagnosticCollection.set(newDiagUri, existingDiags)
-                    fileDecoChanged.fire([oldDiagUri, newDiagUri])
                 }
             }
 
@@ -1064,28 +1056,32 @@ module.exports = {
             }
         })
 
-        // Load cached diagnostic summaries for closed files (from redb)
+        // ── SSE debug log ───────────────────────────────────────────
         clientReady.then(() => {
-            client.http.getBinary('/diagnostics/summary').then(buf => {
-                if (!buf || buf.length === 0) return
-                let p = 0
-                const changedUris = []
-                while (p + 2 <= buf.length) {
-                    const uriLen = buf.readUInt16LE(p); p += 2
-                    if (p + uriLen + 8 > buf.length) break
-                    const peerUri = buf.toString('utf8', p, p + uriLen); p += uriLen
-                    const errors = buf.readUInt32LE(p); p += 4
-                    const warnings = buf.readUInt32LE(p); p += 4
-                    if (errors > 0 || warnings > 0) {
-                        diagSummaryCache.set(peerUri, {errors, warnings})
-                        changedUris.push(Uri.parse(peerUri))
-                    }
+            const info = getBinaryServer()
+            if (!info) return
+            const http = require('http')
+            const req = http.get(
+                `http://127.0.0.1:${info.port}/debug/log?token=${info.token}`,
+                res => {
+                    let buf = ''
+                    res.on('data', chunk => {
+                        buf += chunk.toString()
+                        let nl
+                        while ((nl = buf.indexOf('\n')) !== -1) {
+                            const line = buf.slice(0, nl).trim()
+                            buf = buf.slice(nl + 1)
+                            if (line.startsWith('data:')) {
+                                console.log(`[server] ${line.slice(5).trim()}`)
+                            }
+                        }
+                    })
                 }
-                if (changedUris.length > 0) {
-                    fileDecoChanged.fire(changedUris)
-                }
-            }).catch(() => {})
+            )
+            req.on('error', () => {})
+            context.subscriptions.push({dispose: () => req.destroy()})
         })
+
 
         // ── Per-URI serial update queue ─────────────────────────────
         // Only ONE /document/update request is in flight per URI at any
@@ -1271,18 +1267,6 @@ module.exports = {
                         try {
                             const parsedUri = Uri.parse(uri)
                             diagnosticCollection.set(parsedUri, diags)
-                            // Keep summary cache in sync
-                            let errors = 0, warnings = 0
-                            for (const d of diags) {
-                                if (d.severity === VscDiagnosticSeverity.Error) errors++
-                                else if (d.severity === VscDiagnosticSeverity.Warning) warnings++
-                            }
-                            if (errors > 0 || warnings > 0) {
-                                diagSummaryCache.set(uri, {errors, warnings})
-                            } else {
-                                diagSummaryCache.delete(uri)
-                            }
-                            fileDecoChanged.fire(parsedUri)
                         } catch {}
                         break
                     }
@@ -1409,42 +1393,21 @@ module.exports = {
                         codeLensChanged.fire()
                         break
                     }
-                    case SECTION_PEER_DIAG_SUMMARY: {
-                        let p = 0
-                        const changedUris = []
-                        while (p + 2 <= data.length) {
-                            const uriLen = data.readUInt16LE(p); p += 2
-                            if (p + uriLen + 8 > data.length) break
-                            const peerUri = data.toString('utf8', p, p + uriLen); p += uriLen
-                            const errors = data.readUInt32LE(p); p += 4
-                            const warnings = data.readUInt32LE(p); p += 4
-                            const old = diagSummaryCache.get(peerUri)
-                            if (!old || old.errors !== errors || old.warnings !== warnings) {
-                                if (errors === 0 && warnings === 0) {
-                                    diagSummaryCache.delete(peerUri)
-                                } else {
-                                    diagSummaryCache.set(peerUri, {errors, warnings})
-                                }
-                                changedUris.push(Uri.parse(peerUri))
-                            }
-                        }
-                        if (changedUris.length > 0) {
-                            fileDecoChanged.fire(changedUris)
-                        }
-                        break
-                    }
                     case SECTION_TREE_URIS: {
                         let p = 0
                         const changedUris = []
+                        const docTree = new Set()
                         while (p + 2 <= data.length) {
                             const uriLen = data.readUInt16LE(p); p += 2
                             if (p + uriLen > data.length) break
                             const peerUri = data.toString('utf8', p, p + uriLen); p += uriLen
+                            docTree.add(peerUri)
                             if (!treeUris.has(peerUri)) {
                                 treeUris.add(peerUri)
                                 changedUris.push(Uri.parse(peerUri))
                             }
                         }
+                        perDocTreeUris.set(uri, docTree)
                         if (changedUris.length > 0) {
                             fileDecoChanged.fire(changedUris)
                         }
@@ -1498,7 +1461,7 @@ module.exports = {
             _locked.set(uri, true)
             _queue.delete(uri)
 
-            const params = {uri, languageId: q.languageId, version: String(q.version), hints: '1'}
+            const params = {uri, languageId: q.languageId, version: String(q.version), hints: 'ref,type'}
             const lastId = semanticResultId.get(uri)
             if (lastId !== undefined) params.lastResultId = String(lastId)
 
@@ -1633,6 +1596,12 @@ module.exports = {
             return result
         }
 
+        const docOpenDisposable = workspace.onDidOpenTextDocument(doc => {
+            if (!SUPPORTED_LANGUAGES.has(doc.languageId)) return
+            if (doc.uri.scheme !== 'file' && doc.uri.scheme !== 'mpq') return
+            clientReady.then(() => _sendDidOpen(doc))
+        })
+
         const docChangeDisposable = workspace.onDidChangeTextDocument(e => {
             const doc = e.document
             if (!SUPPORTED_LANGUAGES.has(doc.languageId)) return
@@ -1695,8 +1664,12 @@ module.exports = {
             _enqueueUpdate(uri, doc.languageId, ver, Buffer.concat(sections))
         })
 
-        const docCloseDisposable = workspace.onDidCloseTextDocument(doc => {
-            const key = doc.uri.toString()
+        /**
+         * Shared cleanup when a document is no longer open.
+         * Called from onDidCloseTextDocument AND onDidChangeTabs fallback.
+         * @param {string} key  document URI string
+         */
+        function _handleDocClose(key) {
             if (!openedDocs.has(key)) return
             openedDocs.delete(key)
             _docVersion.delete(key)
@@ -1714,18 +1687,51 @@ module.exports = {
             const closedUri = Uri.parse(key)
             diagnosticCollection.delete(closedUri)
 
-            // Clear stale decorations (tree links & peer diagnostics)
-            const staleUris = []
-            for (const u of treeUris) staleUris.push(Uri.parse(u))
-            for (const u of diagSummaryCache.keys()) staleUris.push(Uri.parse(u))
+            // ── Rebuild tree URIs from remaining open docs ──
+            perDocTreeUris.delete(key)
+
+            // Rebuild treeUris from remaining per-doc sets
+            const newTreeUris = new Set()
+            for (const [, uris] of perDocTreeUris) {
+                for (const u of uris) newTreeUris.add(u)
+            }
+            const removedTreeUris = []
+            for (const u of treeUris) {
+                if (!newTreeUris.has(u)) removedTreeUris.push(Uri.parse(u))
+            }
             treeUris.clear()
-            diagSummaryCache.clear()
-            staleUris.push(closedUri)
-            fileDecoChanged.fire(staleUris)
+            for (const u of newTreeUris) treeUris.add(u)
+
+            // Fire decoration change for all affected URIs
+            const staleUris = [...removedTreeUris, closedUri]
+            if (staleUris.length > 0) fileDecoChanged.fire(staleUris)
 
             client.http.post('/document/close', {
                 textDocument: {uri: key}
             }).catch(e => console.error('document/close error:', e))
+        }
+
+        const docCloseDisposable = workspace.onDidCloseTextDocument(doc => {
+            _handleDocClose(doc.uri.toString())
+        })
+
+        // ── Fallback: detect tab closes that VS Code doesn't surface
+        //    as onDidCloseTextDocument (preview tabs, side-panel closes, etc.) ──
+        const tabCloseDisposable = window.tabGroups.onDidChangeTabs(event => {
+            for (const tab of event.closed) {
+                const inputUri = tab.input?.uri
+                if (!inputUri) continue
+                const key = inputUri.toString()
+                if (!openedDocs.has(key)) continue
+
+                // Check if any remaining tab still shows this URI
+                const stillOpen = window.tabGroups.all.some(group =>
+                    group.tabs.some(t => t.input?.uri?.toString() === key)
+                )
+                if (stillOpen) continue
+
+                _handleDocClose(key)
+            }
         })
 
 
@@ -1762,8 +1768,10 @@ module.exports = {
             typeHierarchyProvider,
             willRenameDisposable,
             didRenameDisposable,
+            docOpenDisposable,
             docChangeDisposable,
             docCloseDisposable,
+            tabCloseDisposable,
 
             // TaskProvider for jass-hook tasks (hooks are created programmatically)
             tasks.registerTaskProvider('jass-hook', {
@@ -1981,6 +1989,16 @@ module.exports = {
                 showTypeGraph(client, context.extensionUri, context)
             }),
 
+            // Export Table panel
+            commands.registerCommand('exportTable.show', () => {
+                showExports(client, context.extensionUri, context)
+            }),
+
+            // Diagnostic Summary panel
+            commands.registerCommand('diagnosticSummary.show', () => {
+                showDiagnostics(client, context.extensionUri, context)
+            }),
+
 
             // Rescan all files (SSE with real progress)
             commands.registerCommand('rescan.execute', async () => {
@@ -1990,41 +2008,84 @@ module.exports = {
                     return
                 }
                 const uri = editor.document.uri.toString()
-                await window.withProgress(
-                    {
-                        location: ProgressLocation.Notification,
-                        title: 'Rescanning…',
-                        cancellable: false
-                    },
-                    async (progress) => {
-                        try {
-                            const result = await _consumeRescanSSE(client, uri, progress)
-                            if (result && result.busy) {
-                                window.showWarningMessage('Rescan is already in progress.')
-                                return
-                            }
-                            if (result && result.ok) {
-                                window.showInformationMessage(`↻ ${result.message}`)
-                            } else if (result && result.errors && result.errors.length > 0) {
-                                const summary = `✗ ${result.message.split('\n')[0]}`
-                                const action = await window.showErrorMessage(summary, 'Show Details')
-                                if (action === 'Show Details') {
-                                    const ch = window.createOutputChannel('JASS Rescan')
-                                    ch.clear()
-                                    ch.appendLine('Rescan errors:')
-                                    for (const e of result.errors) {
-                                        ch.appendLine(`  • ${e}`)
-                                    }
-                                    ch.show()
+
+                let result
+                try {
+                    result = await window.withProgress(
+                        {
+                            location: ProgressLocation.Notification,
+                            title: 'Rescanning…',
+                            cancellable: false
+                        },
+                        async (progress) => {
+                            const res = await _consumeRescanSSE(client, uri, progress)
+                            if (res && res.busy) return res
+
+                            // ── Re-request document/update only for open files ──
+                            if (res && res.entries && res.entries.length > 0) {
+                                progress.report({message: 'Refreshing diagnostics…'})
+                                for (const entry of res.entries) {
+                                    if (!openedDocs.has(entry.uri)) continue
+                                    const ver = (_docVersion.get(entry.uri) || 0) + 1
+                                    _docVersion.set(entry.uri, ver)
+                                    _enqueueUpdate(entry.uri, entry.languageId || 'jass', ver,
+                                        _tlvSection(SECTION_OPEN_URI, Buffer.alloc(0)))
                                 }
-                            } else {
-                                window.showErrorMessage(`✗ ${result ? result.message : 'Rescan failed'}`)
+
+                                // Refresh file decorations for all rescanned URIs
+                                fileDecoChanged.fire(res.entries.map(e => Uri.parse(e.uri)))
                             }
-                        } catch (e) {
-                            window.showErrorMessage(`Rescan error: ${e.message}`)
+                            return res
                         }
+                    )
+                } catch (e) {
+                    window.showErrorMessage(`Rescan error: ${e.message}`)
+                    return
+                }
+
+                if (!result) {
+                    window.showErrorMessage('✗ Rescan failed')
+                    return
+                }
+                if (result.busy) {
+                    window.showWarningMessage('Rescan is already in progress.')
+                    return
+                }
+
+                if (result.ok) {
+                    const action = await window.showInformationMessage(
+                        `✓ ${result.message}`, 'Show Files'
+                    )
+                    if (action === 'Show Files') {
+                        const ch = window.createOutputChannel('JASS Rescan')
+                        ch.clear()
+                        if (result.root) ch.appendLine(`Root: ${result.root}`)
+                        if (result.files && result.files.length > 0) {
+                            for (const f of result.files) ch.appendLine(`  ${f}`)
+                        }
+                        ch.show()
                     }
-                )
+                } else if (result.errors && result.errors.length > 0) {
+                    const action = await window.showErrorMessage(
+                        `✗ ${result.message.split('\n')[0]}`, 'Show Details'
+                    )
+                    if (action === 'Show Details') {
+                        const ch = window.createOutputChannel('JASS Rescan')
+                        ch.clear()
+                        if (result.root) ch.appendLine(`Root: ${result.root}`)
+                        if (result.files && result.files.length > 0) {
+                            for (const f of result.files) ch.appendLine(`  ${f}`)
+                        }
+                        if (result.errors.length > 0) {
+                            ch.appendLine('')
+                            ch.appendLine('Errors:')
+                            for (const e of result.errors) ch.appendLine(`  • ${e}`)
+                        }
+                        ch.show()
+                    }
+                } else {
+                    window.showErrorMessage(`✗ ${result.message}`)
+                }
             }),
 
             // Build
@@ -2100,6 +2161,18 @@ module.exports = {
                         }
                     }
                 )
+            }),
+
+            // Open imported file (quick fix)
+            commands.registerCommand('jass.openImportedFile', async (uriStr) => {
+                if (!uriStr) return
+                try {
+                    const uri = Uri.parse(uriStr)
+                    const doc = await workspace.openTextDocument(uri)
+                    await window.showTextDocument(doc, {preview: true})
+                } catch (e) {
+                    window.showErrorMessage(`Cannot open file: ${e.message}`)
+                }
             }),
 
             // UjAPI download

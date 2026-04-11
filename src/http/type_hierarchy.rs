@@ -1,7 +1,7 @@
 use crate::http::document_symbol::SymbolKind;
 use crate::http::position::Position;
 use crate::http::range::Range;
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::{PARSE_CACHE, peek_or_load};
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::uri_map::LNG_URI_MAP;
@@ -57,7 +57,7 @@ pub(crate) fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<Type
         return None;
     }
 
-    let snapshot = FILE_STORE.get(uri)?;
+    let snapshot = PARSE_CACHE.get(uri)?;
     let snap = snapshot.value();
     let ref_map = &snap.ref_map;
 
@@ -78,7 +78,7 @@ pub(crate) fn compute_prepare(uri: &Url, position: &Position) -> Option<Vec<Type
         if let Some(ext) = ref_map.external_decls.get(&span.decl_key) {
             let mut found = false;
             for origin in &ext.origins {
-                if let Some(ext_snap) = FILE_STORE.get(&origin.uri) {
+                if let Some(ext_snap) = peek_or_load(&origin.uri) {
                     if ext_snap.file_symbols.find_type(&ext.name).is_some() {
                         found = true;
                         break;
@@ -132,7 +132,7 @@ pub(crate) fn compute_supertypes(item: &TypeHierarchyItem) -> Vec<TypeHierarchyI
 
     // Find where the base type is declared
     for peer_uri in &component {
-        if let Some(snap) = FILE_STORE.get(peer_uri) {
+        if let Some(snap) = peek_or_load(peer_uri) {
             if let Some(t) = snap.file_symbols.find_type(&base_name) {
                 if let Some(range) = find_type_decl_range(peer_uri, &base_name) {
                     let detail = t.base.as_ref().map(|b| format!("extends {}", b));
@@ -168,7 +168,7 @@ pub(crate) fn compute_subtypes(item: &TypeHierarchyItem) -> Vec<TypeHierarchyIte
     let mut subtypes = Vec::new();
 
     for peer_uri in &component {
-        if let Some(snap) = FILE_STORE.get(peer_uri) {
+        if let Some(snap) = peek_or_load(peer_uri) {
             for t in &snap.file_symbols.types {
                 if t.base.as_deref() == Some(type_name) {
                     if let Some(range) = find_type_decl_range(peer_uri, &t.name) {
@@ -199,7 +199,7 @@ fn find_base_type(
     type_name: &str,
 ) -> Option<String> {
     for peer_uri in component {
-        if let Some(snap) = FILE_STORE.get(peer_uri) {
+        if let Some(snap) = peek_or_load(peer_uri) {
             if let Some(t) = snap.file_symbols.find_type(type_name) {
                 return t.base.clone();
             }
@@ -210,7 +210,7 @@ fn find_base_type(
 
 /// Find the declaration range for a type in a file.
 fn find_type_decl_range(uri: &Url, name: &str) -> Option<Range> {
-    let snap = FILE_STORE.get(uri)?;
+    let snap = peek_or_load(uri)?;
     let ref_map = &snap.ref_map;
 
     for group in ref_map.groups.values() {

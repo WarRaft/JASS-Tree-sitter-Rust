@@ -11,7 +11,7 @@
 //! Full reparse is the only way to guarantee correctness.
 
 use crate::http::range::Range;
-use crate::util::file_store::new_cancel_token;
+use crate::util::parse_cache::new_cancel_token;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::{PARSER_MAP, TREE_MAP};
 use serde::{Deserialize, Serialize};

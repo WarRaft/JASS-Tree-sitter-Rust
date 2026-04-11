@@ -11,7 +11,7 @@
 //! * **Unused detection** — functions with zero incoming edges (nobody calls them).
 //! * **Recursion detection** — self-edges (allowed, but flagged).
 
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::peek_or_load;
 use crate::util::import_graph::IMPORT_GRAPH;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -38,7 +38,7 @@ fn is_entry_function(func_name: &str, func_uri: &Url, component: &HashSet<Url>) 
 
     // Check if any file in the component is an entry point.
     let has_entries = component.iter().any(|u| {
-        crate::util::file_store::is_uri_entry(u)
+        crate::util::parse_cache::is_uri_entry(u)
     });
 
     if !has_entries {
@@ -47,7 +47,7 @@ fn is_entry_function(func_name: &str, func_uri: &Url, component: &HashSet<Url>) 
     }
 
     // Only main/config in entry-point files are exempt.
-    crate::util::file_store::is_uri_entry(func_uri)
+    crate::util::parse_cache::is_uri_entry(func_uri)
 }
 
 // ─── Diagnostic helpers ──────────────────────────────────────────────────────
@@ -68,7 +68,7 @@ pub struct FuncDiagnostics {
 
 /// Lightweight analysis: return unused / cyclic function names declared in `uri`.
 ///
-/// Reads `FILE_STORE` for every file in the visible component that
+/// Reads `PARSE_CACHE` for every file in the visible component that
 /// contains `uri` (must already be populated).
 pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     let mut result = FuncDiagnostics::default();
@@ -79,7 +79,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     // Frozen URIs.
     let mut frozen_uris: HashSet<Url> = HashSet::new();
     for peer in &component {
-        if let Some(fs) = FILE_STORE.get(peer) {
+        if let Some(fs) = peek_or_load(peer) {
             for fu in &fs.file_symbols.frozen_imports {
                 frozen_uris.insert(fu.clone());
             }
@@ -98,7 +98,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     let mut func_map: HashMap<String, Info> = HashMap::new();
 
     for peer_uri in &component {
-        let fs = match FILE_STORE.get(peer_uri) {
+        let fs = match peek_or_load(peer_uri) {
             Some(fs) => fs,
             None => continue,
         };
@@ -129,7 +129,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     // otherwise a virtual `main` node is created.
     let mut all_bare: HashSet<String> = HashSet::new();
     for peer_uri in &component {
-        if let Some(fs) = FILE_STORE.get(peer_uri) {
+        if let Some(fs) = peek_or_load(peer_uri) {
             all_bare.extend(fs.file_symbols.bare_callees.iter().cloned());
         }
     }
@@ -193,7 +193,7 @@ pub fn diagnose_functions(uri: &Url) -> FuncDiagnostics {
     // Functions used as code-type values cannot be inlined.
     let mut all_func_refs: HashSet<String> = HashSet::new();
     for peer_uri in &component {
-        if let Some(fs) = FILE_STORE.get(peer_uri) {
+        if let Some(fs) = peek_or_load(peer_uri) {
             all_func_refs.extend(fs.file_symbols.func_refs.iter().cloned());
         }
     }
@@ -271,7 +271,7 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
     // Frozen URIs — any file imported via `//import!` by anyone in component.
     let mut frozen_uris: HashSet<Url> = HashSet::new();
     for peer in &component {
-        if let Some(fs) = FILE_STORE.get(peer) {
+        if let Some(fs) = peek_or_load(peer) {
             for fu in &fs.file_symbols.frozen_imports {
                 frozen_uris.insert(fu.clone());
             }
@@ -289,7 +289,7 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
     let mut func_map: HashMap<String, FuncInfo> = HashMap::new();
 
     for peer_uri in &component {
-        let fs = match FILE_STORE.get(peer_uri) {
+        let fs = match peek_or_load(peer_uri) {
             Some(fs) => fs,
             None => continue,
         };
@@ -322,7 +322,7 @@ pub fn build_call_graph(uri: &Url) -> CallGraphResult {
     // Merge bare top-level callees into `main`.
     let mut all_bare: HashSet<String> = HashSet::new();
     for peer_uri in &component {
-        if let Some(fs) = FILE_STORE.get(peer_uri) {
+        if let Some(fs) = peek_or_load(peer_uri) {
             all_bare.extend(fs.file_symbols.bare_callees.iter().cloned());
         }
     }

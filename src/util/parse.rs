@@ -4,8 +4,11 @@
 //!
 //! * **Import resolution** — `resolve_import_directive` turns an
 //!   `ImportDirective` into `(Url, DocumentLink, Diagnostic)`.
+//! * **`GlobalEntry` / `SymbolNS`** — cross-file symbol types.
 //! * **`file_symbols_to_entries`** — converts `FileSymbols` into
-//!   `GlobalEntry` items for the scope resolver.
+//!   `GlobalEntry` items for cross-file resolution.
+//! * **`all_visible_entries`** — collects entries from a set of URIs
+//!   via `peek_or_load` + `file_symbols_to_entries`.
 //! * **`compute_hash_for_uri`** — content hash from ROPE_MAP or disk.
 //! * **`ensure_file_symbols`** — loads symbols for a dependency URI
 //!   from cache or parses from disk, parameterized by `tree_sitter::Language`.
@@ -13,30 +16,149 @@
 //!   (CascadeGuard + pending-drain + peer re-parse) with pluggable
 //!   per-language parse functions.
 
+use crate::debug_log;
 use crate::lng::directive::ImportDirective;
 use crate::lng::directive::UjapiDirective;
-use crate::lng::jass::symbol::FileSymbols;
+use crate::lng::symbol::FileSymbols;
 use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::http::document_link::DocumentLink;
 use crate::http::position::Position;
 use crate::http::range::Range;
 use crate::http::ref_map::{DeclKey, RefMap};
 use crate::util::file_cache;
-use crate::util::file_store::{
-    drain_pending, mark_parse_done,
-    CascadeGuard, FILE_STORE,
+use crate::util::parse_cache::{
+    drain_pending, peek_or_load, mark_parse_done,
+    CascadeGuard, PARSE_CACHE,
     MAX_CASCADE_PEERS, REPARSE_GUARD,
 };
 use crate::util::import_graph::{resolve_import, IMPORT_GRAPH};
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::scope_resolver::{GlobalEntry, SymbolNS, SCOPE_RESOLVER};
 use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 use url::Url;
+
+// ─── Symbol types (moved from scope_resolver) ───────────────────────────────
+
+/// Symbol namespace — JASS separates functions and variables/types by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SymbolNS {
+    /// `function` or `native` — resolves in the function namespace.
+    Func,
+    /// Global variable, constant, or `type` — resolves in the variable namespace.
+    Var,
+}
+
+/// A single global-scope declaration in one file.
+///
+/// Contains enough information for cross-file resolution, hover tooltips,
+/// and completion items.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GlobalEntry {
+    /// URI of the file containing the declaration.
+    pub uri: Url,
+    /// Symbol name.
+    pub name: String,
+    /// Namespace — JASS always uses `""` (global scope).
+    /// AngelScript will use the enclosing `namespace Foo { … }` name.
+    pub namespace: String,
+    /// Namespace.
+    pub ns: SymbolNS,
+    /// `start_byte` of the declaring node in the origin file.
+    /// Used as `DeclKey` for cross-file reference linking.
+    pub decl_key: usize,
+
+    // ── Metadata for hover / completion ──────────────────────────────────
+
+    /// Type name for variables; `None` for functions/natives.
+    pub type_name: Option<String>,
+    /// Parameter list `(name, type)` for functions/natives; empty for vars.
+    pub params: Vec<(String, String)>,
+    /// Return type for functions/natives; `None` for variables.
+    pub return_type: Option<String>,
+    /// `true` for `constant` global variables.
+    pub is_constant: bool,
+    /// `true` for `array` global variables.
+    pub is_array: bool,
+    /// `//*` doc comment (markdown) attached to this declaration.
+    pub doc_comment: Option<String>,
+}
+
+// ─── Helpers that replace SCOPE_RESOLVER ─────────────────────────────────────
+
+/// Return all global entries from files in `visible_uris`.
+///
+/// Iterates each URI, loads the snapshot via [`peek_or_load`] (read-only,
+/// does NOT insert into `PARSE_CACHE`), and converts `FileSymbols` to
+/// `GlobalEntry` items.  This replaces `SCOPE_RESOLVER.all_visible()`.
+pub fn all_visible_entries(visible_uris: &HashSet<Url>) -> Vec<GlobalEntry> {
+    let mut result = Vec::new();
+    for uri in visible_uris {
+        if let Some(snap) = peek_or_load(uri) {
+            result.extend(file_symbols_to_entries(uri, &snap.file_symbols));
+        }
+    }
+    result
+}
+
+/// Look up all entries for `name` in namespace `ns`, filtered to
+/// declarations from `visible_uris`.
+///
+/// Replaces `SCOPE_RESOLVER.resolve()`.
+pub fn resolve_entries(name: &str, ns: SymbolNS, visible: &HashSet<Url>) -> Vec<GlobalEntry> {
+    let mut result = Vec::new();
+    for uri in visible {
+        if let Some(snap) = peek_or_load(uri) {
+            for entry in file_symbols_to_entries(uri, &snap.file_symbols) {
+                if entry.name == name && entry.ns == ns {
+                    result.push(entry);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Return all entries for a single `uri`.
+///
+/// Replaces `SCOPE_RESOLVER.entries_for_uri()`.
+pub fn entries_for_uri(uri: &Url) -> Vec<GlobalEntry> {
+    match peek_or_load(uri) {
+        Some(snap) => file_symbols_to_entries(uri, &snap.file_symbols),
+        None => Vec::new(),
+    }
+}
+
+/// Return all entries across every file known to `IMPORT_GRAPH` and `PARSE_CACHE`.
+///
+/// Replaces `SCOPE_RESOLVER.all_entries()`.
+pub fn all_entries() -> Vec<GlobalEntry> {
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+
+    // Collect from IMPORT_GRAPH (covers all known files).
+    for uri in IMPORT_GRAPH.all_uris() {
+        if seen.insert(uri.clone()) {
+            if let Some(snap) = peek_or_load(&uri) {
+                result.extend(file_symbols_to_entries(&uri, &snap.file_symbols));
+            }
+        }
+    }
+
+    // Also collect from PARSE_CACHE (covers open files not yet in the graph).
+    for entry in PARSE_CACHE.iter() {
+        let uri = entry.key().clone();
+        if seen.insert(uri.clone()) {
+            result.extend(file_symbols_to_entries(&uri, &entry.value().file_symbols));
+        }
+    }
+
+    result
+}
 
 // ─── Import resolution ──────────────────────────────────────────────────────
 
@@ -85,10 +207,23 @@ pub fn resolve_import_directive(
             }
             if resolved.exists {
                 links.push(DocumentLink {
-                    range: path_range,
+                    range: path_range.clone(),
                     target: Some(resolved.url.to_string()),
                     tooltip: Some(resolved.url.to_string()),
                 });
+                // Emit a hint when the target file exists but hasn't been
+                // opened/parsed yet — the quick fix will open it.
+                if !PARSE_CACHE.contains_key(&resolved.url) {
+                    diagnostics.push(Diagnostic {
+                        range: path_range,
+                        message: crate::util::i18n::import_file_not_opened(&imp.path),
+                        severity: Some(DiagnosticSeverity::Hint),
+                        data: Some(serde_json::json!({
+                            "open_uri": resolved.url.to_string(),
+                        })),
+                        ..Diagnostic::new("jass", "import-not-opened")
+                    });
+                }
             } else {
                 diagnostics.push(Diagnostic {
                     range: path_range,
@@ -285,10 +420,21 @@ pub fn resolve_path_import(
             imports.insert(resolved.url.clone());
             if resolved.exists {
                 links.push(DocumentLink {
-                    range: path_range,
+                    range: path_range.clone(),
                     target: Some(resolved.url.to_string()),
                     tooltip: Some(resolved.url.to_string()),
                 });
+                if !PARSE_CACHE.contains_key(&resolved.url) {
+                    diagnostics.push(Diagnostic {
+                        range: path_range,
+                        message: crate::util::i18n::import_file_not_opened(path_text),
+                        severity: Some(DiagnosticSeverity::Hint),
+                        data: Some(serde_json::json!({
+                            "open_uri": resolved.url.to_string(),
+                        })),
+                        ..Diagnostic::new("jass", "import-not-opened")
+                    });
+                }
             } else {
                 diagnostics.push(Diagnostic {
                     range: path_range,
@@ -311,7 +457,10 @@ pub fn resolve_path_import(
 
 // ─── Symbol helpers ─────────────────────────────────────────────────────────
 
-/// Convert `FileSymbols` into `GlobalEntry` items for the scope resolver.
+/// Convert unified `FileSymbols` into `GlobalEntry` items for the scope resolver.
+///
+/// Works for both JASS and AS — iterates all collections; unused ones
+/// are simply empty.
 pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> {
     let mut entries = Vec::new();
 
@@ -319,17 +468,13 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
         entries.push(GlobalEntry {
             uri: uri.clone(),
             name: f.name.clone(),
-            namespace: String::new(),
+            namespace: f.namespace.clone(),
             ns: SymbolNS::Func,
-            decl_key: 0,
+            decl_key: f.decl_byte,
             type_name: None,
-            params: f
-                .params
-                .iter()
-                .map(|p| (p.name.clone(), p.type_name.clone()))
-                .collect(),
+            params: f.params.iter().map(|p| (p.name.clone(), p.type_name.clone())).collect(),
             return_type: f.return_type.clone(),
-            is_constant: false,
+            is_constant: f.is_constant,
             is_array: false,
             doc_comment: f.doc_comment.clone(),
         });
@@ -342,13 +487,9 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
             ns: SymbolNS::Func,
             decl_key: 0,
             type_name: None,
-            params: n
-                .params
-                .iter()
-                .map(|p| (p.name.clone(), p.type_name.clone()))
-                .collect(),
+            params: n.params.iter().map(|p| (p.name.clone(), p.type_name.clone())).collect(),
             return_type: n.return_type.clone(),
-            is_constant: false,
+            is_constant: n.is_constant,
             is_array: false,
             doc_comment: n.doc_comment.clone(),
         });
@@ -357,9 +498,9 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
         entries.push(GlobalEntry {
             uri: uri.clone(),
             name: g.name.clone(),
-            namespace: String::new(),
+            namespace: g.namespace.clone(),
             ns: SymbolNS::Var,
-            decl_key: 0,
+            decl_key: g.decl_byte,
             type_name: g.type_name.clone(),
             params: vec![],
             return_type: None,
@@ -375,7 +516,7 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
             namespace: String::new(),
             ns: SymbolNS::Var,
             decl_key: 0,
-            type_name: None,
+            type_name: t.base.clone(),
             params: vec![],
             return_type: None,
             is_constant: false,
@@ -383,35 +524,7 @@ pub fn file_symbols_to_entries(uri: &Url, fs: &FileSymbols) -> Vec<GlobalEntry> 
             doc_comment: t.doc_comment.clone(),
         });
     }
-
-    entries
-}
-
-/// Convert `AsFileSymbols` into `GlobalEntry` items for the scope resolver.
-///
-/// Each entry's `namespace` field is set to the enclosing AS namespace
-/// (or `""` for top-level).
-pub fn as_file_symbols_to_entries(
-    uri: &Url,
-    fs: &crate::lng::ass::symbol::AsFileSymbols,
-) -> Vec<GlobalEntry> {
-    let mut entries = Vec::new();
-
-    for f in &fs.functions {
-        entries.push(GlobalEntry {
-            uri: uri.clone(),
-            name: f.name.clone(),
-            namespace: f.namespace.clone(),
-            ns: SymbolNS::Func,
-            decl_key: f.decl_byte,
-            type_name: None,
-            params: f.params.iter().map(|p| (p.name.clone(), p.type_name.clone())).collect(),
-            return_type: f.return_type.clone(),
-            is_constant: false,
-            is_array: false,
-            doc_comment: f.doc_comment.clone(),
-        });
-    }
+    // ── AS-specific ──────────────────────────────────────────────────
     for c in &fs.classes {
         entries.push(GlobalEntry {
             uri: uri.clone(),
@@ -502,21 +615,6 @@ pub fn as_file_symbols_to_entries(
             doc_comment: fd.doc_comment.clone(),
         });
     }
-    for g in &fs.globals {
-        entries.push(GlobalEntry {
-            uri: uri.clone(),
-            name: g.name.clone(),
-            namespace: g.namespace.clone(),
-            ns: SymbolNS::Var,
-            decl_key: g.decl_byte,
-            type_name: g.type_name.clone(),
-            params: vec![],
-            return_type: None,
-            is_constant: false,
-            is_array: false,
-            doc_comment: g.doc_comment.clone(),
-        });
-    }
 
     entries
 }
@@ -572,34 +670,45 @@ pub fn collect_as_imports(
     imports
 }
 
-/// Collect all import URLs from a JASS AST (after `rewrite_imports`).
-pub fn collect_jass_imports(
-    items: &[crate::lng::jass::ast::Statement],
+/// Collect frozen-import URLs from an AS AST.
+///
+/// Walks `TopLevel::ImportDir` (frozen) and `TopLevel::UjapiDir`
+/// recursively — namespace blocks are entered so that directives nested
+/// inside them are discovered.
+fn collect_as_frozen_imports(
+    items: &[crate::lng::ass::ast::TopLevel],
     uri: &Url,
+    src: &[u8],
+    rope: &Rope,
 ) -> HashSet<Url> {
-    use crate::lng::jass::ast::Statement;
+    use crate::lng::ass::ast::TopLevel;
 
-    let mut imports = HashSet::new();
+    let mut frozen = HashSet::new();
     for item in items {
-        if let Statement::Import(imp) = item {
-            if !imp.path.is_empty() {
+        if let TopLevel::ImportDir(imp) = item {
+            if imp.frozen && !imp.path.is_empty() {
                 if let Some(resolved) = resolve_import(uri, &imp.path) {
-                    imports.insert(resolved.url);
+                    frozen.insert(resolved.url);
                 }
             }
         }
-        if let Statement::UjapiImport(ud) = item {
+        if let TopLevel::UjapiDir(ud) = item {
+            // ujapi directives are always frozen
             if !ud.path.is_empty() {
                 if let Some(resolved) = resolve_import(uri, &ud.path) {
-                    imports.insert(resolved.url);
+                    frozen.insert(resolved.url);
                 }
             }
         }
+        if let TopLevel::Namespace(ns) = item {
+            frozen.extend(collect_as_frozen_imports(&ns.body, uri, src, rope));
+        }
     }
-    imports
+    frozen
 }
 
-/// Ensure that `FILE_SYMBOLS` and `SCOPE_RESOLVER` have entries for `dep_uri`.
+
+/// Ensure that `file_cache` has entries for `dep_uri`.
 ///
 /// **Must NOT be called for the file currently being parsed** — the caller
 /// must exclude `current_uri` from the loop to avoid clobbering in-flight data.
@@ -611,39 +720,25 @@ pub fn collect_jass_imports(
 ///
 /// ## Staleness checks
 ///
-/// 1. **In-memory** (`FILE_STORE`) — cheapest, no I/O.
+/// 1. **In-memory** (`PARSE_CACHE`) — cheapest, no I/O.
 /// 2. **Disk cache** (`file_cache`) — one `stat()` call to validate
-///    `FileMeta` (size + mtime).  If fresh, a partial `ParseSnapshot` is
-///    reconstructed from the cached data.
+///    `FileMeta` (size + mtime).  If fresh, returns immediately.
+///    Handlers that need data later call [`peek_or_load`].
 /// 3. **Parse from disk** — last resort, reads + parses the file.
 pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) -> bool {
-    // Already fully parsed — FILE_STORE has everything.
-    if FILE_STORE.contains_key(dep_uri) {
+    // Already fully parsed — PARSE_CACHE has everything.
+    if PARSE_CACHE.contains_key(dep_uri) {
         return true;
     }
 
-    // Disk cache — if file metadata matches, reconstruct a partial snapshot.
+    // Disk cache — if file metadata matches, populate SCOPE_RESOLVER only.
+    // The full snapshot stays on disk and will be lazy-loaded by
+    // `peek_or_load()` if any handler actually needs it.
     if let Some(cached) = file_cache::load_if_fresh(dep_uri) {
-        let entries = file_symbols_to_entries(dep_uri, &cached.symbols);
-        SCOPE_RESOLVER.update_file(dep_uri, cached.content_hash, entries);
-
-        let snapshot = std::sync::Arc::new(crate::util::file_store::ParseSnapshot {
-            folding: Vec::new(),
-            symbols: Vec::new(),
-            semantic: std::sync::RwLock::new(Default::default()),
-            diagnostics: Vec::new(),
-            links: Vec::new(),
-            ref_map: cached.ref_map,
-            file_symbols: cached.symbols,
-            _type_map: Default::default(),
-            type_hints: Vec::new(),
-            ujapi_hints: Vec::new(),
-            func_decl_keys: cached.func_decl_keys,
-            var_decl_keys: cached.var_decl_keys,
-            arg_decl_keys: cached.arg_decl_keys,
-            colors: Vec::new(),
-        });
-        FILE_STORE.insert(dep_uri.clone(), snapshot);
+        // Persist entry-point status so recompute_entry_cache sees it.
+        if cached.symbols.is_entry {
+            IMPORT_GRAPH.mark_entry(dep_uri, true);
+        }
         return true;
     }
 
@@ -686,10 +781,15 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             IMPORT_GRAPH.update(dep_uri, dep_imports);
         }
 
+        // Also extract frozen import URLs for `is_uri_frozen()`.
+        let frozen_imports = collect_as_frozen_imports(&ast.items, dep_uri, &src, &rope);
+        IMPORT_GRAPH.mark_frozen(&frozen_imports);
+
         let cursor = crate::lng::ass::cursor::Cursor::walk(&ast, &rope, &[]);
 
         let mut as_file_symbols = cursor.file_symbols;
         as_file_symbols.file_settings = cursor.file_settings;
+        as_file_symbols.frozen_imports = frozen_imports;
 
         // Build a RefMap for cross-file go-to-definition.
         let func_decl_keys = cursor.func_decl_keys;
@@ -702,29 +802,30 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             &rope,
         );
 
-        let mut file_symbols = crate::lng::jass::symbol::FileSymbols::new();
-        file_symbols.file_settings = as_file_symbols.file_settings.clone();
+        // Convert AS symbols to unified FileSymbols
+        let file_symbols = as_file_symbols.to_unified();
 
-        let snapshot = std::sync::Arc::new(crate::util::file_store::ParseSnapshot {
-            folding: cursor.folding,
-            symbols: cursor.symbols,
-            semantic: std::sync::RwLock::new(cursor.semantic),
-            diagnostics: cursor.diagnostics,
-            links: vec![],
-            ref_map,
-            file_symbols,
-            _type_map: Default::default(),
-            type_hints: Vec::new(),
-            ujapi_hints: Vec::new(),
-            func_decl_keys: func_decl_keys.clone(),
-            var_decl_keys: var_decl_keys.clone(),
-            arg_decl_keys: arg_decl_keys.clone(),
-            colors: cursor.colors,
-        });
+        // Persist to disk cache — no in-memory snapshot for closed files.
+        if let Some(meta) = file_cache::FileMeta::from_uri(dep_uri) {
+            file_cache::store(
+                dep_uri,
+                meta,
+                hash,
+                &file_symbols,
+                &ref_map,
+                &func_decl_keys,
+                &var_decl_keys,
+                &arg_decl_keys,
+            );
+        }
 
-        FILE_STORE.insert(dep_uri.clone(), snapshot);
-        let entries = as_file_symbols_to_entries(dep_uri, &as_file_symbols);
-        SCOPE_RESOLVER.update_file(dep_uri, hash, entries);
+        // Closed file — snapshot stays in redb, not in memory.
+        // Handlers use `peek_or_load()` to lazy-load if needed.
+        // Persist entry-point status so recompute_entry_cache sees it.
+        if file_symbols.is_entry {
+            IMPORT_GRAPH.mark_entry(dep_uri, true);
+        }
+
         return true;
     }
 
@@ -735,13 +836,38 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
 
     // Extract imports and register them in the import graph so that
     // transitive dependencies are visible to `visible_component`.
-    let dep_imports = collect_jass_imports(&ast.items, dep_uri);
+    // Also collect frozen import URLs for `is_uri_frozen()`.
+    let mut dep_imports = HashSet::new();
+    let mut frozen_imports = HashSet::new();
+    for item in &ast.items {
+        if let crate::lng::jass::ast::Statement::Import(imp) = item {
+            if !imp.path.is_empty() {
+                if let Some(resolved) = resolve_import(dep_uri, &imp.path) {
+                    dep_imports.insert(resolved.url.clone());
+                    if imp.frozen {
+                        frozen_imports.insert(resolved.url);
+                    }
+                }
+            }
+        }
+        if let crate::lng::jass::ast::Statement::UjapiImport(ud) = item {
+            if !ud.path.is_empty() {
+                if let Some(resolved) = resolve_import(dep_uri, &ud.path) {
+                    dep_imports.insert(resolved.url.clone());
+                    // ujapi imports are always frozen
+                    frozen_imports.insert(resolved.url);
+                }
+            }
+        }
+    }
     if !dep_imports.is_empty() {
         IMPORT_GRAPH.update(dep_uri, dep_imports);
     }
+    IMPORT_GRAPH.mark_frozen(&frozen_imports);
 
     let cursor = crate::lng::jass::cursor::Cursor::walk(&ast, &rope, &[]);
-    let file_symbols = cursor.file_symbols;
+    let mut file_symbols = cursor.file_symbols;
+    file_symbols.frozen_imports = frozen_imports;
     let hash = file_cache::content_hash(&rope);
 
     // Build a full RefMap so that go-to-definition can find declaration
@@ -756,44 +882,26 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         &rope,
     );
 
-    // Build and store a full ParseSnapshot — single source of truth.
-    let snapshot = std::sync::Arc::new(crate::util::file_store::ParseSnapshot {
-        folding: cursor.folding,
-        symbols: cursor.symbols,
-        semantic: std::sync::RwLock::new(cursor.semantic),
-        diagnostics: cursor.diagnostics,
-        links: vec![],
-        ref_map,
-        file_symbols: file_symbols.clone(),
-        _type_map: cursor.type_map,
-        type_hints: cursor.type_hints,
-        ujapi_hints: Vec::new(),
-        func_decl_keys: func_decl_keys.clone(),
-        var_decl_keys: var_decl_keys.clone(),
-        arg_decl_keys: arg_decl_keys.clone(),
-        colors: cursor.colors,
-    });
-
-    // Persist to unified disk cache.
+    // Persist to disk cache — no in-memory snapshot for closed files.
     if let Some(meta) = file_cache::FileMeta::from_uri(dep_uri) {
-        let (de, dw) = file_cache::diag_counts(&snapshot.diagnostics);
         file_cache::store(
             dep_uri,
             meta,
             hash,
             &file_symbols,
-            &snapshot.ref_map,
+            &ref_map,
             &func_decl_keys,
             &var_decl_keys,
             &arg_decl_keys,
-            de,
-            dw,
         );
     }
 
-    FILE_STORE.insert(dep_uri.clone(), snapshot);
-    let entries = file_symbols_to_entries(dep_uri, &file_symbols);
-    SCOPE_RESOLVER.update_file(dep_uri, hash, entries);
+    // Closed file — snapshot stays in redb, not in memory.
+    // Handlers use `peek_or_load()` to lazy-load if needed.
+    // Persist entry-point status so recompute_entry_cache sees it.
+    if file_symbols.is_entry {
+        IMPORT_GRAPH.mark_entry(dep_uri, true);
+    }
     true
 }
 
@@ -854,7 +962,7 @@ pub async fn parse_from_disk_by_uri(uri: &Url) -> Result<Vec<Url>, Box<dyn Error
 ///
 /// Diagnostics use the **push** model: after all parsing is done,
 /// `send_refresh_all` sends `textDocument/publishDiagnostics` for every
-/// file in `FILE_STORE` — both open and closed tabs see errors immediately.
+/// file in `PARSE_CACHE` — both open and closed tabs see errors immediately.
 ///
 /// # Arguments
 ///
@@ -881,7 +989,9 @@ pub async fn cascade_parse_and_notify(
     };
 
     // Pass 1: parse the current file.
+    debug_log!("[cascade] pass1 start");
     let mut cascade = parse_fn(uri.clone()).await?;
+    debug_log!("[cascade] pass1 done, cascade={} peers", cascade.len());
 
     // Drain pending-import waiters.
     let pending_waiters = drain_pending(uri);
@@ -892,6 +1002,7 @@ pub async fn cascade_parse_and_notify(
     }
 
     // Pass 2: cascade re-parse affected peers.
+    debug_log!("[cascade] pass2 start, {} peers total", cascade.len());
     let mut count = 0usize;
 
     for peer_uri in &cascade {
@@ -931,6 +1042,8 @@ pub async fn cascade_parse_and_notify(
             count += 1;
         }
     }
+
+    debug_log!("[cascade] pass2 done, re-parsed {} peers", count);
 
     // Signal that this parse generation is complete.
     if let Some(g) = generation {

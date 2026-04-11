@@ -1,20 +1,18 @@
 use crate::lng::ass::ast::{build_ast, rewrite_directives, TopLevel};
 use crate::lng::ass::cursor::{Cursor, ImportedKind, ImportedSymbol};
-use crate::lng::jass::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
 use crate::http::ref_map::{build_ref_map, DeclKey};
-use crate::util::file_cache;
-use crate::util::file_store::{
-    exports_changed, new_cancel_token, register_pending, ParseSnapshot, FILE_STORE,
+use crate::util::parse_cache::{
+    exports_changed, new_cancel_token, register_pending, ParseSnapshot, PARSE_CACHE,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
-    as_file_symbols_to_entries, cascade_parse_and_notify, ensure_file_symbols,
+    cascade_parse_and_notify, ensure_file_symbols,
     find_decl_key_by_name, resolve_import_directive, resolve_path_import, ParseFn,
+    all_visible_entries, SymbolNS,
 };
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
 use crate::util::tree_map::TREE_MAP;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
@@ -113,7 +111,13 @@ fn _parse(
     // Capture the old visible component BEFORE updating the graph.
     let old_component = IMPORT_GRAPH.visible_component(uri);
 
+    // Register frozen targets eagerly — before visible_component — so
+    // tree_for_uri can prune incoming edges even when PARSE_CACHE doesn't
+    // have this file's snapshot yet (first parse / cold start).
+    IMPORT_GRAPH.mark_frozen(&frozen_imports);
+
     IMPORT_GRAPH.update(uri, imports);
+
 
     // Refresh entry cache so that visible_component reads the updated graph.
     IMPORT_GRAPH.recompute_entry_cache();
@@ -171,7 +175,7 @@ fn _parse(
             component = new_component;
         }
 
-        let visible_entries = SCOPE_RESOLVER.all_visible(&component);
+        let visible_entries = all_visible_entries(&component);
 
         for entry in &visible_entries {
             // Skip entries from the file being parsed — cursor builds them locally.
@@ -181,7 +185,7 @@ fn _parse(
 
             let is_jass_file = !crate::util::open::is_as_uri(&entry.uri);
 
-            let origin_snapshot = FILE_STORE.get(&entry.uri);
+            let origin_snapshot = crate::util::parse_cache::peek_or_load(&entry.uri);
             let origin_decl_key = origin_snapshot
                 .as_ref()
                 .and_then(|snap| {
@@ -285,14 +289,10 @@ fn _parse(
     as_file_symbols.file_settings = cursor.file_settings;
     as_file_symbols.file_ignore_tags = cursor.file_ignore_tags;
 
-    // Convert to JASS FileSymbols for ParseSnapshot compatibility
-    let mut file_symbols = FileSymbols::new();
-    file_symbols.frozen_imports = as_file_symbols.frozen_imports.clone();
-    file_symbols.file_settings = as_file_symbols.file_settings.clone();
-    file_symbols.file_ignore_tags = as_file_symbols.file_ignore_tags.clone();
-    file_symbols.is_entry = as_file_symbols.is_entry;
+    // Convert AS symbols to the unified FileSymbols
+    let file_symbols = as_file_symbols.to_unified();
 
-    let old_snapshot = FILE_STORE.get(uri).map(|e| Arc::clone(e.value()));
+    let old_snapshot = PARSE_CACHE.get(uri).map(|e| Arc::clone(e.value()));
 
     let new_snapshot = Arc::new(ParseSnapshot {
         folding: cursor.folding,
@@ -301,7 +301,7 @@ fn _parse(
         diagnostics: all_diagnostics,
         links,
         ref_map,
-        file_symbols,
+        file_symbols: file_symbols.clone(),
         _type_map: TypeMap::default(),
         type_hints: vec![],
         ujapi_hints,
@@ -311,17 +311,15 @@ fn _parse(
         colors: cursor.colors,
     });
 
-    FILE_STORE.insert(uri.clone(), new_snapshot.clone());
+    PARSE_CACHE.insert(uri.clone(), new_snapshot.clone());
 
-    // ── Recompute entry-point cache after FILE_STORE update ──
+    // ── Persist entry-point status so it survives server restarts ──
+    IMPORT_GRAPH.mark_entry(uri, file_symbols.is_entry);
+
+    // ── Recompute entry-point cache after PARSE_CACHE update ──
     IMPORT_GRAPH.recompute_entry_cache();
 
-    // 9. Update scope resolver with AS symbols
-    let hash = file_cache::content_hash(rope);
-    let entries = as_file_symbols_to_entries(uri, &as_file_symbols);
-    SCOPE_RESOLVER.update_file(uri, hash, entries);
-
-    // 10. Export diff — decide on cascade.
+    // 9. Export diff — decide on cascade.
     let did_change = exports_changed(old_snapshot.as_deref(), &new_snapshot);
 
     let cascade = if did_change || old_component != component {
@@ -395,7 +393,7 @@ fn collect_as_import_details(
 }
 
 /// Parse a **closed** file from disk, produce a full [`ParseSnapshot`], and
-/// store it in [`FILE_STORE`].
+/// store it in [`PARSE_CACHE`].
 ///
 /// Returns the cascade list (peer URIs whose exports may have changed).
 pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {

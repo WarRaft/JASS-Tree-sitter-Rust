@@ -2,6 +2,8 @@
   "command.importGraph.show": "Show Import Graph",
   "command.callGraph.show": "Show Call Graph",
   "command.typeGraph.show": "Show Type Graph",
+  "command.exportTable.show": "Show Exported Symbols",
+  "command.diagnosticSummary.show": "Show Diagnostic Summary",
   "command.rescan.execute": "Rescan All Files",
   "command.build.execute": "Build",
   "command.ujapi.download": "Download UjAPI common.j",

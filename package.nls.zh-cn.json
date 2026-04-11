@@ -2,6 +2,8 @@
   "command.importGraph.show": "显示导入图",
   "command.callGraph.show": "显示调用图",
   "command.typeGraph.show": "显示类型图",
+  "command.exportTable.show": "显示导出符号",
+  "command.diagnosticSummary.show": "显示诊断摘要",
   "command.rescan.execute": "重新扫描所有文件",
   "command.build.execute": "构建",
   "command.ujapi.download": "下载 UjAPI common.j",

@@ -498,6 +498,26 @@ pub fn cannot_resolve_import(path: &str) -> String {
     }
 }
 
+pub fn import_file_not_opened(path: &str) -> String {
+    match locale() {
+        Locale::En => format!("Imported file is not opened: {}", path),
+        Locale::Ru => format!("Импортируемый файл не открыт: {}", path),
+        Locale::Uk => format!("Імпортований файл не відкрито: {}", path),
+        Locale::Zh => format!("导入的文件未打开：{}", path),
+        Locale::Tc => format!("匯入的檔案未開啟：{}", path),
+    }
+}
+
+pub fn open_imported_file() -> &'static str {
+    pick(
+        "Open imported file",
+        "Открыть импортируемый файл",
+        "Відкрити імпортований файл",
+        "打开导入的文件",
+        "開啟匯入的檔案",
+    )
+}
+
 // ─── //set directive diagnostics ────────────────────────────────────────────
 
 pub fn missing_setting_key() -> &'static str {

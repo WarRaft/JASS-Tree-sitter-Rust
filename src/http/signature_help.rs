@@ -1,9 +1,9 @@
 use crate::http::hover::{MarkupContent, MarkupKind};
 use crate::http::position::Position;
-use crate::util::file_store::FILE_STORE;
+use crate::util::parse_cache::PARSE_CACHE;
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::roper::uri_map::ROPE_MAP;
-use crate::util::scope_resolver::{SymbolNS, SCOPE_RESOLVER};
+use crate::util::parse::{SymbolNS, resolve_entries};
 use crate::util::uri_map::LNG_URI_MAP;
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -268,7 +268,7 @@ fn lookup_callable(
     lng: &str,
 ) -> Option<(Vec<(String, String)>, Option<String>, Option<String>)> {
     // Try current file's FileSymbols first
-    if let Some(snap_entry) = FILE_STORE.get(uri) {
+    if let Some(snap_entry) = PARSE_CACHE.get(uri) {
         let fs = &snap_entry.value().file_symbols;
         if let Some(f) = fs.find_function(name) {
             let params: Vec<(String, String)> = f
@@ -291,7 +291,7 @@ fn lookup_callable(
     // Try scope resolver for cross-file lookups
     let mut visible = IMPORT_GRAPH.visible_component(uri);
     visible.insert(uri.clone());
-    let entries = SCOPE_RESOLVER.resolve(name, SymbolNS::Func, &visible);
+    let entries = resolve_entries(name, SymbolNS::Func, &visible);
     if let Some(e) = entries.first() {
         return Some((e.params.clone(), e.return_type.clone(), e.doc_comment.clone()));
     }
@@ -300,7 +300,7 @@ fn lookup_callable(
     if lng == "angelscript" {
         // Check all files in component for AS functions
         for peer_uri in &visible {
-            if let Some(snap) = FILE_STORE.get(peer_uri) {
+            if let Some(snap) = PARSE_CACHE.get(peer_uri) {
                 let fs = &snap.value().file_symbols;
                 if let Some(f) = fs.find_function(name) {
                     let params: Vec<(String, String)> = f

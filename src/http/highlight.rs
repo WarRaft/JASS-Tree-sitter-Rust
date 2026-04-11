@@ -4,11 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use url::Url;
 
-#[derive(Debug, Deserialize)]
-pub struct DocumentHighlightParams {
-    pub uri: Url,
-    pub position: Position,
-}
 
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy)]
 #[repr(u8)]
@@ -50,7 +45,7 @@ pub struct ReferenceContext {
 }
 
 pub(crate) fn compute_highlight(uri: &Url, position: &Position) -> Vec<DocumentHighlight> {
-    let snapshot = match crate::util::file_store::FILE_STORE.get(uri) {
+    let snapshot = match crate::util::parse_cache::PARSE_CACHE.get(uri) {
         Some(s) => s,
         None => return vec![],
     };

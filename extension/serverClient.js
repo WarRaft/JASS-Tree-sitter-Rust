@@ -112,6 +112,7 @@ class ServerClient {
      * @returns {Promise<any>}
      */
     async sendRequest(method, params) {
+        if (!this._started) return null
         const buf = await this.http.postJson(`/${method}`, params)
         return JSON.parse(buf.toString('utf8'))
     }

@@ -1,6 +1,6 @@
 //! Central per-file storage — replaces scattered per-feature DashMaps.
 //!
-//! **`FILE_STORE`** holds an `Arc<ParseSnapshot>` per URI.  A snapshot is
+//! **`PARSE_CACHE`** holds an `Arc<ParseSnapshot>` per URI.  A snapshot is
 //! the immutable, atomic output of one successful parse.  All LSP request
 //! handlers read from the snapshot — no separate folding / symbol /
 //! semantic / diagnostic / link / ref maps.
@@ -23,7 +23,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
-use crate::lng::jass::symbol::FileSymbols;
+use crate::lng::symbol::FileSymbols;
 use crate::lng::jass::type_map::TypeMap;
 use crate::http::color::ColorInformation;
 use crate::http::diagnostic::Diagnostic;
@@ -191,44 +191,44 @@ impl ParseSnapshot {
 // ─── Global stores ───────────────────────────────────────────────────────────
 
 /// Per-URI last-good parse snapshot.
-pub static FILE_STORE: Lazy<DashMap<Url, Arc<ParseSnapshot>>> = Lazy::new(DashMap::new);
+pub static PARSE_CACHE: Lazy<DashMap<Url, Arc<ParseSnapshot>>> = Lazy::new(DashMap::new);
+
+/// Read-only accessor: returns the snapshot from `PARSE_CACHE` (open files)
+/// or reconstructs a minimal one from the persistent **disk cache**
+/// (`file_cache`), but **never inserts** into `PARSE_CACHE`.
+///
+/// This keeps `PARSE_CACHE` strictly for files the user has open in the
+/// editor.  Cross-file helpers (`all_visible_entries`, `resolve_entries`,
+/// etc.) use this so that closed files do not "leak" into memory.
+pub fn peek_or_load(uri: &Url) -> Option<Arc<ParseSnapshot>> {
+    // 1. Fast path — already in memory (file is open).
+    if let Some(entry) = PARSE_CACHE.get(uri) {
+        return Some(Arc::clone(entry.value()));
+    }
+    // 2. Disk cache — reconstruct a partial snapshot WITHOUT caching it.
+    let cached = crate::util::file_cache::load_if_fresh(uri)?;
+    Some(Arc::new(ParseSnapshot {
+        folding: Vec::new(),
+        symbols: Vec::new(),
+        semantic: std::sync::RwLock::new(Default::default()),
+        diagnostics: Vec::new(),
+        links: Vec::new(),
+        ref_map: cached.ref_map,
+        file_symbols: cached.symbols,
+        _type_map: Default::default(),
+        type_hints: Vec::new(),
+        ujapi_hints: Vec::new(),
+        func_decl_keys: cached.func_decl_keys,
+        var_decl_keys: cached.var_decl_keys,
+        arg_decl_keys: cached.arg_decl_keys,
+        colors: Vec::new(),
+    }))
+}
 
 
 /// Per-URI cancellation token.
 pub static CANCEL_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(DashMap::new);
 
-/// ─── Per-URI request cancellation ────────────────────────────────────────────
-///
-/// When `document/change` arrives, ALL in-flight request handlers for
-/// the same URI are stale — the client will discard their responses anyway.
-/// We keep a single `CancellationToken` per URI that request handlers poll;
-/// `cancel_uri_requests` replaces it with a fresh one, instantly cancelling
-/// every handler that captured the old token.
-///
-/// Per-URI cancellation token for in-flight LSP request handlers.
-static REQUEST_TOKENS: Lazy<DashMap<Url, CancellationToken>> = Lazy::new(DashMap::new);
-
-/// Cancel all in-flight request handlers for `uri` and install a fresh token.
-///
-/// Called from the `DidChange` handler on the main loop, **before** applying
-/// edits — so handlers that are already spawned see `is_cancelled()` immediately.
-pub fn cancel_uri_requests(uri: &Url) {
-    if let Some(old) = REQUEST_TOKENS.get(uri) {
-        old.cancel();
-    }
-    REQUEST_TOKENS.insert(uri.clone(), CancellationToken::new());
-}
-
-/// Get (or create) the current request cancellation token for `uri`.
-///
-/// Spawned request handlers call this once at the start to obtain a token
-/// they can poll with `is_cancelled()` or race with `cancelled().await`.
-pub fn uri_request_token(uri: &Url) -> CancellationToken {
-    REQUEST_TOKENS
-        .entry(uri.clone())
-        .or_insert_with(CancellationToken::new)
-        .clone()
-}
 
 /// Pending-import waiters: dependency URI → set of files waiting for it.
 ///
@@ -309,7 +309,7 @@ pub fn new_cancel_token(uri: &Url) -> CancellationToken {
 // ─── DidClose cleanup ────────────────────────────────────────────────────────
 
 /// Evict per-editor state for a closed file and, if the whole import tree
-/// has no more open files, evict the tree's `FILE_STORE` / scope entries
+/// has no more open files, evict the tree's `PARSE_CACHE` / scope entries
 /// so that memory is reclaimed.
 ///
 /// Returns the set of URIs whose diagnostics were cleared (caller should
@@ -317,7 +317,6 @@ pub fn new_cancel_token(uri: &Url) -> CancellationToken {
 pub fn evict_closed_file(uri: &Url) -> Vec<Url> {
     use crate::util::import_graph::IMPORT_GRAPH;
     use crate::util::roper::uri_map::ROPE_MAP;
-    use crate::util::scope_resolver::SCOPE_RESOLVER;
     use crate::util::tree_map::{PARSER_MAP, TREE_MAP};
     use crate::util::uri_map::LNG_URI_MAP;
 
@@ -327,7 +326,6 @@ pub fn evict_closed_file(uri: &Url) -> Vec<Url> {
     PARSER_MAP.remove(uri);
     LNG_URI_MAP.remove(uri);
     CANCEL_TOKENS.remove(uri);
-    REQUEST_TOKENS.remove(uri);
     PARSE_DESIRED.remove(uri);
     PARSE_DONE_TX.remove(uri);
 
@@ -338,23 +336,21 @@ pub fn evict_closed_file(uri: &Url) -> Vec<Url> {
     let any_open = tree_uris.iter().any(|u| ROPE_MAP.contains_key(u));
 
     if any_open {
-        // At least one file is still open — keep FILE_STORE intact.
+        // At least one file is still open — keep PARSE_CACHE intact.
         return vec![];
     }
 
     // 4. No open files remain in this tree — evict everything.
     let mut evicted: Vec<Url> = Vec::with_capacity(tree_uris.len());
     for tree_uri in &tree_uris {
-        if FILE_STORE.remove(tree_uri).is_some() {
+        if PARSE_CACHE.remove(tree_uri).is_some() {
             evicted.push(tree_uri.clone());
         }
         CANCEL_TOKENS.remove(tree_uri);
-        REQUEST_TOKENS.remove(tree_uri);
         PARSE_DESIRED.remove(tree_uri);
         PARSE_DONE_TX.remove(tree_uri);
     }
 
-    SCOPE_RESOLVER.remove_files(&tree_uris);
 
     info!(
         "evict_closed_file: tree for {} — evicted {} file(s)",
@@ -368,15 +364,21 @@ pub fn evict_closed_file(uri: &Url) -> Vec<Url> {
 /// Check if `target_uri` is considered **frozen** (imported via `//import!`
 /// by anyone in the graph).  If *any* file imports it with `//import!`, the
 /// target is frozen — even if another file imports it with plain `//import`.
+///
+/// Checks the import graph's eagerly-updated set first, then falls back to
+/// PARSE_CACHE snapshots.
 pub fn is_uri_frozen(target_uri: &Url) -> bool {
-    FILE_STORE.iter().any(|entry| {
+    if crate::util::import_graph::IMPORT_GRAPH.is_frozen(target_uri) {
+        return true;
+    }
+    PARSE_CACHE.iter().any(|entry| {
         entry.value().file_symbols.frozen_imports.contains(target_uri)
     })
 }
 
 /// Check if `uri` is marked as an **entry point** (contains `//entry` directive).
 pub fn is_uri_entry(uri: &Url) -> bool {
-    FILE_STORE
+    PARSE_CACHE
         .get(uri)
         .map(|snap| snap.file_symbols.is_entry)
         .unwrap_or(false)
@@ -384,7 +386,7 @@ pub fn is_uri_entry(uri: &Url) -> bool {
 
 /// Collect all URIs that are marked as entry points (`//entry` directive).
 pub fn entry_uris() -> Vec<Url> {
-    FILE_STORE
+    PARSE_CACHE
         .iter()
         .filter(|entry| entry.value().file_symbols.is_entry)
         .map(|entry| entry.key().clone())
@@ -429,6 +431,31 @@ pub fn exports_changed(old: Option<&ParseSnapshot>, new: &ParseSnapshot) -> bool
         return true;
     }
 
+    // Compare AS-specific symbol names
+    let old_classes: HashSet<&str> = old.file_symbols.classes.iter().map(|c| c.name.as_str()).collect();
+    let new_classes: HashSet<&str> = new.file_symbols.classes.iter().map(|c| c.name.as_str()).collect();
+    if old_classes != new_classes { return true; }
+
+    let old_ifaces: HashSet<&str> = old.file_symbols.interfaces.iter().map(|i| i.name.as_str()).collect();
+    let new_ifaces: HashSet<&str> = new.file_symbols.interfaces.iter().map(|i| i.name.as_str()).collect();
+    if old_ifaces != new_ifaces { return true; }
+
+    let old_enums: HashSet<&str> = old.file_symbols.enums.iter().map(|e| e.name.as_str()).collect();
+    let new_enums: HashSet<&str> = new.file_symbols.enums.iter().map(|e| e.name.as_str()).collect();
+    if old_enums != new_enums { return true; }
+
+    let old_funcdefs: HashSet<&str> = old.file_symbols.funcdefs.iter().map(|f| f.name.as_str()).collect();
+    let new_funcdefs: HashSet<&str> = new.file_symbols.funcdefs.iter().map(|f| f.name.as_str()).collect();
+    if old_funcdefs != new_funcdefs { return true; }
+
+    let old_typedefs: HashSet<&str> = old.file_symbols.typedefs.iter().map(|t| t.alias.as_str()).collect();
+    let new_typedefs: HashSet<&str> = new.file_symbols.typedefs.iter().map(|t| t.alias.as_str()).collect();
+    if old_typedefs != new_typedefs { return true; }
+
+    let old_mixins: HashSet<&str> = old.file_symbols.mixins.iter().map(|m| m.name.as_str()).collect();
+    let new_mixins: HashSet<&str> = new.file_symbols.mixins.iter().map(|m| m.name.as_str()).collect();
+    if old_mixins != new_mixins { return true; }
+
     // Entry-point status changed — affects tree-shaking and unused detection.
     if old.file_symbols.is_entry != new.file_symbols.is_entry {
         return true;
@@ -441,7 +468,7 @@ pub fn exports_changed(old: Option<&ParseSnapshot>, new: &ParseSnapshot) -> bool
 //
 // After `DidChange` applies edits to the rope/tree it spawns a background
 // parse task.  Request handlers (SemanticTokens, InlayHint, …) that read
-// from `FILE_STORE` may fire **before** that task finishes, returning stale
+// from `PARSE_CACHE` may fire **before** that task finishes, returning stale
 // data with positions that no longer match the buffer.
 //
 // The solution is a lightweight per-URI generation counter paired with a

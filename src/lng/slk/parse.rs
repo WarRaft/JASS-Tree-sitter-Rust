@@ -6,7 +6,7 @@ use crate::http::ref_map::RefMap;
 use crate::http::semantic::hub::Hub;
 use crate::http::semantic::token::Kind as TokenKind;
 use crate::util::dfs_node::Dfs;
-use crate::util::file_store::{ParseSnapshot, FILE_STORE};
+use crate::util::parse_cache::{ParseSnapshot, PARSE_CACHE};
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
@@ -185,7 +185,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         arg_decl_keys: Default::default(),
         colors: Vec::new(),
     });
-    FILE_STORE.insert(uri.clone(), snapshot);
+    PARSE_CACHE.insert(uri.clone(), snapshot);
 
     Ok(())
 }

@@ -1,12 +1,13 @@
 use crate::lng::bni::kind::Kind;
 use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::http::document_symbol::{DocumentSymbol, SymbolKind};
+use crate::http::position::Position;
 use crate::http::folding::{FoldingRange, FoldingRangeKind};
 use crate::http::ref_map::RefMap;
 use crate::http::semantic::hub::Hub;
 use crate::http::semantic::token::Kind as TokenKind;
 use crate::util::dfs_node::Dfs;
-use crate::util::file_store::{ParseSnapshot, FILE_STORE};
+use crate::util::parse_cache::{ParseSnapshot, PARSE_CACHE};
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
@@ -100,7 +101,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
                 Kind::Item => {
                     if let Some(symbol) = current_symbol.as_mut() {
-                        symbol.range.end = node.end_position().into();
+                        symbol.range.end = Position::from_byte_offset(&rope, node.end_byte()).unwrap_or_default();
                     }
                     if let Some(folding) = current_folding.as_mut() {
                         folding.end_line = node.end_position().row;
@@ -108,7 +109,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
                 Kind::Comment => {
                     if let Some(symbol) = current_symbol.as_mut() {
-                        symbol.range.end = node.end_position().into();
+                        symbol.range.end = Position::from_byte_offset(&rope, node.end_byte()).unwrap_or_default();
                     }
                     if let Some(folding) = current_folding.as_mut() {
                         folding.end_line = node.end_position().row;
@@ -143,7 +144,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         folding.push(prev);
     }
 
-    // Store everything atomically in FILE_STORE.
+    // Store everything atomically in PARSE_CACHE.
     let snapshot = Arc::new(ParseSnapshot {
         folding,
         symbols,
@@ -160,7 +161,7 @@ fn _parse(uri: &Url) -> Result<(), Box<dyn Error + Send + Sync>> {
         arg_decl_keys: Default::default(),
         colors: Vec::new(),
     });
-    FILE_STORE.insert(uri.clone(), snapshot);
+    PARSE_CACHE.insert(uri.clone(), snapshot);
 
     Ok(())
 }

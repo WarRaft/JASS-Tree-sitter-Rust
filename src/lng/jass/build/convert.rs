@@ -7,7 +7,7 @@
 use crate::lng::jass::ast::{
     build_ast, rewrite_imports, Expr, FunctionDecl, Id, Statement,
 };
-use crate::util::file_store::{is_uri_frozen, FILE_STORE};
+use crate::util::parse_cache::{is_uri_frozen, peek_or_load};
 use crate::util::import_graph::resolve_import;
 use std::collections::{HashMap, HashSet};
 use url::Url;
@@ -303,9 +303,9 @@ pub(super) fn collect_ir(_trigger_uri: &Url, file_order: &[Url]) -> BuildIR {
     let mut frozen_import_directives = Vec::<super::ir::FrozenImportEntry>::new();
     let mut seen_frozen_urls = HashSet::<Url>::new();
 
-    // Collect native names from FILE_STORE for all files in the import tree.
+    // Collect native names from PARSE_CACHE for all files in the import tree.
     for file_uri in file_order {
-        if let Some(fs) = FILE_STORE.get(file_uri) {
+        if let Some(fs) = peek_or_load(file_uri) {
             for n in &fs.file_symbols.natives {
                 native_names.insert(n.name.clone());
             }
@@ -370,8 +370,7 @@ pub(super) fn collect_ir(_trigger_uri: &Url, file_order: &[Url]) -> BuildIR {
                 Statement::Function(f) => {
                     let fname = f.name.as_ref().map(|id| id_text(&src, id)).unwrap_or_default();
                     if !fname.is_empty() {
-                        let callees: HashSet<String> = FILE_STORE
-                            .get(file_uri)
+                        let callees: HashSet<String> = peek_or_load(file_uri)
                             .map(|fs| {
                                 fs.file_symbols.functions.iter()
                                     .find(|ff| ff.name == fname)
@@ -411,15 +410,15 @@ pub(super) fn collect_ir(_trigger_uri: &Url, file_order: &[Url]) -> BuildIR {
 /// The algorithm:
 /// 1. Walk every IR function body to discover call targets (not the
 ///    `callees` field — it doesn't reflect augmented calls).
-/// 2. BFS through frozen FILE_STORE callees → set of needed frozen functions.
+/// 2. BFS through frozen PARSE_CACHE callees → set of needed frozen functions.
 /// 3. Parse frozen files, extract only needed functions + candidate globals.
 /// 4. Walk all function bodies again to find referenced globals; keep only those.
 pub(super) fn resolve_frozen_deps(ir: &mut BuildIR, file_order: &[Url]) -> HashSet<String> {
-    // 1. Build a map: frozen_function_name → its callees (from FILE_STORE).
+    // 1. Build a map: frozen_function_name → its callees (from PARSE_CACHE).
     let mut frozen_func_callees: HashMap<String, HashSet<String>> = HashMap::new();
     for file_uri in file_order {
         if !is_uri_frozen(file_uri) { continue; }
-        if let Some(fs) = FILE_STORE.get(file_uri) {
+        if let Some(fs) = peek_or_load(file_uri) {
             for f in &fs.file_symbols.functions {
                 frozen_func_callees.insert(f.name.clone(), f.callees.clone());
             }
@@ -479,8 +478,7 @@ pub(super) fn resolve_frozen_deps(ir: &mut BuildIR, file_order: &[Url]) -> HashS
                 Statement::Function(f) => {
                     let fname = f.name.as_ref().map(|id| id_text(&src, id)).unwrap_or_default();
                     if !fname.is_empty() && needed_funcs.contains(&fname) && !ir.functions.contains_key(&fname) {
-                        let callees: HashSet<String> = FILE_STORE
-                            .get(file_uri)
+                        let callees: HashSet<String> = peek_or_load(file_uri)
                             .map(|fs| {
                                 fs.file_symbols.functions.iter()
                                     .find(|ff| ff.name == fname)

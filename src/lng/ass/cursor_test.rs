@@ -41,9 +41,23 @@ mod tests {
         let mut result = Vec::new();
         for (_line_idx, line) in &cursor.semantic.lines {
             for token in &line.tokens {
+                // token.col / token.len are in UTF-16 code units;
+                // iterate chars while accumulating UTF-16 widths.
                 let text: String = src.lines()
                     .nth(token.row)
-                    .map(|l| l.chars().skip(token.col).take(token.len).collect())
+                    .map(|l| {
+                        let mut utf16_pos = 0;
+                        let mut out = String::new();
+                        for ch in l.chars() {
+                            let w = ch.len_utf16();
+                            if utf16_pos >= token.col + token.len { break; }
+                            if utf16_pos >= token.col {
+                                out.push(ch);
+                            }
+                            utf16_pos += w;
+                        }
+                        out
+                    })
                     .unwrap_or_default();
                 result.push((text, token.kind));
             }
@@ -1029,6 +1043,481 @@ DamageCallbackFn@ gDmg_Callback = null;
                 .collect();
             assert!(undeclared.is_empty(),
                 "Expected no 'undeclared' diagnostic for DamageCallbackFn@ at global scope, got {:?}", undeclared);
+        });
+    }
+
+    // ─── Class member resolution (this. and bare) ──────────────────────────
+
+    #[test]
+    fn class_bare_property_resolves() {
+        // Bare `a` inside a method should resolve to the class property `a`
+        let src = "\
+class A {
+    int a = 3;
+    void b(int d) {
+        a = 4;
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let a_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "a")
+                .map(|(k, _)| *k);
+            assert!(a_key.is_some(), "Expected 'a' in ref_names");
+            let occurrences = cursor.ref_groups.get(&a_key.unwrap()).unwrap();
+            // At least 2: declaration + bare reference inside method b
+            assert!(occurrences.len() >= 2,
+                "Expected at least 2 occurrences for 'a' (decl + bare ref), got {}",
+                occurrences.len());
+        });
+    }
+
+    #[test]
+    fn class_this_property_resolves() {
+        // `this.a` inside a method should resolve to the class property `a`
+        let src = "\
+class A {
+    int a = 3;
+    void b() {
+        this.a = 5;
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let a_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "a")
+                .map(|(k, _)| *k);
+            assert!(a_key.is_some(), "Expected 'a' in ref_names");
+            let occurrences = cursor.ref_groups.get(&a_key.unwrap()).unwrap();
+            // At least 2: declaration + this.a reference
+            assert!(occurrences.len() >= 2,
+                "Expected at least 2 occurrences for 'a' (decl + this.a ref), got {}",
+                occurrences.len());
+        });
+    }
+
+    #[test]
+    fn class_bare_method_call_resolves() {
+        // Bare `b(a)` inside method c should resolve to method b and property a
+        let src = "\
+class A {
+    int a = 3;
+    void b(int d) {}
+    void c() {
+        b(a);
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let b_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "b")
+                .map(|(k, _)| *k);
+            assert!(b_key.is_some(), "Expected 'b' in ref_names");
+            let b_occs = cursor.ref_groups.get(&b_key.unwrap()).unwrap();
+            assert!(b_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'b' (decl + call ref), got {}",
+                b_occs.len());
+
+            let a_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "a")
+                .map(|(k, _)| *k);
+            assert!(a_key.is_some(), "Expected 'a' in ref_names");
+            let a_occs = cursor.ref_groups.get(&a_key.unwrap()).unwrap();
+            assert!(a_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'a' (decl + arg ref), got {}",
+                a_occs.len());
+        });
+    }
+
+    #[test]
+    fn class_this_method_call_resolves() {
+        // `this.b(this.a)` should resolve both method b and property a
+        let src = "\
+class A {
+    int a = 3;
+    void b(int d) {}
+    void c() {
+        this.b(this.a);
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let b_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "b")
+                .map(|(k, _)| *k);
+            assert!(b_key.is_some(), "Expected 'b' in ref_names");
+            let b_occs = cursor.ref_groups.get(&b_key.unwrap()).unwrap();
+            // At least 2: declaration + this.b(...) call
+            assert!(b_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'b' (decl + this.b() ref), got {}",
+                b_occs.len());
+
+            let a_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "a")
+                .map(|(k, _)| *k);
+            assert!(a_key.is_some(), "Expected 'a' in ref_names");
+            let a_occs = cursor.ref_groups.get(&a_key.unwrap()).unwrap();
+            // At least 2: declaration + this.a argument
+            assert!(a_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'a' (decl + this.a ref), got {}",
+                a_occs.len());
+        });
+    }
+
+    #[test]
+    fn class_this_method_call_token_is_function() {
+        // `this.b(...)` — the member `b` should get Function semantic token
+        let src = "\
+class A {
+    void b() {}
+    void c() {
+        this.b();
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+            let b_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "b")
+                .collect();
+            // At least one should be Function (the call site)
+            assert!(b_tokens.iter().any(|(_, k)| *k == TokenKind::Function),
+                "Expected at least one 'b' token as Function (call via this.b()), got: {:?}", b_tokens);
+        });
+    }
+
+    #[test]
+    fn class_this_no_undeclared_diagnostic() {
+        // Full example from user: no undeclared diagnostics for bare/this members
+        let src = "\
+class A {
+    int a = 3;
+    void b(int d) {
+        a = 4;
+        this.a = 5;
+    }
+    void c() {
+        b(a);
+        this.b(this.a);
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            // Check no undeclared diagnostics for `a` or `b`
+            let undeclared_a: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("\"a\"") || d.message.contains("'a'") || d.message.ends_with(" a"))
+                .collect();
+            assert!(undeclared_a.is_empty(),
+                "Expected no 'undeclared' diagnostic for 'a', got {:?}", undeclared_a);
+
+            let undeclared_b: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("\"b\"") || d.message.contains("'b'") || d.message.ends_with(" b"))
+                .collect();
+            assert!(undeclared_b.is_empty(),
+                "Expected no 'undeclared' diagnostic for 'b', got {:?}", undeclared_b);
+        });
+    }
+
+    // ─── Forward reference tests (two-pass resolution) ────────────────────
+
+    #[test]
+    fn class_forward_method_resolves() {
+        // Method `c()` calls `b()` which is declared BELOW `c` — two-pass
+        // pre-declaration must make `b` visible inside `c`.
+        let src = "\
+class A {
+    void c() {
+        b();
+    }
+    void b() {}
+}
+";
+        with_cursor(src, |cursor| {
+            let b_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "b")
+                .map(|(k, _)| *k);
+            assert!(b_key.is_some(), "Expected 'b' in ref_names");
+            let b_occs = cursor.ref_groups.get(&b_key.unwrap()).unwrap();
+            // declaration + call site = at least 2
+            assert!(b_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'b' (decl + forward call), got {}",
+                b_occs.len());
+
+            // No undeclared diagnostic for 'b'
+            let undecl: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("\"b\"") || d.message.contains("'b'") || d.message.ends_with(" b"))
+                .collect();
+            assert!(undecl.is_empty(),
+                "Expected no 'undeclared' diagnostic for forward method 'b', got {:?}", undecl);
+        });
+    }
+
+    #[test]
+    fn class_forward_property_resolves() {
+        // Method `c()` reads property `a` which is declared BELOW `c`.
+        let src = "\
+class A {
+    void c() {
+        int x = a;
+    }
+    int a = 42;
+}
+";
+        with_cursor(src, |cursor| {
+            let a_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "a")
+                .map(|(k, _)| *k);
+            assert!(a_key.is_some(), "Expected 'a' in ref_names");
+            let a_occs = cursor.ref_groups.get(&a_key.unwrap()).unwrap();
+            assert!(a_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'a' (decl + forward read), got {}",
+                a_occs.len());
+
+            let undecl: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("\"a\"") || d.message.contains("'a'") || d.message.ends_with(" a"))
+                .collect();
+            assert!(undecl.is_empty(),
+                "Expected no 'undeclared' diagnostic for forward property 'a', got {:?}", undecl);
+        });
+    }
+
+    #[test]
+    fn toplevel_forward_function_resolves() {
+        // Top-level function `Foo` calls `Bar` declared below it.
+        let src = "\
+void Foo() {
+    Bar();
+}
+void Bar() {}
+";
+        with_cursor(src, |cursor| {
+            let bar_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "Bar")
+                .map(|(k, _)| *k);
+            assert!(bar_key.is_some(), "Expected 'Bar' in ref_names");
+            let bar_occs = cursor.ref_groups.get(&bar_key.unwrap()).unwrap();
+            assert!(bar_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'Bar' (decl + forward call), got {}",
+                bar_occs.len());
+
+            let undecl: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("Bar"))
+                .collect();
+            assert!(undecl.is_empty(),
+                "Expected no 'undeclared' diagnostic for forward function 'Bar', got {:?}", undecl);
+        });
+    }
+
+    #[test]
+    fn toplevel_forward_class_type_resolves() {
+        // Function uses class `B` as type before `B` is declared.
+        let src = "\
+void Foo(B obj) {}
+class B {}
+";
+        with_cursor(src, |cursor| {
+            let b_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "B")
+                .map(|(k, _)| *k);
+            assert!(b_key.is_some(), "Expected 'B' in ref_names");
+            let b_occs = cursor.ref_groups.get(&b_key.unwrap()).unwrap();
+            assert!(b_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'B' (decl + type ref), got {}",
+                b_occs.len());
+        });
+    }
+
+    #[test]
+    fn forward_class_constructor_call_resolves_as_type() {
+        // `MyClass(10)` should resolve to the class constructor (TypeRef),
+        // not to a function call, even though MyClass is declared below.
+        let src = "\
+void Foo() {
+    MyClass x = MyClass(10);
+}
+class MyClass {}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            // The `MyClass` in `MyClass(10)` should be colored as a type.
+            let mc_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "MyClass")
+                .collect();
+            // At least one occurrence as Type (the constructor call)
+            let has_type = mc_tokens.iter().any(|(_, k)| *k == TokenKind::Type);
+            assert!(has_type,
+                "Expected at least one 'MyClass' token with Type kind (constructor call), got: {:?}",
+                mc_tokens);
+
+            // No undeclared diagnostics for MyClass
+            let undecl: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("MyClass"))
+                .collect();
+            assert!(undecl.is_empty(),
+                "Expected no 'undeclared' diagnostics for 'MyClass', got {:?}", undecl);
+        });
+    }
+
+    #[test]
+    fn builtin_type_constructor_call_is_type() {
+        // `int(20)` should be colored as a type (built-in constructor).
+        let src = "\
+void Foo() {
+    int x = int(20);
+}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            // The `int` in `int(20)` should be colored as Type
+            let int_tokens: Vec<_> = tokens.iter()
+                .filter(|(t, _)| t == "int")
+                .collect();
+            let has_type = int_tokens.iter().any(|(_, k)| *k == TokenKind::Type);
+            assert!(has_type,
+                "Expected 'int' in 'int(20)' to be colored as Type, got: {:?}", int_tokens);
+        });
+    }
+
+    // ─── Cyrillic coordinate tests ──────────────────────────────────────
+
+    #[test]
+    fn cyrillic_comment_class_method_tokens() {
+        // Cyrillic + emoji in comment — emoji are 4 bytes UTF-8 / 2 code units UTF-16 (surrogate pair),
+        // make sure subsequent tokens still have correct UTF-16 coordinates.
+        let src = "\
+class A {
+    //* Привет мир 🔥💎
+    int a = 3;
+    void b() {}
+    void c() {
+        this.b();
+        this.a = 5;
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            // Method 'b' must be found with Function kind
+            let b_tok = tokens.iter().find(|(t, _)| t == "b" );
+            assert!(b_tok.is_some(),
+                "Expected to find 'b' token after Cyrillic comment, got: {:?}", tokens);
+            assert_eq!(b_tok.unwrap().1, TokenKind::Function);
+
+            // Property 'a' must still resolve — no undeclared diagnostics
+            let undeclared: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains(" a") || d.message.contains(" b"))
+                .collect();
+            assert!(undeclared.is_empty(),
+                "Expected no 'undeclared' diagnostics with Cyrillic comments, got {:?}", undeclared);
+        });
+    }
+
+    #[test]
+    fn cyrillic_string_same_line_offsets() {
+        // Identifier AFTER a Cyrillic + emoji string on the same line.
+        // «Привет🔥» = 6×2 + 4 = 16 bytes UTF-8, but 6 + 2 = 8 UTF-16 code units.
+        // tree-sitter gives byte offsets; make sure our UTF-16 conversion
+        // produces the correct column so the token text matches.
+        let src = "string s = \"Привет🔥\"; int a = 0;\n";
+        with_cursor(src, |cursor| {
+            let tokens = collect_tokens(src, cursor);
+
+            // 'a' should be extracted correctly despite preceding Cyrillic string
+            let a_tok = tokens.iter().find(|(t, _)| t == "a");
+            assert!(a_tok.is_some(),
+                "Expected 'a' token after Cyrillic string literal, tokens: {:?}", tokens);
+            assert_eq!(a_tok.unwrap().1, TokenKind::Variable);
+
+            // 's' should also be found
+            let s_tok = tokens.iter().find(|(t, _)| t == "s");
+            assert!(s_tok.is_some(),
+                "Expected 's' token, tokens: {:?}", tokens);
+        });
+    }
+
+    #[test]
+    fn cyrillic_class_method_ref_group_coordinates() {
+        // Verify that ref_group occurrence ranges for a method declared after
+        // Cyrillic + emoji text (in strings) have correct line/character
+        // (UTF-16) positions that round-trip through Position ↔ byte offset.
+        // 🔥 = U+1F525 → 4 bytes UTF-8, 2 code units UTF-16 (surrogate pair).
+        let src = "\
+class A {
+    string s = \"Привет🔥мир💎\";
+    int a = 3;
+    void b() {
+        a = 5;
+    }
+}
+";
+        with_cursor(src, |cursor| {
+            let rope = Rope::from(src);
+
+            // 'a' (property) — declared + referenced inside method
+            let a_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "a")
+                .map(|(k, _)| *k);
+            assert!(a_key.is_some(), "Expected 'a' in ref_names, got: {:?}", cursor.ref_names);
+            let a_occs = cursor.ref_groups.get(&a_key.unwrap()).unwrap();
+            assert!(a_occs.len() >= 2,
+                "Expected at least 2 occurrences for 'a', got {}", a_occs.len());
+
+            // Verify that every occurrence's range round-trips through byte offset
+            for occ in a_occs {
+                let start_byte = occ.range.start.to_byte_offset(&rope);
+                assert!(start_byte.is_some(),
+                    "Range start {:?} must round-trip to a byte offset", occ.range.start);
+                let end_byte = occ.range.end.to_byte_offset(&rope);
+                assert!(end_byte.is_some(),
+                    "Range end {:?} must round-trip to a byte offset", occ.range.end);
+
+                // The bytes at that offset should be 'a'
+                let sb = start_byte.unwrap();
+                let eb = end_byte.unwrap();
+                let slice = rope.slice_to_cow(sb..eb).to_string();
+                assert_eq!(slice, "a",
+                    "Expected identifier text 'a' at byte {}..{}, got '{}'", sb, eb, slice);
+            }
+
+            // 'b' (method) — should be declared as func
+            let b_key = cursor.ref_names.iter()
+                .find(|(_, n)| n.as_str() == "b")
+                .map(|(k, _)| *k);
+            assert!(b_key.is_some(), "Expected 'b' in ref_names");
+
+            // Verify 'b' occurrence also round-trips correctly
+            let b_occs = cursor.ref_groups.get(&b_key.unwrap()).unwrap();
+            for occ in b_occs {
+                let sb = occ.range.start.to_byte_offset(&rope).unwrap();
+                let eb = occ.range.end.to_byte_offset(&rope).unwrap();
+                let slice = rope.slice_to_cow(sb..eb).to_string();
+                assert_eq!(slice, "b",
+                    "Expected identifier text 'b' at byte {}..{}, got '{}'", sb, eb, slice);
+            }
+        });
+    }
+
+    #[test]
+    fn no_undeclared_int_after_method_call() {
+        // Exact user code that reportedly triggers "Undeclared variable `int`"
+        let src = "\
+void ComputeStatDerived(int heroClass) {
+    statDerived.Reset();
+
+    // Тип основного стата из базового шаблона (0=str, 1=agi, 2=int)
+    int mainStatType = Jass::R2I(baseStats.mainStat);
+}
+";
+        with_cursor(src, |cursor| {
+            let int_diags: Vec<_> = cursor.diagnostics.iter()
+                .filter(|d| d.message.contains("int"))
+                .collect();
+            assert!(int_diags.is_empty(),
+                "Expected no diagnostics mentioning 'int', got: {:?}",
+                int_diags.iter().map(|d| &d.message).collect::<Vec<_>>());
         });
     }
 }
