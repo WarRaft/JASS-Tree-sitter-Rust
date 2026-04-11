@@ -1,5 +1,5 @@
 use crate::lng::w3e::parse::W3eData;
-use crate::lng::map_editor::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk, load_doodad_metadata, merge_w3d_into_doodads};
+use crate::lng::map_editor::slk::{load_terrain_slk, load_doodads_slk, load_units_slk, load_destructables_slk, load_cliff_types_slk, load_cliff_variations, load_water_slk, load_doodad_metadata, merge_w3d_into_doodads, load_destructable_metadata, merge_w3b_into_destructables};
 use crate::lng::map_editor::textures::load_tile_textures;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -123,6 +123,16 @@ async fn _send(
         let slk_and_tex = tokio::task::spawn_blocking(move || {
             let slk = load_terrain_slk(ap2.as_deref());
             let tex = load_tile_textures(&ground_tiles, slk.as_ref(), ap2.as_deref());
+
+            // Read war3map.wts and cache TRIGSTR_ strings BEFORE loading doodads/destructables.
+            if let Some(ref ap) = ap_for_w3d {
+                if let Ok(archive) = storm_rs::MpqArchive::open(ap) {
+                    if let Ok(wts_buf) = archive.read_file("war3map.wts") {
+                        crate::lng::map_editor::westrings::load_map_strings(&wts_buf, "war3map.wts");
+                    }
+                }
+            }
+
             let mut dood_slk = load_doodads_slk(ap2.as_deref());
 
             // Try to load war3map.w3d from the archive and merge into doodads.
@@ -132,6 +142,8 @@ async fn _send(
                         if let Ok(w3d_buf) = archive.read_file("war3map.w3d") {
                             match crate::lng::w3abdhqtu::parse::W3ObjectData::read(&w3d_buf, true) {
                                 Ok((w3d_data, _meta)) => {
+                                    // Save defaults before merge
+                                    dood_result.doodads_default = dood_result.doodads.clone();
                                     let dood_meta = load_doodad_metadata();
                                     let errs = merge_w3d_into_doodads(
                                         &mut dood_result.doodads,
@@ -150,7 +162,34 @@ async fn _send(
             }
 
             let unit_slk = load_units_slk(ap2.as_deref());
-            let dest_slk = load_destructables_slk(ap2.as_deref());
+            let mut dest_slk = load_destructables_slk(ap2.as_deref());
+
+            // Try to load war3map.w3b from the archive and merge into destructables.
+            if let Some(ref mut dest_result) = dest_slk {
+                if let Some(ref ap) = ap_for_w3d {
+                    if let Ok(archive) = storm_rs::MpqArchive::open(ap) {
+                        if let Ok(w3b_buf) = archive.read_file("war3map.w3b") {
+                            match crate::lng::w3abdhqtu::parse::W3ObjectData::read(&w3b_buf, false) {
+                                Ok((w3b_data, _meta)) => {
+                                    // Save defaults before merge
+                                    dest_result.destructables_default = dest_result.destructables.clone();
+                                    let dest_meta = load_destructable_metadata();
+                                    let errs = merge_w3b_into_destructables(
+                                        &mut dest_result.destructables,
+                                        &w3b_data,
+                                        &dest_meta,
+                                    );
+                                    dest_result.w3b_errors = errs;
+                                }
+                                Err(e) => {
+                                    dest_result.w3b_errors.push(format!("Failed to parse war3map.w3b: {}", e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let cliff_types_slk = load_cliff_types_slk(ap2.as_deref(), Some(&tileset_for_cliff));
             let cliff_variations = load_cliff_variations();
             let water_slk = load_water_slk(ap2.as_deref(), &tileset_for_water);
@@ -200,9 +239,21 @@ async fn _send(
 
         // Attach terrain SLK tile metadata and textures.
         let w3d_path = path.parent().map(|p| p.join("war3map.w3d"));
+        let w3b_path = path.parent().map(|p| p.join("war3map.w3b"));
+        let wts_path = path.parent().map(|p| p.join("war3map.wts"));
         let slk_and_tex = tokio::task::spawn_blocking(move || {
             let slk = load_terrain_slk(None);
             let tex = load_tile_textures(&ground_tiles, slk.as_ref(), None);
+
+            // Read war3map.wts and cache TRIGSTR_ strings BEFORE loading doodads/destructables.
+            if let Some(ref wts_file) = wts_path {
+                if wts_file.exists() {
+                    if let Ok(wts_buf) = std::fs::read(wts_file) {
+                        crate::lng::map_editor::westrings::load_map_strings(&wts_buf, "war3map.wts");
+                    }
+                }
+            }
+
             let mut dood_slk = load_doodads_slk(None);
 
             // Try to load war3map.w3d from the same directory and merge into doodads.
@@ -212,6 +263,8 @@ async fn _send(
                         if let Ok(w3d_buf) = std::fs::read(w3d_file) {
                             match crate::lng::w3abdhqtu::parse::W3ObjectData::read(&w3d_buf, true) {
                                 Ok((w3d_data, _meta)) => {
+                                    // Save defaults before merge
+                                    dood_result.doodads_default = dood_result.doodads.clone();
                                     let dood_meta = load_doodad_metadata();
                                     let errs = merge_w3d_into_doodads(
                                         &mut dood_result.doodads,
@@ -230,7 +283,34 @@ async fn _send(
             }
 
             let unit_slk = load_units_slk(None);
-            let dest_slk = load_destructables_slk(None);
+            let mut dest_slk = load_destructables_slk(None);
+
+            // Try to load war3map.w3b from the same directory and merge into destructables.
+            if let Some(ref mut dest_result) = dest_slk {
+                if let Some(ref w3b_file) = w3b_path {
+                    if w3b_file.exists() {
+                        if let Ok(w3b_buf) = std::fs::read(w3b_file) {
+                            match crate::lng::w3abdhqtu::parse::W3ObjectData::read(&w3b_buf, false) {
+                                Ok((w3b_data, _meta)) => {
+                                    // Save defaults before merge
+                                    dest_result.destructables_default = dest_result.destructables.clone();
+                                    let dest_meta = load_destructable_metadata();
+                                    let errs = merge_w3b_into_destructables(
+                                        &mut dest_result.destructables,
+                                        &w3b_data,
+                                        &dest_meta,
+                                    );
+                                    dest_result.w3b_errors = errs;
+                                }
+                                Err(e) => {
+                                    dest_result.w3b_errors.push(format!("Failed to parse war3map.w3b: {}", e));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let cliff_types_slk = load_cliff_types_slk(None, Some(&tileset_for_cliff));
             let cliff_variations = load_cliff_variations();
             let water_slk = load_water_slk(None, &tileset_for_water2);

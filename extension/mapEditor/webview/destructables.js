@@ -11,6 +11,11 @@ window._W3E_DESTRUCTABLES = (function () {
     let _filteredDestructables = [];
     let _destructablesSlkLoaded = false;
 
+    /** @returns {boolean} true if original (from SLK, not in w3b) */
+    function _isOriginal(d) { return !(d.baseId || d.w3bModified); }
+    /** @returns {boolean} true if has actual field modifications in w3b */
+    function _isModified(d) { return !!(d.defaults && Object.keys(d.defaults).length > 0); }
+
     function _makeSlkLink(slkPath) {
         const link = document.createElement('a');
         link.className = 'ts-slk-link';
@@ -48,13 +53,18 @@ window._W3E_DESTRUCTABLES = (function () {
         document.querySelectorAll('.dt-ts-cb').forEach(cb => {
             if (!cb.checked) uncheckedTs.push(cb.getAttribute('data-ts'));
         });
-        S.patchWvState({_destUncheckedCats: uncheckedCats, _destUncheckedTs: uncheckedTs});
+        const uncheckedStatus = [];
+        document.querySelectorAll('.dt-status-cb').forEach(cb => {
+            if (!cb.checked) uncheckedStatus.push(cb.getAttribute('data-status'));
+        });
+        S.patchWvState({_destUncheckedCats: uncheckedCats, _destUncheckedTs: uncheckedTs, _destUncheckedStatus: uncheckedStatus});
     }
 
     function restoreDestFilters() {
         const s = S.getWvState();
         const uncheckedCats = s._destUncheckedCats || [];
         const uncheckedTs = s._destUncheckedTs || [];
+        const uncheckedStatus = s._destUncheckedStatus || [];
         if (uncheckedCats.length) {
             document.querySelectorAll('.dt-cat-cb').forEach(cb => {
                 if (uncheckedCats.includes(cb.getAttribute('data-cat'))) cb.checked = false;
@@ -63,6 +73,11 @@ window._W3E_DESTRUCTABLES = (function () {
         if (uncheckedTs.length) {
             document.querySelectorAll('.dt-ts-cb').forEach(cb => {
                 if (uncheckedTs.includes(cb.getAttribute('data-ts'))) cb.checked = false;
+            });
+        }
+        if (uncheckedStatus.length) {
+            document.querySelectorAll('.dt-status-cb').forEach(cb => {
+                if (uncheckedStatus.includes(cb.getAttribute('data-status'))) cb.checked = false;
             });
         }
     }
@@ -106,6 +121,10 @@ window._W3E_DESTRUCTABLES = (function () {
         document.querySelectorAll('.dt-ts-cb').forEach(cb => {
             if (cb.checked) enabledTs.add(cb.getAttribute('data-ts'));
         });
+        const enabledStatus = new Set();
+        document.querySelectorAll('.dt-status-cb').forEach(cb => {
+            if (cb.checked) enabledStatus.add(cb.getAttribute('data-status'));
+        });
         if (saveState !== false) _saveDestFilters();
 
         const searchEl = document.getElementById('dtSearchInput');
@@ -120,6 +139,11 @@ window._W3E_DESTRUCTABLES = (function () {
                 const comment = (U.gsValue(d.comment) || '').toLowerCase();
                 if (!name.includes(q) && !id.includes(q) && !comment.includes(q)) return false;
             }
+            // Type filter: original / custom; flag: modified
+            const original = _isOriginal(d);
+            if (original && !enabledStatus.has('original')) return false;
+            if (!original && !enabledStatus.has('custom')) return false;
+            if (!original && _isModified(d) && !enabledStatus.has('modified')) return false;
             if (d.category && !enabledCats.has(d.category)) return false;
             if (d.tilesets) {
                 if (d.tilesets === '*') return true;
@@ -163,6 +187,39 @@ window._W3E_DESTRUCTABLES = (function () {
                 for (const ch of d.tilesets) {
                     if (ch !== ',' && ch !== '*') tsSet.add(ch);
                 }
+            }
+        }
+
+        // Status checkboxes: type (Original / Custom) + flag (Modified)
+        const statusCounts = {original: 0, custom: 0, modified: 0};
+        for (const d of _allDestructables) {
+            if (_isOriginal(d)) {
+                statusCounts.original++;
+            } else {
+                statusCounts.custom++;
+                if (_isModified(d)) statusCounts.modified++;
+            }
+        }
+        const statusChecks = document.getElementById('dtStatusChecks');
+        if (statusChecks) {
+            statusChecks.innerHTML = '';
+            const statuses = [
+                ['original', '\u26aa', 'Original'],
+                ['custom', '\ud83d\udd35', 'Custom'],
+                ['modified', '\ud83d\udfe1', 'Modified'],
+            ];
+            for (const [code, icon, label] of statuses) {
+                const lbl = document.createElement('label');
+                lbl.className = 'menu-cb';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'dt-status-cb';
+                cb.setAttribute('data-status', code);
+                cb.checked = true;
+                cb.addEventListener('change', filterAndRender);
+                lbl.appendChild(cb);
+                lbl.appendChild(document.createTextNode(' ' + icon + ' ' + label + ' (' + statusCounts[code] + ')'));
+                statusChecks.appendChild(lbl);
             }
         }
 
@@ -217,13 +274,31 @@ window._W3E_DESTRUCTABLES = (function () {
     function rebuild(slkData) {
         _destructablesSlkLoaded = true;
         let source = '';
+        let w3bErrors = [];
         _allDestructables = [];
         _destructableDataMap = {};
         if (slkData && slkData.destructables) {
             source = slkData.source || '';
+            w3bErrors = slkData.w3bErrors || [];
             _destructableDataMap = slkData.destructables;
             _allDestructables = Object.entries(slkData.destructables).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
         }
+
+        // DEBUG: log status distribution
+        var _dbg = {original: 0, custom: 0, modified: 0, sampleCustom: [], sampleOriginal: []};
+        for (var _i = 0; _i < _allDestructables.length; _i++) {
+            var _d = _allDestructables[_i];
+            if (_isOriginal(_d)) {
+                _dbg.original++;
+                if (_dbg.sampleOriginal.length < 3) _dbg.sampleOriginal.push({id: _d.destructableId, baseId: _d.baseId, w3bModified: _d.w3bModified});
+            } else {
+                _dbg.custom++;
+                if (_isModified(_d)) _dbg.modified++;
+                if (_dbg.sampleCustom.length < 3) _dbg.sampleCustom.push({id: _d.destructableId, baseId: _d.baseId, w3bModified: _d.w3bModified});
+            }
+        }
+        console.log('[DESTRUCTABLES] total=' + _allDestructables.length + ' original=' + _dbg.original + ' custom=' + _dbg.custom + ' modified=' + _dbg.modified, _dbg);
+        console.log('[DESTRUCTABLES] slkData keys:', slkData ? Object.keys(slkData) : 'null');
 
         const srcEl = document.getElementById('dtSlkSource');
         if (srcEl) {
@@ -235,6 +310,19 @@ window._W3E_DESTRUCTABLES = (function () {
                 srcLine.className = 'ts-slk-source-line';
                 srcLine.textContent = source;
                 srcEl.appendChild(srcLine);
+
+                if (w3bErrors.length > 0) {
+                    const errLink = document.createElement('a');
+                    errLink.className = 'ts-slk-link';
+                    errLink.href = '#';
+                    errLink.textContent = '\u26a0 ' + w3bErrors.length + ' error' + (w3bErrors.length > 1 ? 's' : '') + ' reading Destructables';
+                    errLink.style.color = 'var(--vscode-errorForeground, #f44)';
+                    errLink.addEventListener('click', function (e) {
+                        e.preventDefault();
+                        _showW3bErrors(w3bErrors);
+                    });
+                    srcEl.appendChild(errLink);
+                }
             } else {
                 srcEl.className = 'ts-source ts-no-slk';
                 srcEl.textContent = 'DestructableData.slk not found \u2014 set Game Path';
@@ -266,7 +354,7 @@ window._W3E_DESTRUCTABLES = (function () {
     const _DEST_GROUPS = [
         {
             title: '\ud83c\udff7 Identity', fields: [
-                ['DestructableID', 'destructableId'], ['Name', 'name'],
+                ['DestructableID', 'destructableId'], ['baseID', 'baseId'], ['Name', 'name'],
                 ['EditorSuffix', 'editorSuffix'], ['comment', 'comment'],
                 ['category', 'category'], ['doodClass', 'doodClass'],
                 ['tilesets', 'tilesets'], ['tilesetSpecific', 'tilesetSpecific'],
@@ -382,14 +470,26 @@ window._W3E_DESTRUCTABLES = (function () {
                         + (dtTexFile ? ' data-tex-file="' + U.esc(dtTexFile) + '"' : '')
                         + '>' + U.esc(p) + '</a>'
                     ).join('');
-                    rows += '<tr><td class="key">file</td><td>' + links + '</td></tr>';
+                    let fileRow = '<tr><td class="key">file</td><td>' + links + '</td>';
+                    if (d.defaults && d.defaults['file'] !== undefined) {
+                        fileRow += '<td class="dd-default">' + U.esc(d.defaults['file']) + '</td>';
+                    }
+                    rows += fileRow + '</tr>';
                 }
-                rows += '<tr><td class="key">numVar</td><td>' + numVar + '</td></tr>';
+                let numVarRow = '<tr><td class="key">numVar</td><td>' + numVar + '</td>';
+                if (d.defaults && d.defaults['numVar'] !== undefined) {
+                    numVarRow += '<td class="dd-default">' + U.esc(d.defaults['numVar']) + '</td>';
+                }
+                rows += numVarRow + '</tr>';
                 if (group.fields) {
                     for (const [label, key] of group.fields) {
                         const val = d[key];
                         if (val === undefined || val === '' || val === null) continue;
-                        rows += '<tr><td class="key">' + U.esc(label) + '</td><td>' + U.esc(String(val)) + '</td></tr>';
+                        let row = '<tr><td class="key">' + U.esc(label) + '</td><td>' + U.esc(String(val)) + '</td>';
+                        if (d.defaults && d.defaults[key] !== undefined) {
+                            row += '<td class="dd-default">' + U.esc(d.defaults[key]) + '</td>';
+                        }
+                        rows += row + '</tr>';
                     }
                 }
             } else {
@@ -411,15 +511,23 @@ window._W3E_DESTRUCTABLES = (function () {
                         if (key === 'tilesets' && val) {
                             display = U.tilesetBadges(val);
                         }
-                        rows += '<tr><td class="key">' + U.esc(label) + '</td><td>' + display + '</td></tr>';
+                        let row = '<tr><td class="key">' + U.esc(label) + '</td><td>' + display + '</td>';
+                        if (d.defaults && d.defaults[key] !== undefined) {
+                            row += '<td class="dd-default">' + U.esc(d.defaults[key]) + '</td>';
+                        }
+                        rows += row + '</tr>';
                     }
                 }
                 if (group.color) {
                     const c = d[group.color.key];
                     if (c) {
-                        rows += '<tr><td class="key">' + U.esc(group.color.label) + '</td><td>'
+                        let row = '<tr><td class="key">' + U.esc(group.color.label) + '</td><td>'
                             + c.r + ',' + c.g + ',' + c.b + ' '
-                            + U.colorBadge(c.r, c.g, c.b) + '</td></tr>';
+                            + U.colorBadge(c.r, c.g, c.b) + '</td>';
+                        if (d.defaults && d.defaults[group.color.key] !== undefined) {
+                            row += '<td class="dd-default">' + U.esc(d.defaults[group.color.key]) + '</td>';
+                        }
+                        rows += row + '</tr>';
                     }
                 }
             }
@@ -464,8 +572,39 @@ window._W3E_DESTRUCTABLES = (function () {
         });
     }
 
+    // ── W3B errors window ──────────────────────────────────────
+    function _showW3bErrors(errors) {
+        const win = document.getElementById('destructableErrorsWindow');
+        const body = document.getElementById('destructableErrorsBody');
+        if (!win || !body) return;
+        let html = '<div style="margin-bottom:8px;font-weight:bold;">\u26a0 ' + errors.length + ' error' + (errors.length > 1 ? 's' : '') + ' reading Destructables from war3map.w3b:</div>';
+        html += '<div style="font-family:var(--vscode-editor-font-family,monospace);font-size:11px;">';
+        for (let i = 0; i < errors.length; i++) {
+            html += '<div style="padding:2px 0;border-bottom:1px solid var(--vscode-widget-border,rgba(128,128,128,0.2));">'
+                + U.esc(errors[i]) + '</div>';
+        }
+        html += '</div>';
+        body.innerHTML = html;
+        win.setAttribute('title-text', '\u26a0 Destructable Errors (' + errors.length + ')');
+        win.show();
+    }
+
     // ── Canvas list row renderer ──────────────────────────────────
     function renderRow(ctx, d, x, y, w, h, c) {
+        // Highlight custom entries: modified = yellow, unmodified = blue
+        if (!_isOriginal(d)) {
+            if (_isModified(d)) {
+                ctx.fillStyle = 'rgba(220,180,40,0.08)';
+                ctx.fillRect(x, y, w, h);
+                ctx.fillStyle = 'rgba(220,180,40,0.6)';
+                ctx.fillRect(x - 5, y + 2, 3, h - 4);
+            } else {
+                ctx.fillStyle = 'rgba(70,130,230,0.08)';
+                ctx.fillRect(x, y, w, h);
+                ctx.fillStyle = 'rgba(70,130,230,0.6)';
+                ctx.fillRect(x - 5, y + 2, 3, h - 4);
+            }
+        }
         let mid = y + h / 2;
         ctx.textBaseline = 'middle';
         ctx.font = '11px ' + c.mono;
@@ -487,6 +626,19 @@ window._W3E_DESTRUCTABLES = (function () {
                 _clDrawBadge(ctx, chars[bi], bx, y, h, c, chars[bi] === '*');
             }
             bx -= 4;
+        }
+        // Show baseId badge for custom destructables
+        if (d.baseId) {
+            let badgeText = '\u2190' + d.baseId;
+            ctx.font = '9px ' + c.mono;
+            let bw = ctx.measureText(badgeText).width + 6;
+            bx -= bw + 2;
+            ctx.fillStyle = 'rgba(100,149,237,0.15)';
+            ctx.fillRect(bx, y + 4, bw, h - 8);
+            ctx.fillStyle = 'rgba(100,149,237,0.8)';
+            ctx.fillText(badgeText, bx + 3, mid);
+            bx -= 4;
+            ctx.font = '11px ' + c.font;
         }
         let nameX = x + 46;
         let nameW = bx - nameX;

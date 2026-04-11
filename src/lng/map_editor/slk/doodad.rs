@@ -72,8 +72,15 @@ pub struct Doodad {
 pub struct DoodadsSlkResult {
     /// Where the file was found (e.g. `"War3Patch.mpq"`, `"game folder"`, …).
     pub source: String,
-    /// Doodads keyed by rawcode `u32` (little-endian interpretation of the
-    /// 4-byte doodID).
+    /// Default doodads from the SLK (before `war3map.w3d` merge).
+    /// This is the "base" data from the map's own SLK or the game installation.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub doodads_default: HashMap<u32, Doodad>,
+    /// Doodads keyed by rawcode `u32` — the **current** (merged) state
+    /// after applying `war3map.w3d` originals and customs.
+    ///
+    /// Only entries touched by `.w3d` have `w3d_modified = true`.
+    /// Only entries created by `.w3d` customs have `base_id` set.
     pub doodads: HashMap<u32, Doodad>,
     /// Errors encountered while merging `war3map.w3d` data.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -172,6 +179,7 @@ pub fn load_doodads_slk(archive_path: Option<&str>) -> Option<DoodadsSlkResult> 
 
     Some(DoodadsSlkResult {
         source: source.to_string(),
+        doodads_default: HashMap::new(),
         doodads,
         w3d_errors: Vec::new(),
     })
@@ -226,6 +234,10 @@ pub fn merge_w3d_into_doodads(
 ) -> Vec<String> {
     let mut errors = Vec::new();
 
+    // Snapshot of the default (pre-modification) map.
+    // Customs must clone from defaults, not from originals-modified entries.
+    let defaults = doodads.clone();
+
     // Process original-table modifications (modify existing base doodads in-place).
     for def in &w3d.table.originals {
         let key = def.original_id.raw;
@@ -247,10 +259,10 @@ pub fn merge_w3d_into_doodads(
         }
     }
 
-    // Process custom-table entries (clone base doodad, set baseId, apply modifications).
+    // Process custom-table entries (clone from *default* doodad, set baseId, apply modifications).
     for def in &w3d.table.customs {
         let orig_key = def.original_id.raw;
-        let base = match doodads.get(&orig_key) {
+        let base = match defaults.get(&orig_key) {
             Some(d) => d.clone(),
             None => {
                 errors.push(format!(

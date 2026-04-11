@@ -174,6 +174,10 @@ pub fn parse_westrings(data: &[u8]) -> HashMap<String, String> {
 /// Each entry stores `(resolved_value, source_file)`.
 pub(crate) static WESTRINGS: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
 
+/// Map-specific TRIGSTR strings parsed from `war3map.wts`.
+/// Each entry stores `(resolved_value, source_display)`.
+static MAP_STRINGS: Mutex<Option<HashMap<String, (String, String)>>> = Mutex::new(None);
+
 /// Files to load, in priority order (later files override earlier entries).
 const STRING_FILES: &[&str] = &[
     "UI\\WorldEditStrings.txt",
@@ -227,6 +231,53 @@ pub fn resolve(key: &str) -> Option<(String, String)> {
     guard.as_ref()?.get(key).cloned()
 }
 
+// ─── MAP_STRINGS (TRIGSTR) ───────────────────────────────────────────────────
+
+/// Populate the `MAP_STRINGS` cache from `war3map.wts` bytes.
+///
+/// The `source` parameter is the display label (e.g. `"war3map.wts"`).
+/// Normalises numeric identifiers: `"011"` → `"11"`, `"000"` → `"0"`.
+/// The line number of each `STRING <id>` header is encoded in the source
+/// as `"war3map.wts:42"` (0-based) so the frontend can navigate to it.
+pub fn load_map_strings(data: &[u8], source: &str) {
+    let parsed = crate::lng::wts::trigstr_resolve::parse_wts_strings_with_lines(data);
+    let mut map: HashMap<String, (String, String)> = HashMap::with_capacity(parsed.len());
+    for (k, (v, line)) in parsed {
+        let src = format!("{}:{}", source, line);
+        map.insert(k, (v, src));
+    }
+    let mut guard = match MAP_STRINGS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    *guard = Some(map);
+}
+
+/// Look up a TRIGSTR identifier in the cached `MAP_STRINGS`.
+///
+/// `raw_id` is the part after `TRIGSTR_` (e.g. `"1111"`).
+/// Normalises numeric identifiers to match the cache keys.
+fn resolve_trigstr_cached(raw_id: &str) -> Option<(String, String)> {
+    let key = match raw_id.parse::<u64>() {
+        Ok(n) => n.to_string(),
+        Err(_) => raw_id.to_string(),
+    };
+    let guard = match MAP_STRINGS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    guard.as_ref()?.get(&key).cloned()
+}
+
+/// Drop the cached MAP_STRINGS (called when a different map is opened).
+pub fn invalidate_map_strings() {
+    let mut guard = match MAP_STRINGS.lock() {
+        Ok(g) => g,
+        Err(e) => e.into_inner(),
+    };
+    *guard = None;
+}
+
 /// Convenience wrapper: resolve a `WESTRING_*` key (or return the input
 /// unchanged) and return only the display string.
 #[allow(dead_code)]
@@ -238,6 +289,8 @@ pub fn resolve_value(raw_value: &str) -> String {
 ///
 /// If the value starts with `"WESTRING_"`, looks it up and returns a
 /// `GameString` with `original`, `value` (resolved), and `source` populated.
+/// If the value starts with `"TRIGSTR_"`, looks it up in the map-specific
+/// WTS cache and returns a similarly annotated `GameString`.
 /// Otherwise returns a plain `GameString` (`original == value`, empty `source`).
 pub fn resolve_game_string(raw_value: &str) -> GameString {
     if raw_value.is_empty() {
@@ -245,6 +298,21 @@ pub fn resolve_game_string(raw_value: &str) -> GameString {
     }
 
     let original = raw_value.to_string();
+
+    // ── TRIGSTR_* resolution ─────────────────────────────────────
+    if let Some(raw_id) = raw_value.strip_prefix("TRIGSTR_") {
+        if let Some((resolved, src)) = resolve_trigstr_cached(raw_id) {
+            return GameString {
+                value: resolved,
+                original,
+                source: src,
+            };
+        }
+        // Not found — return as-is with empty source
+        return GameString::plain(original);
+    }
+
+    // ── WESTRING_* resolution ────────────────────────────────────
     let mut current = raw_value.to_string();
     let mut source = String::new();
 
@@ -270,11 +338,14 @@ pub fn resolve_game_string(raw_value: &str) -> GameString {
 
 /// Drop the cached map so the next [`ensure_loaded`] call re-reads the file.
 pub fn invalidate() {
-    let mut guard = match WESTRINGS.lock() {
-        Ok(g) => g,
-        Err(e) => e.into_inner(),
-    };
-    *guard = None;
+    {
+        let mut guard = match WESTRINGS.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        *guard = None;
+    }
+    invalidate_map_strings();
 }
 
 /// Return a clone of the full WESTRING map (keys → resolved values).

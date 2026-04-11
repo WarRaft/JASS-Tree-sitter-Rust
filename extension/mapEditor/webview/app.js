@@ -42,8 +42,15 @@ window.W3E = (function () {
             }
         }
         TILESET.rebuildCliffs(snapshot.cliffTypesSlk, _cliffTileCodes);
-        DOOD.rebuild(snapshot.doodadsSlk);
-        DEST.rebuild(snapshot.destructablesSlk);
+
+        // The snapshot now includes w3d/w3b merges when an archive path
+        // is provided, so always rebuild from the snapshot.
+        if (snapshot.doodadsSlk) {
+            DOOD.rebuild(snapshot.doodadsSlk);
+        }
+        if (snapshot.destructablesSlk) {
+            DEST.rebuild(snapshot.destructablesSlk);
+        }
         UNITS.rebuild(snapshot.unitsSlk);
         PLACED.updatePlacedNames();
 

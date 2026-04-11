@@ -11,6 +11,10 @@ window._W3E_DOODADS = (function () {
     let _filteredDoodads = [];
     let _doodadsSlkLoaded = false;
 
+    /** @returns {boolean} true if original (from SLK, not in w3d) */
+    function _isOriginal(d) { return !(d.baseId || d.w3dModified); }
+    /** @returns {boolean} true if has actual field modifications in w3d */
+    function _isModified(d) { return !!(d.defaults && Object.keys(d.defaults).length > 0); }
 
     // ── Canvas list instance ──────────────────────────────────────
     let _doodadCanvasList = null;
@@ -120,9 +124,11 @@ window._W3E_DOODADS = (function () {
                 const comment = (d.comment || '').toLowerCase();
                 if (!name.includes(q) && !id.includes(q) && !comment.includes(q)) return false;
             }
-            // Status filter
-            const status = d.baseId ? 'custom' : (d.w3dModified ? 'modified' : 'default');
-            if (!enabledStatus.has(status)) return false;
+            // Type filter: original / custom; flag: modified
+            const original = _isOriginal(d);
+            if (original && !enabledStatus.has('original')) return false;
+            if (!original && !enabledStatus.has('custom')) return false;
+            if (!original && _isModified(d) && !enabledStatus.has('modified')) return false;
             if (d.category && !enabledCats.has(d.category)) return false;
             if (d.tilesets) {
                 if (d.tilesets === '*') return true;
@@ -169,14 +175,23 @@ window._W3E_DOODADS = (function () {
             }
         }
 
-        // Status checkboxes (Default / Modified / Custom)
+        // Status checkboxes: type (Original / Custom) + flag (Modified)
+        const statusCounts = {original: 0, custom: 0, modified: 0};
+        for (const d of _allDoodads) {
+            if (_isOriginal(d)) {
+                statusCounts.original++;
+            } else {
+                statusCounts.custom++;
+                if (_isModified(d)) statusCounts.modified++;
+            }
+        }
         const statusChecks = document.getElementById('dsStatusChecks');
         if (statusChecks) {
             statusChecks.innerHTML = '';
             const statuses = [
-                ['default', '\u26aa', 'Default'],
-                ['modified', '\ud83d\udfe1', 'Modified'],
+                ['original', '\u26aa', 'Original'],
                 ['custom', '\ud83d\udd35', 'Custom'],
+                ['modified', '\ud83d\udfe1', 'Modified'],
             ];
             for (const [code, icon, label] of statuses) {
                 const lbl = document.createElement('label');
@@ -188,7 +203,7 @@ window._W3E_DOODADS = (function () {
                 cb.checked = true;
                 cb.addEventListener('change', filterAndRender);
                 lbl.appendChild(cb);
-                lbl.appendChild(document.createTextNode(' ' + icon + ' ' + label));
+                lbl.appendChild(document.createTextNode(' ' + icon + ' ' + label + ' (' + statusCounts[code] + ')'));
                 statusChecks.appendChild(lbl);
             }
         }
@@ -253,6 +268,22 @@ window._W3E_DOODADS = (function () {
             _doodadDataMap = slkData.doodads;
             _allDoodads = Object.entries(slkData.doodads).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
         }
+
+        // DEBUG: log status distribution
+        var _dbg = {original: 0, custom: 0, modified: 0, sampleCustom: [], sampleOriginal: []};
+        for (var _i = 0; _i < _allDoodads.length; _i++) {
+            var _d = _allDoodads[_i];
+            if (_isOriginal(_d)) {
+                _dbg.original++;
+                if (_dbg.sampleOriginal.length < 3) _dbg.sampleOriginal.push({id: _d.doodId, baseId: _d.baseId, w3dModified: _d.w3dModified});
+            } else {
+                _dbg.custom++;
+                if (_isModified(_d)) _dbg.modified++;
+                if (_dbg.sampleCustom.length < 3) _dbg.sampleCustom.push({id: _d.doodId, baseId: _d.baseId, w3dModified: _d.w3dModified});
+            }
+        }
+        console.log('[DOODADS] total=' + _allDoodads.length + ' original=' + _dbg.original + ' custom=' + _dbg.custom + ' modified=' + _dbg.modified, _dbg);
+        console.log('[DOODADS] slkData keys:', slkData ? Object.keys(slkData) : 'null');
 
         const srcEl = document.getElementById('dsSlkSource');
         if (srcEl) {
@@ -519,17 +550,19 @@ window._W3E_DOODADS = (function () {
 
     // ── Canvas list row renderer ──────────────────────────────────
     function renderRow(ctx, d, x, y, w, h, c) {
-        // Highlight modified (yellow) and custom (blue) doodads
-        if (d.baseId) {
-            ctx.fillStyle = 'rgba(70,130,230,0.08)';
-            ctx.fillRect(x, y, w, h);
-            ctx.fillStyle = 'rgba(70,130,230,0.6)';
-            ctx.fillRect(x, y + 2, 3, h - 4);
-        } else if (d.w3dModified) {
-            ctx.fillStyle = 'rgba(220,180,40,0.08)';
-            ctx.fillRect(x, y, w, h);
-            ctx.fillStyle = 'rgba(220,180,40,0.6)';
-            ctx.fillRect(x, y + 2, 3, h - 4);
+        // Highlight custom entries: modified = yellow, unmodified = blue
+        if (!_isOriginal(d)) {
+            if (_isModified(d)) {
+                ctx.fillStyle = 'rgba(220,180,40,0.08)';
+                ctx.fillRect(x, y, w, h);
+                ctx.fillStyle = 'rgba(220,180,40,0.6)';
+                ctx.fillRect(x - 5, y + 2, 3, h - 4);
+            } else {
+                ctx.fillStyle = 'rgba(70,130,230,0.08)';
+                ctx.fillRect(x, y, w, h);
+                ctx.fillStyle = 'rgba(70,130,230,0.6)';
+                ctx.fillRect(x - 5, y + 2, 3, h - 4);
+            }
         }
         let mid = y + h / 2;
         ctx.textBaseline = 'middle';
@@ -614,4 +647,3 @@ window._W3E_DOODADS = (function () {
         disposeCanvasList,
     };
 })();
-

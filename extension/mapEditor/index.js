@@ -1,5 +1,5 @@
 // noinspection NpmUsedModulesInstalled
-const {Uri, commands, window, ViewColumn} = require('vscode')
+const {Uri, commands, window, ViewColumn, Range} = require('vscode')
 const crypto = require('crypto')
 const path = require('path')
 const {MpqFileSystemProvider} = require('../mpqFileSystemProvider.js')
@@ -493,7 +493,11 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             if (viewType) {
                 await commands.executeCommand('vscode.openWith', uri, viewType, {viewColumn: ViewColumn.Beside})
             } else {
-                await commands.executeCommand('vscode.open', uri, {preview: false, viewColumn: ViewColumn.Beside})
+                const opts = {preview: false, viewColumn: ViewColumn.Beside}
+                if (typeof msg.line === 'number') {
+                    opts.selection = new Range(msg.line, 0, msg.line, 0)
+                }
+                await commands.executeCommand('vscode.open', uri, opts)
             }
         } else if (msg.command === 'openBlp' && msg.path) {
             // Render a BLP image via the binary HTTP server and send

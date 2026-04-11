@@ -463,6 +463,10 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             <div class="ds-sidebar" id="dtSidebar">
                 <div id="dtSlkSource" class="${destructablesSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${destructablesSlkSource ? esc(destructablesSlkSource) : 'DestructableData.slk not found \u2014 set Game Path'}</div>
                 <div class="ds-filter-group">
+                    <div class="ds-filter-title">Status</div>
+                    <div class="terrain-checks" id="dtStatusChecks"></div>
+                </div>
+                <div class="ds-filter-group">
                     <div class="ds-filter-title">Categories</div>
                     <div class="terrain-checks" id="dtCatChecks">${destCategoryCheckboxes}</div>
                 </div>
@@ -486,6 +490,10 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
 
     <float-window id="destructableDetailWindow" title-text="\ud83c\udfda Destructable" hidden style="left:200px;top:60px;width:560px;">
         <div id="destructableDetailBody"></div>
+    </float-window>
+
+    <float-window id="destructableErrorsWindow" title-text="\u26a0 Destructable Errors" hidden style="left:220px;top:80px;width:600px;max-height:60vh;">
+        <div id="destructableErrorsBody" style="padding:8px;overflow:auto;max-height:55vh;font-size:12px;"></div>
     </float-window>
 
     <float-window id="gameStringInfoWindow" title-text="\ud83d\udd17 GameString" hidden style="left:240px;top:100px;width:400px;">

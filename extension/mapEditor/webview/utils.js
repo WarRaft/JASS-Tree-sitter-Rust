@@ -70,17 +70,41 @@ window._W3E_UTILS = (function () {
         if (!win) return;
         let body = win.querySelector('#gsInfoBody');
         if (!body) return;
+
+        // Detect TRIGSTR source with line info: "war3map.wts:42"
+        let sourceHtml;
+        const wtsMatch = source.match(/^(.+\.wts):(\d+)$/);
+        if (wtsMatch) {
+            const wtsFile = wtsMatch[1];
+            const wtsLine = parseInt(wtsMatch[2], 10);
+            sourceHtml = '<a href="#" class="gs-wts-link" data-wts-file="' + esc(wtsFile) + '" data-wts-line="' + wtsLine + '">' + esc(wtsFile) + ':' + (wtsLine + 1) + '</a>';
+        } else {
+            sourceHtml = esc(source);
+        }
+
         body.innerHTML =
             '<table class="info">' +
             '<tr><td class="key">value</td><td>' + esc(value) + '</td></tr>' +
             '<tr><td class="key">original</td><td><span class="code">' + esc(original) + '</span></td></tr>' +
-            '<tr><td class="key">source</td><td>' + esc(source) + '</td></tr>' +
+            '<tr><td class="key">source</td><td>' + sourceHtml + '</td></tr>' +
             '</table>';
         win.setAttribute('title-text', '\ud83d\udd17 ' + value);
         win.show();
     }
 
     document.addEventListener('click', function (e) {
+        // Handle click on WTS navigation link
+        let wtsLink = e.target.closest('.gs-wts-link');
+        if (wtsLink) {
+            e.preventDefault();
+            const file = wtsLink.getAttribute('data-wts-file') || 'war3map.wts';
+            const line = parseInt(wtsLink.getAttribute('data-wts-line') || '0', 10);
+            if (typeof vscode !== 'undefined') {
+                vscode.postMessage({command: 'openFile', name: file, line: line});
+            }
+            return;
+        }
+
         let link = e.target.closest('.gs-resolved');
         if (!link) return;
         e.preventDefault();

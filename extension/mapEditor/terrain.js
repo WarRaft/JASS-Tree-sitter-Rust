@@ -2055,13 +2055,27 @@
 
             // Reload when game path changes (snapshot updated)
             W3E.onSnapshotChanged(function (snapshot) {
-                if (snapshot.doodadsSlk && snapshot.doodadsSlk.doodads) {
+                // Use DOOD/DEST data maps — they are rebuilt from the snapshot
+                // which now includes w3d/w3b merges from the map archive.
+                const doodDataMap = window._W3E_DOODADS ? window._W3E_DOODADS.getDataMap() : {}
+                if (Object.keys(doodDataMap).length > 0) {
+                    _doodFileMap = {}
+                    for (const [rawId, d] of Object.entries(doodDataMap)) {
+                        if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1}
+                    }
+                } else if (snapshot.doodadsSlk && snapshot.doodadsSlk.doodads) {
                     _doodFileMap = {}
                     for (const [rawId, d] of Object.entries(snapshot.doodadsSlk.doodads)) {
                         if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1}
                     }
                 }
-                if (snapshot.destructablesSlk && snapshot.destructablesSlk.destructables) {
+                const destDataMap = window._W3E_DESTRUCTABLES ? window._W3E_DESTRUCTABLES.getDataMap() : {}
+                if (Object.keys(destDataMap).length > 0) {
+                    _destFileMap = {}
+                    for (const [rawId, d] of Object.entries(destDataMap)) {
+                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || ''}
+                    }
+                } else if (snapshot.destructablesSlk && snapshot.destructablesSlk.destructables) {
                     _destFileMap = {}
                     for (const [rawId, d] of Object.entries(snapshot.destructablesSlk.destructables)) {
                         if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || ''}
