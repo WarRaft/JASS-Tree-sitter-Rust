@@ -315,6 +315,16 @@ module.exports = {
         client._traceOutputChannel = traceChannel
         context.subscriptions.push(traceChannel)
 
+        // ── Debug log output channel ─────────────────────────────────
+        const debugLogChannel = window.createOutputChannel('JASS Server Log')
+        context.subscriptions.push(debugLogChannel)
+        function debugLog(msg) {
+            const ts = new Date().toISOString()
+            console.log(`[JASS] ${msg}`)
+            debugLogChannel.appendLine(`[${ts}] ${msg}`)
+        }
+        debugLog('extension activated')
+
         context.subscriptions.push(commands.registerCommand('jass.toggleTrace', () => {
             client.traceMessages = !client.traceMessages
             const state = client.traceMessages ? 'ON' : 'OFF'
@@ -1039,7 +1049,11 @@ module.exports = {
         })
 
         // ── Start the client and perform document sync ────────────────
-        const clientReady = client.start().catch(err => {
+        const clientReady = client.start().then(() => {
+            const info = getBinaryServer()
+            debugLog(`server started on port ${info ? info.port : '?'}`)
+        }).catch(err => {
+            debugLog(`server start FAILED: ${err.message}`)
             window.showErrorMessage(`❌ Failed to start server:\n\n${err.message}`)
         })
 
@@ -1059,11 +1073,16 @@ module.exports = {
         // ── SSE debug log ───────────────────────────────────────────
         clientReady.then(() => {
             const info = getBinaryServer()
-            if (!info) return
+            if (!info) {
+                debugLog('no server info, SSE skipped')
+                return
+            }
+            debugLog(`connecting SSE to port ${info.port}`)
             const http = require('http')
             const req = http.get(
                 `http://127.0.0.1:${info.port}/debug/log?token=${info.token}`,
                 res => {
+                    debugLog(`SSE connected (${res.statusCode})`)
                     let buf = ''
                     res.on('data', chunk => {
                         buf += chunk.toString()
@@ -1072,13 +1091,15 @@ module.exports = {
                             const line = buf.slice(0, nl).trim()
                             buf = buf.slice(nl + 1)
                             if (line.startsWith('data:')) {
-                                console.log(`[server] ${line.slice(5).trim()}`)
+                                debugLog(line.slice(5).trim())
                             }
                         }
                     })
                 }
             )
-            req.on('error', () => {})
+            req.on('error', e => {
+                debugLog(`SSE error: ${e.message}`)
+            })
             context.subscriptions.push({dispose: () => req.destroy()})
         })
 

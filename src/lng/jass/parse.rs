@@ -118,12 +118,11 @@ fn _parse(
     cancel: &CancellationToken,
 ) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     let fname = uri.path().rsplit('/').next().unwrap_or("?");
-    debug_log!("[_parse] start file={}", fname);
+    debug_log!("[jass] parse start: {}", fname);
     let root = tree.root_node();
 
     // 1. Build AST from CST
     let mut ast = build_ast(root);
-    debug_log!("[_parse] AST built");
 
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() {
@@ -187,7 +186,6 @@ fn _parse(
 
     IMPORT_GRAPH.update(uri, imports.clone());
 
-    debug_log!("[_parse] imports resolved, graph updated");
 
     // Refresh entry cache so that visible_component reads the updated graph.
     IMPORT_GRAPH.recompute_entry_cache();
@@ -197,7 +195,6 @@ fn _parse(
     let mut component: HashSet<Url>;
     {
         component = IMPORT_GRAPH.visible_component(uri);
-        debug_log!("[_parse] visible_component: {} peers", component.len());
 
         // Iteratively ensure every peer is in the scope resolver.
         // `ensure_file_symbols` may register new import edges in the graph
@@ -213,8 +210,6 @@ fn _parse(
                 if !ensured.insert(peer_uri.clone()) {
                     continue;
                 }
-                let peer_name = peer_uri.path().rsplit('/').next().unwrap_or("?");
-                debug_log!("[_parse] ensure_file_symbols: {}", peer_name);
                 let ts_lang = if crate::util::open::is_as_uri(&peer_uri) {
                     tree_sitter_as::language().into()
                 } else {
@@ -245,8 +240,10 @@ fn _parse(
         }
 
         // O(1)-per-name: get all symbols from the connected component.
-        debug_log!("[_parse] ensure loop done, {} peers total", component.len());
         let visible_entries = all_visible_entries(&component);
+
+        // Cache snapshots by URI to avoid repeated redb reads.
+        let mut snapshot_cache: std::collections::HashMap<Url, Option<std::sync::Arc<crate::util::parse_cache::ParseSnapshot>>> = std::collections::HashMap::new();
 
         for entry in &visible_entries {
             // Skip entries from the file being parsed — cursor builds them locally.
@@ -256,7 +253,9 @@ fn _parse(
             // Try to get the precise DeclKey from the snapshot (in-memory
             // or lazy-loaded from disk cache); fall back to the scope
             // resolver's `decl_key` which is always available.
-            let origin_snapshot = crate::util::parse_cache::peek_or_load(&entry.uri);
+            let origin_snapshot = snapshot_cache
+                .entry(entry.uri.clone())
+                .or_insert_with(|| crate::util::parse_cache::peek_or_load(&entry.uri));
             let origin_decl_key = origin_snapshot
                 .as_ref()
                 .and_then(|snap| {
@@ -289,9 +288,7 @@ fn _parse(
     }
 
     // 5. Single-pass cursor: diagnostics + symbols + folding + id_roles + scopes
-    debug_log!("[_parse] Cursor::walk start");
     let mut cursor = Cursor::walk(&ast, rope, &imported_symbols);
-    debug_log!("[_parse] Cursor::walk done");
     cursor.file_symbols.frozen_imports = frozen_imports;
     cursor.file_symbols.file_settings = cursor.file_settings.clone();
     cursor.file_symbols.file_ignore_tags = cursor.file_ignore_tags.clone();
@@ -347,9 +344,7 @@ fn _parse(
     PARSE_CACHE.insert(uri.clone(), preliminary);
     {
         use crate::util::call_graph::diagnose_functions;
-        debug_log!("[_parse] diagnose_functions start");
         let func_diag = diagnose_functions(uri);
-        debug_log!("[_parse] diagnose_functions done");
 
         // File-level `//ignore unused` suppresses all unused-function diagnostics.
         let file_unused_suppressed = cursor.file_ignore_tags.contains("unused");
@@ -553,7 +548,7 @@ fn _parse(
 
     // ── Atomic store — single source of truth ──
     PARSE_CACHE.insert(uri.clone(), new_snapshot.clone());
-    debug_log!("[_parse] snapshot stored");
+    debug_log!("[jass] parse done: {}", fname);
 
     // ── Persist entry-point status so it survives server restarts ──
     IMPORT_GRAPH.mark_entry(uri, new_snapshot.file_symbols.is_entry);

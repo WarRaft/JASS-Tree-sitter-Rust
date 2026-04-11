@@ -14,6 +14,7 @@ use crate::util::parse::{
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
+use crate::debug_log;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
 use std::error::Error;
@@ -77,6 +78,8 @@ fn _parse(
     tree: &tree_sitter::Tree,
     cancel: &CancellationToken,
 ) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    let fname = uri.path().rsplit('/').next().unwrap_or("?");
+    debug_log!("[as] parse start: {}", fname);
     let root = tree.root_node();
 
     // 1. Build AST from CST
@@ -117,7 +120,6 @@ fn _parse(
     IMPORT_GRAPH.mark_frozen(&frozen_imports);
 
     IMPORT_GRAPH.update(uri, imports);
-
 
     // Refresh entry cache so that visible_component reads the updated graph.
     IMPORT_GRAPH.recompute_entry_cache();
@@ -177,6 +179,9 @@ fn _parse(
 
         let visible_entries = all_visible_entries(&component);
 
+        // Cache snapshots by URI to avoid repeated redb reads.
+        let mut snapshot_cache: std::collections::HashMap<Url, Option<Arc<ParseSnapshot>>> = std::collections::HashMap::new();
+
         for entry in &visible_entries {
             // Skip entries from the file being parsed — cursor builds them locally.
             if &entry.uri == uri {
@@ -185,7 +190,9 @@ fn _parse(
 
             let is_jass_file = !crate::util::open::is_as_uri(&entry.uri);
 
-            let origin_snapshot = crate::util::parse_cache::peek_or_load(&entry.uri);
+            let origin_snapshot = snapshot_cache
+                .entry(entry.uri.clone())
+                .or_insert_with(|| crate::util::parse_cache::peek_or_load(&entry.uri));
             let origin_decl_key = origin_snapshot
                 .as_ref()
                 .and_then(|snap| {
@@ -242,6 +249,7 @@ fn _parse(
             }
         }
     }
+
 
     // When any `.j` file is connected, the engine implicitly provides
     // the `handle` base type.  Inject it if not already imported.
@@ -312,6 +320,7 @@ fn _parse(
     });
 
     PARSE_CACHE.insert(uri.clone(), new_snapshot.clone());
+    debug_log!("[as] parse done: {}", fname);
 
     // ── Persist entry-point status so it survives server restarts ──
     IMPORT_GRAPH.mark_entry(uri, file_symbols.is_entry);

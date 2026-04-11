@@ -155,6 +155,7 @@ pub async fn start_server() -> std::io::Result<u16> {
     });
 
     log::info!("Binary HTTP server listening on http://127.0.0.1:{port}");
+    crate::debug_log!("server started on port {port}");
 
     // Spawn the server — it runs forever alongside the LSP loop.
     tokio::spawn(async move {
