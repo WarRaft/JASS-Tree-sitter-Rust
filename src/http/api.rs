@@ -102,14 +102,17 @@ pub async fn blp_render(
 pub async fn mdx_render(
     Query(auth): Query<AuthQuery>,
     Json(params): Json<UriParam>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<impl IntoResponse, (StatusCode, String)> {
     auth.check()?;
     let path = params.uri.to_file_path().map_err(|_| (StatusCode::BAD_REQUEST, "Invalid URI".into()))?;
     let buf = tokio::fs::read(&path).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let file_size = buf.len();
     let model = crate::lng::mdx::parse::parse(&buf).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let response = crate::lng::mdx::response::MdxResponse::from_model(&params.uri, &model, file_size);
-    Ok(Json(serde_json::to_value(response).unwrap_or_default()))
+    let binary = crate::lng::mdx::response::pack_binary(&model, file_size);
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        binary,
+    ))
 }
 
 // ─── DOO ──────────────────────────────────────────────────────────────────────

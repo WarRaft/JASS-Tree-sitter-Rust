@@ -767,32 +767,6 @@ function editorStyles() {
             width: 100%;
             height: 100%;
         }
-        .mv-materials-panel {
-            position: absolute;
-            top: 0; right: 0; bottom: 0;
-            width: 220px;
-            min-width: 120px;
-            max-width: 80%;
-            background: rgba(37, 37, 38, 0.95);
-            border-left: 1px solid rgba(255, 255, 255, 0.1);
-            backdrop-filter: blur(8px);
-            -webkit-backdrop-filter: blur(8px);
-            overflow-y: auto;
-            z-index: 2;
-        }
-        .mv-materials-panel[hidden] { display: none !important; }
-        .mv-panel-resize-handle {
-            position: absolute;
-            left: -3px; top: 0; bottom: 0;
-            width: 6px;
-            cursor: col-resize;
-            z-index: 3;
-        }
-        .mv-panel-resize-handle:hover,
-        .mv-panel-resize-handle.active {
-            background: var(--vscode-focusBorder, #007acc);
-            opacity: 0.5;
-        }
         .mv-mat-title {
             font-size: 11px; font-weight: 600;
             color: var(--vscode-descriptionForeground, #888);
@@ -820,28 +794,74 @@ function editorStyles() {
         }
         .mv-mat-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .mv-mat-eye { font-size: 11px; opacity: 0.5; }
-        .mv-sidebar::-webkit-scrollbar,
-        .mv-materials-panel::-webkit-scrollbar { width: 6px; }
-        .mv-sidebar::-webkit-scrollbar-track,
-        .mv-materials-panel::-webkit-scrollbar-track { background: transparent; }
-        .mv-sidebar::-webkit-scrollbar-thumb,
-        .mv-materials-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
-        .mv-sidebar::-webkit-scrollbar-thumb:hover,
-        .mv-materials-panel::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+        .mv-team-color-label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 14px;
+            font-size: 12px;
+            color: var(--vscode-editor-foreground, #ccc);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        .mv-team-color-label input[type="color"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 22px;
+            height: 22px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 4px;
+            padding: 0;
+            cursor: pointer;
+            background: none;
+            flex-shrink: 0;
+        }
+        .mv-team-color-label input[type="color"]::-webkit-color-swatch-wrapper {
+            padding: 2px;
+        }
+        .mv-team-color-label input[type="color"]::-webkit-color-swatch {
+            border: none;
+            border-radius: 2px;
+        }
+        .mv-sidebar::-webkit-scrollbar { width: 6px; }
+        .mv-sidebar::-webkit-scrollbar-track { background: transparent; }
+        .mv-sidebar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+        .mv-sidebar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
 
         /* ── Model viewer: material items ─────────────────────── */
         .mv-mat-item {
             border-bottom: 1px solid rgba(255, 255, 255, 0.06);
             padding: 6px;
         }
+        .mv-mat-item.mv-hidden {
+            opacity: 0.35;
+        }
         .mv-mat-item-header {
+            display: flex;
+            align-items: center;
+            gap: 4px;
             font-size: 11px;
             font-weight: 600;
             color: var(--vscode-editor-foreground, #ccc);
             margin-bottom: 4px;
+        }
+        .mv-mat-header-label {
+            flex: 1;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+        }
+        .mv-mat-eye-btn {
+            font-size: 11px;
+            opacity: 0.4;
+            cursor: pointer;
+            flex-shrink: 0;
+            padding: 0 2px;
+            border-radius: 3px;
+        }
+        .mv-mat-eye-btn:hover {
+            opacity: 1;
+            background: rgba(255, 255, 255, 0.1);
         }
         .mv-mat-layer {
             background: rgba(255, 255, 255, 0.03);
@@ -1121,6 +1141,130 @@ function editorStyles() {
             background: var(--vscode-editor-background, #1e1e1e);
             border: 1px dashed var(--vscode-editorWidget-border, #444);
             border-radius: 4px;
+        }
+
+        /* ── Animation panel ──────────────────────────────────── */
+        .mv-anim-list {
+            padding: 0;
+            overflow-y: auto;
+            max-height: 100%;
+        }
+        .mv-anim-list::-webkit-scrollbar { width: 6px; }
+        .mv-anim-list::-webkit-scrollbar-track { background: transparent; }
+        .mv-anim-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+        .mv-anim-list::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.25); }
+        .mv-anim-item {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            padding: 6px 8px;
+            transition: background 0.1s;
+        }
+        .mv-anim-item:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+        .mv-anim-item.mv-anim-active {
+            background: rgba(0, 122, 204, 0.15);
+            border-left: 2px solid var(--vscode-focusBorder, #007acc);
+        }
+        .mv-anim-header {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 4px;
+        }
+        .mv-anim-play-btn {
+            width: 22px;
+            height: 22px;
+            border: none;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.08);
+            color: var(--vscode-editor-foreground, #ccc);
+            font-size: 12px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            padding: 0;
+            line-height: 1;
+        }
+        .mv-anim-play-btn:hover {
+            background: rgba(255, 255, 255, 0.16);
+        }
+        .mv-anim-play-btn.playing {
+            background: var(--vscode-button-background, #0e639c);
+            color: var(--vscode-button-foreground, #fff);
+        }
+        .mv-anim-name {
+            flex: 1;
+            font-size: 12px;
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        .mv-anim-duration {
+            font-size: 10px;
+            color: var(--vscode-descriptionForeground, #888);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .mv-anim-flags {
+            display: flex;
+            gap: 4px;
+            font-size: 9px;
+            margin-left: 4px;
+            flex-shrink: 0;
+        }
+        .mv-anim-flag {
+            padding: 1px 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--vscode-descriptionForeground, #888);
+        }
+        .mv-anim-slider-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .mv-anim-slider {
+            flex: 1;
+            height: 4px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            outline: none;
+            cursor: pointer;
+        }
+        .mv-anim-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--vscode-button-background, #0e639c);
+            cursor: pointer;
+            border: none;
+        }
+        .mv-anim-slider::-webkit-slider-thumb:hover {
+            background: var(--vscode-button-hoverBackground, #1177bb);
+            transform: scale(1.3);
+        }
+        .mv-anim-frame-label {
+            font-size: 10px;
+            font-family: var(--vscode-editor-font-family, monospace);
+            color: var(--vscode-descriptionForeground, #888);
+            min-width: 60px;
+            text-align: right;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+        .mv-anim-empty {
+            padding: 20px;
+            text-align: center;
+            color: var(--vscode-descriptionForeground, #888);
+            font-size: 12px;
         }
     `
 }

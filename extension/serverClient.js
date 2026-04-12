@@ -118,6 +118,17 @@ class ServerClient {
     }
 
     /**
+     * Send a JSON request and return the raw binary response (no JSON parse).
+     * @param {string} method  Route path
+     * @param {*} params
+     * @returns {Promise<Buffer>}
+     */
+    async sendBinaryRequest(method, params) {
+        if (!this._started) return null
+        return this.http.postJson(`/${method}`, params)
+    }
+
+    /**
      * Get the binary HTTP server info.
      * @returns {{port: number, token: string} | null}
      */

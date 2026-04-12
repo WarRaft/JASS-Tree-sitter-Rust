@@ -567,8 +567,14 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 <button class="mv-sb-item" id="mvGeosetBtn" title="Geoset visibility">\ud83e\udde9 Geosets</button>
                 <button class="mv-sb-item" id="mvMaterialBtn" title="Materials & textures">\ud83c\udfa8 Material</button>
                 <button class="mv-sb-item" id="mvBonesBtn" title="Bones & helpers">\ud83e\uddb4 Bones</button>
+                <button class="mv-sb-item" id="mvAnimBtn" title="Animation sequences">\ud83c\udfac Anim</button>
                 <div class="mv-sb-sep"></div>
                 <button class="mv-sb-item" id="mvSkeletonBtn" title="Toggle skeleton visibility">\u2620 Skeleton</button>
+                <div class="mv-sb-sep"></div>
+                <label class="mv-team-color-label" title="Team Color">
+                    \ud83c\udfa8 Team
+                    <input type="color" id="mvTeamColorPicker" value="#ff0303" />
+                </label>
             </div>
             <div style="display:flex;flex-direction:column;flex:1;min-width:0;">
                 <div class="mv-toolbar" id="mvToolbar">
@@ -577,24 +583,25 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 </div>
                 <div class="mv-canvas-container" id="modelCanvasContainer">
                     <canvas id="modelCanvas"></canvas>
-                    <div class="mv-materials-panel" id="mvGeosetsPanel" hidden>
-                        <div class="mv-panel-resize-handle" data-resize-panel="mvGeosetsPanel"></div>
-                        <div class="mv-mat-title">Geosets</div>
-                        <div class="mv-mat-list" id="mvGeosetList"></div>
-                    </div>
-                    <div class="mv-materials-panel" id="mvMaterialsPanel" hidden>
-                        <div class="mv-panel-resize-handle" data-resize-panel="mvMaterialsPanel"></div>
-                        <div class="mv-mat-title">Materials</div>
-                        <div class="mv-mat-list" id="mvMaterialList"></div>
-                    </div>
-                    <div class="mv-materials-panel" id="mvBonesPanel" hidden>
-                        <div class="mv-panel-resize-handle" data-resize-panel="mvBonesPanel"></div>
-                        <div class="mv-mat-title">Bones & Helpers</div>
-                        <div class="mv-mat-list" id="mvBonesList"></div>
-                    </div>
                 </div>
             </div>
         </div>
+    </float-window>
+
+    <float-window id="mvGeosetsWindow" parent-window="modelViewerWindow" title-text="\ud83e\udde9 Geosets" hidden style="left:200px;top:80px;width:260px;height:400px;">
+        <div class="mv-mat-list" id="mvGeosetList"></div>
+    </float-window>
+
+    <float-window id="mvMaterialsWindow" parent-window="modelViewerWindow" title-text="\ud83c\udfa8 Materials" hidden style="left:240px;top:100px;width:300px;height:450px;">
+        <div class="mv-mat-list" id="mvMaterialList"></div>
+    </float-window>
+
+    <float-window id="mvBonesWindow" parent-window="modelViewerWindow" title-text="\ud83e\uddb4 Bones & Helpers" hidden style="left:280px;top:120px;width:280px;height:400px;">
+        <div class="mv-mat-list" id="mvBonesList"></div>
+    </float-window>
+
+    <float-window id="mvAnimWindow" parent-window="modelViewerWindow" title-text="\ud83c\udfac Animations" hidden style="left:200px;top:60px;width:340px;height:420px;">
+        <div class="mv-anim-list" id="mvAnimList"></div>
     </float-window>
 
     <float-window id="blpViewerWindow" title-text="\ud83d\uddbc BLP Viewer" no-padding hidden style="left:180px;top:48px;width:640px;height:500px;">

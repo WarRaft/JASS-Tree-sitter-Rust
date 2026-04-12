@@ -131,6 +131,9 @@ class FloatWindow extends HTMLElement {
         this._maxBtn = shadow.getElementById('maxBtn');
         this._savedRect = null; // saved geometry before maximize
 
+        // Click-to-focus: any click inside the window brings it to front
+        this.addEventListener('pointerdown', () => this._bringToFront());
+
         // Close
         shadow.getElementById('closeBtn').addEventListener('click', () => this.hide());
 
@@ -239,12 +242,27 @@ class FloatWindow extends HTMLElement {
 
     hide() {
         this.setAttribute('hidden', '');
+        // Cascade: hide all child windows linked via parent-window attribute
+        if (this.id) {
+            document.querySelectorAll('float-window[parent-window="' + this.id + '"]').forEach(w => w.hide());
+        }
         this._notifyToggle();
     }
 
     _bringToFront() {
         document.querySelectorAll('float-window').forEach(w => { w.style.zIndex = '10'; });
         this.style.zIndex = '11';
+        // If this window has children, bring them above
+        if (this.id) {
+            document.querySelectorAll('float-window[parent-window="' + this.id + '"]').forEach(w => { w.style.zIndex = '12'; });
+        }
+        // If this is a child window, bring parent and all siblings to front too
+        const parentId = this.getAttribute('parent-window');
+        if (parentId) {
+            const parent = document.getElementById(parentId);
+            if (parent) parent.style.zIndex = '11';
+            document.querySelectorAll('float-window[parent-window="' + parentId + '"]').forEach(w => { w.style.zIndex = '12'; });
+        }
     }
 
     _clampToViewport() {

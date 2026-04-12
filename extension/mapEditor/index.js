@@ -7,6 +7,7 @@ const {MpqFileSystemProvider} = require('../mpqFileSystemProvider.js')
 const {SUPPORTED_BINARIES, findMapRoot, scanMapBinaries} = require('./mapRoot.js')
 const {errorHtml} = require('./utils.js')
 const {renderMapEditor} = require('./render.js')
+const {parseMdxBinary} = require('./parseMdxBinary.js')
 
 /**
  * @param {import('vscode').CustomDocument} document
@@ -192,10 +193,11 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         // Render immediately; the model data will be sent to the
         // webview after the HTML is built so the viewer opens it.
         try {
-            const renderResult = await client.sendRequest('render/mdx', {
+            const buf = await client.sendBinaryRequest('render/mdx', {
                 uri: document.uri.toString()
             })
-            if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
+            const renderResult = buf ? parseMdxBinary(buf) : null
+            if (renderResult && renderResult.geosets && renderResult.geosets.length > 0) {
                 const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
                 _pendingMdxData = {
                     command: 'modelData',
@@ -615,11 +617,12 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 if (ext === 'mdx') {
                     // Render MDX via server and send result to webview
                     try {
-                        const renderResult = await client.sendRequest('render/mdx', {
+                        const mdxBuf = await client.sendBinaryRequest('render/mdx', {
                             uri: tmpUri.toString()
                         })
+                        const renderResult = mdxBuf ? parseMdxBinary(mdxBuf) : null
 
-                        if (renderResult && !renderResult.error && renderResult.geosets && renderResult.geosets.length > 0) {
+                        if (renderResult && renderResult.geosets && renderResult.geosets.length > 0) {
                             const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
                             let replTex = null
                             if (msg.cliffTex) {
@@ -770,10 +773,11 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     fs.writeFileSync(tmpPath, buf)
 
                     try {
-                        const renderResult = await client.sendRequest('render/mdx', {
+                        const mdxBuf = await client.sendBinaryRequest('render/mdx', {
                             uri: Uri.file(tmpPath).toString()
                         })
-                        if (renderResult && !renderResult.error && renderResult.geosets) {
+                        const renderResult = mdxBuf ? parseMdxBinary(mdxBuf) : null
+                        if (renderResult && renderResult.geosets) {
                             webviewPanel.webview.postMessage({
                                 command: 'mapObjectModel',
                                 path: modelPath,

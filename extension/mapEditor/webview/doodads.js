@@ -269,21 +269,6 @@ window._W3E_DOODADS = (function () {
             _allDoodads = Object.entries(slkData.doodads).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
         }
 
-        // DEBUG: log status distribution
-        var _dbg = {original: 0, custom: 0, modified: 0, sampleCustom: [], sampleOriginal: []};
-        for (var _i = 0; _i < _allDoodads.length; _i++) {
-            var _d = _allDoodads[_i];
-            if (_isOriginal(_d)) {
-                _dbg.original++;
-                if (_dbg.sampleOriginal.length < 3) _dbg.sampleOriginal.push({id: _d.doodId, baseId: _d.baseId, w3dModified: _d.w3dModified});
-            } else {
-                _dbg.custom++;
-                if (_isModified(_d)) _dbg.modified++;
-                if (_dbg.sampleCustom.length < 3) _dbg.sampleCustom.push({id: _d.doodId, baseId: _d.baseId, w3dModified: _d.w3dModified});
-            }
-        }
-        console.log('[DOODADS] total=' + _allDoodads.length + ' original=' + _dbg.original + ' custom=' + _dbg.custom + ' modified=' + _dbg.modified, _dbg);
-        console.log('[DOODADS] slkData keys:', slkData ? Object.keys(slkData) : 'null');
 
         const srcEl = document.getElementById('dsSlkSource');
         if (srcEl) {

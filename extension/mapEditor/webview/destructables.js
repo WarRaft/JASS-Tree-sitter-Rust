@@ -284,21 +284,6 @@ window._W3E_DESTRUCTABLES = (function () {
             _allDestructables = Object.entries(slkData.destructables).map(function (e) { e[1]._rawKey = e[0]; return e[1]; });
         }
 
-        // DEBUG: log status distribution
-        var _dbg = {original: 0, custom: 0, modified: 0, sampleCustom: [], sampleOriginal: []};
-        for (var _i = 0; _i < _allDestructables.length; _i++) {
-            var _d = _allDestructables[_i];
-            if (_isOriginal(_d)) {
-                _dbg.original++;
-                if (_dbg.sampleOriginal.length < 3) _dbg.sampleOriginal.push({id: _d.destructableId, baseId: _d.baseId, w3bModified: _d.w3bModified});
-            } else {
-                _dbg.custom++;
-                if (_isModified(_d)) _dbg.modified++;
-                if (_dbg.sampleCustom.length < 3) _dbg.sampleCustom.push({id: _d.destructableId, baseId: _d.baseId, w3bModified: _d.w3bModified});
-            }
-        }
-        console.log('[DESTRUCTABLES] total=' + _allDestructables.length + ' original=' + _dbg.original + ' custom=' + _dbg.custom + ' modified=' + _dbg.modified, _dbg);
-        console.log('[DESTRUCTABLES] slkData keys:', slkData ? Object.keys(slkData) : 'null');
 
         const srcEl = document.getElementById('dtSlkSource');
         if (srcEl) {

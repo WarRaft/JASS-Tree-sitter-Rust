@@ -1223,20 +1223,6 @@
             const _fallbackMat = new THREE.MeshPhongMaterial({color: 0xff0000, flatShading: true})
             const _fallbackEntries = [{geometry: _fallbackGeo, material: _fallbackMat}]
 
-            function _b64f32(b64) {
-                if (!b64) return new Float32Array(0)
-                const bin = atob(b64), buf = new ArrayBuffer(bin.length), u8 = new Uint8Array(buf)
-                for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
-                return new Float32Array(buf)
-            }
-
-            function _b64u16(b64) {
-                if (!b64) return new Uint16Array(0)
-                const bin = atob(b64), buf = new ArrayBuffer(bin.length), u8 = new Uint8Array(buf)
-                for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i)
-                return new Uint16Array(buf)
-            }
-
             function _texUrl(texPath) {
                 const bs = DATA.binaryServer
                 if (!bs || !texPath) return null
@@ -1337,10 +1323,10 @@
 
                 for (const g of geosets) {
                     if (!g.vertex_count || !g.face_count) continue
-                    const verts = _b64f32(g.vertices)
-                    const norms = _b64f32(g.normals)
-                    const faces = _b64u16(g.faces)
-                    const uvs = _b64f32(g.uvs)
+                    const verts = g.vertices instanceof Float32Array ? g.vertices : new Float32Array(0)
+                    const norms = g.normals instanceof Float32Array ? g.normals : new Float32Array(0)
+                    const faces = g.faces instanceof Uint16Array ? g.faces : new Uint16Array(0)
+                    const uvs = g.uvs instanceof Float32Array ? g.uvs : new Float32Array(0)
 
                     const geo = new THREE.BufferGeometry()
                     geo.setAttribute('position', new THREE.BufferAttribute(verts, 3))
