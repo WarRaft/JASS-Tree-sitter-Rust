@@ -13,7 +13,7 @@ use log::debug;
 use serde::Serialize;
 use std::io::Cursor;
 
-use super::file_lookup::lookup_file;
+use super::file_lookup::lookup_file_resolved;
 use super::slk::TerrainSlkResult;
 use crate::util::bin_reader::Rawcode;
 
@@ -53,10 +53,15 @@ pub fn load_tile_textures(
             }
 
             let rel_path = format!("{}\\{}{}", tile_info.dir, tile_info.file, tile_info.ext);
-            let (buf, source) = lookup_file(&rel_path, archive_path)?;
+            let (buf, source, resolved_path) = lookup_file_resolved(&rel_path, archive_path)?;
             debug!("textures: loaded {} from {}", rel_path, source);
 
-            let img = decode_texture(&buf, &tile_info.ext)?;
+            // Determine format from the actually resolved path
+            let ext = resolved_path
+                .rfind('.')
+                .map(|i| &resolved_path[i..])
+                .unwrap_or(&tile_info.ext);
+            let img = decode_texture(&buf, ext)?;
             let data_url = rgba_to_png_data_url(&img)?;
 
             Some(TileTexture {

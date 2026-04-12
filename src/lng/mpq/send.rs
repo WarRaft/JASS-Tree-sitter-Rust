@@ -85,8 +85,216 @@ fn fix_case(name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+/// Model-file modification rawcodes (field = "file" for models).
+const MODEL_FIELD_IDS: &[&str] = &["dfil", "bfil", "umdl", "ifil"];
+/// Variation-count modification rawcodes (field = "numVar").
+const NUMVAR_FIELD_IDS: &[&str] = &["dvar", "bvar"];
+/// Texture-path modification rawcodes.
+const TEXTURE_FIELD_IDS: &[&str] = &["dptx", "bptx", "bptd", "bshd", "uico", "iico"];
+/// Model extensions in priority order (.mdx before .mdl).
+const MODEL_EXTS: &[&str] = &[".mdx", ".mdl"];
+/// Texture extensions in priority order (.tga before .blp).
+const TEXTURE_EXTS: &[&str] = &[".tga", ".blp"];
+
+/// Heuristic: does this string look like a file path?
+fn looks_like_path(s: &str) -> bool {
+    if s.len() < 3 { return false; }
+    if s.contains('\\') || s.contains('/') { return true; }
+    if let Some(dot) = s.rfind('.') {
+        let ext_len = s.len() - dot;
+        if ext_len >= 2 && ext_len <= 5 { return true; }
+    }
+    false
+}
+
+/// Strip the file extension from a path (everything after the last `.`
+/// that comes after the last path separator).  Returns the original
+/// string unchanged when there is no extension.
+fn strip_ext(path: &str) -> &str {
+    let last_sep = path.rfind(['/', '\\']).unwrap_or(0);
+    match path[last_sep..].rfind('.') {
+        Some(i) => &path[..last_sep + i],
+        None => path,
+    }
+}
+
+/// Does the path have a recognised file extension?
+fn has_ext(path: &str) -> bool {
+    let last_sep = path.rfind(['/', '\\']).unwrap_or(0);
+    path[last_sep..].rfind('.').map_or(false, |i| {
+        let ext_len = path.len() - (last_sep + i);
+        ext_len >= 2 && ext_len <= 5
+    })
+}
+
+/// Push `base` with each of the given extensions into `out`.
+fn push_with_exts(base: &str, exts: &[&str], out: &mut Vec<String>) {
+    for ext in exts {
+        out.push(format!("{base}{ext}"));
+    }
+}
+
+/// Expand a single path into concrete probe candidates.
+///
+/// * Paths with `.mdx`/`.mdl` → also try the paired model extension.
+/// * Paths with `.tga`/`.blp` → also try the paired texture extension.
+/// * Extensionless paths + known field type → correct extension pair.
+/// * Extensionless paths with unknown type → kept as-is (no blind expansion).
+fn expand_path(path: &str, kind: PathKind, out: &mut Vec<String>) {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
+        let base = strip_ext(path);
+        push_with_exts(base, MODEL_EXTS, out);
+    } else if lower.ends_with(".tga") || lower.ends_with(".blp") {
+        let base = strip_ext(path);
+        push_with_exts(base, TEXTURE_EXTS, out);
+    } else if has_ext(path) {
+        // Known extension that is neither model nor texture — keep as-is.
+        out.push(path.to_string());
+    } else {
+        // No extension — use the field type to decide.
+        match kind {
+            PathKind::Model   => push_with_exts(path, MODEL_EXTS, out),
+            PathKind::Texture => push_with_exts(path, TEXTURE_EXTS, out),
+            PathKind::Unknown => out.push(path.to_string()),
+        }
+    }
+}
+
+/// Semantic type of a path extracted from object data.
+#[derive(Clone, Copy)]
+enum PathKind { Model, Texture, Unknown }
+
+/// Extract model/texture paths from all object definitions, respecting
+/// field semantics (model vs texture) and doodad/destructable variations.
+fn extract_paths_from_object_data(
+    data: &crate::lng::w3abdhqtu::parse::W3ObjectData,
+    out: &mut Vec<String>,
+) {
+    use crate::lng::w3abdhqtu::parse::{ModificationValue, ObjectDefinition};
+
+    fn from_defs(defs: &[ObjectDefinition], out: &mut Vec<String>) {
+        for def in defs {
+            // First pass: collect file path + numVar for this definition.
+            let mut model_path: Option<String> = None;
+            let mut num_var: u32 = 0;
+
+            for set in &def.sets {
+                for m in &set.modifications {
+                    let mid = m.modification_id.text.as_str();
+
+                    if NUMVAR_FIELD_IDS.contains(&mid) {
+                        if let ModificationValue::Int(v) = &m.value {
+                            num_var = *v as u32;
+                        }
+                    }
+
+                    if let ModificationValue::Str(ref s) = m.value {
+                        if !looks_like_path(s) { continue; }
+
+                        let kind = if MODEL_FIELD_IDS.contains(&mid) {
+                            PathKind::Model
+                        } else if TEXTURE_FIELD_IDS.contains(&mid) {
+                            PathKind::Texture
+                        } else {
+                            PathKind::Unknown
+                        };
+
+                        // Remember model path for variation expansion below.
+                        if matches!(kind, PathKind::Model) {
+                            model_path = Some(s.clone());
+                        }
+
+                        expand_path(s, kind, out);
+                    }
+                }
+            }
+
+            // Second pass: generate variation paths (base0, base1, …)
+            // for model fields when numVar > 1.
+            if num_var > 1 {
+                if let Some(ref mp) = model_path {
+                    let base = strip_ext(mp);
+                    for i in 0..num_var {
+                        let var_base = format!("{base}{i}");
+                        push_with_exts(&var_base, MODEL_EXTS, out);
+                    }
+                }
+            }
+        }
+    }
+
+    from_defs(&data.table.originals, out);
+    from_defs(&data.table.customs, out);
+}
+
+/// Collect candidate file paths by parsing the map's object data,
+/// W3I, and imported-file lists.  Returns a deduplicated set of paths
+/// to probe with `archive.has_file()`.
+fn collect_candidate_paths(archive: &storm_rs::MpqArchive) -> std::collections::HashSet<String> {
+    let mut raw: Vec<String> = Vec::new();
+
+    // ── Object data files ──
+    let obj_files: &[(&str, bool)] = &[
+        ("war3map.w3a", true),   // abilities  (level-based)
+        ("war3map.w3b", false),  // destructables
+        ("war3map.w3d", true),   // doodads    (level-based)
+        ("war3map.w3h", false),  // buffs
+        ("war3map.w3q", true),   // upgrades   (level-based)
+        ("war3map.w3t", false),  // items
+        ("war3map.w3u", false),  // units
+    ];
+    for &(file_name, level_data) in obj_files {
+        if let Ok(buf) = archive.read_file(file_name) {
+            if let Ok((data, _)) = crate::lng::w3abdhqtu::parse::W3ObjectData::read(&buf, level_data) {
+                extract_paths_from_object_data(&data, &mut raw);
+            }
+        }
+    }
+
+    // ── W3I paths (loading screen, prologue — these are models) ──
+    if let Ok(buf) = archive.read_file("war3map.w3i") {
+        if let Ok((w3i, _)) = crate::lng::w3i::W3iData::read(&buf) {
+            if let Some(ref p) = w3i.loading_screen_model {
+                if !p.is_empty() { expand_path(p, PathKind::Model, &mut raw); }
+            }
+            if let Some(ref p) = w3i.prologue_screen_model {
+                if !p.is_empty() { expand_path(p, PathKind::Model, &mut raw); }
+            }
+        }
+    }
+
+    // ── Imported files list (paths already have extensions) ──
+    for imp in &["war3mapImported\\war3mapImported.txt", "war3mapImported/war3mapImported.txt"] {
+        if let Ok(buf) = archive.read_file(imp) {
+            if let Ok(text) = String::from_utf8(buf) {
+                for line in text.lines() {
+                    let t = line.trim();
+                    if !t.is_empty() {
+                        raw.push(t.to_string());
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    raw.into_iter().collect()
+}
+
 pub(crate) fn list_files_pub(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
     list_files(archive_path)
+}
+
+/// File source tag used while building the file list.
+#[derive(Clone, Copy, PartialEq)]
+enum FileSource {
+    /// From the archive's internal `(listfile)`.
+    Listfile,
+    /// Probed from the `KNOWN_MPQ_FILES` constant.
+    Discovered,
+    /// Probed from paths referenced in the map's data files.
+    Found,
 }
 
 fn list_files(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
@@ -100,11 +308,11 @@ fn list_files(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
     // so two listfiles may provide the same path with different casing.
     // Prefer the properly-cased variant from the external listfile.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut names: Vec<(String, FileSource)> = Vec::new();
     for name in raw_names {
         let lower = name.replace('\\', "/").to_ascii_lowercase();
         if seen.insert(lower) {
-            names.insert(fix_case(&name));
+            names.push((fix_case(&name), FileSource::Listfile));
         }
     }
 
@@ -113,15 +321,29 @@ fn list_files(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
         let lower = name.replace('\\', "/").to_ascii_lowercase();
         if !seen.contains(&lower) && archive.has_file(name) {
             seen.insert(lower);
-            names.insert(fix_case(name));
+            names.push((fix_case(name), FileSource::Discovered));
+        }
+    }
+
+    // Probe paths referenced in the map's object data / w3i / imports.
+    let candidates = collect_candidate_paths(&archive);
+    for candidate in &candidates {
+        let lower = candidate.replace('\\', "/").to_ascii_lowercase();
+        if !seen.contains(&lower) && archive.has_file(candidate) {
+            seen.insert(lower);
+            names.push((fix_case(candidate), FileSource::Found));
         }
     }
 
     let mut entries: Vec<serde_json::Value> = names
         .iter()
-        .map(|name| {
+        .map(|(name, source)| {
             let size = archive.get_file_size(name).unwrap_or(0);
-            json!({ "name": name, "size": size })
+            match source {
+                FileSource::Discovered => json!({ "name": name, "size": size, "discovered": true }),
+                FileSource::Found      => json!({ "name": name, "size": size, "found": true }),
+                FileSource::Listfile   => json!({ "name": name, "size": size }),
+            }
         })
         .collect();
 
@@ -167,29 +389,43 @@ fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
     // Deduplicate by lowercase — MPQ paths are case-insensitive.
     // Prefer properly-cased names from the external listfile.
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut file_entries: Vec<(String, FileSource)> = Vec::new();
     for name in raw_names {
         let lower = name.replace('\\', "/").to_ascii_lowercase();
         if seen.insert(lower) {
-            names.insert(fix_case(&name));
+            file_entries.push((fix_case(&name), FileSource::Listfile));
         }
     }
     for &name in KNOWN_MPQ_FILES {
         let lower = name.replace('\\', "/").to_ascii_lowercase();
         if !seen.contains(&lower) && archive.has_file(name) {
             seen.insert(lower);
-            names.insert(fix_case(name));
+            file_entries.push((fix_case(name), FileSource::Discovered));
         }
     }
 
-    let file_count = names.len();
-    let total_size: u64 = names.iter()
-        .map(|n| archive.get_file_size(n).unwrap_or(0) as u64)
+    // Probe paths referenced in the map's object data / w3i / imports.
+    let candidates = collect_candidate_paths(&archive);
+    for candidate in &candidates {
+        let lower = candidate.replace('\\', "/").to_ascii_lowercase();
+        if !seen.contains(&lower) && archive.has_file(candidate) {
+            seen.insert(lower);
+            file_entries.push((fix_case(candidate), FileSource::Found));
+        }
+    }
+
+    let file_count = file_entries.len();
+    let total_size: u64 = file_entries.iter()
+        .map(|(n, _)| archive.get_file_size(n).unwrap_or(0) as u64)
         .sum();
 
-    let mut files: Vec<serde_json::Value> = names.iter().map(|name| {
+    let mut files: Vec<serde_json::Value> = file_entries.iter().map(|(name, source)| {
         let size = archive.get_file_size(name).unwrap_or(0);
-        json!({ "name": name, "size": size })
+        match source {
+            FileSource::Discovered => json!({ "name": name, "size": size, "discovered": true }),
+            FileSource::Found      => json!({ "name": name, "size": size, "found": true }),
+            FileSource::Listfile   => json!({ "name": name, "size": size }),
+        }
     }).collect();
     files.sort_by(|a, b| {
         let na = a["name"].as_str().unwrap_or("");
@@ -418,5 +654,4 @@ fn parse_w3x_header(path: &str) -> serde_json::Value {
     // Not a recognized W3X/W3M/W3N header — might be a plain MPQ
     json!({ "signature": format!("{:02X}{:02X}{:02X}{:02X}", sig[0], sig[1], sig[2], sig[3]) })
 }
-
 

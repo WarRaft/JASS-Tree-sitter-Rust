@@ -56,24 +56,27 @@ fn render_texture_png(relative_path: &str, archive_path: Option<&str>, tileset: 
     use image::{DynamicImage, ImageFormat};
     use std::io::Cursor;
 
-    // If the path has no file extension, try .tga first, then .blp
+    // If the path has no file extension, add .blp so the cascade
+    // triggers the .tga → .blp fallback logic.
     let lower = relative_path.to_ascii_lowercase();
     let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
-    if !lower[last_sep..].contains('.') {
-        let tga_path = format!("{relative_path}.tga");
-        if let Ok(result) = render_texture_png(&tga_path, archive_path, tileset) {
-            return Ok(result);
-        }
-        let blp_path = format!("{relative_path}.blp");
-        return render_texture_png(&blp_path, archive_path, tileset);
-    }
+    let search_path = if !lower[last_sep..].contains('.') {
+        format!("{relative_path}.blp")
+    } else {
+        relative_path.to_string()
+    };
 
-    let (buf, _source) = crate::lng::map_editor::file_lookup::lookup_file_ext(relative_path, archive_path, tileset)
-        .ok_or_else(|| format!("Texture not found: {relative_path}"))?;
+    // lookup_file_resolved_ext handles .tga/.blp fallback internally:
+    // strips the extension, tries .tga first, then .blp.
+    let (buf, _source, resolved_path) = crate::lng::map_editor::file_lookup::lookup_file_resolved_ext(
+        &search_path, archive_path, tileset,
+    )
+    .ok_or_else(|| format!("Texture not found: {relative_path}"))?;
 
-    // Determine format by extension
+    // Determine format by the actually resolved path's extension
+    let resolved_lower = resolved_path.to_ascii_lowercase();
 
-    let rgba = if lower.ends_with(".blp") {
+    let rgba = if resolved_lower.ends_with(".blp") {
         let mut image = ImageBlp::from_buf(&buf)
             .map_err(|e| format!("BLP parse error: {e}"))?;
         image.decode(&buf, &[])
@@ -82,7 +85,7 @@ fn render_texture_png(relative_path: &str, archive_path: Option<&str>, tileset: 
             .ok_or("BLP has no mipmaps")?;
         mipmap.image.clone()
             .ok_or_else(|| "BLP mipmap has no image data".to_string())?
-    } else if lower.ends_with(".tga") {
+    } else if resolved_lower.ends_with(".tga") {
         let img = image::load_from_memory_with_format(&buf, ImageFormat::Tga)
             .map_err(|e| format!("TGA decode error: {e}"))?;
         img.to_rgba8()

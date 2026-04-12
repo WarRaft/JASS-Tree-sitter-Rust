@@ -140,11 +140,10 @@ window._W3E_UTILS = (function () {
         const dotIdx = filePath.lastIndexOf('.');
         const hasExt = dotIdx > lastSlash && dotIdx >= 0;
         const base = hasExt ? filePath.substring(0, dotIdx) : filePath;
-        const ext = hasExt ? filePath.substring(dotIdx) : '.mdx';
-        if (numVar <= 1) return [base + ext];
+        if (numVar <= 1) return [base];
         const paths = [];
         for (let i = 0; i < numVar; i++) {
-            paths.push(base + i + ext);
+            paths.push(base + i);
         }
         return paths;
     }

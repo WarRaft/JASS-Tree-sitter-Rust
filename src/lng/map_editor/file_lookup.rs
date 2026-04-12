@@ -46,6 +46,73 @@ pub fn lookup_file_resolved(relative_path: &str, archive_path: Option<&str>) -> 
 
 /// Like `lookup_file_resolved`, but with an optional tileset for tileset-specific MPQ lookup.
 pub fn lookup_file_resolved_ext(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
+    // Try the exact path first (with extension fallbacks).
+    if let result @ Some(_) = lookup_with_ext_fallback(relative_path, archive_path, tileset) {
+        return result;
+    }
+
+    // Variation fallback: strip trailing digits from the filename stem and retry.
+    // e.g. "Doodads\grass1" → "Doodads\grass"
+    // e.g. "Doodads\grass1.mdx" → "Doodads\grass.mdx"
+    if let Some(base) = strip_variation_digits(relative_path) {
+        debug!("lookup_file: variation fallback {relative_path} → {base}");
+        return lookup_with_ext_fallback(&base, archive_path, tileset);
+    }
+
+    None
+}
+
+/// Core lookup with extension fallback (.mdx↔.mdl, .tga↔.blp) but
+/// **without** variation digit stripping.
+fn lookup_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
+    let lower = relative_path.to_ascii_lowercase();
+
+    // ── Model extension normalization: always try .mdx first, then .mdl ──
+    if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
+        let base = &relative_path[..relative_path.len() - 4];
+        let mdx_path = format!("{base}.mdx");
+        if let result @ Some(_) = lookup_cascade(&mdx_path, archive_path, tileset) {
+            return result;
+        }
+        let mdl_path = format!("{base}.mdl");
+        return lookup_cascade(&mdl_path, archive_path, tileset);
+    }
+
+    // ── Texture extension normalization: always try .tga first, then .blp ──
+    if lower.ends_with(".tga") || lower.ends_with(".blp") {
+        let base = &relative_path[..relative_path.len() - 4];
+        let tga_path = format!("{base}.tga");
+        if let result @ Some(_) = lookup_cascade(&tga_path, archive_path, tileset) {
+            return result;
+        }
+        let blp_path = format!("{base}.blp");
+        return lookup_cascade(&blp_path, archive_path, tileset);
+    }
+
+    // ── No extension: try as model (.mdx, .mdl), then as texture (.tga, .blp), then exact ──
+    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+    if !lower[last_sep..].contains('.') {
+        // Model
+        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.mdx"), archive_path, tileset) {
+            return result;
+        }
+        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.mdl"), archive_path, tileset) {
+            return result;
+        }
+        // Texture
+        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.tga"), archive_path, tileset) {
+            return result;
+        }
+        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.blp"), archive_path, tileset) {
+            return result;
+        }
+    }
+
+    lookup_cascade(relative_path, archive_path, tileset)
+}
+
+/// Internal: search the full cascade for exactly `relative_path` (no extension fallbacks).
+fn lookup_cascade(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
     // Normalise to backslash for MPQ lookups and forward-slash for FS.
     let mpq_path = relative_path.replace('/', "\\");
     let fs_path = relative_path.replace('\\', "/");
@@ -141,15 +208,6 @@ pub fn lookup_file_resolved_ext(relative_path: &str, archive_path: Option<&str>,
         debug!("lookup_file: {relative_path} NOT in {mpq_name}");
     }
 
-    // ── .mdx → .mdl fallback ────────────────────────────────────
-    // Model paths in SLK files often omit the extension; callers append
-    // `.mdx` first.  If the `.mdx` wasn't found anywhere in the cascade,
-    // retry with `.mdl` (the older text-based model format).
-    if relative_path.to_ascii_lowercase().ends_with(".mdx") {
-        let mdl_path = format!("{}.mdl", &relative_path[..relative_path.len() - 4]);
-        debug!("lookup_file: .mdx not found, retrying as {mdl_path}");
-        return lookup_file_resolved_ext(&mdl_path, archive_path, tileset);
-    }
 
     None
 }
@@ -164,6 +222,56 @@ pub fn lookup_file_exists(relative_path: &str, archive_path: Option<&str>) -> bo
 
 /// Like `lookup_file_exists`, but with an optional tileset.
 pub fn lookup_file_exists_ext(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> bool {
+    // Try the exact path first (with extension fallbacks).
+    if exists_with_ext_fallback(relative_path, archive_path, tileset) {
+        return true;
+    }
+
+    // Variation fallback: strip trailing digits from the filename stem and retry.
+    if let Some(base) = strip_variation_digits(relative_path) {
+        return exists_with_ext_fallback(&base, archive_path, tileset);
+    }
+
+    false
+}
+
+/// Core existence check with extension fallback (.mdx↔.mdl, .tga↔.blp)
+/// but **without** variation digit stripping.
+fn exists_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> bool {
+    let lower = relative_path.to_ascii_lowercase();
+
+    // ── Model extension normalization: always try .mdx first, then .mdl ──
+    if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
+        let base = &relative_path[..relative_path.len() - 4];
+        if exists_cascade(&format!("{base}.mdx"), archive_path, tileset) {
+            return true;
+        }
+        return exists_cascade(&format!("{base}.mdl"), archive_path, tileset);
+    }
+
+    // ── Texture extension normalization: always try .tga first, then .blp ──
+    if lower.ends_with(".tga") || lower.ends_with(".blp") {
+        let base = &relative_path[..relative_path.len() - 4];
+        if exists_cascade(&format!("{base}.tga"), archive_path, tileset) {
+            return true;
+        }
+        return exists_cascade(&format!("{base}.blp"), archive_path, tileset);
+    }
+
+    // ── No extension: try as model (.mdx, .mdl), then as texture (.tga, .blp), then exact ──
+    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+    if !lower[last_sep..].contains('.') {
+        if exists_cascade(&format!("{relative_path}.mdx"), archive_path, tileset) { return true; }
+        if exists_cascade(&format!("{relative_path}.mdl"), archive_path, tileset) { return true; }
+        if exists_cascade(&format!("{relative_path}.tga"), archive_path, tileset) { return true; }
+        if exists_cascade(&format!("{relative_path}.blp"), archive_path, tileset) { return true; }
+    }
+
+    exists_cascade(relative_path, archive_path, tileset)
+}
+
+/// Internal: check existence in the full cascade (no extension fallbacks).
+fn exists_cascade(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> bool {
     let mpq_path = relative_path.replace('/', "\\");
     let fs_path = relative_path.replace('\\', "/");
 
@@ -236,12 +344,37 @@ pub fn lookup_file_exists_ext(relative_path: &str, archive_path: Option<&str>, t
         }
     }
 
-    // ── .mdx → .mdl fallback ────────────────────────────────────
-    if relative_path.to_ascii_lowercase().ends_with(".mdx") {
-        let mdl_path = format!("{}.mdl", &relative_path[..relative_path.len() - 4]);
-        return lookup_file_exists_ext(&mdl_path, archive_path, tileset);
+    false
+}
+
+/// Strip trailing ASCII digits from the filename stem.
+///
+/// Used for doodad/destructable variation fallback: the game appends a
+/// variation index (`0`, `1`, …) to the base model path.  If the
+/// variation-specific file doesn't exist, the engine falls back to the
+/// base path without the digit suffix.
+///
+/// Examples:
+/// * `"Doodads\\grass1"` → `Some("Doodads\\grass")`
+/// * `"Doodads\\grass1.mdx"` → `Some("Doodads\\grass.mdx")`
+/// * `"Doodads\\grass"` → `None`  (no trailing digits)
+/// * `"123"` → `None`  (entire stem is digits — not a variation)
+fn strip_variation_digits(path: &str) -> Option<String> {
+    let last_sep = path.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
+    let filename = &path[last_sep..];
+
+    // Split filename into stem and extension.
+    let (stem, ext) = match filename.rfind('.') {
+        Some(dot) => (&filename[..dot], &filename[dot..]),
+        None => (filename, ""),
+    };
+
+    // Strip trailing digits from the stem.
+    let trimmed = stem.trim_end_matches(|c: char| c.is_ascii_digit());
+    if trimmed.len() == stem.len() || trimmed.is_empty() {
+        return None; // No trailing digits, or the entire stem is digits.
     }
 
-    false
+    Some(format!("{}{}{}", &path[..last_sep], trimmed, ext))
 }
 

@@ -103,6 +103,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const hasDoodadDoo = !!mapInfo.doodadDooData
     const isDoo = !!mapInfo.isDoo
     const fileCount = mapInfo.archiveFiles ? mapInfo.archiveFiles.length : 0
+    const discoveredCount = mapInfo.archiveFiles ? mapInfo.archiveFiles.filter(f => f.discovered).length : 0
+    const foundCount = mapInfo.archiveFiles ? mapInfo.archiveFiles.filter(f => f.found).length : 0
     const filesRows = mapInfo.isArchive ? renderFilesRows(mapInfo.archiveFiles) : ''
 
     // Build doodads SLK data
@@ -552,6 +554,10 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     <float-window id="filesWindow" title-text="\ud83d\udcc2 Files (${fileCount})" no-padding hidden style="right:16px;top:16px;left:auto;">
         <button slot="actions" class="float-action" id="browseBtn" title="Mount as workspace folder">\ud83d\udcc1</button>
         <input type="text" id="fileFilter" placeholder="Filter files\u2026" class="file-filter" />
+        ${discoveredCount > 0 || foundCount > 0 ? `<div class="file-source-filters">
+            ${discoveredCount > 0 ? `<label class="file-source-label" title="Files found by probing well-known names (not in listfile)"><input type="checkbox" class="file-source-cb" data-source="discovered" checked /><span class="file-badge file-badge-discovered">discovered</span> (${discoveredCount})</label>` : ''}
+            ${foundCount > 0 ? `<label class="file-source-label" title="Files found by probing paths from map data (not in listfile)"><input type="checkbox" class="file-source-cb" data-source="found" checked /><span class="file-badge file-badge-found">found</span> (${foundCount})</label>` : ''}
+        </div>` : ''}
         <div class="files-list" id="filesList">${filesRows}</div>
     </float-window>
     ` : ''}

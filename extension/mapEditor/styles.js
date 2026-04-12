@@ -474,6 +474,46 @@ function editorStyles() {
             color: var(--vscode-descriptionForeground, #888);
         }
 
+        /* ── File source badges & filter ────────────────────────── */
+        .file-badge {
+            display: inline-block;
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            flex-shrink: 0;
+        }
+        .file-badge-discovered {
+            background: rgba(78, 201, 176, 0.2);
+            color: #4ec9b0;
+        }
+        .file-badge-found {
+            background: rgba(220, 160, 50, 0.2);
+            color: #dca032;
+        }
+        .file-source-filters {
+            display: flex;
+            gap: 12px;
+            padding: 4px 10px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            background: rgba(255, 255, 255, 0.02);
+        }
+        .file-source-label {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            cursor: pointer;
+            color: var(--vscode-descriptionForeground, #888);
+            user-select: none;
+        }
+        .file-source-label input[type="checkbox"] {
+            margin: 0;
+            cursor: pointer;
+        }
+
         /* ── Header flag tags ─────────────────────────────────────── */
         .flag-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
         .flag-tag {

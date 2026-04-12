@@ -480,6 +480,43 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         emitGamePathChanged(gamePathStatus).catch(() => {})
     }
 
+    // ── Helper: lookup a game file via HTTP server or WebSocket fallback ──
+    // The server handles .mdx/.mdl and .tga/.blp extension fallback internally,
+    // so callers just send the path as-is — no extension juggling needed.
+    async function lookupGameFile(searchPath, opts) {
+        const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+        let buf = null
+        let resolvedPath = searchPath
+
+        if (bs) {
+            const params = new URLSearchParams({token: bs.token, path: searchPath})
+            if (isArchive) params.set('archive', filePath)
+            if (opts && opts.tileset) params.set('tileset', opts.tileset)
+            try {
+                const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
+                if (resp.ok) {
+                    buf = Buffer.from(await resp.arrayBuffer())
+                    resolvedPath = resp.headers.get('x-resolved-path') || searchPath
+                }
+            } catch (_) {}
+        }
+
+        if (!buf) {
+            try {
+                const result = await client.sendRequest('w3e/lookupFile', {
+                    path: searchPath,
+                    archivePath: isArchive ? filePath : undefined,
+                })
+                if (result && result.content) {
+                    buf = Buffer.from(result.content, 'base64')
+                    resolvedPath = result.resolvedPath || searchPath
+                }
+            } catch (_) {}
+        }
+
+        return buf ? {buf, resolvedPath} : null
+    }
+
 
 
     // ── Message handling ────────────────────────────────────────
@@ -534,53 +571,9 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             // render MDX data, and send the result back to the webview for
             // the embedded model viewer float-window.
             try {
-                const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
-                const hasExt = /\.\w+$/.test(msg.path)
+                const found = await lookupGameFile(msg.path)
 
-                // Build a list of paths to try
-                const pathsToTry = hasExt
-                    ? [msg.path]
-                    : [msg.path + '.mdx', msg.path + '.mdl']
-
-                let buf = null
-                let resolvedPath = msg.path
-
-                for (const tryPath of pathsToTry) {
-                    // Try HTTP server first
-                    if (bs && !buf) {
-                        const params = new URLSearchParams({
-                            token: bs.token,
-                            path: tryPath,
-                        })
-                        if (isArchive) params.set('archive', filePath)
-                        try {
-                            const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
-                            if (resp.ok) {
-                                buf = Buffer.from(await resp.arrayBuffer())
-                                const rp = resp.headers.get('x-resolved-path')
-                                resolvedPath = rp || tryPath
-                            }
-                        } catch (_) {}
-                    }
-
-                    // Fallback to WebSocket
-                    if (!buf) {
-                        try {
-                            const result = await client.sendRequest('w3e/lookupFile', {
-                                path: tryPath,
-                                archivePath: isArchive ? filePath : undefined,
-                            })
-                            if (result && result.content) {
-                                buf = Buffer.from(result.content, 'base64')
-                                resolvedPath = result.resolvedPath || tryPath
-                            }
-                        } catch (_) {}
-                    }
-
-                    if (buf) break
-                }
-
-                if (!buf) {
+                if (!found) {
                     const missingName = msg.path.replace(/\\/g, '/').split('/').pop() || msg.path
                     webviewPanel.webview.postMessage({
                         command: 'modelUnsupported',
@@ -590,6 +583,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     return
                 }
 
+                const {buf, resolvedPath} = found
                 const resolvedExt = (resolvedPath.split('.').pop() || '').toLowerCase()
 
                 // .mdl format — not supported yet, show notice in viewer
@@ -707,56 +701,23 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             await commands.executeCommand('mpq.extractTo', uri)
         } else if (msg.command === 'loadMapObjects' && msg.paths) {
             // Bulk-load MDX models for placing doodads/units on the terrain.
-            const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
             const fs = require('fs')
             const os = require('os')
             const mapTileset = terrainData && terrainData.tileset ? terrainData.tileset : null
 
             for (const modelPath of msg.paths) {
                 try {
-                    const hasExt = /\.\w+$/.test(modelPath)
-                    const pathsToTry = hasExt
-                        ? [modelPath]
-                        : [modelPath + '.mdx', modelPath + '.mdl']
+                    const found = await lookupGameFile(modelPath, {tileset: mapTileset})
 
-                    let buf = null
-                    let resolvedPath = modelPath
-
-                    for (const tryPath of pathsToTry) {
-                        if (bs && !buf) {
-                            const params = new URLSearchParams({token: bs.token, path: tryPath})
-                            if (isArchive) params.set('archive', filePath)
-                            if (mapTileset) params.set('tileset', mapTileset)
-                            try {
-                                const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
-                                if (resp.ok) {
-                                    buf = Buffer.from(await resp.arrayBuffer())
-                                    resolvedPath = resp.headers.get('x-resolved-path') || tryPath
-                                }
-                            } catch (_) {}
-                        }
-                        if (!buf) {
-                            try {
-                                const result = await client.sendRequest('w3e/lookupFile', {
-                                    path: tryPath,
-                                    archivePath: isArchive ? filePath : undefined,
-                                })
-                                if (result && result.content) {
-                                    buf = Buffer.from(result.content, 'base64')
-                                    resolvedPath = result.resolvedPath || tryPath
-                                }
-                            } catch (_) {}
-                        }
-                        if (buf) break
-                    }
-
-                    if (!buf) {
+                    if (!found) {
                         webviewPanel.webview.postMessage({
                             command: 'mapObjectModelNotFound',
                             path: modelPath,
                         })
                         continue
                     }
+
+                    const {buf, resolvedPath} = found
                     const resolvedExt = (resolvedPath.split('.').pop() || '').toLowerCase()
                     if (resolvedExt !== 'mdx') {
                         webviewPanel.webview.postMessage({

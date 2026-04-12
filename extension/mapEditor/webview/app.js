@@ -383,17 +383,27 @@ window.W3E = (function () {
 
             const filterInput = document.getElementById('fileFilter');
             if (filterInput) {
-                filterInput.addEventListener('input', e => {
-                    const q = e.target.value.toLowerCase();
+                function applyFileFilters() {
+                    const q = filterInput.value.toLowerCase();
                     const filesList = document.getElementById('filesList');
-                    if (!q) {
+
+                    // Determine which sources are enabled
+                    const hiddenSources = new Set();
+                    document.querySelectorAll('.file-source-cb').forEach(cb => {
+                        if (!cb.checked) hiddenSources.add(cb.dataset.source);
+                    });
+
+                    if (!q && hiddenSources.size === 0) {
                         filesList.querySelectorAll('.file-row').forEach(r => r.style.display = '');
                         filesList.querySelectorAll('.folder-row').forEach(r => { r.style.display = ''; r.classList.remove('collapsed'); });
                         filesList.querySelectorAll('.folder-children').forEach(r => { r.style.display = ''; r.classList.remove('collapsed'); });
                         return;
                     }
                     filesList.querySelectorAll('.file-row').forEach(r => {
-                        r.style.display = (r.dataset.name || '').toLowerCase().includes(q) ? '' : 'none';
+                        const source = r.dataset.source || 'listfile';
+                        const matchesText = !q || (r.dataset.name || '').toLowerCase().includes(q);
+                        const matchesSource = !hiddenSources.has(source);
+                        r.style.display = matchesText && matchesSource ? '' : 'none';
                     });
                     const folders = filesList.querySelectorAll('.folder-children');
                     for (let i = folders.length - 1; i >= 0; i--) {
@@ -407,6 +417,12 @@ window.W3E = (function () {
                             fr.classList.remove('collapsed');
                         }
                     }
+                }
+
+                filterInput.addEventListener('input', applyFileFilters);
+
+                document.querySelectorAll('.file-source-cb').forEach(cb => {
+                    cb.addEventListener('change', applyFileFilters);
                 });
             }
         }

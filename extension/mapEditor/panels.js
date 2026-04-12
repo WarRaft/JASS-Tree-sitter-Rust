@@ -145,7 +145,7 @@ function buildFileTree(files) {
             if (!node.children[dir]) node.children[dir] = {children: {}, files: []}
             node = node.children[dir]
         }
-        node.files.push({name, basename: parts[parts.length - 1], size: f.size})
+        node.files.push({name, basename: parts[parts.length - 1], size: f.size, discovered: !!f.discovered, found: !!f.found})
     }
     return root
 }
@@ -178,8 +178,14 @@ function renderTreeNode(node, prefix = '') {
     const sorted = [...node.files].sort((a, b) => a.basename.localeCompare(b.basename, undefined, {sensitivity: 'base'}))
     for (const f of sorted) {
         const size = f.size != null ? fmtSize(f.size) : ''
-        html += `<div class="file-row" data-name="${esc(f.name)}">
+        const source = f.found ? 'found' : f.discovered ? 'discovered' : 'listfile'
+        const cls = f.found ? 'file-row file-found' : f.discovered ? 'file-row file-discovered' : 'file-row'
+        const badge = f.found ? '<span class="file-badge file-badge-found" title="Found by probing map data">found</span>'
+            : f.discovered ? '<span class="file-badge file-badge-discovered" title="Discovered by probing known names">discovered</span>'
+            : ''
+        html += `<div class="${cls}" data-name="${esc(f.name)}" data-source="${source}">
             <span class="file-name">${esc(f.basename)}</span>
+            ${badge}
             <span class="file-size">${size}</span>
         </div>`
     }

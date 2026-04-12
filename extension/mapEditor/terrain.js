@@ -1436,16 +1436,16 @@
                 }
             }
 
-            // Resolve the model file path for a doodad, applying variation logic
+            // Resolve the model file path for a doodad, applying variation logic.
+            // Always strips extension — the server handles .mdx/.mdl resolution.
             function _resolveModelPath(baseFile, numVar, variation) {
                 let lastSlash = Math.max(baseFile.lastIndexOf('/'), baseFile.lastIndexOf('\\'))
                 let dotIdx = baseFile.lastIndexOf('.')
                 let hasExt = dotIdx > lastSlash && dotIdx >= 0
                 let base = hasExt ? baseFile.substring(0, dotIdx) : baseFile
-                let ext = hasExt ? baseFile.substring(dotIdx) : '.mdx'
-                if (numVar <= 1) return base + ext
+                if (numVar <= 1) return base
                 let idx = (variation || 0) % numVar
-                return base + idx + ext
+                return base + idx
             }
 
             // Create centered items for missing cliff fallback cubes.
