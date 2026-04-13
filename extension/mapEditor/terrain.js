@@ -615,6 +615,8 @@
                 if (!hasAnyImage) {
                     canvasTex = null
                     mat.map = colorTex
+                    mat.transparent = false
+                    mat.alphaTest = 0
                     mat.needsUpdate = true
                     return
                 }
@@ -647,6 +649,7 @@
 
                         const dstX = cx * CPX
                         const dstY = (cellsY - 1 - cy) * CPX
+
 
                         for (let li = 0; li < unique.length; li++) {
                             const L = unique[li]
@@ -692,11 +695,25 @@
                     }
                 }
 
-                canvasTex = new THREE.CanvasTexture(c2)
+                // Use DataTexture instead of CanvasTexture to avoid
+                // premultiplied-alpha issues: canvas 2D stores premultiplied
+                // data, which can corrupt alpha when CanvasTexture uploads it.
+                // getImageData() returns un-premultiplied RGBA → DataTexture
+                // uploads it as straight RGBA, preserving alpha exactly.
+                const imgData = ctx.getImageData(0, 0, c2.width, c2.height)
+                canvasTex = new THREE.DataTexture(
+                    new Uint8Array(imgData.data.buffer),
+                    c2.width, c2.height,
+                    THREE.RGBAFormat, THREE.UnsignedByteType
+                )
+                canvasTex.flipY = true
                 canvasTex.magFilter = THREE.LinearFilter
                 canvasTex.minFilter = THREE.LinearFilter
+                canvasTex.needsUpdate = true
                 if (useTextures) {
                     mat.map = canvasTex
+                    mat.transparent = true
+                    mat.alphaTest = 0.01
                     mat.needsUpdate = true
                 }
 
@@ -923,6 +940,8 @@
             applyColors()
             if (useTextures && canvasTex) {
                 mat.map = canvasTex
+                mat.transparent = true
+                mat.alphaTest = 0.01
                 mat.needsUpdate = true
             }
 
@@ -958,7 +977,10 @@
             })
             cb('cbTextures', e => {
                 useTextures = e.target.checked
-                mat.map = (useTextures && canvasTex) ? canvasTex : colorTex
+                const useTex = !!(useTextures && canvasTex)
+                mat.map = useTex ? canvasTex : colorTex
+                mat.transparent = useTex
+                mat.alphaTest = useTex ? 0.01 : 0
                 mat.needsUpdate = true
                 saveCbState()
             })
@@ -1321,6 +1343,140 @@
                 const materials = data.materials || []
                 const entries = []
 
+                // Resolve texture path for a given layer
+                function _resolveLayerTexture(layer) {
+                    if (!layer) return null
+                    const texId = layer.texture_id
+                    if (texId == null || texId >= textures.length) return null
+                    const tex = textures[texId]
+                    if (!tex) return null
+                    let texPath = null
+                    if (tex.replaceable_id && replaceableTextures) {
+                        if (replaceableTextures._cliffTex !== undefined) {
+                            texPath = replaceableTextures._cliffTex
+                        } else if (replaceableTextures[tex.replaceable_id]) {
+                            texPath = replaceableTextures[tex.replaceable_id]
+                        }
+                    } else if (tex.file_name && !tex.replaceable_id) {
+                        texPath = tex.file_name
+                    }
+                    if (!texPath) return null
+                    const url = _texUrl(texPath)
+                    if (!url) return null
+                    const t = _textureLoader.load(url)
+                    t.wrapS = THREE.RepeatWrapping
+                    t.wrapT = THREE.RepeatWrapping
+                    t.magFilter = THREE.LinearFilter
+                    t.minFilter = THREE.LinearMipmapLinearFilter
+                    return t
+                }
+
+                // Build material options for a single layer (matches model-viewer.js buildLayerMesh)
+                function _buildLayerMaterial(layer, isCliff) {
+                    const matOpts = {
+                        side: THREE.DoubleSide,
+                    }
+                    // Cliff models: disable specular so adjacent instances
+                    // have consistent diffuse-only lighting (no bright edge seams).
+                    if (isCliff) {
+                        matOpts.specular = 0x000000
+                        matOpts.shininess = 0
+                    }
+
+                    const sf = layer ? (layer.shading_flags || 0) : 0
+                    const fm = layer ? (layer.filter_mode || 0) : 0
+
+                    // NoDepthTest (0x40)
+                    if (sf & 0x40) matOpts.depthTest = false
+
+                    // NoDepthSet (0x80)
+                    if (sf & 0x80) matOpts.depthWrite = false
+
+                    const tex = _resolveLayerTexture(layer)
+                    if (tex) {
+                        matOpts.map = tex
+                        matOpts.color = 0xffffff
+                    } else {
+                        // No texture: modulate/modulate2x without texture is invisible
+                        if (fm === 5 || fm === 6) {
+                            matOpts.visible = false
+                        }
+                        matOpts.color = 0xcccccc
+                    }
+
+                    // Blending modes (WC3 / HiveWE reference):
+                    //   0 None/Opaque:    no blending
+                    //   1 Transparent:    alpha test ≥ 0.75
+                    //   2 Blend:          GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
+                    //   3 Additive:       GL_SRC_ALPHA, GL_ONE
+                    //   4 AddAlpha:       GL_SRC_ALPHA, GL_ONE
+                    //   5 Modulate:       GL_ZERO, GL_SRC_COLOR
+                    //   6 Modulate2x:     GL_DST_COLOR, GL_SRC_COLOR
+                    if (fm === 0) {
+                        matOpts.transparent = false
+                    } else if (fm === 1) {
+                        // Transparent/ColorAlpha — alpha test ≥ 0.75, rendered in opaque pass
+                        // (MdlVis: glAlphaFunc(GL_GEQUAL,0.75) in opaque pass;
+                        //  HiveWE: alpha_test=0.75, glBlendFunc(GL_ONE,GL_ZERO) — no blending)
+                        matOpts.transparent = false
+                        matOpts.alphaTest = 0.75
+                    } else if (fm === 2) {
+                        matOpts.transparent = true
+                        matOpts.blending = THREE.NormalBlending
+                        matOpts.depthWrite = false
+                    } else if (fm === 3 || fm === 4) {
+                        matOpts.transparent = true
+                        matOpts.blending = THREE.CustomBlending
+                        matOpts.blendSrc = THREE.SrcAlphaFactor
+                        matOpts.blendDst = THREE.OneFactor
+                        matOpts.depthWrite = false
+                    } else if (fm === 5) {
+                        matOpts.transparent = true
+                        matOpts.premultipliedAlpha = true
+                        matOpts.blending = THREE.CustomBlending
+                        matOpts.blendEquation = THREE.AddEquation
+                        matOpts.blendSrc = THREE.ZeroFactor
+                        matOpts.blendDst = THREE.SrcColorFactor
+                        matOpts.blendSrcAlpha = THREE.ZeroFactor
+                        matOpts.blendDstAlpha = THREE.SrcAlphaFactor
+                        matOpts.depthWrite = false
+                    } else if (fm === 6) {
+                        matOpts.transparent = true
+                        matOpts.premultipliedAlpha = true
+                        matOpts.blending = THREE.CustomBlending
+                        matOpts.blendEquation = THREE.AddEquation
+                        matOpts.blendSrc = THREE.DstColorFactor
+                        matOpts.blendDst = THREE.SrcColorFactor
+                        matOpts.blendSrcAlpha = THREE.ZeroFactor
+                        matOpts.blendDstAlpha = THREE.SrcAlphaFactor
+                        matOpts.depthWrite = false
+                    }
+
+                    // Layer alpha
+                    if (layer && layer.alpha < 1.0) {
+                        matOpts.transparent = true
+                        matOpts.opacity = layer.alpha
+                    }
+
+                    // Render order: opaque layers first (0,1), then blend (2), then additive (3,4,5,6)
+                    let renderOrder = 0
+                    if (fm === 0 || fm === 1) renderOrder = 0
+                    else if (fm === 2) renderOrder = 1
+                    else renderOrder = 2
+
+                    // Unshaded (0x01) → MeshBasicMaterial (no lighting), otherwise MeshPhongMaterial
+                    let meshMat
+                    if (sf & 0x01) {
+                        delete matOpts.specular
+                        delete matOpts.shininess
+                        meshMat = new THREE.MeshBasicMaterial(matOpts)
+                    } else {
+                        meshMat = new THREE.MeshPhongMaterial(matOpts)
+                    }
+                    if (isCliff && _terrainHeightTex) _applyCliffShader(meshMat)
+                    return {material: meshMat, renderOrder: renderOrder}
+                }
+
                 for (const g of geosets) {
                     if (!g.vertex_count || !g.face_count) continue
                     const verts = g.vertices instanceof Float32Array ? g.vertices : new Float32Array(0)
@@ -1335,72 +1491,22 @@
                     geo.setIndex(new THREE.BufferAttribute(faces, 1))
                     if (norms.length === 0) geo.computeVertexNormals()
 
-                    const matOpts = {
-                        color: 0xcccccc,
-                        side: THREE.DoubleSide,
-                        flatShading: false,
-                    }
-                    // Cliff models: disable specular so adjacent instances
-                    // have consistent diffuse-only lighting (no bright edge seams).
-                    if (isCliff) {
-                        matOpts.specular = 0x000000
-                        matOpts.shininess = 0
-                    }
+                    // Get layers for this geoset's material
+                    const layers = (g.material_id != null && g.material_id < materials.length)
+                        ? (materials[g.material_id].layers || [])
+                        : []
 
-                    // Look up texture via material_id → material → layer → texture
-                    if (g.material_id != null && g.material_id < materials.length) {
-                        const mat = materials[g.material_id]
-                        const layers = mat.layers || []
-                        if (layers.length > 0) {
-                            const layer = layers[0]
-                            const texId = layer.texture_id
-                            if (texId < textures.length) {
-                                const tex = textures[texId]
-                                // Determine texture path: use replaceable texture override if available
-                                let texPath = null
-                                if (tex && tex.replaceable_id && replaceableTextures) {
-                                    if (replaceableTextures._cliffTex !== undefined) {
-                                        // Cliff model: single material with Replaceable ID 11,
-                                        // texture = texDir\texFile from CliffTypes.slk
-                                        texPath = replaceableTextures._cliffTex
-                                    } else if (replaceableTextures[tex.replaceable_id]) {
-                                        texPath = replaceableTextures[tex.replaceable_id]
-                                    }
-                                } else if (tex && tex.file_name && !tex.replaceable_id) {
-                                    texPath = tex.file_name
-                                }
-                                if (texPath) {
-                                    const url = _texUrl(texPath)
-                                    if (url) {
-                                        const t = _textureLoader.load(url)
-                                        t.wrapS = THREE.RepeatWrapping
-                                        t.wrapT = THREE.RepeatWrapping
-                                        t.magFilter = THREE.LinearFilter
-                                        t.minFilter = THREE.LinearMipmapLinearFilter
-                                        matOpts.map = t
-                                        matOpts.color = 0xffffff
-                                    }
-                                }
-                            }
-                            const fm = layer.filter_mode
-                            if (fm === 1) {
-                                matOpts.transparent = true
-                                matOpts.alphaTest = 0.5
-                            } else if (fm === 2 || fm === 3) {
-                                matOpts.transparent = true
-                                matOpts.blending = fm === 3 ? THREE.AdditiveBlending : THREE.NormalBlending
-                                matOpts.depthWrite = false
-                            }
-                            if (layer.alpha < 1.0) {
-                                matOpts.transparent = true
-                                matOpts.opacity = layer.alpha
-                            }
+                    if (layers.length === 0) {
+                        // No layers — fallback material
+                        const {material, renderOrder} = _buildLayerMaterial(null, isCliff)
+                        entries.push({geometry: geo, material: material, renderOrder: renderOrder})
+                    } else {
+                        // Render each layer as a separate pass (multi-pass rendering as in model-viewer)
+                        for (const layer of layers) {
+                            const {material, renderOrder} = _buildLayerMaterial(layer, isCliff)
+                            entries.push({geometry: geo, material: material, renderOrder: renderOrder})
                         }
                     }
-
-                    const meshMat = new THREE.MeshPhongMaterial(matOpts)
-                    if (isCliff && _terrainHeightTex) _applyCliffShader(meshMat)
-                    entries.push({geometry: geo, material: meshMat})
                 }
                 return entries
             }
@@ -1416,6 +1522,7 @@
 
                 for (const entry of entries) {
                     const instMesh = new THREE.InstancedMesh(entry.geometry, entry.material, items.length)
+                    if (entry.renderOrder) instMesh.renderOrder = entry.renderOrder
                     if (group) instMesh.frustumCulled = false // cliff shader moves verts
                     instMesh.userData._items = items
                     for (let i = 0; i < items.length; i++) {
@@ -2113,11 +2220,12 @@
         resize()
         window.addEventListener('resize', resize);
 
-        const _clock = new THREE.Clock();
+        const _timer = new THREE.Timer();
 
         (function animate() {
             requestAnimationFrame(animate)
-            const dt = _clock.getDelta()
+            _timer.update()
+            const dt = _timer.getDelta()
             ctrl.update()
             if (_onAnimateWater) _onAnimateWater(dt)
             renderer.render(scene, ctrl.camera)

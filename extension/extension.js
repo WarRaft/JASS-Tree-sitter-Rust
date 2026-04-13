@@ -36,7 +36,8 @@ const {
 } = require('vscode')
 
 const {ServerClient} = require('./serverClient.js')
-const {resolveBlpEditor} = require('./mapEditor/resolveBlpEditor.js')
+// resolveBlpEditor is no longer used — BLP files open via resolveMapEditor
+// const {resolveBlpEditor} = require('./mapEditor/resolveBlpEditor.js')
 const {resolveMapEditor} = require('./mapEditor/index.js')
 const {showImportGraph} = require('./importGraphPanel.js')
 const {showCallGraph} = require('./callGraphPanel.js')
@@ -2091,7 +2092,7 @@ module.exports = {
         }
 
         context.subscriptions.push(
-            binaryEditor('blp.preview', resolveBlpEditor),
+            binaryEditor('blp.preview', resolveMapEditor),
             binaryEditor('mdx.preview', resolveMapEditor),
             binaryEditor('doo.preview', resolveMapEditor),
             binaryEditor('w3i.preview', resolveMapEditor),

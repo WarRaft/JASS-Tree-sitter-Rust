@@ -211,7 +211,11 @@ window.W3E = (function () {
             const checkerToggle = document.getElementById('blpCheckerToggle');
             const bgColorPicker = document.getElementById('blpBgColor');
 
-            let checkerOn = false;
+            // ── BLP viewer settings (localStorage) ──
+            let checkerOn = localStorage.getItem('blpChecker') === '1';
+            let savedBg = localStorage.getItem('blpBgColor');
+            if (checkerToggle) checkerToggle.checked = checkerOn;
+            if (bgColorPicker && savedBg) bgColorPicker.value = savedBg;
 
             function updateWrappers() {
                 if (!body) return;
@@ -224,11 +228,174 @@ window.W3E = (function () {
 
             if (checkerToggle) checkerToggle.addEventListener('change', function () {
                 checkerOn = checkerToggle.checked;
+                localStorage.setItem('blpChecker', checkerOn ? '1' : '0');
                 updateWrappers();
             });
             if (bgColorPicker) bgColorPicker.addEventListener('input', function () {
+                localStorage.setItem('blpBgColor', bgColorPicker.value);
                 updateWrappers();
             });
+
+            // ── Alpha Test window (WebGL) ──
+            const atWin = document.getElementById('blpAlphaTestWindow');
+            const atWrap = document.getElementById('blpAtCanvasWrap');
+            const atSlider = document.getElementById('blpAtSlider');
+            const atValue = document.getElementById('blpAtValue');
+            const atChecker = document.getElementById('blpAtChecker');
+            const atBgColor = document.getElementById('blpAtBgColor');
+
+            let atCheckerOn = localStorage.getItem('blpAtChecker') === '1';
+            let atSavedBg = localStorage.getItem('blpAtBgColor');
+            let atAlphaVal = parseFloat(localStorage.getItem('blpAlphaTest'));
+            if (isNaN(atAlphaVal)) atAlphaVal = 0.75;
+
+            if (atChecker) atChecker.checked = atCheckerOn;
+            if (atBgColor && atSavedBg) atBgColor.value = atSavedBg;
+            if (atSlider) atSlider.value = String(atAlphaVal);
+            if (atValue) atValue.textContent = atAlphaVal.toFixed(2);
+
+            let atGl = null;
+            let atCanvas = null;
+            let atProgram = null;
+            let atAlphaLoc = null;
+            let atTexture = null;
+
+            const AT_VS = [
+                'attribute vec2 a_pos;',
+                'varying vec2 v_uv;',
+                'void main(){',
+                '  v_uv = a_pos * 0.5 + 0.5;',
+                '  v_uv.y = 1.0 - v_uv.y;',
+                '  gl_Position = vec4(a_pos, 0.0, 1.0);',
+                '}'
+            ].join('\n');
+
+            const AT_FS = [
+                'precision mediump float;',
+                'varying vec2 v_uv;',
+                'uniform sampler2D u_tex;',
+                'uniform float u_alpha;',
+                'void main(){',
+                '  vec4 c = texture2D(u_tex, v_uv);',
+                '  if(c.a <= u_alpha) discard;',
+                '  gl_FragColor = c;',
+                '}'
+            ].join('\n');
+
+            function atInitGL(canvas) {
+                let gl = canvas.getContext('webgl', {alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true});
+                if (!gl) return null;
+
+                function compile(type, src) {
+                    let s = gl.createShader(type);
+                    gl.shaderSource(s, src);
+                    gl.compileShader(s);
+                    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+                        console.error('Shader compile error:', gl.getShaderInfoLog(s));
+                    }
+                    return s;
+                }
+                let vs = compile(gl.VERTEX_SHADER, AT_VS);
+                let fs = compile(gl.FRAGMENT_SHADER, AT_FS);
+                let prog = gl.createProgram();
+                gl.attachShader(prog, vs);
+                gl.attachShader(prog, fs);
+                gl.linkProgram(prog);
+                if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+                    console.error('Program link error:', gl.getProgramInfoLog(prog));
+                }
+                gl.useProgram(prog);
+
+                // fullscreen quad: two triangles
+                let buf = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+                let loc = gl.getAttribLocation(prog, 'a_pos');
+                gl.enableVertexAttribArray(loc);
+                gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+
+                gl.enable(gl.BLEND);
+                gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+                atProgram = prog;
+                atAlphaLoc = gl.getUniformLocation(prog, 'u_alpha');
+                atGl = gl;
+                return gl;
+            }
+
+            function atUploadTexture(gl, img) {
+                if (atTexture) gl.deleteTexture(atTexture);
+                let tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                atTexture = tex;
+            }
+
+            function redrawAtCanvas() {
+                if (!atGl || !atTexture) return;
+                let gl = atGl;
+                gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+                gl.clearColor(0, 0, 0, 0);
+                gl.clear(gl.COLOR_BUFFER_BIT);
+                gl.useProgram(atProgram);
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, atTexture);
+                gl.uniform1f(atAlphaLoc, atAlphaVal);
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+
+            function updateAtWrapBg() {
+                if (!atWrap) return;
+                atWrap.classList.toggle('checker', atCheckerOn);
+                if (!atCheckerOn) atWrap.style.backgroundColor = atBgColor ? atBgColor.value : '';
+                else atWrap.style.backgroundColor = '';
+            }
+            updateAtWrapBg();
+
+            if (atChecker) atChecker.addEventListener('change', function () {
+                atCheckerOn = atChecker.checked;
+                localStorage.setItem('blpAtChecker', atCheckerOn ? '1' : '0');
+                updateAtWrapBg();
+            });
+            if (atBgColor) atBgColor.addEventListener('input', function () {
+                localStorage.setItem('blpAtBgColor', atBgColor.value);
+                updateAtWrapBg();
+            });
+            if (atSlider) atSlider.addEventListener('input', function () {
+                atAlphaVal = parseFloat(atSlider.value);
+                localStorage.setItem('blpAlphaTest', String(atAlphaVal));
+                if (atValue) atValue.textContent = atAlphaVal.toFixed(2);
+                redrawAtCanvas();
+            });
+
+            function openAlphaTest(dataUrl, w, h, label) {
+                if (!atWin || !atWrap) return;
+                // Create a fresh WebGL canvas
+                let canvas = document.createElement('canvas');
+                canvas.width = w;
+                canvas.height = h;
+                atWrap.innerHTML = '';
+                atWrap.appendChild(canvas);
+                atCanvas = canvas;
+
+                let gl = atInitGL(canvas);
+                if (!gl) return;
+
+                let img = new Image();
+                img.onload = function () {
+                    atUploadTexture(gl, img);
+                    redrawAtCanvas();
+                };
+                img.src = dataUrl;
+                atWin.setAttribute('title-text', '\u03b1T ' + label);
+                atWin.show();
+            }
 
             return {
                 load: function (msg) {
@@ -236,22 +403,65 @@ window.W3E = (function () {
                     if (empty) empty.style.display = 'none';
                     win.setAttribute('title-text', '\ud83d\uddbc ' + (msg.name || 'BLP'));
 
-                    let html = '';
+                    body.innerHTML = '';
                     let mipmaps = msg.mipmaps || [];
+
                     for (let i = 0; i < mipmaps.length; i++) {
                         let mip = mipmaps[i];
-                        html += '<div class="blp-mipmap">';
-                        html += '<div class="blp-mip-meta"><span class="blp-mip-size">' + mip.width + ' \u00d7 ' + mip.height + '</span><span>#' + (i + 1) + '</span></div>';
+
+                        let div = document.createElement('div');
+                        div.className = 'blp-mipmap';
+
+                        // ── Meta bar ──
+                        let meta = document.createElement('div');
+                        meta.className = 'blp-mip-meta';
+
+                        let sizeSpan = document.createElement('span');
+                        sizeSpan.className = 'blp-mip-size';
+                        sizeSpan.textContent = mip.width + ' \u00d7 ' + mip.height;
+                        meta.appendChild(sizeSpan);
+
+                        let actions = document.createElement('span');
+                        actions.className = 'blp-mip-actions';
+
                         if (mip.image_data_url) {
-                            html += '<div class="blp-img-wrap' + (checkerOn ? ' checker' : '') + '"' + (!checkerOn && bgColorPicker ? ' style="background-color:' + bgColorPicker.value + '"' : '') + '>';
-                            html += '<img src="' + mip.image_data_url + '" alt="' + mip.width + 'x' + mip.height + '" />';
-                            html += '</div>';
-                        } else {
-                            html += '<div class="blp-no-image">No image</div>';
+                            let alphaBtn = document.createElement('button');
+                            alphaBtn.className = 'blp-alpha-btn';
+                            alphaBtn.textContent = '\u03b1T';
+                            alphaBtn.title = 'Alpha Test';
+                            (function (url, w, h, idx) {
+                                alphaBtn.addEventListener('click', function () {
+                                    openAlphaTest(url, w, h, w + '\u00d7' + h + ' #' + (idx + 1));
+                                });
+                            })(mip.image_data_url, mip.width, mip.height, i);
+                            actions.appendChild(alphaBtn);
                         }
-                        html += '</div>';
+
+                        let indexSpan = document.createElement('span');
+                        indexSpan.textContent = '#' + (i + 1);
+                        actions.appendChild(indexSpan);
+
+                        meta.appendChild(actions);
+                        div.appendChild(meta);
+
+                        if (mip.image_data_url) {
+                            let wrap = document.createElement('div');
+                            wrap.className = 'blp-img-wrap' + (checkerOn ? ' checker' : '');
+                            if (!checkerOn && bgColorPicker) wrap.style.backgroundColor = bgColorPicker.value;
+                            let img = document.createElement('img');
+                            img.src = mip.image_data_url;
+                            img.alt = mip.width + 'x' + mip.height;
+                            wrap.appendChild(img);
+                            div.appendChild(wrap);
+                        } else {
+                            let noImg = document.createElement('div');
+                            noImg.className = 'blp-no-image';
+                            noImg.textContent = 'No image';
+                            div.appendChild(noImg);
+                        }
+
+                        body.appendChild(div);
                     }
-                    body.innerHTML = html;
                     win.show();
                 }
             };

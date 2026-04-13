@@ -925,13 +925,26 @@ function editorStyles() {
             color: var(--vscode-descriptionForeground, #888);
             white-space: nowrap;
         }
+        .mv-mat-thumb-wrap {
+            display: inline-flex;
+            margin-top: 4px;
+            border-radius: 3px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            overflow: hidden;
+            cursor: pointer;
+            background-image: repeating-conic-gradient(#555 0% 25%, #333 0% 50%);
+            background-size: 12px 12px;
+            background-position: 0 0;
+            background-repeat: repeat;
+        }
+        .mv-mat-thumb-wrap:hover {
+            border-color: var(--vscode-focusBorder, #007acc);
+            box-shadow: 0 0 0 1px var(--vscode-focusBorder, #007acc);
+        }
         .mv-mat-thumb {
             display: block;
             max-width: 100%;
             max-height: 96px;
-            margin-top: 4px;
-            border-radius: 3px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
             object-fit: contain;
         }
         .mv-mat-thumb-placeholder {
@@ -1181,6 +1194,80 @@ function editorStyles() {
             background: var(--vscode-editor-background, #1e1e1e);
             border: 1px dashed var(--vscode-editorWidget-border, #444);
             border-radius: 4px;
+        }
+        .blp-mip-actions {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .blp-alpha-btn {
+            font-size: 11px;
+            padding: 1px 6px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 3px;
+            background: transparent;
+            color: var(--vscode-editor-foreground, #ccc);
+            cursor: pointer;
+            user-select: none;
+            line-height: 1.4;
+            font-family: inherit;
+        }
+        .blp-alpha-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        /* ── Alpha Test window ──────────────────────────────── */
+        .blp-at-body {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+        }
+        .blp-at-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            padding: 6px 10px;
+            border-bottom: 1px solid var(--vscode-editorWidget-border, #444);
+            flex-shrink: 0;
+            font-size: 12px;
+        }
+        .blp-at-slider-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .blp-at-slider-wrap input[type="range"] {
+            width: 120px;
+            accent-color: var(--vscode-focusBorder, #007acc);
+        }
+        .blp-at-slider-wrap span {
+            font-family: monospace;
+            min-width: 32px;
+            text-align: right;
+        }
+        .blp-at-canvas-wrap {
+            flex: 1;
+            overflow: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px;
+        }
+        .blp-at-canvas-wrap.checker {
+            background-image: repeating-conic-gradient(#888 0% 25%, #444 0% 50%);
+            background-size: 16px 16px;
+            background-position: 0 0;
+            background-repeat: repeat;
+        }
+        .blp-at-canvas-wrap canvas {
+            display: block;
+            image-rendering: pixelated;
+            max-width: 100%;
+            height: auto;
         }
 
         /* ── Animation panel ──────────────────────────────────── */

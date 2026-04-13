@@ -27,6 +27,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
     const isDoo = ext === 'doo'
     const isDooUnit = isDoo && fname.toLowerCase().includes('units')
     const isMdx = ext === 'mdx'
+    const isBlp = ext === 'blp'
 
     // Detect whether the archive path points to a real file or an extracted folder.
     let isArchiveFile = false
@@ -45,6 +46,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
     let mapName = null
     let binaries = []
     let _pendingMdxData = null
+    let _pendingBlpData = null
 
     if (isArchive) {
         // ── 1. Get archive file list & header ───────────────────
@@ -223,6 +225,31 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             webviewPanel.webview.html = errorHtml(`Failed to render MDX: ${e.message || e}`)
             return
         }
+    } else if (isBlp) {
+        // ── .blp file ───────────────────────────────────────────
+        // Render immediately; the BLP data will be sent to the
+        // webview after the HTML is built so the viewer opens it.
+        try {
+            const result = await client.sendRequest('render/blp', {
+                uri: document.uri.toString()
+            })
+            if (result.error) {
+                webviewPanel.webview.html = errorHtml(result.error.message || JSON.stringify(result.error))
+                return
+            }
+            if (!result.mipmaps || result.mipmaps.length === 0) {
+                webviewPanel.webview.html = errorHtml('No mipmaps returned by server.')
+                return
+            }
+            _pendingBlpData = {
+                command: 'blpData',
+                name: fname,
+                mipmaps: result.mipmaps,
+            }
+        } catch (e) {
+            webviewPanel.webview.html = errorHtml(`Failed to render BLP: ${e.message || e}`)
+            return
+        }
     } else {
         // ── .w3e file ───────────────────────────────────────────
         const params = {uri: document.uri.toString()}
@@ -387,6 +414,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         isDoo,
         isDooUnit,
         isMdx,
+        isBlp,
         archiveFiles,
         archiveHeader,
         w3iData,
@@ -423,6 +451,14 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         // Small delay to let the webview scripts initialize
         setTimeout(() => {
             webviewPanel.webview.postMessage(_pendingMdxData)
+        }, 300)
+    }
+
+    // If a BLP was opened directly, send the image data to the webview
+    // so the BLP viewer auto-opens with the rendered image.
+    if (_pendingBlpData) {
+        setTimeout(() => {
+            webviewPanel.webview.postMessage(_pendingBlpData)
         }, 300)
     }
 

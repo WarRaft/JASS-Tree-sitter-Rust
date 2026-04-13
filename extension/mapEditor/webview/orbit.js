@@ -254,7 +254,7 @@ window._W3E_ORBIT = (function () {
                 }
 
                 _orbit.normalize();
-                _radius = Math.max(1, Math.min(ctrl.maxDist * 5, _radius));
+                _radius = Math.min(ctrl.maxDist * 5, _radius);
                 target.add(panOff);
 
                 _tmpV.set(0, 0, _radius).applyQuaternion(_orbit);

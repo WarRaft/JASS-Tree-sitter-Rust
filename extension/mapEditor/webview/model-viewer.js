@@ -21,13 +21,14 @@ window._W3E_MODEL_VIEWER = (function () {
         camera.position.set(300, 200, 300);
         camera.lookAt(0, 50, 0);
 
-        scene.add(new THREE.AmbientLight(0x606060));
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        dirLight.position.set(200, 400, 300);
-        scene.add(dirLight);
-        const dirLight2 = new THREE.DirectionalLight(0x4488ff, 0.3);
-        dirLight2.position.set(-200, 100, -300);
-        scene.add(dirLight2);
+        // HiveWE uses half-Lambert lighting with a camera-attached light:
+        //   contribution = (dot(N, -camDir) + 1) * 0.5   →  [0 .. 1]
+        // The light follows the camera so the viewed side is always lit.
+        // DirectionalLight intensity = PI to cancel BRDF_Lambert's 1/PI divisor.
+        const dirLight = new THREE.DirectionalLight(0xffffff, Math.PI);
+        dirLight.position.set(0, 0, 1); // forward in camera space
+        camera.add(dirLight);
+        scene.add(camera);
 
         const gridHelper = new THREE.GridHelper(500, 20, 0x444444, 0x333333);
         scene.add(gridHelper);
@@ -568,7 +569,7 @@ window._W3E_MODEL_VIEWER = (function () {
                             let mat = currentMaterials[m.userData.materialId];
                             if (mat && mat.layers) layer = mat.layers[li];
                             let fm = layer ? layer.filter_mode : 0;
-                            if (fm === 0 && !(layer && layer.alpha < 1.0)) {
+                            if ((fm === 0 || fm === 1) && !(layer && layer.alpha < 1.0)) {
                                 m.material.transparent = false;
                                 m.material.opacity = 1.0;
                             } else {
@@ -931,7 +932,7 @@ window._W3E_MODEL_VIEWER = (function () {
                 let sf = layer ? layer.shading_flags : 0;
                 let fm = layer ? layer.filter_mode : 0;
 
-                let matOpts = { flatShading: false };
+                let matOpts = {};
 
                 // TwoSided (0x10) → DoubleSide
                 matOpts.side = (sf & 0x10) ? THREE.DoubleSide : THREE.DoubleSide;
@@ -946,16 +947,22 @@ window._W3E_MODEL_VIEWER = (function () {
                     matOpts.map = texInfo.texture;
                 }
 
-                // Blending modes matching MdlVis Real3D.pas:
-                //   Pass 1: Opaque (fm=0) + ColorAlpha (fm=1) — depth write ON
-                //   Pass 2: FullAlpha/Blend (fm=2) — GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, depth write OFF
-                //   Pass 3: Additive (fm=3), AddAlpha (fm=4), Modulate (fm=5,6) — GL_ONE,GL_ONE / GL_SRC_ALPHA,GL_ONE, depth write OFF
+                // Blending modes (WC3 / HiveWE reference):
+                //   0 None/Opaque:    GL_ONE, GL_ZERO — depth write ON
+                //   1 Transparent:    alpha test ≥ 0.75 — depth write ON
+                //   2 Blend:          GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA — depth write OFF
+                //   3 Additive:       GL_SRC_ALPHA, GL_ONE — depth write OFF
+                //   4 AddAlpha:       GL_SRC_ALPHA, GL_ONE — depth write OFF
+                //   5 Modulate:       GL_ZERO, GL_SRC_COLOR — depth write OFF
+                //   6 Modulate2x:     GL_DST_COLOR, GL_SRC_COLOR — depth write OFF
                 if (fm === 0) {
                     // None/Opaque — no blending
                     matOpts.transparent = false;
                 } else if (fm === 1) {
-                    // Transparent/ColorAlpha — alpha test ≥ 0.75
-                    matOpts.transparent = true;
+                    // Transparent/ColorAlpha — alpha test ≥ 0.75, rendered in opaque pass
+                    // (MdlVis: glAlphaFunc(GL_GEQUAL,0.75) in opaque pass;
+                    //  HiveWE: alpha_test=0.75, glBlendFunc(GL_ONE,GL_ZERO) — no blending)
+                    matOpts.transparent = false;
                     matOpts.alphaTest = 0.75;
                 } else if (fm === 2) {
                     // Blend/FullAlpha — GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
@@ -963,9 +970,11 @@ window._W3E_MODEL_VIEWER = (function () {
                     matOpts.blending = THREE.NormalBlending;
                     matOpts.depthWrite = false;
                 } else if (fm === 3) {
-                    // Additive — GL_ONE, GL_ONE
+                    // Additive — GL_SRC_ALPHA, GL_ONE
                     matOpts.transparent = true;
-                    matOpts.blending = THREE.AdditiveBlending;
+                    matOpts.blending = THREE.CustomBlending;
+                    matOpts.blendSrc = THREE.SrcAlphaFactor;
+                    matOpts.blendDst = THREE.OneFactor;
                     matOpts.depthWrite = false;
                 } else if (fm === 4) {
                     // AddAlpha — GL_SRC_ALPHA, GL_ONE
@@ -974,10 +983,27 @@ window._W3E_MODEL_VIEWER = (function () {
                     matOpts.blendSrc = THREE.SrcAlphaFactor;
                     matOpts.blendDst = THREE.OneFactor;
                     matOpts.depthWrite = false;
-                } else if (fm === 5 || fm === 6) {
-                    // Modulate / Modulate2x — GL_ONE, GL_ONE (same as Additive in MdlVis)
+                } else if (fm === 5) {
+                    // Modulate — GL_ZERO, GL_SRC_COLOR (multiply dest by src)
                     matOpts.transparent = true;
-                    matOpts.blending = THREE.AdditiveBlending;
+                    matOpts.premultipliedAlpha = true;
+                    matOpts.blending = THREE.CustomBlending;
+                    matOpts.blendEquation = THREE.AddEquation;
+                    matOpts.blendSrc = THREE.ZeroFactor;
+                    matOpts.blendDst = THREE.SrcColorFactor;
+                    matOpts.blendSrcAlpha = THREE.ZeroFactor;
+                    matOpts.blendDstAlpha = THREE.SrcAlphaFactor;
+                    matOpts.depthWrite = false;
+                } else if (fm === 6) {
+                    // Modulate2x — GL_DST_COLOR, GL_SRC_COLOR
+                    matOpts.transparent = true;
+                    matOpts.premultipliedAlpha = true;
+                    matOpts.blending = THREE.CustomBlending;
+                    matOpts.blendEquation = THREE.AddEquation;
+                    matOpts.blendSrc = THREE.DstColorFactor;
+                    matOpts.blendDst = THREE.SrcColorFactor;
+                    matOpts.blendSrcAlpha = THREE.ZeroFactor;
+                    matOpts.blendDstAlpha = THREE.SrcAlphaFactor;
                     matOpts.depthWrite = false;
                 }
 
@@ -988,10 +1014,16 @@ window._W3E_MODEL_VIEWER = (function () {
                 }
 
                 if (!texInfo) {
-                    matOpts.color = color;
-                    if (!matOpts.transparent) {
-                        matOpts.transparent = true;
-                        matOpts.opacity = 0.95;
+                    // Modulate/Modulate2x without texture: multiplicative blend on solid color
+                    // is meaningless — hide the mesh until texture loads
+                    if (fm === 5 || fm === 6) {
+                        matOpts.visible = false;
+                    } else {
+                        matOpts.color = color;
+                        if (!matOpts.transparent) {
+                            matOpts.transparent = true;
+                            matOpts.opacity = 0.95;
+                        }
                     }
                 }
 
@@ -1006,7 +1038,14 @@ window._W3E_MODEL_VIEWER = (function () {
                 if (sf & 0x01) {
                     material = new THREE.MeshBasicMaterial(matOpts);
                 } else {
-                    material = new THREE.MeshPhongMaterial(matOpts);
+                    material = new THREE.MeshLambertMaterial(matOpts);
+                    // Half-Lambert: (dot(N, L) * 0.5 + 0.5)  — matches HiveWE
+                    material.onBeforeCompile = function (shader) {
+                        shader.fragmentShader = shader.fragmentShader.replace(
+                            'float dotNL = saturate( dot( geometryNormal, directLight.direction ) );',
+                            'float dotNL = dot( geometryNormal, directLight.direction ) * 0.5 + 0.5;'
+                        );
+                    };
                 }
                 material.userData = {hasTexture: !!texInfo, fallbackColor: color, materialId: materialId, layerIndex: layerIdx};
 
@@ -1102,6 +1141,10 @@ window._W3E_MODEL_VIEWER = (function () {
                             if (layer && layer.texture_id === i) {
                                 m.material.map = threeTex;
                                 m.material.color.set(0xffffff);
+                                // Unhide Modulate/Modulate2x meshes that were hidden while waiting for texture
+                                if (!m.material.visible) {
+                                    m.material.visible = true;
+                                }
                                 m.material.needsUpdate = true;
                             }
                         });
@@ -1236,37 +1279,51 @@ window._W3E_MODEL_VIEWER = (function () {
                         if (tex && tex.file_name && !tex.replaceable_id && bs) {
                             let thumbUrl = textureUrl(bs, archivePath, tex.file_name);
                             if (thumbUrl) {
+                                let wrap = document.createElement('div');
+                                wrap.className = 'mv-mat-thumb-wrap';
+                                wrap.title = 'Click to open in BLP Viewer';
                                 let thumb = document.createElement('img');
                                 thumb.className = 'mv-mat-thumb';
                                 thumb.src = thumbUrl;
                                 thumb.alt = tex.file_name;
                                 thumb.setAttribute('data-mv-tex-index', layer.texture_id);
                                 thumb.onerror = function () {
-                                    thumb.style.display = 'none';
+                                    wrap.style.display = 'none';
                                     let ph = document.createElement('div');
                                     ph.className = 'mv-mat-thumb-placeholder';
                                     ph.textContent = 'Texture not found';
-                                    thumb.parentNode.replaceChild(ph, thumb);
+                                    wrap.parentNode.replaceChild(ph, wrap);
                                 };
-                                layerDiv.appendChild(thumb);
+                                wrap.appendChild(thumb);
+                                wrap.addEventListener('click', function () {
+                                    document.dispatchEvent(new CustomEvent('open-blp', {detail: {path: tex.file_name}}));
+                                });
+                                layerDiv.appendChild(wrap);
                             }
                         } else if (tex && tex.replaceable_id && replaceableTextures && replaceableTextures[tex.replaceable_id] && bs) {
                             let replPath = replaceableTextures[tex.replaceable_id];
                             let thumbUrl = textureUrl(bs, archivePath, replPath);
                             if (thumbUrl) {
+                                let wrap = document.createElement('div');
+                                wrap.className = 'mv-mat-thumb-wrap';
+                                wrap.title = 'Click to open in BLP Viewer';
                                 let thumb = document.createElement('img');
                                 thumb.className = 'mv-mat-thumb';
                                 thumb.src = thumbUrl;
                                 thumb.alt = replPath;
                                 thumb.setAttribute('data-mv-tex-index', layer.texture_id);
                                 thumb.onerror = function () {
-                                    thumb.style.display = 'none';
+                                    wrap.style.display = 'none';
                                     let ph = document.createElement('div');
                                     ph.className = 'mv-mat-thumb-placeholder';
                                     ph.textContent = 'Texture not found';
-                                    thumb.parentNode.replaceChild(ph, thumb);
+                                    wrap.parentNode.replaceChild(ph, wrap);
                                 };
-                                layerDiv.appendChild(thumb);
+                                wrap.appendChild(thumb);
+                                wrap.addEventListener('click', function () {
+                                    document.dispatchEvent(new CustomEvent('open-blp', {detail: {path: replPath}}));
+                                });
+                                layerDiv.appendChild(wrap);
                             }
                         } else if (tex && tex.replaceable_id) {
                             let ph = document.createElement('div');

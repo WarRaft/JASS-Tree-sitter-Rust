@@ -610,7 +610,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         <div class="mv-anim-list" id="mvAnimList"></div>
     </float-window>
 
-    <float-window id="blpViewerWindow" title-text="\ud83d\uddbc BLP Viewer" no-padding hidden style="left:180px;top:48px;width:640px;height:500px;">
+    <float-window id="blpViewerWindow" title-text="\ud83d\uddbc BLP Viewer" no-padding ${mapInfo.isBlp ? '' : 'hidden'} style="left:180px;top:48px;width:640px;height:500px;">
         <div class="blp-viewer" id="blpViewerBody">
             <div class="blp-toolbar" id="blpToolbar">
                 <label class="blp-toggle"><input type="checkbox" id="blpCheckerToggle" /> Checker</label>
@@ -618,6 +618,17 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             </div>
             <div class="blp-empty" id="blpEmpty">Click a <code>.blp</code> file to preview</div>
             <div class="blp-mipmaps" id="blpMipmaps"></div>
+        </div>
+    </float-window>
+
+    <float-window id="blpAlphaTestWindow" parent-window="blpViewerWindow" title-text="\u03b1T Alpha Test" hidden no-padding style="left:200px;top:60px;width:520px;height:480px;">
+        <div class="blp-at-body" id="blpAtBody">
+            <div class="blp-at-toolbar">
+                <label class="blp-toggle"><input type="checkbox" id="blpAtChecker" /> Checker</label>
+                <label class="blp-toggle">Bg:&nbsp;<input type="color" id="blpAtBgColor" value="#000000" /></label>
+                <label class="blp-at-slider-wrap">\u03b1T:&nbsp;<input type="range" id="blpAtSlider" min="0" max="1" step="0.01" value="0.75" /><span id="blpAtValue">0.75</span></label>
+            </div>
+            <div class="blp-at-canvas-wrap" id="blpAtCanvasWrap"></div>
         </div>
     </float-window>
 
