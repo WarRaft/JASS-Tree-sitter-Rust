@@ -219,7 +219,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const cliffTypesMap = (terrainData && terrainData._cliffTypesSlk && terrainData._cliffTypesSlk.cliffTypes) || {}
     const cliffTypeMap = {}
     for (const [id, ct] of Object.entries(cliffTypesMap)) {
-        cliffTypeMap[id] = {cliffModelDir: ct.cliffModelDir || '', rampModelDir: ct.rampModelDir || '', texDir: ct.texDir || '', texFile: ct.texFile || '', texSource: ct.texSource || '', groundTile: ct.groundTile || ''}
+        cliffTypeMap[id] = {cliffModelDir: ct.cliffModelDir || '', rampModelDir: ct.rampModelDir || '', texDir: ct.texDir || '', texFile: ct.texFile || '', texSource: ct.texSource || '', groundTile: ct.groundTile || '', upperTile: ct.upperTile || ''}
     }
     const hasCliffTypesSlk = !!(terrainData && terrainData._cliffTypesSlk)
     if (hasCliffTypesSlk) {

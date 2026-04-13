@@ -168,7 +168,10 @@ fn pack_terrain_binary(data: &W3eData) -> Vec<u8> {
     for p in &data.points {
         let mut f: u8 = 0;
         if p.water { f |= 1; }
-        if p.boundary { f |= 2; }
+        // HiveWE uses both map_edge (water_height bit 14) and boundary
+        // (textureFlags bit 7) for the boundary display:
+        //   if (bottom_left.map_edge || bottom_left.boundary)
+        if p.boundary || p.edge_flag { f |= 2; }
         if p.blight { f |= 4; }
         if p.ramp { f |= 8; }
         buf.push(f);

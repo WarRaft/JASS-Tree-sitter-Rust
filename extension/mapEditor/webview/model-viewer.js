@@ -27,7 +27,13 @@ window._W3E_MODEL_VIEWER = (function () {
         // DirectionalLight intensity = PI to cancel BRDF_Lambert's 1/PI divisor.
         const dirLight = new THREE.DirectionalLight(0xffffff, Math.PI);
         dirLight.position.set(0, 0, 1); // forward in camera space
+        // Target must also be a child of the camera so the light direction
+        // stays constant relative to the view (always shining forward).
+        // Without this, the target stays at world origin and the light
+        // direction shifts as you orbit — causing shadows in front.
+        dirLight.target.position.set(0, 0, 0);
         camera.add(dirLight);
+        camera.add(dirLight.target);
         scene.add(camera);
 
         const gridHelper = new THREE.GridHelper(500, 20, 0x444444, 0x333333);

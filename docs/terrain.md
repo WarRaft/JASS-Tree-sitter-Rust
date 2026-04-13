@@ -398,6 +398,12 @@ Same naming pattern but with `cliffModelDir = "CityCliffs"` and `rampModelDir = 
 
 Each `CliffTypes.slk` entry has a `groundTile` field — a rawcode (e.g. `"Ldrt"`) referencing `TerrainArt\Terrain.slk`. When a tilepoint is a corner of a cliff cell (i.e. a quad whose 4 corners have different `layerHeight` values), the engine replaces that point's displayed ground texture with the cliff type's `groundTile` texture. Only the four corners of the cliff cell are overridden — points that belong exclusively to adjacent flat cells keep their original texture.
 
+#### `upperTile` — peak corner override
+
+Some cliff types also define an `upperTile` field (e.g. Outland `COrd` has `upperTile = "Osmb"`). When `upperTile` is not `"_"` (empty/none), cliff corners whose `layerHeight` equals the **peak** (maximum) of the cell's four corners use `upperTile` instead of `groundTile`. This allows the top of a cliff to display a different ground texture than the base — for example, Outland cliffs show abyss (`Oaby`) at the bottom and scorched magma (`Osmb`) at the top.
+
+**Priority:** `upperTile` (peak corners) → `groundTile` (other cliff corners) → blight → normal `groundTexture`.
+
 Because each tilepoint can be a corner of up to 4 cells, a single tilepoint may participate in both cliff and flat cells. The override is per-point: if the point is a corner of **any** cliff cell, its texture is replaced.
 
 ```
@@ -491,62 +497,62 @@ This means each cliff vertex independently samples the terrain height at its own
 
 ## Ramps
 
-Ramps span 2 tiles. One side uses letters `A`, `B`, `C`; the slope side uses `H`, `L`, `X`:
+Ramp transitions span 2 tiles. One side (left/right or top/bottom) has the ramp flag set, the other doesn't. The transition model filename uses different character encodings for ramp vs non-ramp corners:
+
+- **Non-ramp corners**: `'A' + (layerHeight - base)` → `A`, `B`, `C`
+- **Ramp corners**: `'L' + (layerHeight - base) * (-4)` → `L` (diff 0), `H` (diff 1)
 
 ```
-H = 72    ('H' + 4⁰ = 72)
-L = 76    ('H' + 4¹ = 76)
-X = 88    ('H' + 4² = 88)
-
-slope_char = 'H' + 4 ^ difference_to_base
+Non-ramp:   A=65 (diff 0)   B=66 (diff 1)   C=67 (diff 2)
+Ramp:       L=76 (diff 0)   H=72 (diff 1)
 ```
 
 The editor and game do **not** load models containing `X` or `C`.
 
+### Ramp transition model placement
+
+HiveWE places ramp transition models (`CliffTrans`) before regular cliff models, in this order (terrain.ixx `update_cliff_meshes` lines 980-1083):
+
+1. **Vertical ramp transitions** — spans 2 cells vertically (6 corners: BL, BR, TL, TR, TTL, TTR). One side (left or right) has ramp, the other doesn't. Model path: `Doodads\Terrain\CliffTrans\CliffTrans{pattern}0.mdx`. **Only placed if the model file exists** (HiveWE: `hierarchy.file_exists`). Patterns where all 4 outer corners are at base height (all A/L, no height change) have no corresponding model file and are skipped. Affected corners get the `romp` flag. Cell is skipped for further processing.
+
+2. **Horizontal ramp transitions** — spans 2 cells horizontally (6 corners: BL, BR, TL, TR, BRR, TRR). Top or bottom side has ramp, the other doesn't. Same model path format and `file_exists` guard. Affected corners get the `romp` flag.
+
+3. **Regular cliff models** — skips cells with `romp` flag or ramp entrance. Uses `cliffModelDir` from `CliffTypes.slk`.
+
+The `romp` flag affects `ground_exists`: cells where the bottom-left corner has `romp` OR `cliff` flag (and is NOT a ramp entrance) have their terrain mesh hidden.
+
 ### Slope rendering (terrain mesh)
 
-When a cell's four corner tilepoints **all** have the `ramp` flag set **and** their `layerHeight` values differ, the terrain mesh creates a smooth slope instead of a vertical cliff step.
+HiveWE boosts the **low corners** of ramp entrance cells by `+0.5` tile units (`64` world units), creating a slope through the ramp entrance cell itself (terrain.ixx `update_ground_heights` lines 882-919).
 
 **Algorithm:**
 
-1. For each cell, read the `ramp` flag and `layerHeight` from its 4 corners (BL, BR, TL, TR).
-2. Skip cells where any corner lacks the ramp flag, or all corners share the same `layerHeight`.
-3. Compute `minLayer = min(BL, BR, TL, TR)`.
-4. Any corner whose `layerHeight > minLayer` is lowered to `minLayer` for rendering purposes.
-5. A tilepoint may belong to up to 4 cells; take the minimum adjusted value across all of them.
+For each tilepoint `(i, j)`:
+
+1. `ramp_height = 0`
+2. Check all **4 cells** this point belongs to (offsets `x: -1..0`, `y: -1..0`).
+3. For each cell, get 4 corner `layerHeight` values. Compute `base = min(BL, BR, TL, TR)`.
+4. If this point's `layerHeight ≠ base` → skip (only **low** corners get boosted).
+5. If the cell is a **ramp entrance** (`is_corner_ramp_entrance`: all 4 corners have ramp flag AND `!(BL == TR && TL == BR)`) → `ramp_height = 0.5`, break.
+6. `final_height = final_ground_height() + ramp_height` = `(height + layer_height - 2) + ramp_height` (tile units).
+
+High corners are **not touched**. Only low corners at the base of a ramp entrance get the `+0.5` boost.
 
 ```
-Before (cliff step):            After (slope):
+Standard ramp (layer 2 → 3, 2 rows of ramp points):
 
- H ─── H                        H ─── L(adj)
- │     │                        │     │
- H ─── L                        H ─── L
+ row3: layer=3, no ramp  → final = 1.0    (128 wu)
+ row2: layer=3, ramp     → final = 1.0    (128 wu, high corner — no boost)
+ row1: layer=2, ramp     → final = 0.5    ( 64 wu, low corner — +0.5 boost)
+ row0: layer=2, no ramp  → final = 0.0    (  0 wu)
 
- where H > L                    ramp cell corners lowered → smooth slope
+ Cells:
+  (0-1): 0 → 64   — entry slope
+  (1-2): 64 → 128  — ramp entrance slope
+  (2-3): 128 → 128 — flat high ground
 ```
 
-The slope emerges in the adjacent cell: the cliff cell's high corners are pulled down to the low level, making the neighbouring cell (which was flat at the high level) transition smoothly from high to low.
-
-```js
-// Pseudocode — compute ramp-adjusted layer heights
-const adjusted = new Uint8Array(layerHeight)
-for (let cy = 0; cy < H - 1; cy++) {
-    for (let cx = 0; cx < W - 1; cx++) {
-        const iBL = cy * W + cx,      iBR = cy * W + cx + 1
-        const iTL = (cy+1) * W + cx,  iTR = (cy+1) * W + cx + 1
-
-        if (!(ramp[iBL] && ramp[iBR] && ramp[iTL] && ramp[iTR])) continue
-
-        const minL = Math.min(layerHeight[iBL], layerHeight[iBR],
-                              layerHeight[iTL], layerHeight[iTR])
-        if (minL === Math.max(…)) continue  // no cliff
-
-        for (const i of [iBL, iBR, iTL, iTR])
-            if (layerHeight[i] > minL) adjusted[i] = Math.min(adjusted[i], minL)
-    }
-}
-// Use adjusted[] instead of layerHeight[] in the height formula
-```
+The terrain vertex shader (`terrain.vert`) uses `final_ground_heights` for the Z position and `ground_heights` (deformation only) for normals — matching the cliff shader's normal calculation.
 
 ## Water
 

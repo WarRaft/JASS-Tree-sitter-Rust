@@ -42,7 +42,7 @@ fn pack_points(data: &W3eData) -> serde_json::Value {
 
         let mut f: u8 = 0;
         if p.water { f |= 1; }
-        if p.boundary { f |= 2; }
+        if p.boundary || p.edge_flag { f |= 2; }
         if p.blight { f |= 4; }
         if p.ramp { f |= 8; }
         flags.push(f);

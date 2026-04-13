@@ -344,6 +344,8 @@
  * @property {string} cliffClass - Cliff class (e.g. "c1", "c2")
  * @property {string} texDir - Texture directory (e.g. "ReplaceableTextures\\Cliff")
  * @property {string} texFile - Texture file name (e.g. "Cliff0")
+ * @property {string} groundTile - Ground tile rawcode override near cliffs (e.g. "Ldrt")
+ * @property {string} upperTile - Upper tile rawcode for cliff peak corners (e.g. "Osmb"), "_" = none
  */
 
 /**

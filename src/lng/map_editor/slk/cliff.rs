@@ -24,6 +24,10 @@ pub struct CliffTypeInfo {
     pub tex_source: Option<String>,
     /// Ground tile rawcode override near cliffs (e.g. `"Ldrt"`).
     pub ground_tile: String,
+    /// Upper tile rawcode override for cliff peak corners (e.g. `"Osmb"`).
+    /// When not `"_"` / empty, corners at the peak `layerHeight` of a cliff cell
+    /// use this texture instead of `ground_tile`.
+    pub upper_tile: String,
 }
 
 /// Result of loading `TerrainArt\CliffTypes.slk`.
@@ -80,6 +84,7 @@ pub fn load_cliff_types_slk(archive_path: Option<&str>, tileset: Option<&str>) -
             tex_file,
             tex_source,
             ground_tile: row.get("groundTile").cloned().unwrap_or_default(),
+            upper_tile: row.get("upperTile").cloned().unwrap_or_default(),
         });
     }
 
