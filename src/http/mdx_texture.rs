@@ -52,7 +52,7 @@ pub async fn mdx_texture_handler(
 
 /// Find a texture via the game-folder cascade, decode BLP → PNG bytes.
 fn render_texture_png(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Result<Vec<u8>, String> {
-    use blp::core::image::ImageBlp;
+    use blp::{Blp, FormatDetector, ImageDecoder};
     use image::{DynamicImage, ImageFormat};
     use std::io::Cursor;
 
@@ -77,34 +77,21 @@ fn render_texture_png(relative_path: &str, archive_path: Option<&str>, tileset: 
     let resolved_lower = resolved_path.to_ascii_lowercase();
 
     let rgba = if resolved_lower.ends_with(".blp") {
-        let mut image = ImageBlp::from_buf(&buf)
-            .map_err(|e| format!("BLP parse error: {e}"))?;
-        image.decode(&buf, &[])
+        let img = Blp::into_dynamic(&buf)
             .map_err(|e| format!("BLP decode error: {e}"))?;
-        let mipmap = image.mipmaps.first()
-            .ok_or("BLP has no mipmaps")?;
-        mipmap.image.clone()
-            .ok_or_else(|| "BLP mipmap has no image data".to_string())?
+        img.to_rgba8()
     } else if resolved_lower.ends_with(".tga") {
         let img = image::load_from_memory_with_format(&buf, ImageFormat::Tga)
             .map_err(|e| format!("TGA decode error: {e}"))?;
         img.to_rgba8()
     } else {
         // Try BLP first (most common), fall back to generic image decode
-        if let Ok(mut image) = ImageBlp::from_buf(&buf) {
-            if image.decode(&buf, &[]).is_ok() {
-                if let Some(mip) = image.mipmaps.first() {
-                    if let Some(rgba) = &mip.image {
-                        rgba.clone()
-                    } else {
-                        return Err("Unknown texture format".into());
-                    }
-                } else {
-                    return Err("BLP has no mipmaps".into());
-                }
-            } else {
-                return Err("Failed to decode texture".into());
-            }
+        if Blp::detect(&buf) {
+            let img = Blp::into_dynamic(&buf)
+                .map_err(|e| format!("BLP decode error: {e}"))?;
+            img.to_rgba8()
+        } else if let Ok(img) = image::load_from_memory(&buf) {
+            img.to_rgba8()
         } else {
             return Err(format!("Unsupported texture format: {relative_path}"));
         }
@@ -118,4 +105,3 @@ fn render_texture_png(relative_path: &str, archive_path: Option<&str>, tileset: 
 
     Ok(cursor.into_inner())
 }
-

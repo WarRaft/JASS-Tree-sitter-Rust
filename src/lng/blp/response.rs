@@ -1,6 +1,5 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use blp::core::mipmap::Mipmap;
 use image::{DynamicImage, ImageFormat, RgbaImage};
 use serde::Serialize;
 use std::io::Cursor;
@@ -20,12 +19,13 @@ pub struct BlpMipmapMeta {
     pub image_data_url: Option<String>,
 }
 
-impl From<&Mipmap> for BlpMipmapMeta {
-    fn from(m: &Mipmap) -> Self {
+impl BlpMipmapMeta {
+    /// Build from a Frame + optional decoded RgbaImage.
+    pub fn from_frame(frame: &blp::Frame, img: Option<&RgbaImage>) -> Self {
         Self {
-            width: m.width,
-            height: m.height,
-            image_data_url: m.image.as_ref().and_then(image_to_data_url),
+            width: frame.width,
+            height: frame.height,
+            image_data_url: img.and_then(image_to_data_url),
         }
     }
 }

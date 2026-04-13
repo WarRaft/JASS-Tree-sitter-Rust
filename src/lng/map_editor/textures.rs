@@ -77,9 +77,9 @@ pub fn load_tile_textures(
 fn decode_texture(buf: &[u8], ext: &str) -> Option<RgbaImage> {
     match ext.to_lowercase().as_str() {
         ".blp" => {
-            let mut image = blp::core::image::ImageBlp::from_buf(buf).ok()?;
-            image.decode(buf, &[]).ok()?;
-            image.mipmaps.first()?.image.clone()
+            use blp::ImageDecoder;
+            let img = blp::Blp::into_dynamic(buf).ok()?;
+            Some(img.to_rgba8())
         }
         ".tga" => {
             let img = image::load_from_memory_with_format(buf, ImageFormat::Tga).ok()?;

@@ -8,6 +8,7 @@ use crate::http::server::{TokenParam, check_token};
 use axum::extract::{Json, Query};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use blp::FormatDetector;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -90,9 +91,11 @@ pub async fn blp_render(
     auth.check()?;
     let path = params.uri.to_file_path().map_err(|_| (StatusCode::BAD_REQUEST, "Invalid URI".into()))?;
     let buf = tokio::fs::read(&path).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mut image = blp::core::image::ImageBlp::from_buf(&buf).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    image.decode(&buf, &[]).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let mipmaps: Vec<crate::lng::blp::response::BlpMipmapMeta> = image.mipmaps.iter().map(crate::lng::blp::response::BlpMipmapMeta::from).collect();
+    let (blp_hdr, frames) = blp::Blp::parse_header(&buf).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let decoded = blp::blp::decode::open_mipmaps_filtered(&blp_hdr, &frames, &buf, &[]).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let mipmaps: Vec<crate::lng::blp::response::BlpMipmapMeta> = frames.iter().zip(decoded.iter())
+        .map(|(frame, img)| crate::lng::blp::response::BlpMipmapMeta::from_frame(frame, img.as_ref()))
+        .collect();
     let response = crate::lng::blp::response::BlpResponse { uri: &params.uri, mipmaps };
     Ok(Json(serde_json::to_value(response).unwrap_or_default()))
 }

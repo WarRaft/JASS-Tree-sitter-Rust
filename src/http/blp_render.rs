@@ -9,7 +9,7 @@ use crate::lng::blp::response::BlpMipmapMeta;
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
-use blp::core::image::ImageBlp;
+use blp::{Blp, FormatDetector};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize)]
@@ -41,10 +41,13 @@ pub async fn blp_render_handler(
             crate::lng::map_editor::file_lookup::lookup_file_resolved(&path, archive.as_deref())
                 .ok_or_else(|| "File not found".to_string())?;
 
-        let mut image = ImageBlp::from_buf(&buf).map_err(|e| format!("BLP parse error: {e}"))?;
-        image.decode(&buf, &[]).map_err(|e| format!("BLP decode error: {e}"))?;
+        let (blp_hdr, frames) = Blp::parse_header(&buf).map_err(|e| format!("BLP parse error: {e}"))?;
+        let decoded = blp::blp::decode::open_mipmaps_filtered(&blp_hdr, &frames, &buf, &[])
+            .map_err(|e| format!("BLP decode error: {e}"))?;
 
-        let mipmaps: Vec<BlpMipmapMeta> = image.mipmaps.iter().map(BlpMipmapMeta::from).collect();
+        let mipmaps: Vec<BlpMipmapMeta> = frames.iter().zip(decoded.iter())
+            .map(|(frame, img)| BlpMipmapMeta::from_frame(frame, img.as_ref()))
+            .collect();
 
         let name = resolved
             .replace('\\', "/")
@@ -61,4 +64,3 @@ pub async fn blp_render_handler(
 
     Ok(Json(result))
 }
-

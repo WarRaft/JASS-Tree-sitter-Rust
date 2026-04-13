@@ -1,5 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
+use blp::ImageDecoder;
 use serde_json::json;
 
 /// The external listfile shipped with the extension — contains properly-cased
@@ -460,25 +461,22 @@ fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
     if let Ok(blp_data) = archive.read_file("war3mapMap.blp") {
         minimap = json!({ "format": "blp", "size": blp_data.len() });
         // Try to decode BLP → PNG data-URL for display
-        if let Ok(mut img) = blp::core::image::ImageBlp::from_buf(&blp_data) {
-            if img.decode(&blp_data, &[]).is_ok() {
-                if let Some(mip) = img.mipmaps.first() {
-                    if let Some(ref rgba) = mip.image {
-                        let dynamic = image::DynamicImage::ImageRgba8(rgba.clone());
-                        let mut cursor = std::io::Cursor::new(Vec::new());
-                        if dynamic.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
-                            let png_bytes = cursor.into_inner();
-                            let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png_bytes));
-                            minimap = json!({
-                                "format": "blp",
-                                "size": blp_data.len(),
-                                "dataUrl": data_url,
-                                "width": mip.width,
-                                "height": mip.height,
-                            });
-                        }
-                    }
-                }
+        if let Ok(img) = blp::Blp::into_dynamic(&blp_data) {
+            let rgba = img.to_rgba8();
+            let w = rgba.width();
+            let h = rgba.height();
+            let dynamic = image::DynamicImage::ImageRgba8(rgba);
+            let mut cursor = std::io::Cursor::new(Vec::new());
+            if dynamic.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
+                let png_bytes = cursor.into_inner();
+                let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png_bytes));
+                minimap = json!({
+                    "format": "blp",
+                    "size": blp_data.len(),
+                    "dataUrl": data_url,
+                    "width": w,
+                    "height": h,
+                });
             }
         }
     }
@@ -507,25 +505,22 @@ fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
     // Fallback: war3mapPreview.blp
     if preview.is_null() {
         if let Ok(blp_data) = archive.read_file("war3mapPreview.blp") {
-            if let Ok(mut img) = blp::core::image::ImageBlp::from_buf(&blp_data) {
-                if img.decode(&blp_data, &[]).is_ok() {
-                    if let Some(mip) = img.mipmaps.first() {
-                        if let Some(ref rgba) = mip.image {
-                            let dynamic = image::DynamicImage::ImageRgba8(rgba.clone());
-                            let mut cursor = std::io::Cursor::new(Vec::new());
-                            if dynamic.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
-                                let png_bytes = cursor.into_inner();
-                                let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png_bytes));
-                                preview = json!({
-                                    "format": "blp",
-                                    "size": blp_data.len(),
-                                    "dataUrl": data_url,
-                                    "width": mip.width,
-                                    "height": mip.height,
-                                });
-                            }
-                        }
-                    }
+            if let Ok(img) = blp::Blp::into_dynamic(&blp_data) {
+                let rgba = img.to_rgba8();
+                let w = rgba.width();
+                let h = rgba.height();
+                let dynamic = image::DynamicImage::ImageRgba8(rgba);
+                let mut cursor = std::io::Cursor::new(Vec::new());
+                if dynamic.write_to(&mut cursor, image::ImageFormat::Png).is_ok() {
+                    let png_bytes = cursor.into_inner();
+                    let data_url = format!("data:image/png;base64,{}", BASE64.encode(&png_bytes));
+                    preview = json!({
+                        "format": "blp",
+                        "size": blp_data.len(),
+                        "dataUrl": data_url,
+                        "width": w,
+                        "height": h,
+                    });
                 }
             }
         }
