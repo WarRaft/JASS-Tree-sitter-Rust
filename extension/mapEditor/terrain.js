@@ -1867,7 +1867,7 @@
                             it.p[1] - D.offsetY - halfGridH,
                             it.p[2]
                         )
-                        euler.set(it.rx || 0, it.ry || 0, it.a || 0)
+                        euler.set(it.rx || 0, it.ry || 0, it.a || 0, 'ZYX')
                         quat.setFromEuler(euler)
                         scl.set(it.s[0] || 1, it.s[1] || 1, it.s[2] || 1)
                         mat4.compose(pos, quat, scl)
@@ -1896,6 +1896,94 @@
                 if (numVar <= 1) return base
                 let idx = (variation || 0) % numVar
                 return base + idx
+            }
+
+            // Bilinear interpolation of final ground height at fractional
+            // tilepoint coordinates, matching HiveWE Terrain::interpolated_height.
+            // Coordinates are in tile units (world / 128), NOT game units.
+            function _interpolatedHeight(tx, ty) {
+                tx = Math.max(0, Math.min(W - 1.01, tx))
+                ty = Math.max(0, Math.min(H - 1.01, ty))
+                const ix = Math.floor(tx), iy = Math.floor(ty)
+                const ixc = Math.min(ix + 1, W - 1), iyc = Math.min(iy + 1, H - 1)
+
+                // HiveWE: final_ground_height = (groundHeight - 8192) / 512 + layerHeight - 2
+                //       = groundHeight / (4 * 128) - 16 + layerHeight - 2
+                //       = groundHeight / (H_SCALE * TILE) + layerHeight - 18
+                function _fgh(i, j) {
+                    const idx = j * W + i
+                    return D.groundHeight[idx] / (H_SCALE * TILE) + D.layerHeight[idx] - 18
+                }
+                const p1 = _fgh(ix, iy)
+                const p2 = _fgh(ixc, iy)
+                const p3 = _fgh(ix, iyc)
+                const p4 = _fgh(ixc, iyc)
+                const fx = tx - ix, fy = ty - iy
+                const xx = p1 + (p2 - p1) * fx
+                const yy = p3 + (p4 - p3) * fx
+                return xx + (yy - xx) * fy
+            }
+
+            // Compute pitch (ry) and roll (rx) for a doodad, matching HiveWE
+            // Doodad::update() (doodad.ixx lines 72-133).
+            //
+            // Coordinates in game (world) units; angle in radians.
+            // maxPitch/maxRoll from SLK:
+            //   < 0 → fixed tilt (value used directly as radians)
+            //   = 0 → no tilt (default for missing SLK fields)
+            //   > 0 → terrain-following, value = max angle in degrees
+            // Returns {rx, ry} in radians (rx = roll around X, ry = -pitch around Y)
+            // matching euler.set(rx, ry, a, 'ZYX') in _placeInstances.
+            function _computeTerrainTilt(wx, wy, angle, maxPitch, maxRoll) {
+                if (maxPitch === 0 && maxRoll === 0) return null
+
+                // Sample radius in tile units (HiveWE: 32/128 = 0.25)
+                const SR = 32 / TILE
+                // Convert world position to tile coordinates
+                const tx = (wx - D.offsetX) / TILE
+                const ty = (wy - D.offsetY) / TILE
+
+                // ── Pitch (rotation around local Y, negated) ──────────
+                // HiveWE: negative → fixed (pitch = maxPitch, then rotation *= angleAxis(-pitch, Y))
+                //         positive → terrain following clamped to ±maxPitch degrees
+                let pitch = 0
+                if (maxPitch < 0) {
+                    pitch = maxPitch
+                } else if (maxPitch > 0) {
+                    const maxPitchRad = maxPitch * Math.PI / 180
+                    const fwdX = tx + SR * Math.cos(angle)
+                    const fwdY = ty + SR * Math.sin(angle)
+                    const bwdX = tx - SR * Math.cos(angle)
+                    const bwdY = ty - SR * Math.sin(angle)
+                    const h1 = _interpolatedHeight(bwdX, bwdY)
+                    const h2 = _interpolatedHeight(fwdX, fwdY)
+                    pitch = Math.max(-maxPitchRad, Math.min(maxPitchRad,
+                        Math.atan2(h2 - h1, SR * 2)))
+                }
+
+                // ── Roll (rotation around local X) ────────────────────
+                // HiveWE: negative → fixed (roll = -maxRoll, then rotation *= angleAxis(roll, X))
+                //         positive → terrain following clamped to ±maxRoll degrees
+                let roll = 0
+                if (maxRoll < 0) {
+                    roll = -maxRoll
+                } else if (maxRoll > 0) {
+                    const maxRollRad = maxRoll * Math.PI / 180
+                    const perpAngle = angle + Math.PI / 2
+                    const fwdX = tx + SR * Math.cos(perpAngle)
+                    const fwdY = ty + SR * Math.sin(perpAngle)
+                    const bwdX = tx - SR * Math.cos(perpAngle)
+                    const bwdY = ty - SR * Math.sin(perpAngle)
+                    const h1 = _interpolatedHeight(bwdX, bwdY)
+                    const h2 = _interpolatedHeight(fwdX, fwdY)
+                    roll = Math.max(-maxRollRad, Math.min(maxRollRad,
+                        Math.atan2(h2 - h1, SR * 2)))
+                }
+
+                if (pitch === 0 && roll === 0) return null
+                // euler.set(rx=roll, ry=-pitch, rz=angle, 'ZYX') matches HiveWE's
+                // quat composition: Rz(angle) * Ry(-pitch) * Rx(roll)
+                return {rx: roll, ry: -pitch}
             }
 
             // Create centered items for missing cliff fallback cubes.
@@ -2234,6 +2322,21 @@
                     const resolved = _resolveModelPath(file, numVar, item.v)
                     const texFile = typeof entry === 'object' ? (entry.texFile || '') : ''
                     const texId = typeof entry === 'object' ? (entry.texId || 0) : 0
+
+                    // fixedRot override: positive or zero → fixed angle in degrees
+                    // (HiveWE Doodad::acceptable_angle: fixedRot >= 0 → radians(fixedRot))
+                    // Negative value (-1 default) means free rotation — use DOO angle.
+                    const fixedRot = typeof entry === 'object' ? (entry.fixedRot != null ? entry.fixedRot : -1) : -1
+                    if (fixedRot >= 0) {
+                        item.a = fixedRot * Math.PI / 180
+                    }
+
+                    // Compute terrain-following tilt from maxPitch/maxRoll
+                    const mp = typeof entry === 'object' ? (entry.maxPitch != null ? entry.maxPitch : 0) : 0
+                    const mr = typeof entry === 'object' ? (entry.maxRoll != null ? entry.maxRoll : 0) : 0
+                    const tilt = _computeTerrainTilt(item.p[0], item.p[1], item.a || 0, mp, mr)
+                    if (tilt) { item.rx = tilt.rx; item.ry = tilt.ry }
+
                     const cacheKey = texFile ? (resolved + '|' + texFile) : resolved
                     if (!byCacheKey[cacheKey]) byCacheKey[cacheKey] = {path: resolved, items: [], texId, texFile}
                     byCacheKey[cacheKey].items.push(item)
@@ -2660,24 +2763,24 @@
                 if (Object.keys(doodDataMap).length > 0) {
                     _doodFileMap = {}
                     for (const [rawId, d] of Object.entries(doodDataMap)) {
-                        if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1}
+                        if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0, fixedRot: d.fixedRot != null ? d.fixedRot : -1}
                     }
                 } else if (snapshot.doodadsSlk && snapshot.doodadsSlk.doodads) {
                     _doodFileMap = {}
                     for (const [rawId, d] of Object.entries(snapshot.doodadsSlk.doodads)) {
-                        if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1}
+                        if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0, fixedRot: d.fixedRot != null ? d.fixedRot : -1}
                     }
                 }
                 const destDataMap = window._W3E_DESTRUCTABLES ? window._W3E_DESTRUCTABLES.getDataMap() : {}
                 if (Object.keys(destDataMap).length > 0) {
                     _destFileMap = {}
                     for (const [rawId, d] of Object.entries(destDataMap)) {
-                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || ''}
+                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || '', maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0}
                     }
                 } else if (snapshot.destructablesSlk && snapshot.destructablesSlk.destructables) {
                     _destFileMap = {}
                     for (const [rawId, d] of Object.entries(snapshot.destructablesSlk.destructables)) {
-                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || ''}
+                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || '', maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0}
                     }
                 }
                 if (snapshot.unitsSlk && snapshot.unitsSlk.units) {
@@ -2715,6 +2818,10 @@
         // ── Orbit controls ──────────────────────────────────────
         const ctrl = W3E.makeOrbitControls(camera, canvas, maxDim, {zUp: true})
         ctrl.target.set(0, 0, 0)
+        ctrl.saveInitState()
+
+        const resetCameraBtn = document.getElementById('resetCameraBtn')
+        if (resetCameraBtn) resetCameraBtn.addEventListener('click', function () { ctrl.reset() })
 
         function resize() {
             const cw = window.innerWidth, ch = window.innerHeight

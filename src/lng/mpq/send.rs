@@ -229,10 +229,105 @@ fn extract_paths_from_object_data(
     from_defs(&data.table.customs, out);
 }
 
+/// SLK files from which to extract candidate file paths for archive probing.
+const SLK_PATH_SOURCES: &[&str] = &[
+    "Units\\DestructableData.slk",
+    "Doodads\\Doodads.slk",
+    "Units\\unitUI.slk",
+    "Units\\UnitData.slk",
+];
+
+/// Known SLK column names that hold model file paths.
+const SLK_MODEL_FIELDS: &[&str] = &["file", "portraitmodel", "special", "unitShadow", "buildingShadow"];
+/// Known SLK column names that hold texture file paths.
+const SLK_TEXTURE_FIELDS: &[&str] = &["texFile", "pathTex", "pathTexDeath"];
+
+/// Extract file paths from base SLK data so that custom replacements
+/// inside the map archive can be detected.
+fn extract_paths_from_slk_data(archive_path: &str, out: &mut Vec<String>) {
+    for &slk_path in SLK_PATH_SOURCES {
+        let buf = match crate::lng::map_editor::file_lookup::lookup_file(slk_path, Some(archive_path)) {
+            Some((b, _)) => b,
+            None => continue,
+        };
+        let rows = crate::lng::map_editor::slk::parse_slk(&buf);
+        for row in &rows {
+            let num_var: u32 = row.get("numVar").and_then(|v| v.parse().ok()).unwrap_or(0);
+            let mut model_path: Option<&str> = None;
+
+            for (key, value) in row {
+                if !looks_like_path(value) { continue; }
+
+                let kind = if SLK_MODEL_FIELDS.contains(&key.as_str()) {
+                    PathKind::Model
+                } else if SLK_TEXTURE_FIELDS.contains(&key.as_str()) {
+                    PathKind::Texture
+                } else {
+                    PathKind::Unknown
+                };
+
+                if matches!(kind, PathKind::Model) {
+                    model_path = Some(value.as_str());
+                }
+
+                expand_path(value, kind, out);
+            }
+
+            // Generate variation paths (base0, base1, …) when numVar > 1.
+            if num_var > 1 {
+                if let Some(mp) = model_path {
+                    let base = strip_ext(mp);
+                    for i in 0..num_var {
+                        let var_base = format!("{base}{i}");
+                        push_with_exts(&var_base, MODEL_EXTS, out);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Parse model files (.mdx) from the map archive and extract the texture
+/// paths they reference.  Each texture path is expanded with `.tga`/`.blp`
+/// extension pairing so custom texture replacements are detected.
+fn extract_textures_from_models(
+    archive: &storm_rs::MpqArchive,
+    model_paths: &[String],
+    out: &mut Vec<String>,
+) {
+    let mut seen_bases: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for path in model_paths {
+        // Dedup by base path (avoid processing both .mdx and .mdl variants)
+        let base = strip_ext(path).to_ascii_lowercase();
+        if !seen_bases.insert(base) { continue; }
+
+        // Try to read from the map archive
+        let mpq_path = path.replace('/', "\\");
+        let buf = match archive.read_file(&mpq_path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        // Only parse MDX binary format (not MDL text format)
+        if buf.len() < 4 || &buf[0..4] != b"MDLX" { continue; }
+
+        let model = match crate::lng::mdx::parse::parse(&buf) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+
+        for tex in &model.textures {
+            if !tex.file_name.is_empty() {
+                expand_path(&tex.file_name, PathKind::Texture, out);
+            }
+        }
+    }
+}
+
 /// Collect candidate file paths by parsing the map's object data,
-/// W3I, and imported-file lists.  Returns a deduplicated set of paths
-/// to probe with `archive.has_file()`.
-fn collect_candidate_paths(archive: &storm_rs::MpqArchive) -> std::collections::HashSet<String> {
+/// W3I, imported-file lists, and base SLK data.  Returns a deduplicated
+/// set of paths to probe with `archive.has_file()`.
+fn collect_candidate_paths(archive: &storm_rs::MpqArchive, archive_path: &str) -> std::collections::HashSet<String> {
     let mut raw: Vec<String> = Vec::new();
 
     // ── Object data files ──
@@ -280,6 +375,27 @@ fn collect_candidate_paths(archive: &storm_rs::MpqArchive) -> std::collections::
         }
     }
 
+    // ── Base SLK data paths (models, textures, path textures from game data) ──
+    extract_paths_from_slk_data(archive_path, &mut raw);
+
+    // ── Textures referenced inside model files in the map archive ──
+    // Collect model paths from the candidate list AND the archive's own file list.
+    let mut model_candidates: Vec<String> = archive.list_files().into_iter()
+        .filter(|f| {
+            let l = f.to_ascii_lowercase();
+            l.ends_with(".mdx") || l.ends_with(".mdl")
+        })
+        .collect();
+    model_candidates.extend(
+        raw.iter()
+            .filter(|p| {
+                let l = p.to_ascii_lowercase();
+                l.ends_with(".mdx") || l.ends_with(".mdl")
+            })
+            .cloned()
+    );
+    extract_textures_from_models(archive, &model_candidates, &mut raw);
+
     raw.into_iter().collect()
 }
 
@@ -326,8 +442,8 @@ fn list_files(archive_path: &str) -> Result<Vec<serde_json::Value>, String> {
         }
     }
 
-    // Probe paths referenced in the map's object data / w3i / imports.
-    let candidates = collect_candidate_paths(&archive);
+    // Probe paths referenced in the map's object data / w3i / imports / base SLK data.
+    let candidates = collect_candidate_paths(&archive, archive_path);
     for candidate in &candidates {
         let lower = candidate.replace('\\', "/").to_ascii_lowercase();
         if !seen.contains(&lower) && archive.has_file(candidate) {
@@ -405,8 +521,8 @@ fn get_info(archive_path: &str) -> Result<serde_json::Value, String> {
         }
     }
 
-    // Probe paths referenced in the map's object data / w3i / imports.
-    let candidates = collect_candidate_paths(&archive);
+    // Probe paths referenced in the map's object data / w3i / imports / base SLK data.
+    let candidates = collect_candidate_paths(&archive, archive_path);
     for candidate in &candidates {
         let lower = candidate.replace('\\', "/").to_ascii_lowercase();
         if !seen.contains(&lower) && archive.has_file(candidate) {

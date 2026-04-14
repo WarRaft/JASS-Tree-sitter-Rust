@@ -510,4 +510,59 @@ function renderDooContent(data, isUnit) {
     </div>`
 }
 
-module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent, REQUIRED_MPQ_FILES}
+// ── W3R (regions) content for float-window ──────────────────────────
+function renderW3rContent(data) {
+    if (!data) return '<div class="fi-empty">No data</div>'
+
+    const metaHtml = renderDooMeta(data._meta)
+
+    const headerRows = [
+        ['Format', data.format],
+        ['Regions', data.regions ? data.regions.length : 0],
+    ]
+    const headerHtml = headerRows.map(([k, v]) =>
+        `<tr><td class="key">${k}</td><td>${v}</td></tr>`
+    ).join('')
+
+    let regionsHtml = ''
+    if (data.regions && data.regions.length > 0) {
+        const thead = ['#', 'Num', 'Name', 'Left', 'Bottom', 'Right', 'Top', 'Weather', 'Sound', 'Color']
+            .map(c => `<th>${c}</th>`).join('')
+        const tbody = data.regions.map((r, i) => {
+            const w = r.weather && r.weather.text && r.weather.text !== '\0\0\0\0' && r.weather.raw !== 0
+                ? esc(r.weather.text) : ''
+            const snd = r.ambient_sound || ''
+            const cr = r.color ? r.color.r : 0
+            const cg = r.color ? r.color.g : 0
+            const cb = r.color ? r.color.b : 0
+            const ca = r.color ? r.color.a : 255
+            const colorCss = `rgba(${cr},${cg},${cb},${(ca / 255).toFixed(2)})`
+            return `<tr>
+                <td class="num">${i + 1}</td>
+                <td class="num">${r.num}</td>
+                <td>${esc(r.name)}</td>
+                <td class="num">${fmtF(r.left)}</td>
+                <td class="num">${fmtF(r.bottom)}</td>
+                <td class="num">${fmtF(r.right)}</td>
+                <td class="num">${fmtF(r.top)}</td>
+                <td class="code">${w}</td>
+                <td>${esc(snd)}</td>
+                <td><span style="display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:middle;background:${colorCss};border:1px solid rgba(255,255,255,0.2);"></span></td>
+            </tr>`
+        }).join('')
+
+        regionsHtml = `
+        <div class="tw-section-title">📐 Regions (${data.regions.length})</div>
+        <div class="table-wrap" style="flex:1;min-height:0;overflow:auto;">
+            <table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>
+        </div>`
+    }
+
+    return `<div class="doo-content">
+    ${metaHtml}
+    <table class="info">${headerHtml}</table>
+    ${regionsHtml}
+    </div>`
+}
+
+module.exports = {renderMapInfoContent, renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent, renderW3rContent, REQUIRED_MPQ_FILES}

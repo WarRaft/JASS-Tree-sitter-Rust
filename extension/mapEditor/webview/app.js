@@ -553,6 +553,10 @@ window.W3E = (function () {
                         const w = document.getElementById('unitDooWindow');
                         if (w) { w.show(); return; }
                     }
+                    if (name.replace(/\\/g, '/').toLowerCase() === 'war3map.w3r') {
+                        const w = document.getElementById('regionsWindow');
+                        if (w) { w.show(); return; }
+                    }
                     const ext = (name.split('.').pop() || '').toLowerCase();
                     if (ext === 'mdx' || ext === 'mdl') {
                         vscode.postMessage({command: 'openModel', path: name});
@@ -560,6 +564,10 @@ window.W3E = (function () {
                     }
                     if (ext === 'blp') {
                         vscode.postMessage({command: 'openBlp', path: name});
+                        return;
+                    }
+                    if (ext === 'slk') {
+                        vscode.postMessage({command: 'openSlk', path: name});
                         return;
                     }
                     vscode.postMessage({command: 'openFile', name});

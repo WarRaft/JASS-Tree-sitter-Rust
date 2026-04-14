@@ -83,6 +83,7 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/render/blp", post(crate::http::api::blp_render))
         .route("/render/mdx", post(crate::http::api::mdx_render))
         .route("/render/doo", post(crate::http::api::doo_render))
+        .route("/render/w3r", post(crate::http::api::w3r_render))
         .route("/render/w3i", post(crate::http::api::w3i_render))
         .route("/render/w3e", post(crate::http::api::w3e_render))
         .route("/render/w3obj", post(crate::http::api::w3obj_render))

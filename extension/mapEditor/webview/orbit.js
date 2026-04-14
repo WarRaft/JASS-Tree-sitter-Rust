@@ -33,12 +33,13 @@ window._W3E_ORBIT = (function () {
         let skipGuards = opts && opts.skipGuards;
         let zUp = !!(opts && opts.zUp);
 
-        let ZOOM_LINEAR = maxD * 0.05;     // fixed zoom step per scroll notch
-        let PAN_FIXED   = maxD / 1000;     // fixed pan factor (world units per pixel)
+        let _maxD = maxD;
+        let ZOOM_LINEAR = _maxD * 0.05;     // fixed dolly step per scroll notch
+        let PAN_FIXED   = _maxD / 1000;     // fixed pan factor (world units per pixel)
 
         let target   = new THREE.Vector3();
         let panOff   = new THREE.Vector3();
-        let zoomDelta = 0;
+        let dollyDelta = 0;               // forward/backward translation (dolly)
         let hDelta = 0, vDelta = 0;
 
         let orbiting = false, panning = false, zooming = false;
@@ -123,7 +124,7 @@ window._W3E_ORBIT = (function () {
             let dx = e.clientX - px, dy = e.clientY - py;
             px = e.clientX; py = e.clientY;
             if (orbiting) { hDelta -= dx * ROTATE_SPEED; vDelta -= dy * ROTATE_SPEED; }
-            if (zooming) { zoomDelta += dy / 50 * ZOOM_LINEAR; }
+            if (zooming) { dollyDelta += dy / 50 * ZOOM_LINEAR; }
             if (panning) {
                 let v = new THREE.Vector3(), activeCam = getActiveCam();
                 v.setFromMatrixColumn(activeCam.matrix, 0); panOff.addScaledVector(v, -dx * PAN_FIXED * PAN_SPEED);
@@ -141,9 +142,9 @@ window._W3E_ORBIT = (function () {
         domEl.addEventListener('wheel', function (e) {
             if (!skipGuards && e.target.closest('float-window')) return;
             e.preventDefault();
-            if (e.deltaMode === 1) { zoomDelta += (e.deltaY > 0 ? 1 : -1) * ZOOM_LINEAR; return; }
+            if (e.deltaMode === 1) { dollyDelta += (e.deltaY > 0 ? 1 : -1) * ZOOM_LINEAR; return; }
             if (e.ctrlKey || e.metaKey) {
-                zoomDelta += e.deltaY / 100 * ZOOM_LINEAR;
+                dollyDelta += e.deltaY / 100 * ZOOM_LINEAR;
             } else if (e.shiftKey || lmbDown) {
                 let activeCam = getActiveCam();
                 let v = new THREE.Vector3();
@@ -226,10 +227,34 @@ window._W3E_ORBIT = (function () {
         })();
 
         // ── Update ──────────────────────────────────────────────
+        let _initPos = cam.position.clone();
+        let _initTarget = new THREE.Vector3(); // will be set via ctrl.target before first update
+
         let ctrl = {
             target: target,
-            maxDist: maxD,
+            get maxDist() { return _maxD; },
+            set maxDist(v) { _maxD = v; ZOOM_LINEAR = v * 0.05; PAN_FIXED = v / 1000; },
             get camera() { return getActiveCam(); },
+
+            reset: function () {
+                target.copy(_initTarget);
+                cam.position.copy(_initPos);
+                cam.lookAt(target);
+                _radius = _initPos.distanceTo(target) || maxD;
+                let dir = cam.position.clone().sub(target);
+                _orbit.copy(_buildOrbitQuat(dir));
+                if (orthoCam) {
+                    orthoCam.position.copy(cam.position);
+                    orthoCam.quaternion.copy(cam.quaternion);
+                    syncOrthoFrustum();
+                }
+            },
+
+            /** Call after setting target to remember the initial state for reset(). */
+            saveInitState: function () {
+                _initTarget.copy(target);
+                _initPos.copy(cam.position);
+            },
 
             update: function () {
                 if (_needsInit) _initFromCamera();
@@ -250,11 +275,19 @@ window._W3E_ORBIT = (function () {
                         _tmpQ.setFromAxisAngle(_tmpV, -vDelta);
                         _orbit.premultiply(_tmpQ);
                     }
-                    _radius += zoomDelta;
                 }
 
                 _orbit.normalize();
-                _radius = Math.min(ctrl.maxDist * 5, _radius);
+
+                // Dolly: translate target along the view direction (back axis)
+                // so the entire orbit sphere moves forward/backward.
+                // This keeps the orbit center meaningful at any distance
+                // and allows flying through any point — no radius limits.
+                if (dollyDelta !== 0) {
+                    _tmpV.set(0, 0, 1).applyQuaternion(_orbit);
+                    target.addScaledVector(_tmpV, dollyDelta);
+                }
+
                 target.add(panOff);
 
                 _tmpV.set(0, 0, _radius).applyQuaternion(_orbit);
@@ -268,7 +301,7 @@ window._W3E_ORBIT = (function () {
 
                 hDelta = 0; vDelta = 0;
                 panOff.set(0, 0, 0);
-                zoomDelta = 0;
+                dollyDelta = 0;
 
                 if (gizmoRenderer) {
                     gizmoCamera.quaternion.copy(_orbit);

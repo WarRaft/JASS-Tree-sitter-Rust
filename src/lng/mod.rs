@@ -8,6 +8,7 @@ pub(crate) mod mdx;
 pub(crate) mod symbol;
 pub(crate) mod w3e;
 pub(crate) mod w3i;
+pub(crate) mod w3r;
 pub(crate) mod doo;
 pub(crate) mod mpq;
 pub(crate) mod slk;

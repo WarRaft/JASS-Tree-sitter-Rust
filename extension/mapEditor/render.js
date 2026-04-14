@@ -1,5 +1,5 @@
 const {esc, indexToRgb, TILESET_NAMES, DOODAD_CATEGORIES, DESTRUCTABLE_CATEGORIES} = require('./utils.js')
-const {renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent} = require('./panels.js')
+const {renderHeaderContent, renderGamePathContent, renderFilesRows, renderW3iContent, renderDooContent, renderW3rContent} = require('./panels.js')
 const {editorStyles} = require('./styles.js')
 
 function renderMeta(meta) {
@@ -101,6 +101,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const hasUnitDoo = !!mapInfo.unitDooData
     const doodadDooContent = renderDooContent(mapInfo.doodadDooData, false)
     const hasDoodadDoo = !!mapInfo.doodadDooData
+    const w3rContent = renderW3rContent(mapInfo.w3rData)
+    const hasW3r = !!mapInfo.w3rData
     const isDoo = !!mapInfo.isDoo
     const fileCount = mapInfo.archiveFiles ? mapInfo.archiveFiles.length : 0
     const discoveredCount = mapInfo.archiveFiles ? mapInfo.archiveFiles.filter(f => f.discovered).length : 0
@@ -204,11 +206,11 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     // Build rawcode → model file maps for placing objects on terrain
     const doodadFileMap = {}
     for (const [rawId, d] of Object.entries(doodadsMap)) {
-        if (d.file) doodadFileMap[rawId] = {file: d.file, numVar: d.numVar || 1}
+        if (d.file) doodadFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0, fixedRot: d.fixedRot != null ? d.fixedRot : -1}
     }
     const destructableFileMap = {}
     for (const [rawId, d] of Object.entries(destructablesMap)) {
-        if (d.file) destructableFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || ''}
+        if (d.file) destructableFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || '', maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0, fixedRot: d.fixedRot != null ? d.fixedRot : -1}
     }
     const unitFileMap = {}
     for (const [rawId, u] of Object.entries(unitsMap)) {
@@ -350,11 +352,15 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
                 title="${hasTerrain ? 'Tileset info' : 'No terrain data available'}">\ud83e\uddf1 Tileset</button>
         <button class="menu-item menu-child${hasTerrain ? '' : ' disabled'}" ${hasTerrain ? 'data-action="toggleWindow" data-target="cliffsWindow"' : ''}
                 title="${hasTerrain ? 'Cliff types' : 'No terrain data available'}">\u26f0 Cliffs</button>
+        <button class="menu-item${hasW3r ? '' : ' disabled'}" ${hasW3r ? 'data-action="toggleWindow" data-target="regionsWindow"' : ''}
+                title="${hasW3r ? 'Map regions (war3map.w3r)' : 'No regions data available'}">\ud83d\udccd Regions</button>
         ${mapInfo.isArchive ? '<button class="menu-item" data-action="toggleWindow" data-target="filesWindow" title="Archive file list">\ud83d\udcc2 Files</button>' : ''}
         ${mapInfo.isArchive ? `<button class="menu-item menu-child${mapInfo.isArchiveFile ? '' : ' disabled'}" ${mapInfo.isArchiveFile ? 'id="browseMpqBtn"' : ''}
                 title="${mapInfo.isArchiveFile ? 'Browse archive as folder' : 'Already a folder on disk'}">\ud83d\udcc1 Browse</button>` : ''}
         <button class="menu-item" data-action="toggleWindow" data-target="modelViewerWindow" title="3D Model Viewer">\ud83c\udfae Model</button>
         <button class="menu-item" data-action="toggleWindow" data-target="blpViewerWindow" title="BLP Image Viewer">\ud83d\uddbc BLP</button>
+        <div class="menu-sep"></div>
+        <button class="menu-item" id="resetCameraBtn" title="Reset camera to initial position">\ud83c\udfaf Reset Camera</button>
     </div>
 
     <!-- ── Floating windows (Custom Elements) ─────────────────── -->
@@ -547,6 +553,12 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         <reload-button slot="actions"></reload-button>
         <div id="ctSlkSource" class="${cliffTypesSlkSource ? 'ts-source' : 'ts-source ts-no-slk'}">${cliffTypesSlkSource ? esc(cliffTypesSlkSource) : 'TerrainArt\\CliffTypes.slk \u2014 not found, set Game Path'}</div>
         <div id="ctCliffSection">${totalCliffTiles > 0 ? '<div class="tw-section-title">Cliff Tiles (' + totalCliffTiles + ')</div><div class="legend">' + cliffLegendItems + '</div>' : ''}</div>
+    </float-window>
+    ` : ''}
+
+    ${hasW3r ? `
+    <float-window id="regionsWindow" title-text="\ud83d\udccd Regions" no-padding hidden style="left:140px;top:16px;width:900px;height:60vh;">
+        ${w3rContent}
     </float-window>
     ` : ''}
 

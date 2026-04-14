@@ -40,6 +40,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
     let terrainData = null
     let w3iData = null
+    let w3rData = null
     let unitDooData = null
     let doodadDooData = null
     let archiveInfo = null
@@ -97,6 +98,16 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 archivePath: filePath,
             })
             if (!result.error) doodadDooData = result
+        } catch (_) {
+        }
+
+        // ── 6. Load w3r (regions) from archive ──────────────────────
+        try {
+            const result = await client.sendRequest('render/w3r', {
+                uri: document.uri.toString(),
+                archivePath: filePath,
+            })
+            if (!result.error) w3rData = result
         } catch (_) {
         }
 
@@ -318,6 +329,19 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 }
             }
         }
+
+        if (!w3rData) {
+            const w3rPath = path.join(mapRoot, 'war3map.w3r')
+            if (fs.existsSync(w3rPath)) {
+                try {
+                    const r = await client.sendRequest('render/w3r', {
+                        uri: Uri.file(w3rPath).toString(),
+                    })
+                    if (!r.error) w3rData = r
+                } catch (_) {
+                }
+            }
+        }
     }
 
     // ── Three.js URI ────────────────────────────────────────────
@@ -418,6 +442,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         archiveFiles,
         archiveHeader,
         w3iData,
+        w3rData,
         unitDooData,
         doodadDooData,
         gamePath: gamePathStatus.gamePath,

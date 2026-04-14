@@ -157,6 +157,42 @@ async fn doo_render_impl(params: &DooRenderParams) -> Result<Value, String> {
     Ok(val)
 }
 
+// ─── W3R ──────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct W3rRenderParams {
+    pub uri: Url,
+    pub archive_path: Option<String>,
+}
+
+pub async fn w3r_render(
+    Query(auth): Query<AuthQuery>,
+    Json(params): Json<W3rRenderParams>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    auth.check()?;
+    let result = w3r_render_impl(&params).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(result))
+}
+
+async fn w3r_render_impl(params: &W3rRenderParams) -> Result<Value, String> {
+    use crate::lng::w3r::W3rData;
+    let buf = if let Some(ref ap) = params.archive_path {
+        let ap = ap.clone();
+        tokio::task::spawn_blocking(move || {
+            let archive = storm_rs::MpqArchive::open(&ap).map_err(|e| format!("Cannot open archive: {e}"))?;
+            archive.read_file("war3map.w3r").map_err(|e| format!("Cannot read war3map.w3r: {e}"))
+        }).await.map_err(|e| format!("spawn: {e}"))??
+    } else {
+        let path = params.uri.to_file_path().map_err(|_| "Invalid URI".to_string())?;
+        tokio::fs::read(&path).await.map_err(|e| e.to_string())?
+    };
+    let (data, meta) = W3rData::read(&buf).map_err(|e| e.to_string())?;
+    let mut val = serde_json::to_value(data).map_err(|e| e.to_string())?;
+    val["_meta"] = serde_json::to_value(meta).unwrap_or_default();
+    Ok(val)
+}
+
 // ─── W3I ──────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]

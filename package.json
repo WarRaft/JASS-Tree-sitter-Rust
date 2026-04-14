@@ -142,6 +142,20 @@
         }
       },
       {
+        "id": "w3r",
+        "aliases": [
+          "W3R Regions",
+          "W3R"
+        ],
+        "extensions": [
+          ".w3r"
+        ],
+        "icon": {
+          "light": "./icons/w3r.svg",
+          "dark": "./icons/w3r.svg"
+        }
+      },
+      {
         "id": "w3x",
         "aliases": [
           "W3X Map Archive",
