@@ -524,44 +524,25 @@ function renderW3rContent(data) {
         `<tr><td class="key">${k}</td><td>${v}</td></tr>`
     ).join('')
 
-    let regionsHtml = ''
-    if (data.regions && data.regions.length > 0) {
-        const thead = ['#', 'Num', 'Name', 'Left', 'Bottom', 'Right', 'Top', 'Weather', 'Sound', 'Color']
-            .map(c => `<th>${c}</th>`).join('')
-        const tbody = data.regions.map((r, i) => {
-            const w = r.weather && r.weather.text && r.weather.text !== '\0\0\0\0' && r.weather.raw !== 0
-                ? esc(r.weather.text) : ''
-            const snd = r.ambient_sound || ''
-            const cr = r.color ? r.color.r : 0
-            const cg = r.color ? r.color.g : 0
-            const cb = r.color ? r.color.b : 0
-            const ca = r.color ? r.color.a : 255
-            const colorCss = `rgba(${cr},${cg},${cb},${(ca / 255).toFixed(2)})`
-            return `<tr>
-                <td class="num">${i + 1}</td>
-                <td class="num">${r.num}</td>
-                <td>${esc(r.name)}</td>
-                <td class="num">${fmtF(r.left)}</td>
-                <td class="num">${fmtF(r.bottom)}</td>
-                <td class="num">${fmtF(r.right)}</td>
-                <td class="num">${fmtF(r.top)}</td>
-                <td class="code">${w}</td>
-                <td>${esc(snd)}</td>
-                <td><span style="display:inline-block;width:14px;height:14px;border-radius:3px;vertical-align:middle;background:${colorCss};border:1px solid rgba(255,255,255,0.2);"></span></td>
-            </tr>`
-        }).join('')
-
-        regionsHtml = `
-        <div class="tw-section-title">📐 Regions (${data.regions.length})</div>
-        <div class="table-wrap" style="flex:1;min-height:0;overflow:auto;">
-            <table><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table>
-        </div>`
-    }
+    const regionCount = data.regions ? data.regions.length : 0
 
     return `<div class="doo-content">
     ${metaHtml}
     <table class="info">${headerHtml}</table>
-    ${regionsHtml}
+    <div style="padding:6px 10px 2px;flex-shrink:0;display:flex;align-items:center;gap:6px;">
+        <label id="rgMasterToggle" style="display:inline-flex;align-items:center;gap:3px;cursor:pointer;font-size:11px;user-select:none;" title="Enable/disable region overlay on terrain">
+            <input type="checkbox" id="rgMasterCheckbox" checked style="cursor:pointer;margin:0;" />
+        </label>
+        <button id="rgShowAllBtn" style="font-size:11px;padding:2px 8px;cursor:pointer;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:3px;" title="Show all regions on terrain">Show All</button>
+        <button id="rgHideAllBtn" style="font-size:11px;padding:2px 8px;cursor:pointer;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:3px;" title="Hide all regions on terrain">Hide All</button>
+    </div>
+    <div class="ds-sort-bar">
+        <span class="ds-sort-col rg-sort-col" data-sort="num">#</span>
+        <span class="ds-sort-col rg-sort-col ds-sort-name" data-sort="name">Name</span>
+        <span class="ds-sort-col rg-sort-col ds-sort-cat" data-sort="weather">Weather</span>
+        <span class="ds-sort-info">(<span id="rgRegionCount">${regionCount}</span>)</span>
+    </div>
+    <div class="legend" id="regionsList" style="flex:1;min-height:0;overflow:hidden;"></div>
     </div>`
 }
 

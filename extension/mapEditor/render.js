@@ -296,6 +296,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const pathTexSrc = mapInfo.pathTexSrc || ''
     const modelViewerSrc = mapInfo.modelViewerSrc || ''
     const orbitSrc = mapInfo.orbitSrc || ''
+    const fpsSrc = mapInfo.fpsSrc || ''
     const appSrc = mapInfo.appSrc || ''
     const terrainSrc = mapInfo.terrainSrc || ''
 
@@ -557,7 +558,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     ` : ''}
 
     ${hasW3r ? `
-    <float-window id="regionsWindow" title-text="\ud83d\udccd Regions" no-padding hidden style="left:140px;top:16px;width:900px;height:60vh;">
+    <float-window id="regionsWindow" title-text="\ud83d\udccd Regions" no-padding hidden style="left:140px;top:16px;width:520px;height:60vh;">
         ${w3rContent}
     </float-window>
     ` : ''}
@@ -657,6 +658,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     <script nonce="${nonce}" src="${placedSrc}"></script>
     <script nonce="${nonce}" src="${threeSrc}"></script>
     <script nonce="${nonce}" src="${orbitSrc}"></script>
+    <script nonce="${nonce}" src="${fpsSrc}"></script>
     <script nonce="${nonce}" src="${modelViewerSrc}"></script>
     <script nonce="${nonce}" src="${appSrc}"></script>
     <script nonce="${nonce}">
@@ -683,7 +685,8 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         initialCliffTypesSlk: ${hasCliffTypesSlk ? JSON.stringify(terrainData._cliffTypesSlk) : 'null'},
         cliffVariations: ${JSON.stringify(cliffVariations)},
         tileset: ${hasTerrain ? JSON.stringify(terrainData.tileset) : 'null'},
-        waterSlk: ${hasTerrain && terrainData._waterSlk ? JSON.stringify(terrainData._waterSlk) : 'null'}
+        waterSlk: ${hasTerrain && terrainData._waterSlk ? JSON.stringify(terrainData._waterSlk) : 'null'},
+        w3rRegions: ${hasW3r && mapInfo.w3rData && mapInfo.w3rData.regions ? JSON.stringify(mapInfo.w3rData.regions) : 'null'}
     };
     </script>
     <script nonce="${nonce}" src="${terrainSrc}"></script>

@@ -390,6 +390,9 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
     const orbitUri = webviewPanel.webview.asWebviewUri(
         Uri.joinPath(wvDir, 'orbit.js')
     )
+    const fpsUri = webviewPanel.webview.asWebviewUri(
+        Uri.joinPath(wvDir, 'fps.js')
+    )
     const appUri = webviewPanel.webview.asWebviewUri(
         Uri.joinPath(wvDir, 'app.js')
     )
@@ -462,6 +465,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         pathTexSrc: pathTexUri.toString(),
         modelViewerSrc: modelViewerUri.toString(),
         orbitSrc: orbitUri.toString(),
+        fpsSrc: fpsUri.toString(),
         appSrc: appUri.toString(),
         terrainSrc: terrainUri.toString(),
         binaryServer,

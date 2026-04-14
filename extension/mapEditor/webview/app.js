@@ -62,6 +62,256 @@ window.W3E = (function () {
     // ── Orbit controls — delegate to _W3E_ORBIT ────────────────
     let makeOrbitControls = window._W3E_ORBIT.makeOrbitControls;
 
+    // ── FPS controls — delegate to _W3E_FPS ──────────────────
+    let makeFpsControls = window._W3E_FPS.makeFpsControls;
+
+    // ── Regions (W3R) canvas list ────────────────────────────────
+    let _rgAllRegions = [];
+    let _rgFiltered = [];
+    let _rgCanvasList = null;
+    let _rgSort = {field: null, dir: 'asc'};
+    let _rgVisibility = {}; // num → boolean (true = visible)
+    let _rgMasterEnabled = true; // master toggle for region overlay
+    let _rgVisibilityListeners = [];
+
+    function _rgSaveSort() {
+        S.patchWvState({_rgSort: {field: _rgSort.field, dir: _rgSort.dir}});
+    }
+    function _rgRestoreSort() {
+        let s = S.getWvState();
+        if (s._rgSort && s._rgSort.field) {
+            _rgSort = {field: s._rgSort.field, dir: s._rgSort.dir || 'asc'};
+        }
+    }
+    function _rgSaveVisibility() {
+        let visible = [];
+        for (let k in _rgVisibility) {
+            if (_rgVisibility[k]) visible.push(k);
+        }
+        S.patchWvState({_rgVisible: visible, _rgMasterEnabled: _rgMasterEnabled});
+    }
+    function _rgRestoreVisibility() {
+        let s = S.getWvState();
+        if (s._rgVisible && Array.isArray(s._rgVisible)) {
+            let set = {};
+            for (let i = 0; i < s._rgVisible.length; i++) set[s._rgVisible[i]] = true;
+            for (let k in _rgVisibility) {
+                _rgVisibility[k] = !!set[k];
+            }
+        }
+        if (s._rgMasterEnabled !== undefined) {
+            _rgMasterEnabled = !!s._rgMasterEnabled;
+        }
+    }
+
+    function _rgCycleSort(field) {
+        if (_rgSort.field !== field) {
+            _rgSort = {field: field, dir: 'asc'};
+        } else if (_rgSort.dir === 'asc') {
+            _rgSort.dir = 'desc';
+        } else {
+            _rgSort = {field: null, dir: 'asc'};
+        }
+        _rgSaveSort();
+        _rgUpdateSortButtons();
+        _rgFilterAndRender();
+    }
+
+    function _rgUpdateSortButtons() {
+        document.querySelectorAll('.rg-sort-col').forEach(function (btn) {
+            let f = btn.getAttribute('data-sort');
+            btn.classList.remove('ds-sort-active', 'ds-sort-asc', 'ds-sort-desc');
+            if (f === _rgSort.field) {
+                btn.classList.add('ds-sort-active', _rgSort.dir === 'asc' ? 'ds-sort-asc' : 'ds-sort-desc');
+            }
+        });
+    }
+
+    function _rgFilterAndRender() {
+        let sorted = _rgAllRegions.slice();
+        if (_rgSort.field) {
+            let f = _rgSort.field;
+            let mul = _rgSort.dir === 'desc' ? -1 : 1;
+            sorted.sort(function (a, b) {
+                let va = a[f], vb = b[f];
+                if (typeof va === 'string') va = va.toLowerCase();
+                if (typeof vb === 'string') vb = vb.toLowerCase();
+                if (va == null) va = '';
+                if (vb == null) vb = '';
+                return va < vb ? -1 * mul : va > vb ? 1 * mul : 0;
+            });
+        }
+        _rgFiltered = sorted;
+        if (_rgCanvasList) _rgCanvasList.setData(sorted);
+        let cntEl = document.getElementById('rgRegionCount');
+        if (cntEl) cntEl.textContent = String(sorted.length);
+    }
+
+    function _rgRenderRow(ctx, r, x, y, w, h, c) {
+        let mid = y + h / 2;
+        ctx.textBaseline = 'middle';
+
+        // ── Show/hide checkbox (left side)
+        let cbX = x + 2, cbY = y + (h - 12) / 2, cbW = 12, cbH = 12;
+        let visible = _rgVisibility[r.num] !== false;
+        ctx.strokeStyle = c.desc;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(cbX + 0.5, cbY + 0.5, cbW, cbH);
+        if (visible) {
+            ctx.fillStyle = c.link;
+            ctx.fillRect(cbX + 2, cbY + 2, cbW - 3, cbH - 3);
+        }
+
+        // ── Color swatch
+        let cr = r.color ? r.color.r : 0;
+        let cg = r.color ? r.color.g : 0;
+        let cb2 = r.color ? r.color.b : 0;
+        let ca = r.color ? r.color.a : 255;
+        let swX = x + 20, swY = y + (h - 14) / 2, swW = 14, swH = 14;
+        ctx.fillStyle = 'rgba(' + cr + ',' + cg + ',' + cb2 + ',' + (ca / 255).toFixed(2) + ')';
+        ctx.fillRect(swX, swY, swW, swH);
+        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(swX + 0.5, swY + 0.5, swW, swH);
+
+        // ── Num
+        ctx.font = '10px ' + c.mono;
+        ctx.fillStyle = c.desc;
+        ctx.textAlign = 'right';
+        ctx.fillText(String(r.num), x + 56, mid);
+        ctx.textAlign = 'left';
+
+        // ── Name
+        ctx.font = '12px ' + c.font;
+        ctx.fillStyle = visible ? c.fg : c.desc;
+        let nameX = x + 62;
+        let nameW = w - 62 - 80;
+        if (nameW > 10) _clTruncText(ctx, r.name || '', nameX, mid, nameW);
+
+        // ── Weather (right side)
+        let wt = r._weather || '';
+        if (wt) {
+            ctx.font = '10px ' + c.mono;
+            ctx.fillStyle = c.desc;
+            ctx.textAlign = 'right';
+            ctx.fillText(wt, x + w, mid);
+            ctx.textAlign = 'left';
+        }
+
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    function _rgSetAllVisibility(visible) {
+        for (let i = 0; i < _rgAllRegions.length; i++) {
+            _rgVisibility[_rgAllRegions[i].num] = visible;
+        }
+        _rgSaveVisibility();
+        if (_rgCanvasList) _rgCanvasList.setData(_rgFiltered); // redraw
+        _rgNotifyVisibility();
+    }
+
+    function _rgToggleVisibility(r) {
+        _rgVisibility[r.num] = _rgVisibility[r.num] === false;
+        _rgSaveVisibility();
+        if (_rgCanvasList) _rgCanvasList.setData(_rgFiltered); // redraw
+        _rgNotifyVisibility();
+    }
+
+    function _rgNotifyVisibility() {
+        let effective = getRegionVisibility();
+        for (let i = 0; i < _rgVisibilityListeners.length; i++) {
+            try { _rgVisibilityListeners[i](effective); } catch (_) {}
+        }
+    }
+
+    function onRegionVisibilityChanged(fn) { _rgVisibilityListeners.push(fn); }
+    function getRegionVisibility() {
+        if (!_rgMasterEnabled) {
+            let off = {};
+            for (let k in _rgVisibility) off[k] = false;
+            return off;
+        }
+        return _rgVisibility;
+    }
+
+    function _rgInitRegions(regions) {
+        _rgAllRegions = [];
+        _rgVisibility = {};
+        if (!regions || !regions.length) return;
+        for (let i = 0; i < regions.length; i++) {
+            let r = regions[i];
+            let wt = '';
+            if (r.weather && r.weather.text && r.weather.text !== '\0\0\0\0' && r.weather.raw !== 0) {
+                wt = r.weather.text;
+            }
+            _rgAllRegions.push({
+                num: r.num,
+                name: r.name || '',
+                weather: wt,
+                _weather: wt,
+                ambient_sound: r.ambient_sound || '',
+                color: r.color || {r: 0, g: 0, b: 0, a: 255},
+                left: r.left, bottom: r.bottom, right: r.right, top: r.top
+            });
+            _rgVisibility[r.num] = true;
+        }
+        _rgRestoreVisibility();
+    }
+
+    function _rgEnsureCanvasList() {
+        if (_rgCanvasList) return;
+        let el = document.getElementById('regionsList');
+        if (!el) return;
+        _rgCanvasList = new CanvasList(el, {
+            rowHeight: 26,
+            renderRow: _rgRenderRow,
+            onClick: function (item, idx, e) {
+                // Detect checkbox click (first 18px)
+                let rect = el.querySelector('canvas').getBoundingClientRect();
+                let cx = e.clientX - rect.left;
+                if (cx < 18) {
+                    _rgToggleVisibility(item);
+                }
+            }
+        });
+        // Sort buttons
+        document.querySelectorAll('.rg-sort-col').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                _rgCycleSort(btn.getAttribute('data-sort'));
+            });
+        });
+        // Show All / Hide All buttons
+        let showAllBtn = document.getElementById('rgShowAllBtn');
+        if (showAllBtn) {
+            showAllBtn.addEventListener('click', function () {
+                _rgSetAllVisibility(true);
+            });
+        }
+        let hideAllBtn = document.getElementById('rgHideAllBtn');
+        if (hideAllBtn) {
+            hideAllBtn.addEventListener('click', function () {
+                _rgSetAllVisibility(false);
+            });
+        }
+        // Master toggle checkbox
+        let masterCb = document.getElementById('rgMasterCheckbox');
+        if (masterCb) {
+            masterCb.checked = _rgMasterEnabled;
+            masterCb.addEventListener('change', function () {
+                _rgMasterEnabled = masterCb.checked;
+                _rgSaveVisibility();
+                _rgNotifyVisibility();
+            });
+        }
+        _rgRestoreSort();
+        _rgUpdateSortButtons();
+        _rgFilterAndRender();
+    }
+
+    function _rgDisposeCanvasList() {
+        if (_rgCanvasList) { _rgCanvasList.dispose(); _rgCanvasList = null; }
+    }
+
     // ── Menu sync ────────────────────────────────────────────────
     function syncMenuActive() {
         document.querySelectorAll('[data-action="toggleWindow"]').forEach(btn => {
@@ -111,6 +361,11 @@ window.W3E = (function () {
 
         // ── Resolve placed object names from initial SLK data ────
         PLACED.updatePlacedNames();
+
+        // ── Init regions data ───────────────────────────────────
+        if (config.w3rRegions) {
+            _rgInitRegions(config.w3rRegions);
+        }
 
         // ── Menu sync ────────────────────────────────────────────
         document.addEventListener('float-toggled', syncMenuActive);
@@ -189,6 +444,9 @@ window.W3E = (function () {
             } else if (id === 'destructableDooWindow') {
                 if (win.open) PLACED.ensureDestDooCanvasList();
                 else PLACED.disposeDestDooCanvasList();
+            } else if (id === 'regionsWindow') {
+                if (win.open) _rgEnsureCanvasList();
+                else _rgDisposeCanvasList();
             }
         });
 
@@ -199,6 +457,8 @@ window.W3E = (function () {
         if (_doodadDooWin && _doodadDooWin.open) PLACED.ensureDoodadDooCanvasList();
         let _destDooWin = document.getElementById('destructableDooWindow');
         if (_destDooWin && _destDooWin.open) PLACED.ensureDestDooCanvasList();
+        let _regionsWin = document.getElementById('regionsWindow');
+        if (_regionsWin && _regionsWin.open) _rgEnsureCanvasList();
 
         // ── Model viewer ─────────────────────────────────────────
         const _modelViewer = window._W3E_MODEL_VIEWER.init();
@@ -653,7 +913,10 @@ window.W3E = (function () {
         indexToRgb: U.indexToRgb,
         syncMenuActive,
         makeOrbitControls,
+        makeFpsControls,
         highlightPlacedDoodad: function (idx) { PLACED.highlightPlacedDoodad(idx); },
+        onRegionVisibilityChanged,
+        getRegionVisibility,
     };
 })();
 

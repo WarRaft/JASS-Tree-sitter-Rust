@@ -16,7 +16,8 @@
         initialUnitsSlk: DATA.initialUnitsSlk,
         initialCliffTypesSlk: DATA.initialCliffTypesSlk,
         doodadDooItems: DATA.doodadDooItems || [],
-        unitDooItems: DATA.unitDooItems || []
+        unitDooItems: DATA.unitDooItems || [],
+        w3rRegions: DATA.w3rRegions || null
     })
 
     // ── Three.js setup ──────────────────────────────────────────
@@ -323,6 +324,9 @@
                     }
                 }
                 norm.needsUpdate = true
+
+                // Notify region overlays to re-sync their Z values
+                document.dispatchEvent(new Event('terrain-heights-changed'))
             }
 
             applyHeights()
@@ -1284,7 +1288,7 @@
                     // not the one below-left (Math.floor).
                     //   sx = round((pt.x + worldW/2) / TILE)  → 0..W-1
                     //   sy = round((pt.y + worldH/2) / TILE)  → 0..H-1
-                    //   sy=0 is bottom, sy=H-1 is top.
+                    //   sy=0 is bottom, sy=H-1 is top row.
                     const sx = Math.max(0, Math.min(W - 1, Math.round((pt.x + worldW / 2) / TILE)))
                     const sy = Math.max(0, Math.min(H - 1, Math.round((pt.y + worldH / 2) / TILE)))
                     const idx = sy * W + sx
@@ -1462,8 +1466,8 @@
             // ── Team Color / Team Glow texture generation (matches MdlVis) ──
             const _TEAM_GLOW_ALPHA = [
                 1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,1,
+                1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
                 1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
-                1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1,
                 1,1,1,1,1,1,1,1,2,2,2,2,3,3,3,3,3,3,3,2,2,2,1,1,1,1,0,0,0,0,0,1,
                 1,1,1,1,1,1,1,1,1,2,2,3,4,5,6,6,6,6,5,4,3,2,2,1,2,2,1,0,0,0,0,0,
                 1,1,1,1,1,1,1,1,1,1,3,4,6,7,9,9,10,9,8,7,5,3,2,1,3,2,2,1,0,0,0,0,
@@ -2414,10 +2418,7 @@
                         const replTex = _buildReplTex(info)
                         const entries = _buildModel(msg, replTex, !!info._cliff)
                         _modelCache[cacheKey] = entries
-                        const grp = info._cliff ? cliffGroup : objectGroup
-                        if (info.items && grp.visible) {
-                            _placeInstances(info.items, entries, info._cliff ? cliffGroup : undefined)
-                        }
+                        _placeInstances(info.items, entries, info._cliff ? cliffGroup : undefined)
                         delete _pendingItems[cacheKey]
                     }
                 } else if (msg && msg.command === 'mapObjectModelNotFound') {
@@ -2815,8 +2816,207 @@
             })
         }
 
-        // ── Orbit controls ──────────────────────────────────────
-        const ctrl = W3E.makeOrbitControls(camera, canvas, maxDim, {zUp: true})
+        // ── Region overlays ─────────────────────────────────────────
+        // Two layers per region:
+        //   1. Fill   — semi-transparent mesh on terrain surface.
+        //              depthTest:true + polygonOffset → occluded by models.
+        //   2. Border — opaque outline along region edges.
+        //              depthTest:false → shows through models, follows terrain.
+        const _regionMeshes = {} // num → { fill, border, sx0, sy0, sx1, sy1, subW, subH }
+        if (hasTerrain && mesh && DATA.w3rRegions && DATA.w3rRegions.length > 0) {
+            const D = DATA.renderData
+            const W = D.w, H = D.h
+            const TILE = 128
+            const halfGridW = (W - 1) * TILE / 2
+            const halfGridH = (H - 1) * TILE / 2
+            const terrainPos = mesh.geometry.attributes.position
+
+            const fillGroup = new THREE.Group()
+            fillGroup.renderOrder = 1
+            scene.add(fillGroup)
+
+            const borderGroup = new THREE.Group()
+            borderGroup.renderOrder = 999
+            scene.add(borderGroup)
+
+            // Helper: scene coords + Z for a grid vertex (sx, sy)
+            function _rgVert(sx, sy) {
+                const gj = H - 1 - sy
+                return [
+                    -halfGridW + sx * TILE,
+                    -halfGridH + sy * TILE,
+                    terrainPos.getZ(gj * W + sx)
+                ]
+            }
+
+            for (let i = 0; i < DATA.w3rRegions.length; i++) {
+                const r = DATA.w3rRegions[i]
+                const cr = r.color ? r.color.r : 0
+                const cg = r.color ? r.color.g : 0
+                const cb = r.color ? r.color.b : 0
+                const rgbColor = new THREE.Color(cr / 255, cg / 255, cb / 255)
+
+                // Convert region game-coord bounds → grid vertex indices
+                let sx0 = (Math.min(r.left, r.right) - D.offsetX) / TILE
+                let sx1 = (Math.max(r.left, r.right) - D.offsetX) / TILE
+                let sy0 = (Math.min(r.bottom, r.top) - D.offsetY) / TILE
+                let sy1 = (Math.max(r.bottom, r.top) - D.offsetY) / TILE
+
+                sx0 = Math.max(0, Math.floor(sx0))
+                sx1 = Math.min(W - 1, Math.ceil(sx1))
+                sy0 = Math.max(0, Math.floor(sy0))
+                sy1 = Math.min(H - 1, Math.ceil(sy1))
+
+                const segX = sx1 - sx0
+                const segY = sy1 - sy0
+                if (segX < 1 || segY < 1) continue
+
+                const subW = segX + 1
+                const subH = segY + 1
+
+                // ── Fill mesh ──────────────────────────────────────
+                const fillPos = new Float32Array(subW * subH * 3)
+                const fillIdx = []
+
+                for (let dy = 0; dy < subH; dy++) {
+                    for (let dx = 0; dx < subW; dx++) {
+                        const v = _rgVert(sx0 + dx, sy0 + dy)
+                        const vi = dy * subW + dx
+                        fillPos[vi * 3    ] = v[0]
+                        fillPos[vi * 3 + 1] = v[1]
+                        fillPos[vi * 3 + 2] = v[2]
+                    }
+                }
+                for (let dy = 0; dy < segY; dy++) {
+                    for (let dx = 0; dx < segX; dx++) {
+                        const a = dy * subW + dx
+                        const b = a + 1
+                        const c = a + subW
+                        const d = c + 1
+                        fillIdx.push(a, b, d)
+                        fillIdx.push(a, d, c)
+                    }
+                }
+
+                const fillGeo = new THREE.BufferGeometry()
+                fillGeo.setAttribute('position', new THREE.BufferAttribute(fillPos, 3))
+                fillGeo.setIndex(fillIdx)
+
+                const fillMat = new THREE.MeshBasicMaterial({
+                    color: rgbColor,
+                    transparent: true,
+                    opacity: 0.22,
+                    side: THREE.DoubleSide,
+                    depthWrite: false,
+                    depthTest: true,
+                    polygonOffset: true,
+                    polygonOffsetFactor: -1,
+                    polygonOffsetUnits: -1
+                })
+                const fillMesh = new THREE.Mesh(fillGeo, fillMat)
+                fillMesh.renderOrder = 1
+                fillMesh.visible = false
+                fillGroup.add(fillMesh)
+
+                // ── Border line (4 edges) ──────────────────────────
+                const bv = []
+                // Bottom: sy = sy0
+                for (let dx = 0; dx < segX; dx++) {
+                    const a = _rgVert(sx0 + dx, sy0), b = _rgVert(sx0 + dx + 1, sy0)
+                    bv.push(a[0], a[1], a[2], b[0], b[1], b[2])
+                }
+                // Top: sy = sy1
+                for (let dx = 0; dx < segX; dx++) {
+                    const a = _rgVert(sx0 + dx, sy1), b = _rgVert(sx0 + dx + 1, sy1)
+                    bv.push(a[0], a[1], a[2], b[0], b[1], b[2])
+                }
+                // Left: sx = sx0
+                for (let dy = 0; dy < segY; dy++) {
+                    const a = _rgVert(sx0, sy0 + dy), b = _rgVert(sx0, sy0 + dy + 1)
+                    bv.push(a[0], a[1], a[2], b[0], b[1], b[2])
+                }
+                // Right: sx = sx1
+                for (let dy = 0; dy < segY; dy++) {
+                    const a = _rgVert(sx1, sy0 + dy), b = _rgVert(sx1, sy0 + dy + 1)
+                    bv.push(a[0], a[1], a[2], b[0], b[1], b[2])
+                }
+
+                const borderGeo = new THREE.BufferGeometry()
+                borderGeo.setAttribute('position', new THREE.Float32BufferAttribute(bv, 3))
+                const borderLine = new THREE.LineSegments(borderGeo, new THREE.LineBasicMaterial({
+                    color: rgbColor, depthTest: false, depthWrite: false
+                }))
+                borderLine.renderOrder = 999
+                borderLine.visible = false
+                borderGroup.add(borderLine)
+
+                _regionMeshes[r.num] = {
+                    fill: fillMesh, border: borderLine,
+                    sx0, sy0, sx1, sy1, subW, subH
+                }
+            }
+
+            // Sync heights with terrain on deformation/slopes change
+            function _updateRegionMeshHeights() {
+                for (const num in _regionMeshes) {
+                    const rm = _regionMeshes[num]
+                    const segX = rm.sx1 - rm.sx0, segY = rm.sy1 - rm.sy0
+
+                    // Fill
+                    const fPos = rm.fill.geometry.attributes.position
+                    for (let dy = 0; dy < rm.subH; dy++) {
+                        for (let dx = 0; dx < rm.subW; dx++) {
+                            const vi = dy * rm.subW + dx
+                            fPos.setZ(vi, _rgVert(rm.sx0 + dx, rm.sy0 + dy)[2])
+                        }
+                    }
+                    fPos.needsUpdate = true
+
+                    // Border
+                    const bPos = rm.border.geometry.attributes.position
+                    let bi = 0
+                    for (let dx = 0; dx < segX; dx++) {
+                        const a = _rgVert(rm.sx0 + dx, rm.sy0), b = _rgVert(rm.sx0 + dx + 1, rm.sy0)
+                        bPos.setXYZ(bi++, a[0], a[1], a[2]); bPos.setXYZ(bi++, b[0], b[1], b[2])
+                    }
+                    for (let dx = 0; dx < segX; dx++) {
+                        const a = _rgVert(rm.sx0 + dx, rm.sy1), b = _rgVert(rm.sx0 + dx + 1, rm.sy1)
+                        bPos.setXYZ(bi++, a[0], a[1], a[2]); bPos.setXYZ(bi++, b[0], b[1], b[2])
+                    }
+                    for (let dy = 0; dy < segY; dy++) {
+                        const a = _rgVert(rm.sx0, rm.sy0 + dy), b = _rgVert(rm.sx0, rm.sy0 + dy + 1)
+                        bPos.setXYZ(bi++, a[0], a[1], a[2]); bPos.setXYZ(bi++, b[0], b[1], b[2])
+                    }
+                    for (let dy = 0; dy < segY; dy++) {
+                        const a = _rgVert(rm.sx1, rm.sy0 + dy), b = _rgVert(rm.sx1, rm.sy0 + dy + 1)
+                        bPos.setXYZ(bi++, a[0], a[1], a[2]); bPos.setXYZ(bi++, b[0], b[1], b[2])
+                    }
+                    bPos.needsUpdate = true
+                }
+            }
+
+            // Initial visibility
+            const initVis = W3E.getRegionVisibility()
+            for (const num in _regionMeshes) {
+                const vis = initVis[num] === true
+                _regionMeshes[num].fill.visible = vis
+                _regionMeshes[num].border.visible = vis
+            }
+
+            // React to visibility toggles
+            W3E.onRegionVisibilityChanged(function (vis) {
+                for (const num in _regionMeshes) {
+                    const v = vis[num] === true
+                    _regionMeshes[num].fill.visible = v
+                    _regionMeshes[num].border.visible = v
+                }
+            })
+
+            document.addEventListener('terrain-heights-changed', _updateRegionMeshHeights)
+        }
+
+        // ── FPS controls ────────────────────────────────────────────
+        const ctrl = W3E.makeFpsControls(camera, canvas, maxDim, {zUp: true})
         ctrl.target.set(0, 0, 0)
         ctrl.saveInitState()
 
@@ -2839,7 +3039,7 @@
             requestAnimationFrame(animate)
             _timer.update()
             const dt = _timer.getDelta()
-            ctrl.update()
+            ctrl.update(dt)
             if (_onAnimateWater) _onAnimateWater(dt)
             renderer.render(scene, ctrl.camera)
         })()
@@ -2847,4 +3047,6 @@
         console.error('Three.js init error:', e)
     }
 })()
+
+
 

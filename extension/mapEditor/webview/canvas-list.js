@@ -205,7 +205,7 @@ class CanvasList {
     _onClickEvt(e) {
         if (this._scrollDragging) return;
         let i = this._idx(e.clientY);
-        if (i >= 0 && this._onClick) this._onClick(this._items[i], i);
+        if (i >= 0 && this._onClick) this._onClick(this._items[i], i, e);
     }
 
     _onPointerDown(e) {
