@@ -82,6 +82,7 @@ maybe_upx() {
 # ----------- optional: size-oriented RUSTFLAGS -----------
 # Можно отключить, если используешь профиль в Cargo.toml.
 export RUSTFLAGS="${RUSTFLAGS:-} -C strip=symbols"
+export AR="/usr/local/opt/llvm/bin/llvm-ar"
 
 # ---------------- macOS (universal) ----------------
 msg "📦 Building universal macOS binary…"
