@@ -267,20 +267,48 @@ struct LeakFixCtx {
     local_types: HashMap<String, String>,
     /// `type_name → temp_global_name` assigned by `fix_leaks`.
     temp_globals: HashMap<String, String>,
+    /// Return type of the current function.
+    return_type: String,
 }
 
 impl LeakFixCtx {
-    /// If the return value is `IRExpr::Id(name)` referencing a handle local
-    /// that has a temp global, return `(local_name, temp_global_name)`.
-    fn returned_local_info(&self, val: &Option<IRExpr>) -> Option<(String, String)> {
-        if let Some(IRExpr::Id(name)) = val {
-            if let Some(type_name) = self.local_types.get(name) {
-                if let Some(temp) = self.temp_globals.get(type_name) {
-                    return Some((name.clone(), temp.clone()));
-                }
+    /// Returns true when `return` expression references any handle local
+    /// currently not known as definitely-null (thus would be clobbered by
+    /// leak null-sets inserted before `return`).
+    fn return_uses_leaking_handle_local(&self, val: &Option<IRExpr>, null_map: &NullMap) -> bool {
+        let Some(expr) = val else { return false };
+        let mut ids = HashSet::new();
+        collect_ids_in_expr(expr, &mut ids);
+        ids.into_iter().any(|name| {
+            self.local_types.contains_key(&name)
+                && null_map.get(&name).copied().unwrap_or(NullState::Null) != NullState::Null
+        })
+    }
+}
+
+/// Collect all identifier names referenced in an expression.
+fn collect_ids_in_expr(expr: &IRExpr, out: &mut HashSet<String>) {
+    match expr {
+        IRExpr::Id(name) => {
+            out.insert(name.clone());
+        }
+        IRExpr::Call { args, .. } => {
+            for a in args {
+                collect_ids_in_expr(a, out);
             }
         }
-        None
+        IRExpr::Binary { left, right, .. } => {
+            collect_ids_in_expr(left, out);
+            collect_ids_in_expr(right, out);
+        }
+        IRExpr::Unary { operand, .. } => collect_ids_in_expr(operand, out),
+        IRExpr::Parens(inner) => collect_ids_in_expr(inner, out),
+        IRExpr::Index { array, index } => {
+            collect_ids_in_expr(array, out);
+            collect_ids_in_expr(index, out);
+        }
+        IRExpr::Cast { inner, .. } => collect_ids_in_expr(inner, out),
+        IRExpr::Literal(_) | IRExpr::FuncRef(_) => {}
     }
 }
 
@@ -319,30 +347,24 @@ fn insert_fixes_in_body(
                 result.push(stmt);
             }
             IRStmt::Return(ref val) => {
-                // Check if the return value is a handle-type local variable.
-                if let Some((local_name, temp_global)) = ctx.returned_local_info(val) {
-                    let state = null_map.get(&local_name).copied().unwrap_or(NullState::Null);
-                    if state != NullState::Null {
-                        // set temp_global = localvar  (JASS-only)
+                // If return expression uses leaking handle locals, evaluate it
+                // before null-sets and then return through a temp global.
+                if ctx.return_uses_leaking_handle_local(val, null_map) {
+                    if let (Some(ret_expr), Some(temp_global)) = (
+                        val.as_ref().cloned(),
+                        ctx.temp_globals.get(&ctx.return_type).cloned(),
+                    ) {
+                        // set temp_global = <return-expr>  (JASS-only)
                         result.push(IRStmt::TargetOnly {
                             target: TARGET_JASS,
                             inner: Box::new(IRStmt::Set {
                                 var: temp_global.clone(),
                                 index: None,
-                                value: IRExpr::Id(local_name.clone()),
+                                value: ret_expr,
                             }),
                         });
-                        // null-sets for all OTHER leaking locals (already JASS-only)
-                        result.extend(null_sets_for_leaks(null_map, handle_locals, Some(&local_name)));
-                        // set localvar = null  (JASS-only)
-                        result.push(IRStmt::TargetOnly {
-                            target: TARGET_JASS,
-                            inner: Box::new(IRStmt::Set {
-                                var: local_name.clone(),
-                                index: None,
-                                value: IRExpr::null(),
-                            }),
-                        });
+                        // null-sets for all leaking locals (already JASS-only)
+                        result.extend(null_sets_for_leaks(null_map, handle_locals, None));
                         // return temp_global  (JASS-only)
                         result.push(IRStmt::TargetOnly {
                             target: TARGET_JASS,
@@ -483,16 +505,17 @@ fn insert_fixes_in_body(
     result
 }
 
-/// Check if a statement list's last effective statement is a `return`.
+/// Check if the JASS control-flow of a statement list ends with an
+/// unconditional `return`.
 fn body_returns(stmts: &[IRStmt]) -> bool {
     for stmt in stmts.iter().rev() {
         match stmt {
             IRStmt::Return(_) => return true,
-            IRStmt::TargetOnly { inner, .. } => {
-                if body_returns(std::slice::from_ref(inner.as_ref())) {
-                    continue; // this TargetOnly path returns, check next
+            IRStmt::TargetOnly { target, inner } => {
+                if *target & TARGET_JASS == 0 {
+                    continue;
                 }
-                return false;
+                return body_returns(std::slice::from_ref(inner.as_ref()));
             }
             IRStmt::If { branches, body, .. } => {
                 let has_else = branches.iter().any(|b| b.condition.is_none());
@@ -533,6 +556,7 @@ fn fix_function_leaks(func: &mut IRFunc, temp_globals: &HashMap<String, String>)
     let ctx = LeakFixCtx {
         local_types,
         temp_globals: temp_globals.clone(),
+        return_type: func.return_type.clone(),
     };
 
     // 2. Build initial null state map — all handle locals start as Null.
@@ -556,28 +580,36 @@ fn fix_function_leaks(func: &mut IRFunc, temp_globals: &HashMap<String, String>)
 
 // ─── Returned-local type scanning ────────────────────────────────────────────
 
-/// Recursively scan a function body for `return <handle_local>` patterns
-/// and collect the types that need a temp global variable.
-fn collect_returned_local_types(
+/// Check whether an expression references any handle local variable.
+fn expr_references_handle_local(expr: &IRExpr, handle_locals: &HashMap<String, String>) -> bool {
+    let mut ids = HashSet::new();
+    collect_ids_in_expr(expr, &mut ids);
+    ids.into_iter().any(|name| handle_locals.contains_key(&name))
+}
+
+/// Recursively scan a function body for returns where expression references a
+/// handle local and collect return types that need a temp global variable.
+fn collect_return_temp_types(
     stmts: &[IRStmt],
     handle_locals: &HashMap<String, String>, // name → type_name
+    return_type: &str,
     needed: &mut HashSet<String>,            // type_names
 ) {
     for stmt in stmts {
         match stmt {
-            IRStmt::Return(Some(IRExpr::Id(name))) => {
-                if let Some(type_name) = handle_locals.get(name) {
-                    needed.insert(type_name.clone());
+            IRStmt::Return(Some(expr)) => {
+                if return_type != "nothing" && expr_references_handle_local(expr, handle_locals) {
+                    needed.insert(return_type.to_string());
                 }
             }
             IRStmt::If { body, branches, .. } => {
-                collect_returned_local_types(body, handle_locals, needed);
+                collect_return_temp_types(body, handle_locals, return_type, needed);
                 for b in branches {
-                    collect_returned_local_types(&b.body, handle_locals, needed);
+                    collect_return_temp_types(&b.body, handle_locals, return_type, needed);
                 }
             }
             IRStmt::Loop(body) => {
-                collect_returned_local_types(body, handle_locals, needed);
+                collect_return_temp_types(body, handle_locals, return_type, needed);
             }
             _ => {}
         }
@@ -609,7 +641,7 @@ pub(super) fn fix_leaks(ir: &mut BuildIR) {
             }
         }
         if !handle_locals.is_empty() {
-            collect_returned_local_types(&func.body, &handle_locals, &mut needed_types);
+            collect_return_temp_types(&func.body, &handle_locals, &func.return_type, &mut needed_types);
         }
     }
 
@@ -658,6 +690,217 @@ pub(super) fn fix_leaks(ir: &mut BuildIR) {
                 value: None,
             }],
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_func(name: &str, return_type: &str, body: Vec<IRStmt>) -> IRFunc {
+        IRFunc {
+            name: name.to_string(),
+            short_name: None,
+            params: Vec::new(),
+            return_type: return_type.to_string(),
+            body,
+            callees: HashSet::new(),
+            inline_expr: None,
+        }
+    }
+
+    #[test]
+    fn return_expr_with_handle_local_is_evaluated_before_null_sets() {
+        let func = test_func(
+            "A",
+            "integer",
+            vec![
+                IRStmt::Local {
+                    type_name: "unit".to_string(),
+                    is_array: false,
+                    name: "u".to_string(),
+                    short_name: None,
+                    value: Some(IRExpr::call(
+                        "CreateUnit",
+                        vec![
+                            IRExpr::rawcode("null"),
+                            IRExpr::int(0),
+                            IRExpr::float1(0.0),
+                            IRExpr::float1(0.0),
+                            IRExpr::float1(0.0),
+                        ],
+                    )),
+                },
+                IRStmt::Return(Some(IRExpr::call(
+                    "SetUnitAbilityLevel",
+                    vec![IRExpr::id("u"), IRExpr::int(0), IRExpr::int(0)],
+                ))),
+            ],
+        );
+
+        let mut functions = HashMap::new();
+        functions.insert("A".to_string(), func);
+        let mut ir = BuildIR {
+            globals: Vec::new(),
+            functions,
+            bare_stmts: Vec::new(),
+            native_names: HashSet::new(),
+            frozen_import_directives: Vec::new(),
+        };
+
+        fix_leaks(&mut ir);
+
+        let temp_name = ir
+            .globals
+            .iter()
+            .find_map(|g| match g {
+                IRStmt::VarDecl { type_name, decls, .. } if type_name == "integer" => {
+                    decls.first().map(|d| d.name.clone())
+                }
+                _ => None,
+            })
+            .expect("expected temp integer global for return caching");
+
+        let body = &ir.functions.get("A").expect("missing function A").body;
+        let mut eval_idx = None;
+        let mut null_indices: Vec<usize> = Vec::new();
+        let mut ret_idx = None;
+
+        for (i, stmt) in body.iter().enumerate() {
+            if let IRStmt::TargetOnly { target, inner } = stmt {
+                if *target != TARGET_JASS {
+                    continue;
+                }
+                match inner.as_ref() {
+                    IRStmt::Set { var, value, .. }
+                        if var == &temp_name
+                            && matches!(value, IRExpr::Call { name, .. } if name == "SetUnitAbilityLevel") =>
+                    {
+                        eval_idx = Some(i);
+                    }
+                    IRStmt::Set { var, value, .. }
+                        if var == "u" && matches!(value, IRExpr::Literal(v) if v == "null") =>
+                    {
+                        null_indices.push(i);
+                    }
+                    IRStmt::Return(Some(IRExpr::Id(name))) if name == &temp_name => {
+                        ret_idx = Some(i);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let eval_idx = eval_idx.expect("missing JASS temp assignment for return expression");
+        let first_null_idx = *null_indices
+            .iter()
+            .min()
+            .expect("missing JASS null-set for local handle");
+        let ret_idx = ret_idx.expect("missing JASS return of temp value");
+
+        assert!(
+            eval_idx < first_null_idx,
+            "return expression must be evaluated before handle null-set; body: {body:?}"
+        );
+        assert!(
+            null_indices.iter().any(|n| eval_idx < *n && *n < ret_idx),
+            "at least one handle null-set must happen between eval and return; body: {body:?}"
+        );
+    }
+
+    #[test]
+    fn rewritten_return_does_not_append_duplicate_null_sets_after_return() {
+        let func = test_func(
+            "A",
+            "integer",
+            vec![
+                IRStmt::Local {
+                    type_name: "unit".to_string(),
+                    is_array: false,
+                    name: "A".to_string(),
+                    short_name: None,
+                    value: Some(IRExpr::call(
+                        "CreateUnit",
+                        vec![
+                            IRExpr::rawcode("null"),
+                            IRExpr::int(0),
+                            IRExpr::float1(0.0),
+                            IRExpr::float1(0.0),
+                            IRExpr::float1(0.0),
+                        ],
+                    )),
+                },
+                IRStmt::Local {
+                    type_name: "unit".to_string(),
+                    is_array: false,
+                    name: "B".to_string(),
+                    short_name: None,
+                    value: Some(IRExpr::call(
+                        "CreateUnit",
+                        vec![
+                            IRExpr::rawcode("null"),
+                            IRExpr::int(0),
+                            IRExpr::float1(0.0),
+                            IRExpr::float1(0.0),
+                            IRExpr::float1(0.0),
+                        ],
+                    )),
+                },
+                IRStmt::Return(Some(IRExpr::call(
+                    "SetUnitAbilityLevel",
+                    vec![IRExpr::id("A"), IRExpr::int(0), IRExpr::int(0)],
+                ))),
+            ],
+        );
+
+        let mut functions = HashMap::new();
+        functions.insert("A".to_string(), func);
+        let mut ir = BuildIR {
+            globals: Vec::new(),
+            functions,
+            bare_stmts: Vec::new(),
+            native_names: HashSet::new(),
+            frozen_import_directives: Vec::new(),
+        };
+
+        fix_leaks(&mut ir);
+
+        let body = &ir.functions.get("A").expect("missing function A").body;
+        let mut count_a_null = 0usize;
+        let mut count_b_null = 0usize;
+        let mut last_jass_stmt = None;
+
+        for stmt in body {
+            if let IRStmt::TargetOnly { target, inner } = stmt {
+                if *target & TARGET_JASS == 0 {
+                    continue;
+                }
+                match inner.as_ref() {
+                    IRStmt::Set { var, value, .. }
+                        if var == "A" && matches!(value, IRExpr::Literal(v) if v == "null") =>
+                    {
+                        count_a_null += 1;
+                    }
+                    IRStmt::Set { var, value, .. }
+                        if var == "B" && matches!(value, IRExpr::Literal(v) if v == "null") =>
+                    {
+                        count_b_null += 1;
+                    }
+                    _ => {}
+                }
+                last_jass_stmt = Some(inner.as_ref());
+            } else {
+                last_jass_stmt = Some(stmt);
+            }
+        }
+
+        assert_eq!(count_a_null, 1, "expected exactly one `set A = null`; body: {body:?}");
+        assert_eq!(count_b_null, 1, "expected exactly one `set B = null`; body: {body:?}");
+        assert!(body_returns(body), "rewritten return must still count as unconditional return; body: {body:?}");
+        assert!(
+            matches!(last_jass_stmt, Some(IRStmt::Return(Some(IRExpr::Id(_))))),
+            "last JASS statement must be the rewritten return; body: {body:?}"
+        );
     }
 }
 

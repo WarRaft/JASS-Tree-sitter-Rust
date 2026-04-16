@@ -2,10 +2,103 @@
 //!
 //! war3map.w3u — Unit data (in W3M maps only .w3u is used, storing both unit and item data)
 
+use super::{
+    SlkSource, parse_slk, parse_unit_strings, rawcode_to_u32, slk_bool, slk_f64, slk_index_by,
+    slk_str, slk_u8, slk_u32,
+};
+use crate::lng::map_editor::westrings::GameString;
 use serde::Serialize;
 use std::collections::HashMap;
-use super::{parse_slk, parse_unit_strings, slk_u8, slk_u32, slk_f64, slk_bool, slk_str, rawcode_to_u32, slk_index_by, SlkSource};
-use crate::lng::map_editor::westrings::GameString;
+
+/// Parsed string data from `*UnitStrings.txt` (BNI format) for a single unit.
+///
+/// Fields correspond to keys found in `HumanUnitStrings.txt`,
+/// `OrcUnitStrings.txt`, etc.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitStringsEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub editor_suffix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ubertip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tooltip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hotkey: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub propernames: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revivetip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub awakentip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub casterupgradename: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub casterupgradetip: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub casterupgradecount: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dependency_or: Option<String>,
+}
+
+impl UnitStringsEntry {
+    /// Build from a raw key→value map produced by [`parse_unit_strings`].
+    pub fn from_fields(fields: &HashMap<String, String>) -> Self {
+        fn opt(fields: &HashMap<String, String>, key: &str) -> Option<String> {
+            fields.get(key).filter(|v| !v.is_empty()).cloned()
+        }
+        Self {
+            name: opt(fields, "Name"),
+            editor_suffix: opt(fields, "EditorSuffix"),
+            tip: opt(fields, "Tip"),
+            // Accept both "Ubertip" and "UberTip"
+            ubertip: opt(fields, "Ubertip").or_else(|| opt(fields, "UberTip")),
+            tooltip: opt(fields, "Tooltip"),
+            hotkey: opt(fields, "Hotkey"),
+            propernames: opt(fields, "Propernames"),
+            revivetip: opt(fields, "Revivetip"),
+            awakentip: opt(fields, "Awakentip"),
+            description: opt(fields, "Description"),
+            casterupgradename: opt(fields, "Casterupgradename"),
+            casterupgradetip: opt(fields, "Casterupgradetip"),
+            casterupgradecount: opt(fields, "Casterupgradecount"),
+            dependency_or: opt(fields, "DependencyOr"),
+        }
+    }
+
+    /// Merge another entry on top: only fills fields that are still `None`.
+    pub fn merge(&mut self, other: &UnitStringsEntry) {
+        macro_rules! fill {
+            ($f:ident) => {
+                if self.$f.is_none() {
+                    self.$f = other.$f.clone();
+                }
+            };
+        }
+        fill!(name);
+        fill!(editor_suffix);
+        fill!(tip);
+        fill!(ubertip);
+        fill!(tooltip);
+        fill!(hotkey);
+        fill!(propernames);
+        fill!(revivetip);
+        fill!(awakentip);
+        fill!(description);
+        fill!(casterupgradename);
+        fill!(casterupgradetip);
+        fill!(casterupgradecount);
+        fill!(dependency_or);
+    }
+}
+
+// ─── UnitInfo ────────────────────────────────────────────────────────────────
 
 /// A single unit entry merged from `Units\UnitData.slk`, `Units\UnitBalance.slk`,
 /// `Units\unitUI.slk`, and `Units\UnitWeapons.slk`.
@@ -187,6 +280,8 @@ pub struct UnitsSlkResult {
     /// Units keyed by rawcode `u32` (little-endian interpretation of the
     /// 4-byte unitID).
     pub units: HashMap<u32, UnitInfo>,
+    /// Pre-parsed Profile strings from `*UnitStrings.txt`, keyed by rawcode.
+    pub unit_strings: HashMap<u32, UnitStringsEntry>,
 }
 
 /// Try to load and parse unit SLK files via the cascading lookup.
@@ -194,10 +289,8 @@ pub struct UnitsSlkResult {
 /// Merges data from `UnitData.slk` (primary), `UnitBalance.slk`, `unitUI.slk`,
 /// and `UnitWeapons.slk`.
 pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
-    let (buf, source) = crate::lng::map_editor::file_lookup::lookup_file(
-        "Units\\UnitData.slk",
-        archive_path,
-    )?;
+    let (buf, source) =
+        crate::lng::map_editor::file_lookup::lookup_file("Units\\UnitData.slk", archive_path)?;
 
     // Ensure WorldEditStrings are loaded for WESTRING_* resolution.
     crate::lng::map_editor::westrings::ensure_loaded(archive_path);
@@ -211,35 +304,50 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
     }];
 
     // Load supplementary SLK files, indexed by their ID columns.
-    let balance_map = crate::lng::map_editor::file_lookup::lookup_file("Units\\UnitBalance.slk", archive_path)
-        .map(|(b, src)| {
-            let rows = parse_slk(&b);
-            let n = rows.len();
-            let indexed = slk_index_by(rows, "unitBalanceID");
-            sources.push(SlkSource { name: "UnitBalance.slk".into(), source: src, rows: n });
-            indexed
-        })
-        .unwrap_or_default();
+    let balance_map =
+        crate::lng::map_editor::file_lookup::lookup_file("Units\\UnitBalance.slk", archive_path)
+            .map(|(b, src)| {
+                let rows = parse_slk(&b);
+                let n = rows.len();
+                let indexed = slk_index_by(rows, "unitBalanceID");
+                sources.push(SlkSource {
+                    name: "UnitBalance.slk".into(),
+                    source: src,
+                    rows: n,
+                });
+                indexed
+            })
+            .unwrap_or_default();
 
-    let ui_map = crate::lng::map_editor::file_lookup::lookup_file("Units\\unitUI.slk", archive_path)
-        .map(|(b, src)| {
-            let rows = parse_slk(&b);
-            let n = rows.len();
-            let indexed = slk_index_by(rows, "unitUIID");
-            sources.push(SlkSource { name: "unitUI.slk".into(), source: src, rows: n });
-            indexed
-        })
-        .unwrap_or_default();
+    let ui_map =
+        crate::lng::map_editor::file_lookup::lookup_file("Units\\unitUI.slk", archive_path)
+            .map(|(b, src)| {
+                let rows = parse_slk(&b);
+                let n = rows.len();
+                let indexed = slk_index_by(rows, "unitUIID");
+                sources.push(SlkSource {
+                    name: "unitUI.slk".into(),
+                    source: src,
+                    rows: n,
+                });
+                indexed
+            })
+            .unwrap_or_default();
 
-    let weap_map = crate::lng::map_editor::file_lookup::lookup_file("Units\\UnitWeapons.slk", archive_path)
-        .map(|(b, src)| {
-            let rows = parse_slk(&b);
-            let n = rows.len();
-            let indexed = slk_index_by(rows, "unitWeapID");
-            sources.push(SlkSource { name: "UnitWeapons.slk".into(), source: src, rows: n });
-            indexed
-        })
-        .unwrap_or_default();
+    let weap_map =
+        crate::lng::map_editor::file_lookup::lookup_file("Units\\UnitWeapons.slk", archive_path)
+            .map(|(b, src)| {
+                let rows = parse_slk(&b);
+                let n = rows.len();
+                let indexed = slk_index_by(rows, "unitWeapID");
+                sources.push(SlkSource {
+                    name: "UnitWeapons.slk".into(),
+                    source: src,
+                    rows: n,
+                });
+                indexed
+            })
+            .unwrap_or_default();
 
     let empty = HashMap::new();
 
@@ -259,157 +367,163 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
         let name = crate::lng::map_editor::westrings::resolve_game_string(&raw_name);
 
         let key = rawcode_to_u32(&unit_id);
-        units.insert(key, UnitInfo {
-            unit_id,
-            name,
-            comment: row.get("comment(s)").cloned().unwrap_or_default(),
-            sort: row.get("sort").cloned().unwrap_or_default(),
-            race: row.get("race").cloned().unwrap_or_default(),
-            tilesets: bal.get("tilesets").cloned().unwrap_or_default(),
+        units.insert(
+            key,
+            UnitInfo {
+                unit_id,
+                name,
+                comment: row.get("comment(s)").cloned().unwrap_or_default(),
+                sort: row.get("sort").cloned().unwrap_or_default(),
+                race: row.get("race").cloned().unwrap_or_default(),
+                tilesets: bal.get("tilesets").cloned().unwrap_or_default(),
 
-            // Movement
-            move_tp: row.get("movetp").cloned().unwrap_or_default(),
-            move_height: slk_f64(&row, "moveHeight", 0.0),
-            move_floor: slk_f64(&row, "moveFloor", 0.0),
-            turn_rate: slk_f64(&row, "turnRate", 0.6),
-            prop_win: slk_f64(&row, "propWin", 60.0),
-            formation: slk_u32(&row, "formation", 0),
-            path_tex: slk_str(&row, "pathTex"),
+                // Movement
+                move_tp: row.get("movetp").cloned().unwrap_or_default(),
+                move_height: slk_f64(&row, "moveHeight", 0.0),
+                move_floor: slk_f64(&row, "moveFloor", 0.0),
+                turn_rate: slk_f64(&row, "turnRate", 0.6),
+                prop_win: slk_f64(&row, "propWin", 60.0),
+                formation: slk_u32(&row, "formation", 0),
+                path_tex: slk_str(&row, "pathTex"),
 
-            // Combat basics
-            targ_type: row.get("targType").cloned().unwrap_or_default(),
-            threat: slk_u32(&row, "threat", 0),
-            points: slk_u32(&row, "points", 0),
-            death: slk_f64(&row, "death", 0.0),
-            death_type: slk_u32(&row, "deathType", 0),
-            can_sleep: slk_bool(&row, "canSleep"),
-            can_flee: slk_bool(&row, "canFlee"),
-            cargo_size: slk_u32(&row, "cargoSize", 0),
-            prio: slk_u32(&row, "prio", 0),
-            buff_type: slk_str(&row, "buffType"),
-            buff_radius: slk_f64(&row, "buffRadius", 0.0),
-            fat_los: slk_bool(&row, "fatLOS"),
+                // Combat basics
+                targ_type: row.get("targType").cloned().unwrap_or_default(),
+                threat: slk_u32(&row, "threat", 0),
+                points: slk_u32(&row, "points", 0),
+                death: slk_f64(&row, "death", 0.0),
+                death_type: slk_u32(&row, "deathType", 0),
+                can_sleep: slk_bool(&row, "canSleep"),
+                can_flee: slk_bool(&row, "canFlee"),
+                cargo_size: slk_u32(&row, "cargoSize", 0),
+                prio: slk_u32(&row, "prio", 0),
+                buff_type: slk_str(&row, "buffType"),
+                buff_radius: slk_f64(&row, "buffRadius", 0.0),
+                fat_los: slk_bool(&row, "fatLOS"),
 
-            // Stats (UnitBalance)
-            level: slk_u32(bal, "level", 0),
-            hp: slk_u32(bal, "HP", 0),
-            real_hp: slk_f64(bal, "realHP", 0.0),
-            regen_hp: slk_f64(bal, "regenHP", 0.0),
-            regen_type: bal.get("regenType").cloned().unwrap_or_default(),
-            mana0: slk_u32(bal, "mana0", 0),
-            mana_n: slk_u32(bal, "manaN", 0),
-            real_m: slk_f64(bal, "realM", 0.0),
-            regen_mana: slk_f64(bal, "regenMana", 0.0),
-            def: slk_u32(bal, "def", 0),
-            def_type: bal.get("defType").cloned().unwrap_or_default(),
-            def_up: slk_f64(bal, "defUp", 0.0),
-            real_def: slk_f64(bal, "realdef", 0.0),
-            spd: slk_u32(bal, "spd", 0),
-            min_spd: slk_u32(bal, "minSpd", 0),
-            max_spd: slk_u32(bal, "maxSpd", 0),
-            sight: slk_u32(bal, "sight", 0),
-            nsight: slk_u32(bal, "nsight", 0),
-            bld_tm: slk_u32(bal, "bldtm", 0),
-            rep_tm: slk_u32(bal, "reptm", 0),
-            collision: slk_f64(bal, "collision", 0.0),
-            primary: bal.get("Primary").cloned().unwrap_or_default(),
-            str_: slk_u32(bal, "STR", 0),
-            str_plus: slk_f64(bal, "STRplus", 0.0),
-            agi: slk_u32(bal, "AGI", 0),
-            agi_plus: slk_f64(bal, "AGIplus", 0.0),
-            int_: slk_u32(bal, "INT", 0),
-            int_plus: slk_f64(bal, "INTplus", 0.0),
-            is_bldg: slk_bool(bal, "isbldg"),
-            unit_type: bal.get("type").cloned().unwrap_or_default(),
+                // Stats (UnitBalance)
+                level: slk_u32(bal, "level", 0),
+                hp: slk_u32(bal, "HP", 0),
+                real_hp: slk_f64(bal, "realHP", 0.0),
+                regen_hp: slk_f64(bal, "regenHP", 0.0),
+                regen_type: bal.get("regenType").cloned().unwrap_or_default(),
+                mana0: slk_u32(bal, "mana0", 0),
+                mana_n: slk_u32(bal, "manaN", 0),
+                real_m: slk_f64(bal, "realM", 0.0),
+                regen_mana: slk_f64(bal, "regenMana", 0.0),
+                def: slk_u32(bal, "def", 0),
+                def_type: bal.get("defType").cloned().unwrap_or_default(),
+                def_up: slk_f64(bal, "defUp", 0.0),
+                real_def: slk_f64(bal, "realdef", 0.0),
+                spd: slk_u32(bal, "spd", 0),
+                min_spd: slk_u32(bal, "minSpd", 0),
+                max_spd: slk_u32(bal, "maxSpd", 0),
+                sight: slk_u32(bal, "sight", 0),
+                nsight: slk_u32(bal, "nsight", 0),
+                bld_tm: slk_u32(bal, "bldtm", 0),
+                rep_tm: slk_u32(bal, "reptm", 0),
+                collision: slk_f64(bal, "collision", 0.0),
+                primary: bal.get("Primary").cloned().unwrap_or_default(),
+                str_: slk_u32(bal, "STR", 0),
+                str_plus: slk_f64(bal, "STRplus", 0.0),
+                agi: slk_u32(bal, "AGI", 0),
+                agi_plus: slk_f64(bal, "AGIplus", 0.0),
+                int_: slk_u32(bal, "INT", 0),
+                int_plus: slk_f64(bal, "INTplus", 0.0),
+                is_bldg: slk_bool(bal, "isbldg"),
+                unit_type: bal.get("type").cloned().unwrap_or_default(),
 
-            // Economy (UnitBalance)
-            gold_cost: slk_u32(bal, "goldcost", 0),
-            lumber_cost: slk_u32(bal, "lumbercost", 0),
-            gold_rep: slk_u32(bal, "goldRep", 0),
-            lumber_rep: slk_u32(bal, "lumberRep", 0),
-            fmade: slk_u32(bal, "fmade", 0),
-            fused: slk_u32(bal, "fused", 0),
-            bounty_dice: slk_u32(bal, "bountydice", 0),
-            bounty_sides: slk_u32(bal, "bountysides", 0),
-            bounty_plus: slk_u32(bal, "bountyplus", 0),
-            stock_max: slk_u32(bal, "stockMax", 0),
-            stock_regen: slk_u32(bal, "stockRegen", 0),
-            stock_start: slk_u32(bal, "stockStart", 0),
+                // Economy (UnitBalance)
+                gold_cost: slk_u32(bal, "goldcost", 0),
+                lumber_cost: slk_u32(bal, "lumbercost", 0),
+                gold_rep: slk_u32(bal, "goldRep", 0),
+                lumber_rep: slk_u32(bal, "lumberRep", 0),
+                fmade: slk_u32(bal, "fmade", 0),
+                fused: slk_u32(bal, "fused", 0),
+                bounty_dice: slk_u32(bal, "bountydice", 0),
+                bounty_sides: slk_u32(bal, "bountysides", 0),
+                bounty_plus: slk_u32(bal, "bountyplus", 0),
+                stock_max: slk_u32(bal, "stockMax", 0),
+                stock_regen: slk_u32(bal, "stockRegen", 0),
+                stock_start: slk_u32(bal, "stockStart", 0),
 
-            // Model / UI (unitUI)
-            file: ui.get("file").cloned().unwrap_or_default(),
-            model_scale: slk_f64(ui, "modelScale", 1.0),
-            scale: slk_f64(ui, "scale", 1.0),
-            scale_bull: slk_f64(ui, "scaleBull", 1.0),
-            occ_h: slk_f64(ui, "occH", 0.0),
-            sel_z: slk_f64(ui, "selZ", 0.0),
-            red: slk_u8(ui, "red", 255),
-            green: slk_u8(ui, "green", 255),
-            blue: slk_u8(ui, "blue", 255),
-            team_color: ui.get("teamColor").and_then(|v| v.parse().ok()).unwrap_or(-1),
-            custom_team_color: slk_bool(ui, "customTeamColor"),
-            unit_sound: slk_str(ui, "unitSound"),
-            unit_class: slk_str(ui, "unitClass"),
-            special: slk_str(ui, "special"),
-            unit_shadow: slk_str(ui, "unitShadow"),
-            building_shadow: slk_str(ui, "buildingShadow"),
-            shadow_on_water: slk_bool(ui, "shadowOnWater"),
-            sel_circ_on_water: slk_bool(ui, "selCircOnWater"),
-            max_pitch: slk_f64(ui, "maxPitch", 0.0),
-            max_roll: slk_f64(ui, "maxRoll", 0.0),
-            elev_pts: slk_u32(ui, "elevPts", 0),
-            elev_rad: slk_f64(ui, "elevRad", 0.0),
-            fog_rad: slk_f64(ui, "fogRad", 0.0),
-            uber_splat: slk_str(ui, "uberSplat"),
-            in_editor: ui.get("inEditor").map(|v| v == "1").unwrap_or(true),
-            hidden_in_editor: slk_bool(ui, "hiddenInEditor"),
+                // Model / UI (unitUI)
+                file: ui.get("file").cloned().unwrap_or_default(),
+                model_scale: slk_f64(ui, "modelScale", 1.0),
+                scale: slk_f64(ui, "scale", 1.0),
+                scale_bull: slk_f64(ui, "scaleBull", 1.0),
+                occ_h: slk_f64(ui, "occH", 0.0),
+                sel_z: slk_f64(ui, "selZ", 0.0),
+                red: slk_u8(ui, "red", 255),
+                green: slk_u8(ui, "green", 255),
+                blue: slk_u8(ui, "blue", 255),
+                team_color: ui
+                    .get("teamColor")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(-1),
+                custom_team_color: slk_bool(ui, "customTeamColor"),
+                unit_sound: slk_str(ui, "unitSound"),
+                unit_class: slk_str(ui, "unitClass"),
+                special: slk_str(ui, "special"),
+                unit_shadow: slk_str(ui, "unitShadow"),
+                building_shadow: slk_str(ui, "buildingShadow"),
+                shadow_on_water: slk_bool(ui, "shadowOnWater"),
+                sel_circ_on_water: slk_bool(ui, "selCircOnWater"),
+                max_pitch: slk_f64(ui, "maxPitch", 0.0),
+                max_roll: slk_f64(ui, "maxRoll", 0.0),
+                elev_pts: slk_u32(ui, "elevPts", 0),
+                elev_rad: slk_f64(ui, "elevRad", 0.0),
+                fog_rad: slk_f64(ui, "fogRad", 0.0),
+                uber_splat: slk_str(ui, "uberSplat"),
+                in_editor: ui.get("inEditor").map(|v| v == "1").unwrap_or(true),
+                hidden_in_editor: slk_bool(ui, "hiddenInEditor"),
 
-            // Weapons (UnitWeapons)
-            weaps_on: slk_u32(wp, "weapsOn", 0),
-            acquire: slk_f64(wp, "acquire", 0.0),
-            weap_tp1: slk_str(wp, "weapTp1"),
-            weap_type1: slk_str(wp, "weapType1"),
-            atk_type1: wp.get("atkType1").cloned().unwrap_or_default(),
-            cool1: slk_f64(wp, "cool1", 0.0),
-            dmgplus1: slk_u32(wp, "dmgplus1", 0),
-            dice1: slk_u32(wp, "dice1", 0),
-            sides1: slk_u32(wp, "sides1", 0),
-            range_n1: slk_f64(wp, "rangeN1", 0.0),
-            targs1: wp.get("targs1").cloned().unwrap_or_default(),
-            show_ui1: slk_bool(wp, "showUI1"),
-            dmg_pt1: slk_f64(wp, "dmgpt1", 0.0),
-            back_sw1: slk_f64(wp, "backSw1", 0.0),
-            splash_targs1: wp.get("splashTargs1").cloned().unwrap_or_default(),
-            min_range: slk_f64(wp, "minRange", 0.0),
-            weap_tp2: slk_str(wp, "weapTp2"),
-            weap_type2: slk_str(wp, "weapType2"),
-            atk_type2: wp.get("atkType2").cloned().unwrap_or_default(),
-            cool2: slk_f64(wp, "cool2", 0.0),
-            dmgplus2: slk_u32(wp, "dmgplus2", 0),
-            dice2: slk_u32(wp, "dice2", 0),
-            sides2: slk_u32(wp, "sides2", 0),
-            range_n2: slk_f64(wp, "rangeN2", 0.0),
-            targs2: wp.get("targs2").cloned().unwrap_or_default(),
-            show_ui2: slk_bool(wp, "showUI2"),
-            dmg_pt2: slk_f64(wp, "dmgpt2", 0.0),
-            back_sw2: slk_f64(wp, "backSw2", 0.0),
-            splash_targs2: wp.get("splashTargs2").cloned().unwrap_or_default(),
+                // Weapons (UnitWeapons)
+                weaps_on: slk_u32(wp, "weapsOn", 0),
+                acquire: slk_f64(wp, "acquire", 0.0),
+                weap_tp1: slk_str(wp, "weapTp1"),
+                weap_type1: slk_str(wp, "weapType1"),
+                atk_type1: wp.get("atkType1").cloned().unwrap_or_default(),
+                cool1: slk_f64(wp, "cool1", 0.0),
+                dmgplus1: slk_u32(wp, "dmgplus1", 0),
+                dice1: slk_u32(wp, "dice1", 0),
+                sides1: slk_u32(wp, "sides1", 0),
+                range_n1: slk_f64(wp, "rangeN1", 0.0),
+                targs1: wp.get("targs1").cloned().unwrap_or_default(),
+                show_ui1: slk_bool(wp, "showUI1"),
+                dmg_pt1: slk_f64(wp, "dmgpt1", 0.0),
+                back_sw1: slk_f64(wp, "backSw1", 0.0),
+                splash_targs1: wp.get("splashTargs1").cloned().unwrap_or_default(),
+                min_range: slk_f64(wp, "minRange", 0.0),
+                weap_tp2: slk_str(wp, "weapTp2"),
+                weap_type2: slk_str(wp, "weapType2"),
+                atk_type2: wp.get("atkType2").cloned().unwrap_or_default(),
+                cool2: slk_f64(wp, "cool2", 0.0),
+                dmgplus2: slk_u32(wp, "dmgplus2", 0),
+                dice2: slk_u32(wp, "dice2", 0),
+                sides2: slk_u32(wp, "sides2", 0),
+                range_n2: slk_f64(wp, "rangeN2", 0.0),
+                targs2: wp.get("targs2").cloned().unwrap_or_default(),
+                show_ui2: slk_bool(wp, "showUI2"),
+                dmg_pt2: slk_f64(wp, "dmgpt2", 0.0),
+                back_sw2: slk_f64(wp, "backSw2", 0.0),
+                splash_targs2: wp.get("splashTargs2").cloned().unwrap_or_default(),
 
-            // Meta
-            in_beta: slk_bool(&row, "InBeta"),
-            version: slk_u32(&row, "version", 0),
+                // Meta
+                in_beta: slk_bool(&row, "InBeta"),
+                version: slk_u32(&row, "version", 0),
 
-            // Strings (populated later from UnitStrings.txt)
-            tip: None,
-            ubertip: None,
-            hotkey: None,
-            propernames: None,
-            revivetip: None,
-            awakentip: None,
-            editor_suffix: None,
-            caster_upgrade_name: None,
-            caster_upgrade_tip: None,
-        });
+                // Strings (populated later from UnitStrings.txt)
+                tip: None,
+                ubertip: None,
+                hotkey: None,
+                propernames: None,
+                revivetip: None,
+                awakentip: None,
+                editor_suffix: None,
+                caster_upgrade_name: None,
+                caster_upgrade_tip: None,
+            },
+        );
     }
 
     // ── Load UnitStrings.txt files ────────────────────────────────
@@ -421,8 +535,12 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
         "Units\\NeutralUnitStrings.txt",
     ];
 
+    let mut unit_strings: HashMap<u32, UnitStringsEntry> = HashMap::new();
+
     for &file_path in UNIT_STRING_FILES {
-        if let Some((buf, src)) = crate::lng::map_editor::file_lookup::lookup_file(file_path, archive_path) {
+        if let Some((buf, src)) =
+            crate::lng::map_editor::file_lookup::lookup_file(file_path, archive_path)
+        {
             let sections = parse_unit_strings(&buf);
             let file_name = file_path
                 .rsplit('\\')
@@ -438,28 +556,47 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
 
             for (rawcode, fields) in sections {
                 let key = rawcode_to_u32(&rawcode);
-                if let Some(unit) = units.get_mut(&key) {
-                    // Override name if present in UnitStrings
-                    if let Some(name_val) = fields.get("Name") {
-                        if !name_val.is_empty() {
-                            unit.name = crate::lng::map_editor::westrings::resolve_game_string(name_val);
-                        }
-                    }
+                let entry = UnitStringsEntry::from_fields(&fields);
+                unit_strings
+                    .entry(key)
+                    .and_modify(|existing| existing.merge(&entry))
+                    .or_insert(entry);
+            }
+        }
+    }
 
-                    fn opt(fields: &HashMap<String, String>, key: &str) -> Option<String> {
-                        fields.get(key).filter(|v| !v.is_empty()).cloned()
-                    }
-
-                    if unit.tip.is_none() { unit.tip = opt(&fields, "Tip"); }
-                    if unit.ubertip.is_none() { unit.ubertip = opt(&fields, "Ubertip"); }
-                    if unit.hotkey.is_none() { unit.hotkey = opt(&fields, "Hotkey"); }
-                    if unit.propernames.is_none() { unit.propernames = opt(&fields, "Propernames"); }
-                    if unit.revivetip.is_none() { unit.revivetip = opt(&fields, "Revivetip"); }
-                    if unit.awakentip.is_none() { unit.awakentip = opt(&fields, "Awakentip"); }
-                    if unit.editor_suffix.is_none() { unit.editor_suffix = opt(&fields, "EditorSuffix"); }
-                    if unit.caster_upgrade_name.is_none() { unit.caster_upgrade_name = opt(&fields, "Casterupgradename"); }
-                    if unit.caster_upgrade_tip.is_none() { unit.caster_upgrade_tip = opt(&fields, "Casterupgradetip"); }
-                }
+    // Apply parsed strings to UnitInfo structs.
+    for (&key, strings) in &unit_strings {
+        if let Some(unit) = units.get_mut(&key) {
+            if let Some(ref name_val) = strings.name {
+                unit.name = crate::lng::map_editor::westrings::resolve_game_string(name_val);
+            }
+            if unit.tip.is_none() {
+                unit.tip = strings.tip.clone();
+            }
+            if unit.ubertip.is_none() {
+                unit.ubertip = strings.ubertip.clone();
+            }
+            if unit.hotkey.is_none() {
+                unit.hotkey = strings.hotkey.clone();
+            }
+            if unit.propernames.is_none() {
+                unit.propernames = strings.propernames.clone();
+            }
+            if unit.revivetip.is_none() {
+                unit.revivetip = strings.revivetip.clone();
+            }
+            if unit.awakentip.is_none() {
+                unit.awakentip = strings.awakentip.clone();
+            }
+            if unit.editor_suffix.is_none() {
+                unit.editor_suffix = strings.editor_suffix.clone();
+            }
+            if unit.caster_upgrade_name.is_none() {
+                unit.caster_upgrade_name = strings.casterupgradename.clone();
+            }
+            if unit.caster_upgrade_tip.is_none() {
+                unit.caster_upgrade_tip = strings.casterupgradetip.clone();
             }
         }
     }
@@ -468,6 +605,6 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
         source: source.to_string(),
         sources,
         units,
+        unit_strings,
     })
 }
-
