@@ -1,5 +1,5 @@
 {
-  "version": "0.0.40",
+  "version": "0.0.42",
   "license": "MIT",
   "author": "WarRaft",
   "publisher": "WarRaft",
@@ -34,7 +34,7 @@
   "dependencies": {},
   "devDependencies": {
     "@types/vscode": "^1.110.0",
-    "@vscode/vsce": "^3.7.1"
+    "@vscode/vsce": "^3.9.0"
   },
   "configurationDefaults": {},
   "contributes": {
