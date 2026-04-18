@@ -26,7 +26,7 @@ use crate::http::range::Range;
 use crate::http::ref_map::{DeclKey, RefMap};
 use crate::util::file_cache;
 use crate::util::parse_cache::{
-    drain_pending, peek_or_load, mark_parse_done,
+    drain_pending, peek_or_load, mark_parse_done, register_pending,
     CascadeGuard, PARSE_CACHE,
     MAX_CASCADE_PEERS, REPARSE_GUARD,
 };
@@ -103,6 +103,122 @@ pub fn all_visible_entries(visible_uris: &HashSet<Url>) -> Vec<GlobalEntry> {
         }
     }
     result
+}
+
+/// Build JASS imported symbols from visible entries.
+///
+/// When `precise_decl_keys` is `true`, tries to resolve the exact origin
+/// `DeclKey` from snapshots (`peek_or_load`) and falls back to `entry.decl_key`.
+///
+/// The function is read-only: it never mutates `PARSE_CACHE` or `IMPORT_GRAPH`.
+pub fn jass_imported_symbols_from_entries(
+    current_uri: &Url,
+    visible_entries: &[GlobalEntry],
+    precise_decl_keys: bool,
+) -> Vec<crate::lng::jass::cursor::ImportedSymbol> {
+    use crate::lng::jass::cursor::{ImportedKind, ImportedSymbol};
+
+    let mut imported_symbols = Vec::new();
+    let mut snapshot_cache: std::collections::HashMap<
+        Url,
+        Option<std::sync::Arc<crate::util::parse_cache::ParseSnapshot>>,
+    > = std::collections::HashMap::new();
+
+    for entry in visible_entries {
+        if &entry.uri == current_uri {
+            continue;
+        }
+
+        let origin_decl_key = if precise_decl_keys {
+            let origin_snapshot = snapshot_cache
+                .entry(entry.uri.clone())
+                .or_insert_with(|| crate::util::parse_cache::peek_or_load(&entry.uri));
+            origin_snapshot
+                .as_ref()
+                .and_then(|snap| {
+                    find_decl_key_by_name(
+                        &snap.ref_map,
+                        &entry.name,
+                        entry.ns,
+                        &snap.func_decl_keys,
+                    )
+                })
+                .or(Some(entry.decl_key as DeclKey))
+        } else {
+            Some(entry.decl_key as DeclKey)
+        };
+
+        imported_symbols.push(ImportedSymbol {
+            origin_uri: entry.uri.clone(),
+            name: entry.name.clone(),
+            kind: match entry.ns {
+                SymbolNS::Func => ImportedKind::Func,
+                SymbolNS::Var => ImportedKind::Var,
+            },
+            origin_decl_key,
+            return_type: entry.return_type.clone(),
+            type_name: entry.type_name.clone(),
+        });
+    }
+
+    imported_symbols
+}
+
+/// Ensure that every URI in the connected component has symbols available.
+///
+/// The function may expand the component when `ensure_file_symbols` discovers
+/// new transitive imports and updates `IMPORT_GRAPH`.
+///
+/// This is an orchestration-level compatibility helper shared by JASS/AS paths.
+/// Reusing it does not imply that language-specific parse pipelines are fully
+/// unified or migrated.
+///
+/// If `pending_waiter` is provided, unresolved peers are registered via
+/// `register_pending(peer, pending_waiter)`.
+pub fn ensure_visible_component_loaded(
+    anchor_uri: &Url,
+    mut component: HashSet<Url>,
+    pending_waiter: Option<&Url>,
+) -> HashSet<Url> {
+    let mut ensured: HashSet<Url> = HashSet::new();
+    ensured.insert(anchor_uri.clone());
+    const MAX_ROUNDS: usize = 64;
+
+    for _round in 0..MAX_ROUNDS {
+        let mut discovered_new = false;
+        for peer_uri in component.iter().cloned().collect::<Vec<_>>() {
+            if !ensured.insert(peer_uri.clone()) {
+                continue;
+            }
+
+            let ts_lang = if crate::util::open::is_as_uri(&peer_uri) {
+                tree_sitter_as::language().into()
+            } else {
+                tree_sitter_jass::language().into()
+            };
+
+            let ensured_ok = ensure_file_symbols(&peer_uri, ts_lang);
+            if !ensured_ok {
+                if let Some(waiter) = pending_waiter {
+                    register_pending(&peer_uri, waiter);
+                }
+            }
+            discovered_new = true;
+        }
+
+        if !discovered_new {
+            break;
+        }
+
+        IMPORT_GRAPH.recompute_entry_cache();
+        let new_component = IMPORT_GRAPH.visible_component(anchor_uri);
+        if new_component == component {
+            break;
+        }
+        component = new_component;
+    }
+
+    component
 }
 
 /// Look up all entries for `name` in namespace `ns`, filtered to

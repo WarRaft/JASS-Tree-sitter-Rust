@@ -308,6 +308,7 @@ pub struct Ast<'tree> {
 
 impl<'tree> Ast<'tree> {
     /// Return the compile-time value for `expr` when available.
+    #[cfg(test)]
     pub fn comptime_of_expr(&self, expr: &Expr<'tree>) -> Option<&ComptimeValue> {
         self.comptime_values
             .get(&(expr.cst_node().start_byte(), expr.cst_node().end_byte()))

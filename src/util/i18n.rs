@@ -272,27 +272,6 @@ pub fn handle_leak_before_return(name: &str, type_name: &str) -> String {
     }
 }
 
-// ─── Handle leak quick fix ──────────────────────────────────────────────────
-
-pub fn fix_handle_leak(name: &str) -> String {
-    match locale() {
-        Locale::En => format!("Set `{}` to `null`", name),
-        Locale::Ru => format!("Установить `{}` в `null`", name),
-        Locale::Uk => format!("Встановити `{}` в `null`", name),
-        Locale::Zh => format!("将 `{}` 设置为 `null`", name),
-        Locale::Tc => format!("將 `{}` 設置為 `null`", name),
-    }
-}
-
-pub fn fix_all_handle_leaks() -> &'static str {
-    pick(
-        "Fix all handle leaks in file",
-        "Исправить все утечки хэндлов в файле",
-        "Виправити всі витоки хендлів у файлі",
-        "修复文件中所有句柄泄漏",
-        "修復檔案中所有句柄洩漏",
-    )
-}
 
 // ─── Function diagnostics ───────────────────────────────────────────────────
 
@@ -1118,7 +1097,7 @@ pub fn build_hook_spawn_failed(phase: &str, cmd: &str, err: &str) -> String {
         Locale::Tc => format!("無法啟動 `build-{}` 命令：`{}` — {}", phase, cmd, err),
     }
 }
-
+#[allow(dead_code)]
 pub fn build_archive_ok(globals: usize, functions: usize, bare_stmts: usize, script_name: &str) -> String {
     let stmts_part = if bare_stmts > 0 {
         match locale() {
@@ -1139,7 +1118,7 @@ pub fn build_archive_ok(globals: usize, functions: usize, bare_stmts: usize, scr
         Locale::Tc => format!("建構成功 → {} — {} 個全域變數，{} 個函式{}", script_name, globals, functions, stmts_part),
     }
 }
-
+#[allow(dead_code)]
 pub fn build_backup_failed(path: &str, err: &str) -> String {
     match locale() {
         Locale::En => format!("Failed to create backup {}: {}", path, err),
@@ -1150,6 +1129,7 @@ pub fn build_backup_failed(path: &str, err: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub fn build_archive_open_failed(path: &str, err: &str) -> String {
     match locale() {
         Locale::En => format!("Failed to open archive {}: {}", path, err),
@@ -1159,7 +1139,7 @@ pub fn build_archive_open_failed(path: &str, err: &str) -> String {
         Locale::Tc => format!("開啟存檔 {} 失敗：{}", path, err),
     }
 }
-
+#[allow(dead_code)]
 pub fn build_archive_inject_failed(script_name: &str, err: &str) -> String {
     match locale() {
         Locale::En => format!("Failed to inject {} into archive: {}", script_name, err),
@@ -1487,7 +1467,7 @@ pub fn remove_else_branch() -> &'static str {
 }
 
 // ─── Fold StringHash ─────────────────────────────────────────────────────────
-
+#[allow(dead_code)]
 pub fn fold_string_hash() -> &'static str {
     pick(
         "Compute StringHash",
@@ -1498,6 +1478,7 @@ pub fn fold_string_hash() -> &'static str {
     )
 }
 
+#[allow(dead_code)]
 pub fn fold_string_hash_all() -> &'static str {
     pick(
         "Compute all StringHash in file",

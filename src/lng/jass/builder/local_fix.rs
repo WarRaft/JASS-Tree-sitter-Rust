@@ -406,7 +406,7 @@ fn collect_return_lines(stmts: &[Statement], out: &mut HashSet<usize>) {
 fn collect_leak_edits(
     diags: &[Diagnostic],
     index: &AstFixIndex,
-    src: &str,
+    _src: &str,
     method: LeakFixMethod,
 ) -> Vec<LineEdit> {
     let mut edits = Vec::new();
@@ -495,6 +495,7 @@ fn unique_local_name(func_name: &str, var_name: &str, declared: &HashSet<String>
 }
 
 
+#[cfg(test)]
 fn returned_local_edits(
     diag: &Diagnostic,
     index: &AstFixIndex,

@@ -1,24 +1,26 @@
 use crate::http::code_action::{
-    CodeAction, CodeActionParams, Command, CODE_ACTION_KIND_QUICKFIX, CODE_ACTION_KIND_REFACTOR,
+    CODE_ACTION_KIND_QUICKFIX, CODE_ACTION_KIND_REFACTOR, CodeAction, CodeActionParams, Command,
 };
 use crate::http::diagnostic::Diagnostic;
 use crate::http::position::Position;
 use crate::http::range::Range;
 use crate::http::rename::{TextEdit, WorkspaceEdit};
-use crate::util::parse_cache::{PARSE_CACHE, peek_or_load};
 use crate::util::open::is_as_uri;
+use crate::util::parse_cache::PARSE_CACHE;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
 use serde_json::json;
 use std::collections::HashMap;
-
 
 pub(crate) fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
     let mut actions = Vec::new();
 
     // ── UjAPI download / re-download actions ──────────────────────────────
     // Diagnostics with source="ujapi" carry { ujapi_uri, ujapi_path } in `data`.
-    let ujapi_diags: Vec<_> = params.context.diagnostics.iter()
+    let ujapi_diags: Vec<_> = params
+        .context
+        .diagnostics
+        .iter()
         .filter(|d| d.has_code("ujapi"))
         .filter(|d| d.data.is_some())
         .cloned()
@@ -29,7 +31,11 @@ pub(crate) fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         let maybe_params = ujapi_diags[0].data.as_ref().and_then(|data| {
             let u = data.get("ujapi_uri")?.as_str()?.to_string();
             let p = data.get("ujapi_path")?.as_str()?.to_string();
-            if u.is_empty() || p.is_empty() { None } else { Some((u, p)) }
+            if u.is_empty() || p.is_empty() {
+                None
+            } else {
+                Some((u, p))
+            }
         });
 
         if let Some((ujapi_uri, ujapi_path)) = maybe_params {
@@ -48,10 +54,7 @@ pub(crate) fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
                 command: Some(Command {
                     title: title.to_string(),
                     command: "ujapi.download".into(),
-                    arguments: Some(vec![
-                        json!(ujapi_uri),
-                        json!(ujapi_path),
-                    ]),
+                    arguments: Some(vec![json!(ujapi_uri), json!(ujapi_path)]),
                 }),
             });
         }
@@ -66,12 +69,6 @@ pub(crate) fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
                 actions.push(fa);
             }
         }
-    }
-
-    // ── Handle leak quick fixes ─────────────────────────────────────────
-    let uri = &params.uri;
-    if !is_as_uri(uri) {
-        actions.extend(compute_leak_fixes(params));
     }
 
     // ── Unused function quick fixes ───────────────────────────────────────
@@ -128,12 +125,6 @@ pub(crate) fn compute(params: &CodeActionParams) -> Vec<CodeAction> {
         if let Some(action) = compute_remove_else_action(params) {
             actions.push(action);
         }
-    }
-
-    // ── Fold StringHash refactoring ──────────────────────────────────────
-    let uri = &params.uri;
-    if !is_as_uri(uri) {
-        actions.extend(compute_string_hash_fold(params));
     }
 
     // ── ExecuteFunc quick fixes ──────────────────────────────────────────
@@ -206,7 +197,9 @@ fn compute_simplify_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::simplify_if_return_action().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -272,7 +265,9 @@ fn compute_simplify_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title,
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -288,11 +283,17 @@ fn compute_simplify_fix_all(uri: &url::Url) -> Option<CodeAction> {
 /// non-overlapping.
 fn paren_delete_edits(diag: &Diagnostic) -> Option<[TextEdit; 2]> {
     let data = diag.data.as_ref()?;
-    let open: Range  = serde_json::from_value(data.get("parens_open")?.clone()).ok()?;
+    let open: Range = serde_json::from_value(data.get("parens_open")?.clone()).ok()?;
     let close: Range = serde_json::from_value(data.get("parens_close")?.clone()).ok()?;
     Some([
-        TextEdit { range: open,  new_text: String::new() },
-        TextEdit { range: close, new_text: String::new() },
+        TextEdit {
+            range: open,
+            new_text: String::new(),
+        },
+        TextEdit {
+            range: close,
+            new_text: String::new(),
+        },
     ])
 }
 
@@ -321,7 +322,9 @@ fn compute_parens_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::remove_redundant_parens().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -363,8 +366,16 @@ fn compute_parens_fix_all(uri: &url::Url) -> Option<CodeAction> {
     let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
     for diag in &parens_diags {
         if let Some([open_edit, close_edit]) = paren_delete_edits(diag) {
-            edits.push((open_edit.range.start.line,  open_edit.range.start.character,  open_edit));
-            edits.push((close_edit.range.start.line, close_edit.range.start.character, close_edit));
+            edits.push((
+                open_edit.range.start.line,
+                open_edit.range.start.character,
+                open_edit,
+            ));
+            edits.push((
+                close_edit.range.start.line,
+                close_edit.range.start.character,
+                close_edit,
+            ));
         }
     }
 
@@ -385,12 +396,12 @@ fn compute_parens_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title,
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
-
-
 
 // ─── Redundant boolean comparison fixes ──────────────────────────────────────
 
@@ -410,20 +421,26 @@ fn compute_bool_cmp_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
     for diag in &diags {
         if let Some(new_text) = diag
-            .data.as_ref()
+            .data
+            .as_ref()
             .and_then(|d| d.get("bool_cmp_new_text"))
             .and_then(|v| v.as_str())
         {
             let mut changes = HashMap::new();
-            changes.insert(uri.clone(), vec![TextEdit {
-                range: diag.range.clone(),
-                new_text: new_text.to_string(),
-            }]);
+            changes.insert(
+                uri.clone(),
+                vec![TextEdit {
+                    range: diag.range.clone(),
+                    new_text: new_text.to_string(),
+                }],
+            );
             actions.push(CodeAction {
                 title: crate::util::i18n::simplify_bool_cmp().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -456,14 +473,18 @@ fn compute_bool_cmp_fix_all(uri: &url::Url) -> Option<CodeAction> {
     let mut edits: Vec<(usize, usize, TextEdit)> = Vec::new();
     for diag in &bool_diags {
         if let Some(new_text) = diag
-            .data.as_ref()
+            .data
+            .as_ref()
             .and_then(|d| d.get("bool_cmp_new_text"))
             .and_then(|v| v.as_str())
         {
             edits.push((
                 diag.range.start.line,
                 diag.range.start.character,
-                TextEdit { range: diag.range.clone(), new_text: new_text.to_string() },
+                TextEdit {
+                    range: diag.range.clone(),
+                    new_text: new_text.to_string(),
+                },
             ));
         }
     }
@@ -483,7 +504,9 @@ fn compute_bool_cmp_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title: crate::util::i18n::simplify_all_bool_cmp().to_string(),
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -540,7 +563,9 @@ fn compute_as_string_toggle(params: &CodeActionParams) -> Option<(CodeAction, Op
         title: title.to_string(),
         kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     };
 
@@ -583,7 +608,9 @@ fn compute_file_wide_toggle(
         title: title.to_string(),
         kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -645,13 +672,21 @@ fn convert_string_text(text: &str, is_triple: bool) -> (&'static str, String) {
 /// Strip surrounding `"""` from a triple-quoted string, returning the inner content.
 fn strip_triple_quotes(s: &str) -> &str {
     let s = if s.starts_with("\"\"\"") { &s[3..] } else { s };
-    if s.ends_with("\"\"\"") { &s[..s.len() - 3] } else { s }
+    if s.ends_with("\"\"\"") {
+        &s[..s.len() - 3]
+    } else {
+        s
+    }
 }
 
 /// Strip surrounding `"` from a single-quoted string, returning the inner content.
 fn strip_single_quotes(s: &str) -> &str {
     let s = if s.starts_with('"') { &s[1..] } else { s };
-    if s.ends_with('"') { &s[..s.len() - 1] } else { s }
+    if s.ends_with('"') {
+        &s[..s.len() - 1]
+    } else {
+        s
+    }
 }
 
 /// Escape a triple-quoted inner string for use inside single quotes.
@@ -703,234 +738,6 @@ fn unescape_for_triple(s: &str) -> String {
     out
 }
 
-// ─── Handle leak quick fixes ─────────────────────────────────────────────────
-
-/// Extract variable name from a leak diagnostic's `data` field.
-fn leak_var(diag: &Diagnostic) -> Option<String> {
-    diag.data.as_ref()?.get("leak_var")?.as_str().map(String::from)
-}
-
-/// Extract leak kind (`"return"` or `"endfunction"`) from a leak diagnostic's `data`.
-fn leak_kind(diag: &Diagnostic) -> Option<String> {
-    diag.data.as_ref()?.get("leak_kind")?.as_str().map(String::from)
-}
-
-/// Extract leak type from a diagnostic's `data` field.
-fn leak_type(diag: &Diagnostic) -> Option<String> {
-    diag.data.as_ref()?.get("leak_type")?.as_str().map(String::from)
-}
-
-/// Extract function name from a diagnostic's `data` field.
-fn leak_func_name(diag: &Diagnostic) -> Option<String> {
-    diag.data.as_ref()?.get("func_name")?.as_str().map(String::from)
-}
-
-/// Check if the diagnostic is for a returned local variable.
-fn is_returned_local(diag: &Diagnostic) -> bool {
-    diag.data
-        .as_ref()
-        .and_then(|d| d.get("returned_local"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
-
-/// Find the line number of the first `endglobals` keyword in the rope.
-/// Returns `None` if no globals block exists.
-fn find_endglobals_line(rope: &lapce_xi_rope::Rope) -> Option<usize> {
-    let line_count = rope.line_of_offset(rope.len()) + 1;
-    for line in 0..line_count {
-        let ls = rope.offset_of_line(line);
-        let le = rope.offset_of_line(line + 1).min(rope.len());
-        let text = rope.slice_to_cow(ls..le);
-        if text.trim() == "endglobals" {
-            return Some(line);
-        }
-    }
-    None
-}
-
-/// Generate a unique global variable name `funcname_varname`, appending a
-/// numeric suffix if the name already appears in declared names.
-/// Format: `funcname_varname_2`, `funcname_varname_3`, etc.
-fn unique_global_name(
-    func_name: &str,
-    var_name: &str,
-    declared: &std::collections::HashSet<String>,
-) -> String {
-    let base = format!("{}_{}", func_name, var_name);
-    if !declared.contains(&base) {
-        return base;
-    }
-    let mut suffix = 2u32;
-    loop {
-        let candidate = format!("{}_{}", base, suffix);
-        if !declared.contains(&candidate) {
-            return candidate;
-        }
-        suffix += 1;
-    }
-}
-
-/// Collect every declared identifier name from the AST (globals, params, locals).
-fn collect_declared_names(ast: &crate::lng::jass::ast::Ast, src: &str) -> std::collections::HashSet<String> {
-    use crate::lng::jass::ast::Statement;
-
-    let mut names = std::collections::HashSet::new();
-    for item in &ast.items {
-        match item {
-            Statement::Globals(g) => {
-                for v in &g.vars {
-                    for d in &v.decls {
-                        if let Some(id) = &d.name {
-                            names.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
-                        }
-                    }
-                }
-            }
-            Statement::VarStmt(v) => {
-                for d in &v.decls {
-                    if let Some(id) = &d.name {
-                        names.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
-                    }
-                }
-            }
-            Statement::Function(f) => {
-                // Collect parameters
-                for p in &f.params {
-                    if let Some(id) = &p.name {
-                        names.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
-                    }
-                }
-                // Collect locals in function body
-                collect_local_names(src, &f.body, &mut names);
-            }
-            _ => {}
-        }
-    }
-    names
-}
-
-fn collect_local_names(
-    src: &str,
-    stmts: &[crate::lng::jass::ast::Statement],
-    out: &mut std::collections::HashSet<String>,
-) {
-    use crate::lng::jass::ast::Statement;
-
-    for stmt in stmts {
-        match stmt {
-            Statement::Local(l) => {
-                if let Some(id) = &l.name {
-                    out.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
-                }
-            }
-            Statement::VarStmt(v) => {
-                for d in &v.decls {
-                    if let Some(id) = &d.name {
-                        out.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
-                    }
-                }
-            }
-            Statement::If(s) => {
-                collect_local_names(src, &s.body, out);
-                for b in &s.branches {
-                    collect_local_names(src, &b.body, out);
-                }
-            }
-            Statement::Loop(s) => collect_local_names(src, &s.body, out),
-            _ => {}
-        }
-    }
-}
-
-/// Build text edits for the "returned local" leak fix.
-///
-/// 1. Insert a global variable declaration before `endglobals`
-///    (or create a `globals`/`endglobals` block at line 0).
-/// 2. Replace the `return <var>` line with:
-///    ```
-///    set <global> = <var>
-///    set <var> = null
-///    return <global>
-///    ```
-fn returned_local_edits(
-    diag: &Diagnostic,
-    uri: &url::Url,
-    rope: &lapce_xi_rope::Rope,
-) -> Option<Vec<TextEdit>> {
-    let mut generated = std::collections::HashSet::new();
-    // Collect initial declared names from AST
-    let tree = TREE_MAP.get(uri)?;
-    let tree = tree.value().clone();
-    let ast = crate::lng::jass::ast::build_ast(tree.root_node());
-    let full_text = rope.slice_to_cow(0..rope.len());
-    generated = collect_declared_names(&ast, &full_text);
-
-    returned_local_edits_with_tracking(diag, uri, rope, &mut generated)
-}
-
-fn returned_local_edits_with_tracking(
-    diag: &Diagnostic,
-    uri: &url::Url,
-    rope: &lapce_xi_rope::Rope,
-    generated_names: &mut std::collections::HashSet<String>,
-) -> Option<Vec<TextEdit>> {
-    let var = leak_var(diag)?;
-    let type_name = leak_type(diag)?;
-    let func_name = leak_func_name(diag)?;
-
-    let global_name = unique_global_name(&func_name, &var, generated_names);
-    // Track that we've used this name
-    generated_names.insert(global_name.clone());
-
-    let mut edits = Vec::new();
-
-    // ── 1. Insert global variable declaration ─────────────────────────────
-    if let Some(endglobals_line) = find_endglobals_line(rope) {
-        let glob_indent = body_indent(rope, endglobals_line);
-        let insert_pos = Position { line: endglobals_line, character: 0 };
-        edits.push(TextEdit {
-            range: Range { start: insert_pos.clone(), end: insert_pos },
-            new_text: format!("{}{} {}\n", glob_indent, type_name, global_name),
-        });
-    } else {
-        // No globals block — create one at the top of the file.
-        let insert_pos = Position { line: 0, character: 0 };
-        edits.push(TextEdit {
-            range: Range { start: insert_pos.clone(), end: insert_pos },
-            new_text: format!("globals\n    {} {}\nendglobals\n\n", type_name, global_name),
-        });
-    }
-
-    // ── 2. Replace the `return <var>` line ────────────────────────────────
-    let ret_line = diag.range.start.line;
-    let indent = line_indent(rope, ret_line);
-
-    // Find the full extent of the return line.
-    let line_count = rope.line_of_offset(rope.len()) + 1;
-    let ret_line_start = rope.offset_of_line(ret_line);
-    let ret_line_end = if ret_line + 1 < line_count {
-        rope.offset_of_line(ret_line + 1)
-    } else {
-        rope.len()
-    };
-    let _ret_text = rope.slice_to_cow(ret_line_start..ret_line_end);
-
-    let start_pos = Position { line: ret_line, character: 0 };
-    let end_pos = Position { line: ret_line + 1, character: 0 };
-    edits.push(TextEdit {
-        range: Range { start: start_pos, end: end_pos },
-        new_text: format!(
-            "{indent}set {global} = {var}\n{indent}set {var} = null\n{indent}return {global}\n",
-            indent = indent,
-            global = global_name,
-            var = var,
-        ),
-    });
-
-    Some(edits)
-}
-
 /// Read the leading whitespace of a line in a rope.
 fn line_indent(rope: &lapce_xi_rope::Rope, line: usize) -> String {
     let line_count = rope.line_of_offset(rope.len()) + 1;
@@ -943,229 +750,6 @@ fn line_indent(rope: &lapce_xi_rope::Rope, line: usize) -> String {
     text.chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect()
-}
-
-/// Find the body-level indentation for an `endfunction` leak.
-/// Scans backwards from the `endfunction` line to find the first non-blank line
-/// and uses its indentation.  Falls back to `endfunction` indent + 4 spaces.
-fn body_indent(rope: &lapce_xi_rope::Rope, endfunction_line: usize) -> String {
-    let line_count = rope.line_of_offset(rope.len()) + 1;
-    let mut line = endfunction_line;
-    while line > 0 {
-        line -= 1;
-        if line >= line_count {
-            break;
-        }
-        let ls = rope.offset_of_line(line);
-        let le = rope.offset_of_line(line + 1).min(rope.len());
-        let text = rope.slice_to_cow(ls..le);
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            return text
-                .chars()
-                .take_while(|c| *c == ' ' || *c == '\t')
-                .collect();
-        }
-    }
-    // Fallback: endfunction indent + 4 spaces.
-    let ef_indent = line_indent(rope, endfunction_line);
-    format!("{}    ", ef_indent)
-}
-
-/// Build a `TextEdit` that inserts `set <var> = null` before the given
-/// diagnostic's target line, with appropriate indentation.
-fn leak_text_edit(
-    diag: &Diagnostic,
-    rope: &lapce_xi_rope::Rope,
-) -> Option<TextEdit> {
-    let var = leak_var(diag)?;
-    let kind = leak_kind(diag)?;
-    let target_line = diag.range.start.line;
-
-    let indent = if kind == "endfunction" {
-        body_indent(rope, target_line)
-    } else {
-        // "return" — same indent as the return keyword line
-        line_indent(rope, target_line)
-    };
-
-    let insert_pos = Position {
-        line: target_line,
-        character: 0,
-    };
-
-    Some(TextEdit {
-        range: Range {
-            start: insert_pos.clone(),
-            end: insert_pos,
-        },
-        new_text: format!("{}set {} = null\n", indent, var),
-    })
-}
-
-/// Compute quick fix actions for handle leak diagnostics.
-fn compute_leak_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
-    let mut actions = Vec::new();
-
-    let uri = &params.uri;
-    let rope = match ROPE_MAP.get(uri) {
-        Some(r) => r,
-        None => return actions,
-    };
-    let rope = rope.value();
-
-    // Collect leak diagnostics from the cursor context.
-    let leak_diags: Vec<_> = params
-        .context
-        .diagnostics
-        .iter()
-        .filter(|d| d.has_code("leak"))
-        .filter(|d| d.data.is_some())
-        .cloned()
-        .collect();
-
-    // ── Per-variable quick fixes ──────────────────────────────────────────
-    // Group by (line, var) to avoid duplicate edits at the same location.
-    let mut seen = std::collections::HashSet::new();
-    // Track generated names to avoid collisions between fixes
-    let mut generated_names = std::collections::HashSet::new();
-    // Collect initial declared names from AST
-    if !leak_diags.is_empty() {
-        let tree = match TREE_MAP.get(uri) {
-            Some(t) => t.value().clone(),
-            None => return actions,
-        };
-        let ast = crate::lng::jass::ast::build_ast(tree.root_node());
-        let full_text = rope.slice_to_cow(0..rope.len());
-        generated_names = collect_declared_names(&ast, &full_text);
-    }
-
-    for diag in &leak_diags {
-        let var = match leak_var(diag) {
-            Some(v) => v,
-            None => continue,
-        };
-        let key = (diag.range.start.line, var.clone());
-        if !seen.insert(key) {
-            continue;
-        }
-        if is_returned_local(diag) {
-            // Returned local: create global + rewrite return.
-            if let Some(edits) = returned_local_edits_with_tracking(diag, uri, rope, &mut generated_names) {
-                let title = crate::util::i18n::fix_handle_leak(&var);
-                let mut changes = HashMap::new();
-                changes.insert(uri.clone(), edits);
-                actions.push(CodeAction {
-                    title,
-                    kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
-                    diagnostics: Some(vec![diag.clone()]),
-                    edit: Some(WorkspaceEdit {
-                        changes: Some(changes),
-                    }),
-                    command: None,
-                });
-            }
-        } else if let Some(edit) = leak_text_edit(diag, rope) {
-            let title = crate::util::i18n::fix_handle_leak(&var);
-            let mut changes = HashMap::new();
-            changes.insert(uri.clone(), vec![edit]);
-            actions.push(CodeAction {
-                title,
-                kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
-                diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit {
-                    changes: Some(changes),
-                }),
-                command: None,
-            });
-        }
-    }
-
-    // ── Fix all leaks in file ─────────────────────────────────────────────
-    if !leak_diags.is_empty() {
-        if let Some(file_action) = compute_fix_all_leaks(uri, rope) {
-            actions.push(file_action);
-        }
-    }
-
-    actions
-}
-
-/// Build a single code action that fixes ALL handle leaks in the file.
-fn compute_fix_all_leaks(
-    uri: &url::Url,
-    rope: &lapce_xi_rope::Rope,
-) -> Option<CodeAction> {
-    // Get all diagnostics for this file from PARSE_CACHE.
-    let snap = PARSE_CACHE.get(uri)?;
-    let all_diags = &snap.value().diagnostics;
-
-    let leak_diags: Vec<_> = all_diags
-        .iter()
-        .filter(|d| d.has_code("leak"))
-        .filter(|d| d.data.is_some())
-        .collect();
-
-    if leak_diags.len() < 2 {
-        return None;
-    }
-
-    // Build edits, deduplicated by (line, var), sorted by line descending
-    // so that insertions don't shift line numbers of subsequent edits.
-    let mut seen = std::collections::HashSet::new();
-    let mut edits: Vec<(usize, TextEdit)> = Vec::new();
-    // Track generated names to avoid collisions between fixes
-    let mut generated_names = std::collections::HashSet::new();
-    // Collect initial declared names from AST
-    {
-        let tree = TREE_MAP.get(uri)?;
-        let tree = tree.value().clone();
-        let ast = crate::lng::jass::ast::build_ast(tree.root_node());
-        let full_text = rope.slice_to_cow(0..rope.len());
-        generated_names = collect_declared_names(&ast, &full_text);
-    }
-
-    for diag in &leak_diags {
-        let var = match leak_var(diag) {
-            Some(v) => v,
-            None => continue,
-        };
-        let key = (diag.range.start.line, var);
-        if !seen.insert(key) {
-            continue;
-        }
-        if is_returned_local(diag) {
-            if let Some(ret_edits) = returned_local_edits_with_tracking(diag, uri, rope, &mut generated_names) {
-                for e in ret_edits {
-                    edits.push((diag.range.start.line, e));
-                }
-            }
-        } else if let Some(edit) = leak_text_edit(diag, rope) {
-            edits.push((diag.range.start.line, edit));
-        }
-    }
-
-    // Sort by line descending so inserts don't invalidate positions.
-    edits.sort_by(|a, b| b.0.cmp(&a.0));
-    let text_edits: Vec<TextEdit> = edits.into_iter().map(|(_, e)| e).collect();
-
-    if text_edits.is_empty() {
-        return None;
-    }
-
-    let title = crate::util::i18n::fix_all_handle_leaks().to_string();
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), text_edits);
-
-    Some(CodeAction {
-        title,
-        kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
-        diagnostics: None,
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-        }),
-        command: None,
-    })
 }
 
 // ─── Unused function fixes ───────────────────────────────────────────────────
@@ -1203,7 +787,9 @@ fn compute_unused_func_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::remove_unused_function().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -1245,11 +831,7 @@ fn compute_unused_func_fix_all(uri: &url::Url) -> Option<CodeAction> {
             .and_then(|v| serde_json::from_value::<Range>(v.clone()).ok())
         {
             let edit = func_delete_edit(rope, &func_range);
-            edits.push((
-                edit.range.start.line,
-                edit.range.start.character,
-                edit,
-            ));
+            edits.push((edit.range.start.line, edit.range.start.character, edit));
         }
     }
 
@@ -1268,7 +850,9 @@ fn compute_unused_func_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title: crate::util::i18n::remove_all_unused_functions().to_string(),
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -1292,7 +876,10 @@ fn func_delete_edit(rope: &lapce_xi_rope::Rope, func_range: &Range) -> TextEdit 
     let line_count = rope.line_of_offset(rope.len()) + 1;
     // Extend to the start of the next line to consume the trailing newline.
     let end = if end_line + 1 < line_count {
-        Position { line: end_line + 1, character: 0 }
+        Position {
+            line: end_line + 1,
+            character: 0,
+        }
     } else {
         func_range.end.clone()
     };
@@ -1308,21 +895,34 @@ fn func_delete_edit(rope: &lapce_xi_rope::Rope, func_range: &Range) -> TextEdit 
 /// expression (the sole expression in its syntactic slot).
 fn is_top_level_call_in_text(source: &str, call_start: usize, call_end: usize) -> bool {
     let line_start = source[..call_start].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let line_end = source[call_end..].find('\n').map(|p| call_end + p).unwrap_or(source.len());
+    let line_end = source[call_end..]
+        .find('\n')
+        .map(|p| call_end + p)
+        .unwrap_or(source.len());
 
     let before = source[line_start..call_start].trim();
     let after = source[call_end..line_end].trim();
 
     // `call NAME()`
-    if before.ends_with("call") && after.is_empty() { return true; }
+    if before.ends_with("call") && after.is_empty() {
+        return true;
+    }
     // `return NAME()`
-    if before.ends_with("return") && after.is_empty() { return true; }
+    if before.ends_with("return") && after.is_empty() {
+        return true;
+    }
     // `exitwhen NAME()`
-    if before.ends_with("exitwhen") && after.is_empty() { return true; }
+    if before.ends_with("exitwhen") && after.is_empty() {
+        return true;
+    }
     // `set VAR = NAME()` / `set VAR[IDX] = NAME()`
-    if before.starts_with("set ") && before.ends_with('=') && after.is_empty() { return true; }
+    if before.starts_with("set ") && before.ends_with('=') && after.is_empty() {
+        return true;
+    }
     // `if NAME() then` / `elseif NAME() then`
-    if before.ends_with("if") && after == "then" { return true; }
+    if before.ends_with("if") && after == "then" {
+        return true;
+    }
 
     false
 }
@@ -1360,7 +960,10 @@ fn find_call_and_build_edit(
                 format!("({})", expr)
             };
             let range = Range::from_byte_offsets(rope, abs_pos, call_end);
-            return Some(TextEdit { range, new_text: replacement });
+            return Some(TextEdit {
+                range,
+                new_text: replacement,
+            });
         }
 
         search_from = abs_pos + pattern.len();
@@ -1387,8 +990,13 @@ fn build_inline_edits(
         // Both edits are in the same file — make sure delete comes after replace
         // in the list (sorted descending) so positions stay valid.
         let mut edits = vec![delete_edit, replace_edit];
-        edits.sort_by(|a, b| b.range.start.line.cmp(&a.range.start.line)
-            .then(b.range.start.character.cmp(&a.range.start.character)));
+        edits.sort_by(|a, b| {
+            b.range
+                .start
+                .line
+                .cmp(&a.range.start.line)
+                .then(b.range.start.character.cmp(&a.range.start.character))
+        });
         let mut changes = HashMap::new();
         changes.insert(uri.clone(), edits);
         return Some(changes);
@@ -1397,10 +1005,14 @@ fn build_inline_edits(
     // Search other files in the visible component for the call site.
     let component = crate::util::import_graph::IMPORT_GRAPH.visible_component(uri);
     for peer_uri in &component {
-        if peer_uri == uri { continue; }
+        if peer_uri == uri {
+            continue;
+        }
         if let Some(peer_rope) = ROPE_MAP.get(peer_uri) {
             let peer_rope = peer_rope.value();
-            if let Some(replace_edit) = find_call_and_build_edit(peer_rope, func_name, expr, is_compound) {
+            if let Some(replace_edit) =
+                find_call_and_build_edit(peer_rope, func_name, expr, is_compound)
+            {
                 let mut changes = HashMap::new();
                 changes.insert(uri.clone(), vec![delete_edit]);
                 changes.insert(peer_uri.clone(), vec![replace_edit]);
@@ -1433,7 +1045,9 @@ fn compute_inline_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                     title: crate::util::i18n::inline_function_action().to_string(),
                     kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                     diagnostics: Some(vec![diag.clone()]),
-                    edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                    }),
                     command: None,
                 });
             }
@@ -1530,19 +1144,25 @@ fn compute_inline_fix_all(uri: &url::Url) -> Option<CodeAction> {
     for (name, (_, is_compound, _)) in &inline_map {
         let resolved_expr = &resolved_exprs[name];
         if let Some(call_edit) = find_call_and_build_edit_excluding(
-            rope, name, resolved_expr, *is_compound, &exclude_ranges,
+            rope,
+            name,
+            resolved_expr,
+            *is_compound,
+            &exclude_ranges,
         ) {
             edits.push(call_edit);
         } else {
             // Call site might be in another file.
             let component = crate::util::import_graph::IMPORT_GRAPH.visible_component(uri);
             for peer_uri in &component {
-                if peer_uri == uri { continue; }
+                if peer_uri == uri {
+                    continue;
+                }
                 if let Some(peer_rope) = ROPE_MAP.get(peer_uri) {
                     let peer_rope = peer_rope.value();
-                    if let Some(call_edit) = find_call_and_build_edit(
-                        peer_rope, name, resolved_expr, *is_compound,
-                    ) {
+                    if let Some(call_edit) =
+                        find_call_and_build_edit(peer_rope, name, resolved_expr, *is_compound)
+                    {
                         // Cross-file edits are not supported in "fix all" yet.
                         // For now, skip.  (Single-function inline handles this.)
                         let _ = call_edit;
@@ -1557,8 +1177,13 @@ fn compute_inline_fix_all(uri: &url::Url) -> Option<CodeAction> {
     }
 
     // Sort descending so edits don't invalidate each other's positions.
-    edits.sort_by(|a, b| b.range.start.line.cmp(&a.range.start.line)
-        .then(b.range.start.character.cmp(&a.range.start.character)));
+    edits.sort_by(|a, b| {
+        b.range
+            .start
+            .line
+            .cmp(&a.range.start.line)
+            .then(b.range.start.character.cmp(&a.range.start.character))
+    });
 
     let mut changes = HashMap::new();
     changes.insert(uri.clone(), edits);
@@ -1567,7 +1192,9 @@ fn compute_inline_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title: crate::util::i18n::inline_all_functions_action().to_string(),
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -1641,10 +1268,7 @@ fn replace_call_in_text(
 }
 
 /// DFS-based topological sort: dependencies (leaves) come before dependents.
-fn topo_sort_inline(
-    names: &[String],
-    deps: &HashMap<String, Vec<String>>,
-) -> Vec<String> {
+fn topo_sort_inline(names: &[String], deps: &HashMap<String, Vec<String>>) -> Vec<String> {
     let mut visited = std::collections::HashSet::new();
     let mut order = Vec::new();
 
@@ -1654,7 +1278,9 @@ fn topo_sort_inline(
         visited: &mut std::collections::HashSet<String>,
         order: &mut Vec<String>,
     ) {
-        if visited.contains(name) { return; }
+        if visited.contains(name) {
+            return;
+        }
         visited.insert(name.to_string());
         if let Some(d) = deps.get(name) {
             for dep in d {
@@ -1704,9 +1330,9 @@ fn find_call_and_build_edit_excluding(
             let call_line = range.start.line;
 
             // Skip if the call is inside an excluded (deleted) function.
-            let excluded = exclude_ranges.iter().any(|r| {
-                call_line >= r.start.line && call_line <= r.end.line
-            });
+            let excluded = exclude_ranges
+                .iter()
+                .any(|r| call_line >= r.start.line && call_line <= r.end.line);
 
             if !excluded {
                 let top_level = is_top_level_call_in_text(source, abs_pos, call_end);
@@ -1715,7 +1341,10 @@ fn find_call_and_build_edit_excluding(
                 } else {
                     format!("({})", expr)
                 };
-                return Some(TextEdit { range, new_text: replacement });
+                return Some(TextEdit {
+                    range,
+                    new_text: replacement,
+                });
             }
         }
 
@@ -1762,7 +1391,9 @@ fn compute_collapse_and_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::collapse_and_chain_action().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -1827,7 +1458,9 @@ fn compute_collapse_and_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title,
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -1871,7 +1504,9 @@ fn compute_collapse_or_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::collapse_or_chain_action().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -1936,7 +1571,9 @@ fn compute_collapse_or_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title,
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -1974,7 +1611,9 @@ fn compute_empty_else_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::remove_empty_else().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -2038,7 +1677,9 @@ fn compute_empty_else_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title: crate::util::i18n::remove_all_empty_else().to_string(),
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -2169,7 +1810,9 @@ fn compute_remove_else_action(params: &CodeActionParams) -> Option<CodeAction> {
         title: crate::util::i18n::remove_else_branch().to_string(),
         kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
 }
@@ -2215,7 +1858,9 @@ fn compute_execute_func_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::execute_func_replace(func_name),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -2280,214 +1925,11 @@ fn compute_execute_func_fix_all(uri: &url::Url) -> Option<CodeAction> {
         title,
         kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
         diagnostics: None,
-        edit: Some(WorkspaceEdit { changes: Some(changes) }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+        }),
         command: None,
     })
-}
-
-// ─── Fold StringHash ─────────────────────────────────────────────────────────
-
-use crate::lng::jass::kind::{Field, Kind};
-use crate::util::string_hash::{
-    blizzard_string_hash, collect_constants, eval_const_expr, ConstValue,
-};
-
-const FIELD_NAME: u16 = Field::Name as u16;
-const FIELD_ARGS: u16 = Field::Args as u16;
-
-/// Info about a single foldable site in the file.
-struct StringHashSite {
-    /// Byte range to replace.
-    start: usize,
-    end: usize,
-    /// The evaluated hash value.
-    hash: i32,
-}
-
-/// Build a signature map: `func_name → [param_type, …]` from all known functions/natives.
-fn build_signature_map_for_uri(uri: &url::Url) -> HashMap<String, Vec<String>> {
-    let mut map = HashMap::new();
-    // Collect from the file itself and all connected files.
-    let component = crate::util::import_graph::IMPORT_GRAPH.visible_component(uri);
-    for file_uri in &component {
-        if let Some(entry) = peek_or_load(file_uri) {
-            let symbols = &entry.file_symbols;
-            for f in &symbols.functions {
-                let types: Vec<String> = f.params.iter().map(|p| p.type_name.clone()).collect();
-                map.insert(f.name.clone(), types);
-            }
-            for n in &symbols.natives {
-                let types: Vec<String> = n.params.iter().map(|p| p.type_name.clone()).collect();
-                map.insert(n.name.clone(), types);
-            }
-        }
-    }
-    // Also check the file itself in case it's not yet in the graph.
-    if let Some(entry) = PARSE_CACHE.get(uri) {
-        let symbols = &entry.value().file_symbols;
-        for f in &symbols.functions {
-            let types: Vec<String> = f.params.iter().map(|p| p.type_name.clone()).collect();
-            map.entry(f.name.clone()).or_insert(types);
-        }
-        for n in &symbols.natives {
-            let types: Vec<String> = n.params.iter().map(|p| p.type_name.clone()).collect();
-            map.entry(n.name.clone()).or_insert(types);
-        }
-    }
-    map
-}
-
-/// Compute code actions for folding `StringHash(expr)` → integer constant
-/// and for replacing string arguments in integer parameter positions.
-fn compute_string_hash_fold(params: &CodeActionParams) -> Vec<CodeAction> {
-    let uri = &params.uri;
-    let rope = match ROPE_MAP.get(uri) {
-        Some(r) => r,
-        None => return vec![],
-    };
-    let tree = match TREE_MAP.get(uri) {
-        Some(t) => t,
-        None => return vec![],
-    };
-
-    // Collect constant values from globals in the file text.
-    let text = rope.to_string();
-    let const_lines: Vec<String> = text.lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| l.starts_with("constant "))
-        .collect();
-    let constants = collect_constants(&const_lines);
-
-    // Build function signature map.
-    let signatures = build_signature_map_for_uri(uri);
-
-    // Walk the tree and collect all foldable sites.
-    let root = tree.root_node();
-    let mut sites: Vec<StringHashSite> = Vec::new();
-    collect_string_hash_sites(&root, &text, &constants, &signatures, &mut sites);
-
-    if sites.is_empty() {
-        return vec![];
-    }
-
-    let mut actions = Vec::new();
-
-    // Find the site under the cursor.
-    let cursor_byte = rope.offset_of_line(params.range.start.line) + params.range.start.character;
-    if let Some(site) = sites.iter().find(|s| cursor_byte >= s.start && cursor_byte <= s.end) {
-        let range = Range::from_byte_offsets(&rope, site.start, site.end);
-        let mut changes = HashMap::new();
-        changes.insert(uri.clone(), vec![TextEdit {
-            range,
-            new_text: site.hash.to_string(),
-        }]);
-        actions.push(CodeAction {
-            title: crate::util::i18n::fold_string_hash().to_string(),
-            kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
-            diagnostics: None,
-            edit: Some(WorkspaceEdit { changes: Some(changes) }),
-            command: None,
-        });
-    }
-
-    // File-wide: fold all sites — only when the cursor is on a site
-    // (single action was added) and there are more sites in the file.
-    if sites.len() >= 2 && !actions.is_empty() {
-        let edits: Vec<TextEdit> = sites.iter().map(|s| {
-            TextEdit {
-                range: Range::from_byte_offsets(&rope, s.start, s.end),
-                new_text: s.hash.to_string(),
-            }
-        }).collect();
-        let mut changes = HashMap::new();
-        changes.insert(uri.clone(), edits);
-        actions.push(CodeAction {
-            title: crate::util::i18n::fold_string_hash_all().to_string(),
-            kind: Some(CODE_ACTION_KIND_REFACTOR.into()),
-            diagnostics: None,
-            edit: Some(WorkspaceEdit { changes: Some(changes) }),
-            command: None,
-        });
-    }
-
-    actions
-}
-
-/// Recursively walk the tree and collect foldable sites:
-/// 1. `StringHash(expr)` calls where the argument evaluates to a string
-/// 2. String expressions passed to integer parameter positions
-fn collect_string_hash_sites(
-    node: &tree_sitter::Node,
-    source: &str,
-    constants: &std::collections::HashMap<String, ConstValue>,
-    signatures: &HashMap<String, Vec<String>>,
-    sites: &mut Vec<StringHashSite>,
-) {
-    if let Ok(Kind::FunctionCall) = Kind::try_from(node.kind_id()) {
-        if let Some(name_node) = node.child_by_field_id(FIELD_NAME) {
-            let name = &source[name_node.start_byte()..name_node.end_byte()];
-
-            // Case 1: StringHash(expr) — fold the entire call.
-            if name == "StringHash" {
-                if let Some(args_node) = node.child_by_field_id(FIELD_ARGS) {
-                    let mut arg_text = None;
-                    for i in 0..args_node.child_count() {
-                        if let Some(child) = args_node.child(i as u32) {
-                            if let Ok(Kind::Expr) = Kind::try_from(child.kind_id()) {
-                                arg_text = Some(&source[child.start_byte()..child.end_byte()]);
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(expr) = arg_text {
-                        if let Some(ConstValue::Str(s)) = eval_const_expr(expr, constants) {
-                            let hash = blizzard_string_hash(&s);
-                            sites.push(StringHashSite {
-                                start: node.start_byte(),
-                                end: node.end_byte(),
-                                hash,
-                            });
-                            return;
-                        }
-                    }
-                }
-            }
-
-            // Case 2: func(... string_arg ...) where param expects integer.
-            if let Some(param_types) = signatures.get(name) {
-                if let Some(args_node) = node.child_by_field_id(FIELD_ARGS) {
-                    let mut arg_index = 0usize;
-                    for i in 0..args_node.child_count() {
-                        if let Some(child) = args_node.child(i as u32) {
-                            if let Ok(Kind::Expr) = Kind::try_from(child.kind_id()) {
-                                if arg_index < param_types.len()
-                                    && param_types[arg_index] == "integer"
-                                {
-                                    let arg_text = &source[child.start_byte()..child.end_byte()];
-                                    if let Some(ConstValue::Str(s)) = eval_const_expr(arg_text, constants) {
-                                        let hash = blizzard_string_hash(&s);
-                                        sites.push(StringHashSite {
-                                            start: child.start_byte(),
-                                            end: child.end_byte(),
-                                            hash,
-                                        });
-                                    }
-                                }
-                                arg_index += 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Recurse into children.
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i as u32) {
-            collect_string_hash_sites(&child, source, constants, signatures, sites);
-        }
-    }
 }
 
 // ─── `else if` → `elseif` quick fixes ────────────────────────────────────────
@@ -2520,13 +1962,24 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         let ei_el = data.get("inner_endif_end_line").and_then(|v| v.as_u64());
 
         // ── Fix 1: replace `else if` → `elseif` ─────────────────────────
-        if let (Some(esl), Some(esc), Some(isl), Some(isc), Some(iel), Some(iec)) =
-            (else_start_line, else_start_char, if_start_line, if_start_char, if_end_line, if_end_char)
-        {
+        if let (Some(esl), Some(esc), Some(isl), Some(isc), Some(iel), Some(iec)) = (
+            else_start_line,
+            else_start_char,
+            if_start_line,
+            if_start_char,
+            if_end_line,
+            if_end_char,
+        ) {
             let mut edits = vec![TextEdit {
                 range: Range {
-                    start: Position { line: esl as usize, character: esc as usize },
-                    end: Position { line: iel as usize, character: iec as usize },
+                    start: Position {
+                        line: esl as usize,
+                        character: esc as usize,
+                    },
+                    end: Position {
+                        line: iel as usize,
+                        character: iec as usize,
+                    },
                 },
                 new_text: "elseif".into(),
             }];
@@ -2543,7 +1996,9 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                     let reindent_end = reindent_end as usize;
 
                     for line_num in reindent_start..=reindent_end {
-                        if line_num >= line_count { break; }
+                        if line_num >= line_count {
+                            break;
+                        }
                         let ls = rope.offset_of_line(line_num);
                         let le = rope.offset_of_line(line_num + 1).min(rope.len());
                         let text = rope.slice_to_cow(ls..le);
@@ -2551,15 +2006,22 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                         if trimmed.is_empty() {
                             continue;
                         }
-                        let leading_ws: usize = text.bytes()
+                        let leading_ws: usize = text
+                            .bytes()
                             .take_while(|b| *b == b' ' || *b == b'\t')
                             .count();
                         let to_strip = delta.min(leading_ws);
                         if to_strip > 0 {
                             edits.push(TextEdit {
                                 range: Range {
-                                    start: Position { line: line_num, character: 0 },
-                                    end: Position { line: line_num, character: to_strip },
+                                    start: Position {
+                                        line: line_num,
+                                        character: 0,
+                                    },
+                                    end: Position {
+                                        line: line_num,
+                                        character: to_strip,
+                                    },
                                 },
                                 new_text: String::new(),
                             });
@@ -2574,7 +2036,9 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::fix_else_if_to_elseif().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -2582,9 +2046,14 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         // ── Fix 2: add missing `endif` ───────────────────────────────────
         let insert_char = data.get("insert_endif_char").and_then(|v| v.as_u64());
 
-        if let (Some(esc), Some(esl), Some(isl), Some(isc), Some(iel), Some(ic)) =
-            (else_start_char, else_start_line, if_start_line, if_start_char, if_end_line, insert_char)
-        {
+        if let (Some(esc), Some(esl), Some(isl), Some(isc), Some(iel), Some(ic)) = (
+            else_start_char,
+            else_start_line,
+            if_start_line,
+            if_start_char,
+            if_end_line,
+            insert_char,
+        ) {
             let mut edits = Vec::new();
             let indent = " ".repeat(ic as usize);
 
@@ -2602,7 +2071,9 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                     let reindent_end = reindent_end as usize;
 
                     for line_num in reindent_start..=reindent_end {
-                        if line_num >= line_count { break; }
+                        if line_num >= line_count {
+                            break;
+                        }
                         let ls = rope.offset_of_line(line_num);
                         let le = if line_num + 1 < line_count {
                             rope.offset_of_line(line_num + 1)
@@ -2610,11 +2081,19 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                             rope.len()
                         };
                         let text = rope.slice_to_cow(ls..le);
-                        if text.trim().is_empty() { continue; }
+                        if text.trim().is_empty() {
+                            continue;
+                        }
                         edits.push(TextEdit {
                             range: Range {
-                                start: Position { line: line_num, character: 0 },
-                                end: Position { line: line_num, character: 0 },
+                                start: Position {
+                                    line: line_num,
+                                    character: 0,
+                                },
+                                end: Position {
+                                    line: line_num,
+                                    character: 0,
+                                },
                             },
                             new_text: indent_add.clone(),
                         });
@@ -2627,8 +2106,14 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
             if let (Some(ei_end_line), Some(ei_end_char)) = (ei_el, ei_ec) {
                 edits.push(TextEdit {
                     range: Range {
-                        start: Position { line: ei_end_line as usize, character: ei_end_char as usize },
-                        end: Position { line: ei_end_line as usize, character: ei_end_char as usize },
+                        start: Position {
+                            line: ei_end_line as usize,
+                            character: ei_end_char as usize,
+                        },
+                        end: Position {
+                            line: ei_end_line as usize,
+                            character: ei_end_char as usize,
+                        },
                     },
                     new_text: format!("\n{}endif", indent),
                 });
@@ -2638,8 +2123,14 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 if let Some(line) = insert_line {
                     edits.push(TextEdit {
                         range: Range {
-                            start: Position { line: line as usize, character: 0 },
-                            end: Position { line: line as usize, character: 0 },
+                            start: Position {
+                                line: line as usize,
+                                character: 0,
+                            },
+                            end: Position {
+                                line: line as usize,
+                                character: 0,
+                            },
                         },
                         new_text: format!("{}endif\n", indent),
                     });
@@ -2653,7 +2144,9 @@ fn compute_else_if_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                     title: crate::util::i18n::fix_add_endif().to_string(),
                     kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                     diagnostics: Some(vec![diag.clone()]),
-                    edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                    }),
                     command: None,
                 });
             }
@@ -2685,8 +2178,12 @@ fn compute_array_no_init_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
             Some(d) => d,
             None => continue,
         };
-        let start = data.get("array_no_init_remove_start").and_then(|v| v.as_u64());
-        let end = data.get("array_no_init_remove_end").and_then(|v| v.as_u64());
+        let start = data
+            .get("array_no_init_remove_start")
+            .and_then(|v| v.as_u64());
+        let end = data
+            .get("array_no_init_remove_end")
+            .and_then(|v| v.as_u64());
         if let (Some(start), Some(end), Some(rope)) = (start, end, &rope) {
             let edit = TextEdit {
                 range: Range::from_byte_offsets(rope, start as usize, end as usize),
@@ -2698,7 +2195,9 @@ fn compute_array_no_init_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
                 title: crate::util::i18n::array_no_init_fix().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -2742,7 +2241,9 @@ fn compute_array_set_no_index_fixes(params: &CodeActionParams) -> Vec<CodeAction
                 title: crate::util::i18n::array_set_no_index_fix().to_string(),
                 kind: Some(CODE_ACTION_KIND_QUICKFIX.into()),
                 diagnostics: Some(vec![diag.clone()]),
-                edit: Some(WorkspaceEdit { changes: Some(changes) }),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                }),
                 command: None,
             });
         }
@@ -2765,7 +2266,9 @@ fn compute_open_import_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
             continue;
         }
         let Some(data) = &diag.data else { continue };
-        let Some(open_uri) = data.get("open_uri").and_then(|v| v.as_str()) else { continue };
+        let Some(open_uri) = data.get("open_uri").and_then(|v| v.as_str()) else {
+            continue;
+        };
         if open_uri.is_empty() {
             continue;
         }
@@ -2786,4 +2289,3 @@ fn compute_open_import_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
 
     actions
 }
-

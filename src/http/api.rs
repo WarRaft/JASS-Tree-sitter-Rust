@@ -575,13 +575,126 @@ pub fn count_snap_diagnostics(snap: &crate::util::parse_cache::ParseSnapshot) ->
     (e, w, h, i)
 }
 
+fn count_diag_severity(
+    diagnostics: &[crate::http::diagnostic::Diagnostic],
+) -> (u32, u32, u32, u32) {
+    use crate::http::diagnostic::DiagnosticSeverity;
+    let (mut e, mut w, mut h, mut i) = (0u32, 0u32, 0u32, 0u32);
+    for d in diagnostics {
+        match d.severity {
+            Some(DiagnosticSeverity::Error) => e += 1,
+            Some(DiagnosticSeverity::Warning) => w += 1,
+            Some(DiagnosticSeverity::Hint) => h += 1,
+            Some(DiagnosticSeverity::Information) => i += 1,
+            None => {}
+        }
+    }
+    (e, w, h, i)
+}
+
+fn build_as_imported_symbols_for_isolated(
+    uri: &Url,
+    visible_entries: &[crate::util::parse::GlobalEntry],
+) -> Vec<crate::lng::ass::cursor::ImportedSymbol> {
+    use crate::http::ref_map::DeclKey;
+    use crate::lng::ass::cursor::{ImportedKind, ImportedSymbol};
+    use crate::util::parse::SymbolNS;
+
+    let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
+    for entry in visible_entries {
+        if &entry.uri == uri {
+            continue;
+        }
+        let is_jass_file = !crate::util::open::is_as_uri(&entry.uri);
+        let sym_kind = match entry.ns {
+            SymbolNS::Func => ImportedKind::Func,
+            SymbolNS::Var => ImportedKind::Var,
+        };
+        let origin_decl_key = Some(entry.decl_key as DeclKey);
+
+        if is_jass_file {
+            imported_symbols.push(ImportedSymbol {
+                origin_uri: entry.uri.clone(),
+                name: entry.name.clone(),
+                kind: sym_kind,
+                origin_decl_key,
+                return_type: entry.return_type.clone(),
+                type_name: entry.type_name.clone(),
+                namespace: "Jass".to_string(),
+            });
+            imported_symbols.push(ImportedSymbol {
+                origin_uri: entry.uri.clone(),
+                name: entry.name.clone(),
+                kind: sym_kind,
+                origin_decl_key,
+                return_type: entry.return_type.clone(),
+                type_name: entry.type_name.clone(),
+                namespace: String::new(),
+            });
+        } else {
+            imported_symbols.push(ImportedSymbol {
+                origin_uri: entry.uri.clone(),
+                name: entry.name.clone(),
+                kind: sym_kind,
+                origin_decl_key,
+                return_type: entry.return_type.clone(),
+                type_name: entry.type_name.clone(),
+                namespace: entry.namespace.clone(),
+            });
+        }
+    }
+    imported_symbols
+}
+
+fn collect_jass_import_diagnostics_for_isolated(
+    uri: &Url,
+    ast: &crate::lng::jass::ast::Ast<'_>,
+    src: &[u8],
+    rope: &lapce_xi_rope::Rope,
+) -> Vec<crate::http::diagnostic::Diagnostic> {
+    let mut imports = std::collections::HashSet::new();
+    let mut frozen_imports = std::collections::HashSet::new();
+    let mut links = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut ujapi_hints = Vec::new();
+
+    for item in &ast.items {
+        if let crate::lng::jass::ast::Statement::Import(imp) = item {
+            crate::util::parse::resolve_import_directive(
+                uri,
+                imp,
+                src,
+                rope,
+                &mut imports,
+                &mut frozen_imports,
+                &mut links,
+                &mut diagnostics,
+            );
+        }
+        if let crate::lng::jass::ast::Statement::UjapiImport(ud) = item {
+            crate::util::parse::resolve_ujapi_directive(
+                uri,
+                ud,
+                src,
+                rope,
+                &mut imports,
+                &mut frozen_imports,
+                &mut links,
+                &mut diagnostics,
+                &mut ujapi_hints,
+            );
+        }
+    }
+
+    diagnostics
+}
+
 /// Isolated diagnostic count for a closed file.
 ///
 /// Reads the file from disk, parses with tree-sitter, runs cursor walk
 /// using symbols from PARSE_CACHE/file_cache (read-only), counts diagnostics.
 /// Does NOT modify PARSE_CACHE or IMPORT_GRAPH.
 pub fn count_diagnostics_isolated(uri: &Url) -> (u32, u32, u32, u32) {
-    use crate::http::diagnostic::DiagnosticSeverity;
     use crate::util::import_graph::IMPORT_GRAPH;
     use crate::util::parse::all_visible_entries;
 
@@ -621,55 +734,13 @@ pub fn count_diagnostics_isolated(uri: &Url) -> (u32, u32, u32, u32) {
     let diagnostics = if is_as {
         // ── AngelScript ──
         use crate::lng::ass::ast::{build_ast, rewrite_directives};
-        use crate::lng::ass::cursor::{Cursor, ImportedSymbol, ImportedKind};
-        use crate::util::parse::SymbolNS;
-        use crate::http::ref_map::DeclKey;
+        use crate::lng::ass::cursor::Cursor;
 
         let mut ast = build_ast(tree.root_node());
         let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
         rewrite_directives(&mut ast, &src);
 
-        let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
-        for entry in &visible_entries {
-            if &entry.uri == uri { continue; }
-            let is_jass_file = !crate::util::open::is_as_uri(&entry.uri);
-            let sym_kind = match entry.ns {
-                SymbolNS::Func => ImportedKind::Func,
-                SymbolNS::Var => ImportedKind::Var,
-            };
-            let origin_decl_key = Some(entry.decl_key as DeclKey);
-
-            if is_jass_file {
-                imported_symbols.push(ImportedSymbol {
-                    origin_uri: entry.uri.clone(),
-                    name: entry.name.clone(),
-                    kind: sym_kind,
-                    origin_decl_key,
-                    return_type: entry.return_type.clone(),
-                    type_name: entry.type_name.clone(),
-                    namespace: "Jass".to_string(),
-                });
-                imported_symbols.push(ImportedSymbol {
-                    origin_uri: entry.uri.clone(),
-                    name: entry.name.clone(),
-                    kind: sym_kind,
-                    origin_decl_key,
-                    return_type: entry.return_type.clone(),
-                    type_name: entry.type_name.clone(),
-                    namespace: String::new(),
-                });
-            } else {
-                imported_symbols.push(ImportedSymbol {
-                    origin_uri: entry.uri.clone(),
-                    name: entry.name.clone(),
-                    kind: sym_kind,
-                    origin_decl_key,
-                    return_type: entry.return_type.clone(),
-                    type_name: entry.type_name.clone(),
-                    namespace: entry.namespace.clone(),
-                });
-            }
-        }
+        let imported_symbols = build_as_imported_symbols_for_isolated(uri, &visible_entries);
 
         let cursor = Cursor::walk(&ast, &rope, &imported_symbols);
         cursor.diagnostics
@@ -682,21 +753,19 @@ pub fn count_diagnostics_isolated(uri: &Url) -> (u32, u32, u32, u32) {
         let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
         rewrite_imports(&mut ast, &src);
 
-        let cursor = Cursor::walk(&ast, &rope, &[]);
-        cursor.diagnostics
+        let imported_symbols = crate::util::parse::jass_imported_symbols_from_entries(
+            uri,
+            &visible_entries,
+            false,
+        );
+        let mut diagnostics = collect_jass_import_diagnostics_for_isolated(uri, &ast, &src, &rope);
+
+        let cursor = Cursor::walk(&ast, &rope, &imported_symbols);
+        diagnostics.extend(cursor.diagnostics);
+        diagnostics
     };
 
-    let (mut e, mut w, mut h, mut i) = (0u32, 0u32, 0u32, 0u32);
-    for d in &diagnostics {
-        match d.severity {
-            Some(DiagnosticSeverity::Error) => e += 1,
-            Some(DiagnosticSeverity::Warning) => w += 1,
-            Some(DiagnosticSeverity::Hint) => h += 1,
-            Some(DiagnosticSeverity::Information) => i += 1,
-            None => {}
-        }
-    }
-    (e, w, h, i)
+    count_diag_severity(&diagnostics)
 }
 
 

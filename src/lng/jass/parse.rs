@@ -1,16 +1,17 @@
-use crate::lng::jass::ast::{Statement, annotate_comptime_values, build_ast, rewrite_imports};
-use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
+use crate::http::document_link::DocumentLink;
+use crate::http::inlay_hint::InlayHint;
+use crate::lng::jass::ast::{Ast, Statement, annotate_comptime_values, build_ast, rewrite_imports};
+use crate::lng::jass::cursor::{Cursor, ImportedSymbol};
 use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::http::ref_map::{DeclKey, RefMap, build_ref_map};
 use crate::util::file_cache;
 use crate::util::parse_cache::{
-    PARSE_CACHE, ParseSnapshot, exports_changed, new_cancel_token, register_pending,
+    PARSE_CACHE, ParseSnapshot, exports_changed, new_cancel_token,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
-    ParseFn, cascade_parse_and_notify, ensure_file_symbols,
-    find_decl_key_by_name, resolve_import_directive,
-    all_visible_entries, SymbolNS,
+    ParseFn, cascade_parse_and_notify, ensure_visible_component_loaded,
+    resolve_import_directive, all_visible_entries,
 };
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
@@ -24,6 +25,34 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
+struct JassAnalysisResult {
+    previous_snapshot: Option<Arc<ParseSnapshot>>,
+    new_snapshot: Arc<ParseSnapshot>,
+    old_component: HashSet<Url>,
+    new_component: HashSet<Url>,
+    hash: [u8; 32],
+}
+
+struct JassImportResolution {
+    imports: HashSet<Url>,
+    frozen_imports: HashSet<Url>,
+    links: Vec<DocumentLink>,
+    import_diagnostics: Vec<Diagnostic>,
+    ujapi_hints: Vec<InlayHint>,
+}
+
+struct JassVisibleScopePrep {
+    old_component: HashSet<Url>,
+    new_component: HashSet<Url>,
+    imported_symbols: Vec<ImportedSymbol>,
+}
+
+struct JassPreparedAnalysis<'tree> {
+    ast: Ast<'tree>,
+    import_resolution: JassImportResolution,
+    visible_scope: JassVisibleScopePrep,
+}
+
 // ─── Main parse entry point ─────────────────────────────────────────────────
 
 /// Parse and store all LSP data for `uri`.
@@ -35,7 +64,6 @@ use url::Url;
 pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     let started_at = Instant::now();
     crate::debug_log!("jass::parse START uri={}", uri.path());
-    let token = new_cancel_token(uri);
 
     // ── Clone owned data from DashMap guards and drop the guards immediately ──
     let rope = ROPE_MAP
@@ -47,34 +75,7 @@ pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> 
         .map(|t| t.value().clone())
         .ok_or("no tree")?;
 
-    let uri_owned = uri.clone();
-    let cancel = token.clone();
-
-    crate::debug_log!("jass::parse spawning blocking task uri={}", uri.path());
-    // ── Run CPU-heavy parse on the blocking thread pool ──
-    let handle = tokio::task::spawn_blocking(move || {
-        crate::debug_log!("jass::_parse blocking task START uri={}", uri_owned.path());
-        let result = _parse(&uri_owned, &rope, &tree, &cancel);
-        crate::debug_log!("jass::_parse blocking task END uri={}", uri_owned.path());
-        result
-    });
-
-    // ── Race the blocking work against cancellation ──
-    crate::debug_log!("jass::parse waiting for blocking result uri={}", uri.path());
-    let result = tokio::select! {
-        res = handle => {
-            crate::debug_log!(
-                "jass::parse blocking result arrived uri={}, elapsed_ms={}",
-                uri.path(),
-                started_at.elapsed().as_millis()
-            );
-            res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?
-        },
-        _ = token.cancelled() => {
-            crate::debug_log!("jass::parse cancelled");
-            Ok(vec![])
-        },
-    };
+    let result = run_parse_task(uri, rope, tree).await;
     crate::debug_log!(
         "jass::parse END uri={}, result={}, elapsed_ms={}",
         uri.path(),
@@ -82,6 +83,33 @@ pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> 
         started_at.elapsed().as_millis()
     );
     result
+}
+
+async fn run_parse_task(
+    uri: &Url,
+    rope: Rope,
+    tree: tree_sitter::Tree,
+) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    let token = new_cancel_token(uri);
+    let uri_owned = uri.clone();
+    let cancel = token.clone();
+
+    crate::debug_log!("jass::parse spawning blocking task uri={}", uri.path());
+    let handle = tokio::task::spawn_blocking(move || {
+        crate::debug_log!("jass::_parse blocking task START uri={}", uri_owned.path());
+        let result = _parse(&uri_owned, &rope, &tree, &cancel);
+        crate::debug_log!("jass::_parse blocking task END uri={}", uri_owned.path());
+        result
+    });
+
+    crate::debug_log!("jass::parse waiting for blocking result uri={}", uri.path());
+    tokio::select! {
+        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
+        _ = token.cancelled() => {
+            crate::debug_log!("jass::parse cancelled uri={}", uri.path());
+            Ok(vec![])
+        },
+    }
 }
 
 /// Parse + cascade re-parse + push diagnostics + refresh all open editors.
@@ -159,36 +187,96 @@ fn _parse(
     cancel: &CancellationToken,
 ) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
     let started_at = Instant::now();
-    crate::debug_log!("jass::_parse internal START uri={}", uri.path());
-    let root = tree.root_node();
-
-    // 1. Build AST from CST
-    crate::debug_log!("jass::_parse building AST uri={}", uri.path());
-    let mut ast = build_ast(root);
-    crate::debug_log!(
-        "jass::_parse AST built uri={}, item_count={}, elapsed_ms={}",
-        uri.path(),
-        ast.items.len(),
-        started_at.elapsed().as_millis()
-    );
-
-    // ── Cancellation checkpoint ──
-    if cancel.is_cancelled() {
-        crate::debug_log!("jass::_parse cancelled at checkpoint 1");
+    let Some(prepared) = _prepare_jass_analysis(uri, rope, tree, cancel)? else {
         return Ok(vec![]);
+    };
+
+    let Some(analysis) = _analyze_jass(uri, rope, prepared, cancel)? else {
+        return Ok(vec![]);
+    };
+
+    let JassAnalysisResult {
+        previous_snapshot,
+        new_snapshot,
+        old_component,
+        new_component: component,
+        hash,
+    } = analysis;
+
+    // Persist to unified disk cache.
+    if let Some(meta) = file_cache::FileMeta::from_uri(uri) {
+        file_cache::store(
+            uri,
+            meta,
+            hash,
+            &new_snapshot.file_symbols,
+            &new_snapshot.ref_map,
+            &new_snapshot.func_decl_keys,
+            &new_snapshot.var_decl_keys,
+            &new_snapshot.arg_decl_keys,
+        );
     }
 
-    // 2. Rewrite leading `//import` / `//import!` comments into Import nodes
-    crate::debug_log!("jass::_parse rewriting imports uri={}", uri.path());
-    let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
-    rewrite_imports(&mut ast, &src);
+    // ── Atomic store — single source of truth ──
+    PARSE_CACHE.insert(uri.clone(), new_snapshot.clone());
 
-    // 2.1 Compute compile-time values and store them in AST.
-    annotate_comptime_values(&mut ast, &src);
+    // ── Persist entry-point status so it survives server restarts ──
+    IMPORT_GRAPH.mark_entry(uri, new_snapshot.file_symbols.is_entry);
 
-    // 3. Extract resolved import URLs, document links, and diagnostics
-    //    for non-existent import paths.
-    crate::debug_log!("jass::_parse resolving imports uri={}", uri.path());
+    // ── Recompute entry-point cache after PARSE_CACHE update ──
+    IMPORT_GRAPH.recompute_entry_cache();
+
+    // 11. Spawn builder process for the entry point (if any).
+    //
+    // When a file in an import tree is parsed, we find its entry point.
+    // The builder process runs in the background to collect multi-file
+    // diagnostics (unused functions, type mismatches across files, etc.).
+    //
+    // If a new parse starts before the builder finishes, the old builder
+    // is cancelled and a new one is spawned.
+    if let Some(entry_uri) = crate::lng::jass::builder::collect::find_entry_point(uri) {
+        builder_process::cancel_builder_for_entry(&entry_uri);
+
+        let config = builder_process::BuilderConfig {
+            mode: crate::lng::jass::builder::PipelineMode::Diagnostics,
+            opts: crate::lng::jass::builder::collect::build_opt_tags(
+                &new_snapshot.file_symbols.file_settings,
+            ),
+        };
+        builder_process::spawn_builder_task(&entry_uri, config);
+    }
+
+    // 10. Export diff — decide on cascade.
+    let did_change = exports_changed(previous_snapshot.as_deref(), &new_snapshot);
+
+    let cascade = if did_change || old_component != component {
+        let mut all_affected = old_component;
+        all_affected.extend(component.into_iter());
+        all_affected
+            .into_iter()
+            .filter(|peer| peer != uri)
+            .collect()
+    } else {
+        vec![]
+    };
+
+    crate::debug_log!(
+        "jass::_parse internal END uri={}, diagnostics={}, cascade_count={}, exports_changed={}, total_elapsed_ms={}",
+        uri.path(),
+        new_snapshot.diagnostics.len(),
+        cascade.len(),
+        did_change,
+        started_at.elapsed().as_millis()
+    );
+    Ok(cascade)
+}
+
+fn collect_jass_import_resolution(
+    uri: &Url,
+    ast: &Ast<'_>,
+    src: &[u8],
+    rope: &Rope,
+) -> JassImportResolution {
     let mut imports = HashSet::new();
     let mut frozen_imports = HashSet::new();
     let mut links = Vec::new();
@@ -222,168 +310,213 @@ fn _parse(
             );
         }
     }
+
+    JassImportResolution {
+        imports,
+        frozen_imports,
+        links,
+        import_diagnostics,
+        ujapi_hints,
+    }
+}
+
+fn build_jass_imported_symbols(uri: &Url, component: &HashSet<Url>) -> Vec<ImportedSymbol> {
+    // O(1)-per-name: get all symbols from the connected component.
+    let visible_entries = all_visible_entries(component);
     crate::debug_log!(
-        "jass::_parse imports resolved uri={}, imports={}, frozen_imports={}, links={}, import_diagnostics={}, ujapi_hints={}, elapsed_ms={}",
+        "jass::_parse visible entries uri={}, component_size={}, visible_entries={}",
         uri.path(),
-        imports.len(),
-        frozen_imports.len(),
-        links.len(),
-        import_diagnostics.len(),
-        ujapi_hints.len(),
-        started_at.elapsed().as_millis()
+        component.len(),
+        visible_entries.len()
     );
 
-    // ── Cancellation checkpoint ──
-    if cancel.is_cancelled() {
-        return Ok(vec![]);
+    let imported_symbols = crate::util::parse::jass_imported_symbols_from_entries(
+        uri,
+        &visible_entries,
+        true,
+    );
+
+    crate::debug_log!(
+        "jass::_parse imported symbols built uri={}, imported_symbols={}",
+        uri.path(),
+        imported_symbols.len()
+    );
+
+    imported_symbols
+}
+
+fn collect_jass_call_graph_diagnostics(
+    uri: &Url,
+    file_symbols: crate::lng::symbol::FileSymbols,
+    func_decl_keys: HashSet<DeclKey>,
+    var_decl_keys: HashSet<DeclKey>,
+    arg_decl_keys: HashSet<DeclKey>,
+) -> (
+    Option<Arc<ParseSnapshot>>,
+    crate::util::call_graph::FuncDiagnostics,
+) {
+    let previous_snapshot = PARSE_CACHE.get(uri).map(|e| Arc::clone(e.value()));
+
+    let preliminary = Arc::new(ParseSnapshot {
+        folding: Vec::new(),
+        symbols: Vec::new(),
+        semantic: std::sync::RwLock::new(Default::default()),
+        diagnostics: Vec::new(),
+        links: Vec::new(),
+        ref_map: RefMap::default(),
+        file_symbols,
+        _type_map: Default::default(),
+        type_hints: Vec::new(),
+        ujapi_hints: Vec::new(),
+        func_decl_keys,
+        var_decl_keys,
+        arg_decl_keys,
+        colors: Vec::new(),
+    });
+    PARSE_CACHE.insert(uri.clone(), preliminary);
+
+    let diagnostics = crate::util::call_graph::diagnose_functions(uri);
+
+    match previous_snapshot.as_ref() {
+        Some(snap) => {
+            PARSE_CACHE.insert(uri.clone(), Arc::clone(snap));
+        }
+        None => {
+            PARSE_CACHE.remove(uri);
+        }
     }
 
+    (previous_snapshot, diagnostics)
+}
+
+fn prepare_jass_visible_scope(
+    uri: &Url,
+    imports: &HashSet<Url>,
+    frozen_imports: &HashSet<Url>,
+) -> JassVisibleScopePrep {
     // Capture the old visible component BEFORE updating the graph,
     // so we can detect peers that lost visibility after import removal.
     let old_component = IMPORT_GRAPH.visible_component(uri);
 
-
     // Register frozen targets eagerly — before visible_component — so
     // tree_for_uri can prune incoming edges even when PARSE_CACHE doesn't
     // have this file's snapshot yet (first parse / cold start).
-    IMPORT_GRAPH.mark_frozen(&frozen_imports);
+    IMPORT_GRAPH.mark_frozen(frozen_imports);
 
     IMPORT_GRAPH.update(uri, imports.clone());
-
 
     // Refresh entry cache so that visible_component reads the updated graph.
     IMPORT_GRAPH.recompute_entry_cache();
 
-    // 4. Gather symbols from the **visible component** (entry-aware scope).
-    let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
-    let mut component: HashSet<Url>;
-    {
-        component = IMPORT_GRAPH.visible_component(uri);
-        crate::debug_log!(
-            "jass::_parse visible component initial uri={}, component_size={}",
-            uri.path(),
-            component.len()
-        );
+    let mut component = IMPORT_GRAPH.visible_component(uri);
+    crate::debug_log!(
+        "jass::_parse visible component initial uri={}, component_size={}",
+        uri.path(),
+        component.len()
+    );
 
-        // Iteratively ensure every peer is in the scope resolver.
-        // `ensure_file_symbols` may register new import edges in the graph
-        // (for transitive imports), so we re-check `visible_component` until
-        // no new peers appear.
-        let mut ensured: HashSet<Url> = HashSet::new();
-        ensured.insert(uri.clone());
-        const MAX_ROUNDS: usize = 64;
+    component = ensure_visible_component_loaded(uri, component, Some(uri));
 
-        for round in 0..MAX_ROUNDS {
-            crate::debug_log!(
-                "jass::_parse ensure round uri={}, round={}, component_size={}, ensured={}",
-                uri.path(),
-                round + 1,
-                component.len(),
-                ensured.len()
-            );
-            let mut discovered_new = false;
-            for peer_uri in component.iter().cloned().collect::<Vec<_>>() {
-                if !ensured.insert(peer_uri.clone()) {
-                    continue;
-                }
-                crate::debug_log!(
-                    "jass::_parse ensure peer uri={}, peer_uri={}",
-                    uri.path(),
-                    peer_uri.path()
-                );
-                let ts_lang = if crate::util::open::is_as_uri(&peer_uri) {
-                    tree_sitter_as::language().into()
-                } else {
-                    tree_sitter_jass::language().into()
-                };
-                let ensured_ok = ensure_file_symbols(&peer_uri, ts_lang);
-                crate::debug_log!(
-                    "jass::_parse ensure peer result uri={}, peer_uri={}, ok={}",
-                    uri.path(),
-                    peer_uri.path(),
-                    ensured_ok
-                );
-                if !ensured_ok {
-                    // Dependency not available yet — register so that when it
-                    // finishes parsing we get a cascade re-parse.
-                    register_pending(&peer_uri, uri);
-                    log::info!(
-                        "pending import: {} waits for {}",
-                        uri.path(),
-                        peer_uri.path()
-                    );
-                }
-                discovered_new = true;
-            }
-            if !discovered_new {
-                break;
-            }
-            // Recompute after new edges may have been added by ensure_file_symbols.
-            IMPORT_GRAPH.recompute_entry_cache();
-            let new_component = IMPORT_GRAPH.visible_component(uri);
-            if new_component == component {
-                break;
-            }
-            component = new_component;
-        }
+    let imported_symbols = build_jass_imported_symbols(uri, &component);
 
-        // O(1)-per-name: get all symbols from the connected component.
-        let visible_entries = all_visible_entries(&component);
-        crate::debug_log!(
-            "jass::_parse visible entries uri={}, component_size={}, visible_entries={}",
-            uri.path(),
-            component.len(),
-            visible_entries.len()
-        );
-
-        // Cache snapshots by URI to avoid repeated redb reads.
-        let mut snapshot_cache: std::collections::HashMap<Url, Option<std::sync::Arc<crate::util::parse_cache::ParseSnapshot>>> = std::collections::HashMap::new();
-
-        for entry in &visible_entries {
-            // Skip entries from the file being parsed — cursor builds them locally.
-            if &entry.uri == uri {
-                continue;
-            }
-            // Try to get the precise DeclKey from the snapshot (in-memory
-            // or lazy-loaded from disk cache); fall back to the scope
-            // resolver's `decl_key` which is always available.
-            let origin_snapshot = snapshot_cache
-                .entry(entry.uri.clone())
-                .or_insert_with(|| crate::util::parse_cache::peek_or_load(&entry.uri));
-            let origin_decl_key = origin_snapshot
-                .as_ref()
-                .and_then(|snap| {
-                    find_decl_key_by_name(
-                        &snap.ref_map,
-                        &entry.name,
-                        entry.ns,
-                        &snap.func_decl_keys,
-                    )
-                })
-                .or(Some(entry.decl_key as DeclKey));
-
-            imported_symbols.push(ImportedSymbol {
-                origin_uri: entry.uri.clone(),
-                name: entry.name.clone(),
-                kind: match entry.ns {
-                    SymbolNS::Func => ImportedKind::Func,
-                    SymbolNS::Var => ImportedKind::Var,
-                },
-                origin_decl_key,
-                return_type: entry.return_type.clone(),
-                type_name: entry.type_name.clone(),
-            });
-        }
-        crate::debug_log!(
-            "jass::_parse imported symbols built uri={}, imported_symbols={}",
-            uri.path(),
-            imported_symbols.len()
-        );
+    JassVisibleScopePrep {
+        old_component,
+        new_component: component,
+        imported_symbols,
     }
+}
+
+fn _prepare_jass_analysis<'tree>(
+    uri: &Url,
+    rope: &Rope,
+    tree: &'tree tree_sitter::Tree,
+    cancel: &CancellationToken,
+) -> Result<Option<JassPreparedAnalysis<'tree>>, Box<dyn Error + Send + Sync>> {
+    let started_at = Instant::now();
+    crate::debug_log!("jass::_parse internal START uri={}", uri.path());
+    let root = tree.root_node();
+
+    crate::debug_log!("jass::_parse building AST uri={}", uri.path());
+    let mut ast = build_ast(root);
+    crate::debug_log!(
+        "jass::_parse AST built uri={}, item_count={}, elapsed_ms={}",
+        uri.path(),
+        ast.items.len(),
+        started_at.elapsed().as_millis()
+    );
+
+    if cancel.is_cancelled() {
+        crate::debug_log!("jass::_parse cancelled at checkpoint 1");
+        return Ok(None);
+    }
+
+    crate::debug_log!("jass::_parse rewriting imports uri={}", uri.path());
+    let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
+    rewrite_imports(&mut ast, &src);
+    annotate_comptime_values(&mut ast, &src);
+
+    crate::debug_log!("jass::_parse resolving imports uri={}", uri.path());
+    let import_resolution = collect_jass_import_resolution(uri, &ast, &src, rope);
+    crate::debug_log!(
+        "jass::_parse imports resolved uri={}, imports={}, frozen_imports={}, links={}, import_diagnostics={}, ujapi_hints={}, elapsed_ms={}",
+        uri.path(),
+        import_resolution.imports.len(),
+        import_resolution.frozen_imports.len(),
+        import_resolution.links.len(),
+        import_resolution.import_diagnostics.len(),
+        import_resolution.ujapi_hints.len(),
+        started_at.elapsed().as_millis()
+    );
+
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
+
+    let visible_scope = prepare_jass_visible_scope(
+        uri,
+        &import_resolution.imports,
+        &import_resolution.frozen_imports,
+    );
+
+    if cancel.is_cancelled() {
+        return Ok(None);
+    }
+
+    Ok(Some(JassPreparedAnalysis {
+        ast,
+        import_resolution,
+        visible_scope,
+    }))
+}
+
+fn _analyze_jass(
+    uri: &Url,
+    rope: &Rope,
+    prepared: JassPreparedAnalysis<'_>,
+    cancel: &CancellationToken,
+) -> Result<Option<JassAnalysisResult>, Box<dyn Error + Send + Sync>> {
+    let started_at = Instant::now();
+    let JassPreparedAnalysis {
+        ast,
+        import_resolution,
+        visible_scope,
+    } = prepared;
+    let JassImportResolution {
+        frozen_imports,
+        links,
+        import_diagnostics,
+        ujapi_hints,
+        ..
+    } = import_resolution;
+    let JassVisibleScopePrep {
+        old_component,
+        new_component: component,
+        imported_symbols,
+    } = visible_scope;
 
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() {
-        return Ok(vec![]);
+        return Ok(None);
     }
 
     // 5. Single-pass cursor: diagnostics + symbols + folding + id_roles + scopes
@@ -423,36 +556,17 @@ fn _parse(
     let hash = file_cache::content_hash(rope);
 
     // 8. Call-graph diagnostics: unused functions & cyclic calls.
-    //    We need PARSE_CACHE populated for the current file, so write a
-    //    preliminary snapshot first (it will be replaced below).
-    //
-    // IMPORTANT: capture the true old snapshot BEFORE inserting the preliminary.
-    // If cancellation fires at the final checkpoint we restore it so that
-    // PARSE_CACHE is never left with the empty preliminary (which would cause
-    // the SemanticTokens handler to return an empty token list).
-    let true_old_snapshot: Option<Arc<ParseSnapshot>> =
-        PARSE_CACHE.get(uri).map(|e| Arc::clone(e.value()));
-
-    let preliminary = Arc::new(ParseSnapshot {
-        folding: Vec::new(),
-        symbols: Vec::new(),
-        semantic: std::sync::RwLock::new(Default::default()),
-        diagnostics: Vec::new(),
-        links: Vec::new(),
-        ref_map: RefMap::default(),
-        file_symbols: cursor.file_symbols.clone(),
-        _type_map: Default::default(),
-        type_hints: Vec::new(),
-        ujapi_hints: Vec::new(),
-        func_decl_keys: func_decl_keys.clone(),
-        var_decl_keys: var_decl_keys.clone(),
-        arg_decl_keys: arg_decl_keys.clone(),
-        colors: Vec::new(),
-    });
-    PARSE_CACHE.insert(uri.clone(), preliminary);
+    //    `diagnose_functions` still reads the current file via `PARSE_CACHE`,
+    //    so a small compatibility bridge publishes a temporary preliminary
+    //    snapshot, runs the analysis, and restores the previous cache state.
+    let (true_old_snapshot, func_diag) = collect_jass_call_graph_diagnostics(
+        uri,
+        cursor.file_symbols.clone(),
+        func_decl_keys.clone(),
+        var_decl_keys.clone(),
+        arg_decl_keys.clone(),
+    );
     {
-        use crate::util::call_graph::diagnose_functions;
-        let func_diag = diagnose_functions(uri);
         crate::debug_log!(
             "jass::_parse call graph diagnostics uri={}, unused={}, in_cycle={}, inlinable={}",
             uri.path(),
@@ -614,22 +728,10 @@ fn _parse(
 
     // ── FINAL cancellation check — don't store stale results ──
     if cancel.is_cancelled() {
-        // Restore the pre-preliminary snapshot so the SemanticTokens handler
-        // never reads an empty placeholder.
-        match true_old_snapshot {
-            Some(snap) => {
-                PARSE_CACHE.insert(uri.clone(), snap);
-            }
-            None => {
-                PARSE_CACHE.remove(uri);
-            }
-        }
-        return Ok(vec![]);
+        return Ok(None);
     }
 
-    // 9. Build snapshot and store atomically.
-    let old_snapshot = PARSE_CACHE.get(uri).map(|e| Arc::clone(e.value()));
-
+    // 9. Build snapshot candidate.
     let new_snapshot = Arc::new(ParseSnapshot {
         folding: cursor.folding,
         symbols: cursor.symbols,
@@ -647,72 +749,22 @@ fn _parse(
         colors: cursor.colors,
     });
 
-    // Persist to unified disk cache.
-    if let Some(meta) = file_cache::FileMeta::from_uri(uri) {
-        file_cache::store(
-            uri,
-            meta,
-            hash,
-            &new_snapshot.file_symbols,
-            &new_snapshot.ref_map,
-            &new_snapshot.func_decl_keys,
-            &new_snapshot.var_decl_keys,
-            &new_snapshot.arg_decl_keys,
-        );
-    }
-
-    // ── Atomic store — single source of truth ──
-    PARSE_CACHE.insert(uri.clone(), new_snapshot.clone());
-
-    // ── Persist entry-point status so it survives server restarts ──
-    IMPORT_GRAPH.mark_entry(uri, new_snapshot.file_symbols.is_entry);
-
-    // ── Recompute entry-point cache after PARSE_CACHE update ──
-    IMPORT_GRAPH.recompute_entry_cache();
-
-    // 11. Spawn builder process for the entry point (if any).
-    //
-    // When a file in an import tree is parsed, we find its entry point.
-    // The builder process runs in the background to collect multi-file
-    // diagnostics (unused functions, type mismatches across files, etc.).
-    //
-    // If a new parse starts before the builder finishes, the old builder
-    // is cancelled and a new one is spawned.
-    if let Some(entry_uri) = crate::lng::jass::builder::collect::find_entry_point(uri) {
-        builder_process::cancel_builder_for_entry(&entry_uri);
-
-        let config = builder_process::BuilderConfig {
-            mode: crate::lng::jass::builder::PipelineMode::Diagnostics,
-            opts: crate::lng::jass::builder::collect::build_opt_tags(
-                &new_snapshot.file_symbols.file_settings,
-            ),
-        };
-        builder_process::spawn_builder_task(&entry_uri, config);
-    }
-
-    // 10. Export diff — decide on cascade.
-    let did_change = exports_changed(old_snapshot.as_deref(), &new_snapshot);
-
-    let cascade = if did_change || old_component != component {
-        let mut all_affected = old_component;
-        all_affected.extend(component.into_iter());
-        all_affected
-            .into_iter()
-            .filter(|peer| peer != uri)
-            .collect()
-    } else {
-        vec![]
-    };
-
     crate::debug_log!(
-        "jass::_parse internal END uri={}, diagnostics={}, cascade_count={}, exports_changed={}, total_elapsed_ms={}",
+        "jass::_parse analysis END uri={}, diagnostics={}, old_component_size={}, new_component_size={}, total_elapsed_ms={}",
         uri.path(),
         new_snapshot.diagnostics.len(),
-        cascade.len(),
-        did_change,
+        old_component.len(),
+        component.len(),
         started_at.elapsed().as_millis()
     );
-    Ok(cascade)
+
+    Ok(Some(JassAnalysisResult {
+        previous_snapshot: true_old_snapshot,
+        new_snapshot,
+        old_component,
+        new_component: component,
+        hash,
+    }))
 }
 
 /// Parse a **closed** file from disk, produce a full [`ParseSnapshot`], and
@@ -726,18 +778,20 @@ fn _parse(
 ///
 /// Returns the cascade list (peer URIs whose exports may have changed).
 pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    let started_at = Instant::now();
+    crate::debug_log!("jass::parse_from_disk START uri={}", uri.path());
     let path = uri.to_file_path().map_err(|_| "invalid file path")?;
     if !path.exists() {
         return Ok(vec![]);
     }
 
-    // Cheap stat()-based skip: if file unchanged and we have results, skip.
-    if let Some(current_meta) = file_cache::FileMeta::from_path(&path) {
-        if let Some(cached) = file_cache::load(uri) {
-            if cached.meta == current_meta && PARSE_CACHE.contains_key(uri) {
-                return Ok(vec![]);
-            }
-        }
+    // Cheap stat()-based skip: if the disk cache is fresh, no re-parse needed.
+    // Closed files are intentionally absent from PARSE_CACHE (peek_or_load
+    // handles lazy loading), so we must NOT require PARSE_CACHE presence here.
+    if let Some(cached) = file_cache::load_if_fresh(uri) {
+        crate::debug_log!("jass::parse_from_disk SKIP (disk_cache fresh) uri={}", uri.path());
+        let _ = cached; // symbols already in disk cache; peek_or_load serves them
+        return Ok(vec![]);
     }
 
     let content = std::fs::read_to_string(&path)?;
@@ -747,14 +801,12 @@ pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send
     parser.set_language(&tree_sitter_jass::language().into())?;
     let tree = parser.parse(&content, None).ok_or("parse failed")?;
 
-    let token = new_cancel_token(uri);
-    let uri_owned = uri.clone();
-    let cancel = token.clone();
-
-    let handle = tokio::task::spawn_blocking(move || _parse(&uri_owned, &rope, &tree, &cancel));
-
-    tokio::select! {
-        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
-        _ = token.cancelled() => Ok(vec![]),
-    }
+    let result = run_parse_task(uri, rope, tree).await;
+    crate::debug_log!(
+        "jass::parse_from_disk END uri={}, result={}, elapsed_ms={}",
+        uri.path(),
+        if result.is_ok() { "OK" } else { "ERR" },
+        started_at.elapsed().as_millis()
+    );
+    result
 }

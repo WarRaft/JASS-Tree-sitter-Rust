@@ -3,11 +3,11 @@ use crate::lng::ass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::lng::jass::type_map::TypeMap;
 use crate::http::ref_map::{build_ref_map, DeclKey};
 use crate::util::parse_cache::{
-    exports_changed, new_cancel_token, register_pending, ParseSnapshot, PARSE_CACHE,
+    exports_changed, new_cancel_token, ParseSnapshot, PARSE_CACHE,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
-    cascade_parse_and_notify, ensure_file_symbols,
+    cascade_parse_and_notify, ensure_visible_component_loaded,
     find_decl_key_by_name, resolve_import_directive, resolve_path_import, ParseFn,
     all_visible_entries, SymbolNS,
 };
@@ -71,6 +71,11 @@ pub async fn parse_and_notify(uri: &Url, generation: Option<u64>) -> Result<(), 
 }
 
 /// Core parse logic (runs on the blocking thread pool).
+///
+/// Note: during the current JASS-focused refactor wave this file keeps the
+/// existing AS behavior and only reuses shared compatibility helpers
+/// (`ensure_visible_component_loaded`, etc.) where safe.
+/// It is intentionally NOT a full AS pipeline migration.
 fn _parse(
     uri: &Url,
     rope: &Rope,
@@ -131,48 +136,11 @@ fn _parse(
     //    symbols from `.as` files keep their original namespace.
     //    JASS types are also promoted to top-level (namespace = "") so that
     //    AS code can reference them without qualifier (e.g. `unit`, `handle`).
+    //
+    // Shared helper reuse here is adapter-level only; AS semantics stay local.
     let mut imported_symbols: Vec<ImportedSymbol> = Vec::new();
     {
-        // Iteratively ensure every peer is in the scope resolver.
-        // `ensure_file_symbols` may register new import edges in the graph
-        // (for transitive imports), so we re-check `visible_component` until
-        // no new peers appear.
-        let mut ensured: HashSet<Url> = HashSet::new();
-        ensured.insert(uri.clone());
-        const MAX_ROUNDS: usize = 64;
-
-        for _round in 0..MAX_ROUNDS {
-            let mut discovered_new = false;
-            for peer_uri in component.iter().cloned().collect::<Vec<_>>() {
-                if !ensured.insert(peer_uri.clone()) {
-                    continue;
-                }
-                let ts_lang = if crate::util::open::is_as_uri(&peer_uri) {
-                    tree_sitter_as::language().into()
-                } else {
-                    tree_sitter_jass::language().into()
-                };
-                if !ensure_file_symbols(&peer_uri, ts_lang) {
-                    register_pending(&peer_uri, uri);
-                    log::info!(
-                        "pending import: {} waits for {}",
-                        uri.path(),
-                        peer_uri.path()
-                    );
-                }
-                discovered_new = true;
-            }
-            if !discovered_new {
-                break;
-            }
-            // Recompute after new edges may have been added by ensure_file_symbols.
-            IMPORT_GRAPH.recompute_entry_cache();
-            let new_component = IMPORT_GRAPH.visible_component(uri);
-            if new_component == component {
-                break;
-            }
-            component = new_component;
-        }
+        component = ensure_visible_component_loaded(uri, component, Some(uri));
 
         let visible_entries = all_visible_entries(&component);
 

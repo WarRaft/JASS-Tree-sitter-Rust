@@ -55,6 +55,24 @@ pub fn init_by_uri(
     }
 }
 
+/// Init + preload symbols for rescan pass 1.
+///
+/// This keeps the rescan handler focused on orchestration while the
+/// language-specific preload logic stays in one shared place.
+pub fn preload_symbols_by_uri(
+    uri: &Url,
+    content: &str,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    init_by_uri(uri, content)?;
+    let ts_lang: tree_sitter::Language = if is_as_uri(uri) {
+        tree_sitter_as::language().into()
+    } else {
+        tree_sitter_jass::language().into()
+    };
+    crate::util::parse::ensure_file_symbols(uri, ts_lang);
+    Ok(())
+}
+
 /// Init + parse without cascade.
 ///
 /// Used by rescan pass 2: all symbols are already in the scope resolver,
