@@ -81,9 +81,15 @@ pub fn get_or_create_builder_state(entry_uri: &Url) -> Arc<BuilderProcessState> 
 ///
 /// Called when a new parse starts for a file in that import tree.
 pub fn cancel_builder_for_entry(entry_uri: &Url) {
-    if let Some(state) = BUILDER_PROCESSES.get(entry_uri) {
+    // Avoid re-entrant map access: never insert while holding a `get()` guard.
+    let should_replace = if let Some(state) = BUILDER_PROCESSES.get(entry_uri) {
         state.cancel_token.cancel();
+        true
+    } else {
+        false
+    };
 
+    if should_replace {
         // Spawn a new token for the next build.
         let new_state = Arc::new(BuilderProcessState::new());
         BUILDER_PROCESSES.insert(entry_uri.clone(), new_state);

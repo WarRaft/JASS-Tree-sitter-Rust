@@ -237,12 +237,14 @@ impl ImportGraph {
     /// Called eagerly during parse — before `visible_component` — so that
     /// `tree_for_uri` can prune incoming edges of frozen nodes even when
     /// PARSE_CACHE doesn't have the importer's snapshot yet.
-    pub fn mark_frozen(&self, targets: &HashSet<Url>) {
+    pub fn mark_frozen(&self, targets: &HashSet<Url>) -> bool {
         if targets.is_empty() {
-            return;
+            return false;
         }
         let mut ft = self.frozen_targets.write().unwrap();
+        let old_len = ft.len();
         ft.extend(targets.iter().cloned());
+        ft.len() != old_len
     }
 
     /// Check if `uri` is frozen according to the graph's own bookkeeping.
@@ -252,7 +254,7 @@ impl ImportGraph {
 
     /// Replaces all outgoing edges of `uri` with `new_imports`.
     /// Skips disk write if nothing changed.
-    pub fn update(&self, uri: &Url, new_imports: HashSet<Url>) {
+    pub fn update(&self, uri: &Url, new_imports: HashSet<Url>) -> bool {
         let mut inner = self.inner.write().unwrap();
         let node = inner.ensure_node(uri);
 
@@ -264,7 +266,7 @@ impl ImportGraph {
             .collect();
 
         if old == new_imports {
-            return;
+            return false;
         }
 
         // Targets that are being removed — candidates for GC.
@@ -314,6 +316,8 @@ impl ImportGraph {
         for uri in &evict_from_cache {
             crate::util::parse_cache::PARSE_CACHE.remove(uri);
         }
+
+        true
     }
 
     /// Remove a file node and all its edges (e.g. file deleted from disk).
@@ -652,7 +656,7 @@ impl ImportGraph {
     ///
     /// When `is_entry` is `true`, the URI is added to the persistent set.
     /// When `false`, it is removed.  The change is persisted to redb.
-    pub fn mark_entry(&self, uri: &Url, is_entry: bool) {
+    pub fn mark_entry(&self, uri: &Url, is_entry: bool) -> bool {
         let mut entries = self.entry_nodes.write().unwrap();
         let changed = if is_entry {
             entries.insert(uri.clone())
@@ -662,6 +666,7 @@ impl ImportGraph {
         if changed {
             self.save_entry_nodes(&entries);
         }
+        changed
     }
 
     /// Persist only the entry-node set (without rewriting the entire table).

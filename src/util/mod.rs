@@ -18,8 +18,5 @@ pub(crate) mod type_graph;
 pub(crate) mod ujapi;
 pub(crate) mod uri_map;
 pub(crate) mod builder_process;
-
 #[cfg(test)]
 mod import_graph_test;
-#[cfg(test)]
-mod string_hash_test;

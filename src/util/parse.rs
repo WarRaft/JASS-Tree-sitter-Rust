@@ -186,6 +186,7 @@ pub fn ensure_visible_component_loaded(
 
     for _round in 0..MAX_ROUNDS {
         let mut discovered_new = false;
+        let mut graph_state_changed = false;
         for peer_uri in component.iter().cloned().collect::<Vec<_>>() {
             if !ensured.insert(peer_uri.clone()) {
                 continue;
@@ -197,16 +198,21 @@ pub fn ensure_visible_component_loaded(
                 tree_sitter_jass::language().into()
             };
 
-            let ensured_ok = ensure_file_symbols(&peer_uri, ts_lang);
-            if !ensured_ok {
+            let outcome = ensure_file_symbols_internal(&peer_uri, ts_lang);
+            if !outcome.available {
                 if let Some(waiter) = pending_waiter {
                     register_pending(&peer_uri, waiter);
                 }
             }
+            graph_state_changed |= outcome.graph_state_changed;
             discovered_new = true;
         }
 
         if !discovered_new {
+            break;
+        }
+
+        if !graph_state_changed {
             break;
         }
 
@@ -842,6 +848,19 @@ fn collect_as_frozen_imports(
 ///    Handlers that need data later call [`peek_or_load`].
 /// 3. **Parse from disk** — last resort, reads + parses the file.
 pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) -> bool {
+    ensure_file_symbols_internal(dep_uri, ts_language).available
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EnsureFileSymbolsOutcome {
+    available: bool,
+    graph_state_changed: bool,
+}
+
+fn ensure_file_symbols_internal(
+    dep_uri: &Url,
+    ts_language: tree_sitter::Language,
+) -> EnsureFileSymbolsOutcome {
     let started_at = Instant::now();
     crate::debug_log!("ensure_file_symbols START uri={}", dep_uri.path());
     // Already fully parsed — PARSE_CACHE has everything.
@@ -851,24 +870,27 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             dep_uri.path(),
             started_at.elapsed().as_millis()
         );
-        return true;
+        return EnsureFileSymbolsOutcome {
+            available: true,
+            graph_state_changed: false,
+        };
     }
 
     // Disk cache — if file metadata matches, populate SCOPE_RESOLVER only.
     // The full snapshot stays on disk and will be lazy-loaded by
     // `peek_or_load()` if any handler actually needs it.
     if let Some(cached) = file_cache::load_if_fresh(dep_uri) {
-        // Persist entry-point status so recompute_entry_cache sees it.
-        if cached.symbols.is_entry {
-            IMPORT_GRAPH.mark_entry(dep_uri, true);
-        }
+        let entry_changed = IMPORT_GRAPH.mark_entry(dep_uri, cached.symbols.is_entry);
         crate::debug_log!(
             "ensure_file_symbols HIT disk_cache uri={}, is_entry={}, elapsed_ms={}",
             dep_uri.path(),
             cached.symbols.is_entry,
             started_at.elapsed().as_millis()
         );
-        return true;
+        return EnsureFileSymbolsOutcome {
+            available: true,
+            graph_state_changed: entry_changed,
+        };
     }
 
     // Parse from disk.
@@ -876,7 +898,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         Ok(p) if p.is_file() => p,
         _ => {
             crate::debug_log!("ensure_file_symbols FAIL invalid_path uri={}", dep_uri.path());
-            return false;
+            return EnsureFileSymbolsOutcome::default();
         },
     };
     crate::debug_log!("ensure_file_symbols reading from disk uri={}, path={}", dep_uri.path(), path.display());
@@ -884,19 +906,19 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         Ok(c) => c,
         Err(e) => {
             crate::debug_log!("ensure_file_symbols FAIL read uri={}, error={}", dep_uri.path(), e);
-            return false;
+            return EnsureFileSymbolsOutcome::default();
         },
     };
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&ts_language).is_err() {
         crate::debug_log!("ensure_file_symbols FAIL set_language uri={}", dep_uri.path());
-        return false;
+        return EnsureFileSymbolsOutcome::default();
     }
     let tree = match parser.parse(&content, None) {
         Some(t) => t,
         None => {
             crate::debug_log!("ensure_file_symbols FAIL parser.parse uri={}", dep_uri.path());
-            return false;
+            return EnsureFileSymbolsOutcome::default();
         },
     };
 
@@ -917,9 +939,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         // blocks) and register them in the import graph so that transitive
         // dependencies are visible to `visible_component`.
         let dep_imports = collect_as_imports(&ast.items, dep_uri, &rope);
-        if !dep_imports.is_empty() {
-            IMPORT_GRAPH.update(dep_uri, dep_imports);
-        }
+        let graph_changed = IMPORT_GRAPH.update(dep_uri, dep_imports);
 
         // Also extract frozen import URLs for `is_uri_frozen()`.
         let frozen_imports = collect_as_frozen_imports(&ast.items, dep_uri, &src, &rope);
@@ -962,9 +982,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         // Closed file — snapshot stays in redb, not in memory.
         // Handlers use `peek_or_load()` to lazy-load if needed.
         // Persist entry-point status so recompute_entry_cache sees it.
-        if file_symbols.is_entry {
-            IMPORT_GRAPH.mark_entry(dep_uri, true);
-        }
+        let entry_changed = IMPORT_GRAPH.mark_entry(dep_uri, file_symbols.is_entry);
 
         crate::debug_log!(
             "ensure_file_symbols END uri={}, lang=angelscript, imports_loaded=true, elapsed_ms={}",
@@ -972,7 +990,10 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             started_at.elapsed().as_millis()
         );
 
-        return true;
+        return EnsureFileSymbolsOutcome {
+            available: true,
+            graph_state_changed: graph_changed || entry_changed,
+        };
     }
 
     // ── JASS path (default) ──
@@ -1007,10 +1028,8 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         }
     }
     let dep_import_count = dep_imports.len();
-    if !dep_imports.is_empty() {
-        IMPORT_GRAPH.update(dep_uri, dep_imports);
-    }
-    IMPORT_GRAPH.mark_frozen(&frozen_imports);
+    let graph_changed = IMPORT_GRAPH.update(dep_uri, dep_imports);
+    let _ = IMPORT_GRAPH.mark_frozen(&frozen_imports);
 
     let cursor = crate::lng::jass::cursor::Cursor::walk(&ast, &rope, &[]);
     let mut file_symbols = cursor.file_symbols;
@@ -1046,9 +1065,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
     // Closed file — snapshot stays in redb, not in memory.
     // Handlers use `peek_or_load()` to lazy-load if needed.
     // Persist entry-point status so recompute_entry_cache sees it.
-    if file_symbols.is_entry {
-        IMPORT_GRAPH.mark_entry(dep_uri, true);
-    }
+    let entry_changed = IMPORT_GRAPH.mark_entry(dep_uri, file_symbols.is_entry);
     crate::debug_log!(
         "ensure_file_symbols END uri={}, lang=jass, imports={}, frozen_imports={}, elapsed_ms={}",
         dep_uri.path(),
@@ -1056,7 +1073,10 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         file_symbols.frozen_imports.len(),
         started_at.elapsed().as_millis()
     );
-    true
+    EnsureFileSymbolsOutcome {
+        available: true,
+        graph_state_changed: graph_changed || entry_changed,
+    }
 }
 
 /// Look up the `DeclKey` of a symbol by name **and namespace** in a `RefMap`.

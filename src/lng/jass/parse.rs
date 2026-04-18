@@ -221,10 +221,12 @@ fn _parse(
     PARSE_CACHE.insert(uri.clone(), new_snapshot.clone());
 
     // ── Persist entry-point status so it survives server restarts ──
-    IMPORT_GRAPH.mark_entry(uri, new_snapshot.file_symbols.is_entry);
+    let entry_changed = IMPORT_GRAPH.mark_entry(uri, new_snapshot.file_symbols.is_entry);
 
     // ── Recompute entry-point cache after PARSE_CACHE update ──
-    IMPORT_GRAPH.recompute_entry_cache();
+    if entry_changed {
+        IMPORT_GRAPH.recompute_entry_cache();
+    }
 
     // 11. Spawn builder process for the entry point (if any).
     //
@@ -401,12 +403,14 @@ fn prepare_jass_visible_scope(
     // Register frozen targets eagerly — before visible_component — so
     // tree_for_uri can prune incoming edges even when PARSE_CACHE doesn't
     // have this file's snapshot yet (first parse / cold start).
-    IMPORT_GRAPH.mark_frozen(frozen_imports);
+    let _ = IMPORT_GRAPH.mark_frozen(frozen_imports);
 
-    IMPORT_GRAPH.update(uri, imports.clone());
+    let graph_changed = IMPORT_GRAPH.update(uri, imports.clone());
 
     // Refresh entry cache so that visible_component reads the updated graph.
-    IMPORT_GRAPH.recompute_entry_cache();
+    if graph_changed {
+        IMPORT_GRAPH.recompute_entry_cache();
+    }
 
     let mut component = IMPORT_GRAPH.visible_component(uri);
     crate::debug_log!(
