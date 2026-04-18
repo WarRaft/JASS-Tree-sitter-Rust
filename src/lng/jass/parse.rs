@@ -12,6 +12,7 @@ use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
     ParseFn, cascade_parse_and_notify, ensure_visible_component_loaded,
     resolve_import_directive, all_visible_entries,
+    run_blocking_parse_with_cancel, build_cascade_peers,
 };
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
@@ -95,21 +96,13 @@ async fn run_parse_task(
     let cancel = token.clone();
 
     crate::debug_log!("jass::parse spawning blocking task uri={}", uri.path());
-    let handle = tokio::task::spawn_blocking(move || {
+    crate::debug_log!("jass::parse waiting for blocking result uri={}", uri.path());
+    run_blocking_parse_with_cancel(token, move || {
         crate::debug_log!("jass::_parse blocking task START uri={}", uri_owned.path());
         let result = _parse(&uri_owned, &rope, &tree, &cancel);
         crate::debug_log!("jass::_parse blocking task END uri={}", uri_owned.path());
         result
-    });
-
-    crate::debug_log!("jass::parse waiting for blocking result uri={}", uri.path());
-    tokio::select! {
-        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
-        _ = token.cancelled() => {
-            crate::debug_log!("jass::parse cancelled uri={}", uri.path());
-            Ok(vec![])
-        },
-    }
+    }).await
 }
 
 /// Parse + cascade re-parse + push diagnostics + refresh all open editors.
@@ -256,16 +249,7 @@ fn _parse(
     // 10. Export diff — decide on cascade.
     let did_change = exports_changed(previous_snapshot.as_deref(), &new_snapshot);
 
-    let cascade = if did_change || old_component != component {
-        let mut all_affected = old_component;
-        all_affected.extend(component.into_iter());
-        all_affected
-            .into_iter()
-            .filter(|peer| peer != uri)
-            .collect()
-    } else {
-        vec![]
-    };
+    let cascade = build_cascade_peers(uri, old_component, component, did_change);
 
     Ok(cascade)
 }

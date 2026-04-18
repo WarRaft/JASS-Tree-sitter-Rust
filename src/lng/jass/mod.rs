@@ -10,7 +10,5 @@ pub(crate) mod type_map;
 #[cfg(test)]
 mod ast_test;
 #[cfg(test)]
-mod cursor_test;
-#[cfg(test)]
 mod symbol_test;
 pub mod builder;

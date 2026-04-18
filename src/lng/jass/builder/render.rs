@@ -7,6 +7,8 @@
 //! - Every structural node (`FunctionDecl`, `VarStmt`, `IfStmt`, …) is assembled
 //!   manually from its typed AST fields.
 
+#![allow(dead_code)]
+
 use crate::lng::jass::ast::{
     CallStmt, Expr, ExitwhenStmt, FunctionCall, FunctionDecl,
     GlobalsBlock, Id, LocalDecl, Param, ReturnStmt,

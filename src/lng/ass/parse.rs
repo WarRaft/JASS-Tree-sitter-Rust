@@ -10,6 +10,7 @@ use crate::util::parse::{
     cascade_parse_and_notify, ensure_visible_component_loaded,
     find_decl_key_by_name, resolve_import_directive, resolve_path_import, ParseFn,
     all_visible_entries, SymbolNS,
+    run_blocking_parse_with_cancel, build_cascade_peers,
 };
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
@@ -50,14 +51,7 @@ pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> 
     let uri_owned = uri.clone();
     let cancel = token.clone();
 
-    // ── Run CPU-heavy parse on the blocking thread pool ──
-    let handle = tokio::task::spawn_blocking(move || _parse(&uri_owned, &rope, &tree, &cancel));
-
-    // ── Race the blocking work against cancellation ──
-    tokio::select! {
-        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
-        _ = token.cancelled() => Ok(vec![]),
-    }
+    run_blocking_parse_with_cancel(token, move || _parse(&uri_owned, &rope, &tree, &cancel)).await
 }
 
 /// Parse + cascade re-parse + push diagnostics + refresh all open editors.
@@ -299,16 +293,7 @@ fn _parse(
     // 9. Export diff — decide on cascade.
     let did_change = exports_changed(old_snapshot.as_deref(), &new_snapshot);
 
-    let cascade = if did_change || old_component != component {
-        let mut all_affected = old_component;
-        all_affected.extend(component.into_iter());
-        all_affected
-            .into_iter()
-            .filter(|peer| peer != uri)
-            .collect()
-    } else {
-        vec![]
-    };
+    let cascade = build_cascade_peers(uri, old_component, component, did_change);
 
     Ok(cascade)
 }
@@ -390,10 +375,5 @@ pub async fn parse_from_disk(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send
     let uri_owned = uri.clone();
     let cancel = token.clone();
 
-    let handle = tokio::task::spawn_blocking(move || _parse(&uri_owned, &rope, &tree, &cancel));
-
-    tokio::select! {
-        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
-        _ = token.cancelled() => Ok(vec![]),
-    }
+    run_blocking_parse_with_cancel(token, move || _parse(&uri_owned, &rope, &tree, &cancel)).await
 }

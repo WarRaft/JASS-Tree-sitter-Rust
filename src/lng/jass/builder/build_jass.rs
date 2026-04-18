@@ -37,28 +37,30 @@ pub fn run_with_options(uri: &Url, options: BuildOptions) -> BuildResult {
 
 /// Execute the JASS builder and return the extended pipeline report.
 pub fn run_report_with_options(uri: &Url, options: BuildOptions) -> BuilderReport {
-    let project = match collect_project(uri, "build-jass", "war3map.j") {
-        Ok(p) => p,
-        Err(e) => {
-            return BuilderReport {
-                result: e,
-                diagnostics: Vec::new(),
-                files: 0,
-                functions: 0,
-                globals: 0,
-                preview: None,
-                applied_fixes: Vec::new(),
-            }
-        }
-    };
+     let project = match collect_project(uri, "build-jass", "war3map.j") {
+         Ok(p) => p,
+         Err(e) => {
+             return BuilderReport {
+                 result: e,
+                 diagnostics: Vec::new(),
+                 files: 0,
+                 functions: 0,
+                 globals: 0,
+                 preview: None,
+                 applied_fixes: Vec::new(),
+             }
+         }
+     };
 
-    let uglify = find_build_setting(uri, "build-opts")
-        .map(|(_, v)| {
-            let mut settings = std::collections::HashMap::new();
-            settings.insert("build-opts".to_string(), v);
-            build_opt_tags(&settings).contains("uglify")
-        })
-        .unwrap_or(false);
+     // Find build-opts in the entry file that has build-jass setting
+     let uglify = find_build_setting(uri, "build-jass")
+         .and_then(|(entry_uri, _)| find_build_setting(&entry_uri, "build-opts"))
+         .map(|(_, v)| {
+             let mut settings = std::collections::HashMap::new();
+             settings.insert("build-opts".to_string(), v);
+             build_opt_tags(&settings).contains("uglify")
+         })
+         .unwrap_or(false);
 
     let plan = analyze_project(&project, options.mode, uglify);
     let files = project.files.len();

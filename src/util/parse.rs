@@ -40,6 +40,7 @@ use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 // ─── Symbol types (moved from scope_resolver) ───────────────────────────────
@@ -1108,6 +1109,41 @@ pub type ParseFn = Box<
         + Send
         + Sync,
 >;
+
+/// Run a CPU-heavy parse closure on the blocking pool and race it against
+/// cancellation.
+pub async fn run_blocking_parse_with_cancel<F>(
+    token: CancellationToken,
+    task: F,
+) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>>
+where
+    F: FnOnce() -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> + Send + 'static,
+{
+    let handle = tokio::task::spawn_blocking(task);
+    tokio::select! {
+        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
+        _ = token.cancelled() => Ok(vec![]),
+    }
+}
+
+/// Build the list of peers that need cascade re-parse.
+pub fn build_cascade_peers(
+    uri: &Url,
+    old_component: HashSet<Url>,
+    new_component: HashSet<Url>,
+    did_change: bool,
+) -> Vec<Url> {
+    if did_change || old_component != new_component {
+        let mut all_affected = old_component;
+        all_affected.extend(new_component);
+        all_affected
+            .into_iter()
+            .filter(|peer| peer != uri)
+            .collect()
+    } else {
+        vec![]
+    }
+}
 
 // ─── Universal dispatch ─────────────────────────────────────────────────────
 
