@@ -35,7 +35,8 @@ endglobals
 | `build-jass` | `<path>` | `./` | Output path for the JASS build. Merges the entire import tree into a single `.j` file: types → natives → globals → functions (topologically sorted) → `main`. If the path is a directory, `war3map.j` is appended. When the path points to a `.w3x` or `.w3m` archive, the script is injected directly into the map. |
 | `build-as` | `<path>` | `./` | Output path for the AngelScript build. Same merge logic, but emits `.as` syntax. Reserved-word conflicts are resolved by appending a numeric suffix. When the path points to a `.w3x` or `.w3m` archive, the script is injected directly into the map. |
 | `backup` | `<path>` | `./` | Backup path for the map archive. Before injecting the script into a `.w3x` / `.w3m` file, a copy of the original archive is saved to this path with a date prefix: `YYYY_MM_DD_FileName.w3x`. If the path is a directory, the date-prefixed archive filename is appended. |
-| `build-uglify` | `0 \| 1` | `0` | Minify identifiers in build output. When enabled, function and variable names are shortened to reduce file size. |
+| `build-opts` | `uglify` `nolocal` | | Build option tags. `uglify` enables identifier minification in build output. `nolocal` switches leak fixing for returned locals to the no-local strategy (use a temp global instead of introducing a temp local). Multiple tags may be combined in one directive. |
+| `build-uglify` | `0 \| 1` | `0` | Legacy alias for `//set build-opt uglify`. Kept for compatibility. |
 | `build-before` | `<command>` | | Shell command to run **before** the build. Executed via `sh -c` (Unix) or `cmd /C` (Windows). The working directory is the folder of the `//entry` file. Supports `{{variable}}` template placeholders (see below). |
 | `build-after` | `<command>` | | Shell command to run **after** the build (only on success). Same execution rules as `build-before`. |
 

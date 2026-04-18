@@ -1,4 +1,4 @@
-use crate::lng::jass::ast::{Statement, build_ast, rewrite_imports};
+use crate::lng::jass::ast::{Statement, annotate_comptime_values, build_ast, rewrite_imports};
 use crate::lng::jass::cursor::{Cursor, ImportedKind, ImportedSymbol};
 use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::http::ref_map::{DeclKey, RefMap, build_ref_map};
@@ -129,6 +129,9 @@ fn _parse(
     // 2. Rewrite leading `//import` / `//import!` comments into Import nodes
     let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
     rewrite_imports(&mut ast, &src);
+
+    // 2.1 Compute compile-time values and store them in AST.
+    annotate_comptime_values(&mut ast, &src);
 
     // 3. Extract resolved import URLs, document links, and diagnostics
     //    for non-existent import paths.
@@ -476,7 +479,7 @@ fn _parse(
     //     whether any entry points exist in the component.
     if !new_snapshot_is_entry {
         for (key, _) in &cursor_file_settings {
-            if key == "build-jass" || key == "build-as" || key == "backup" || key == "build-uglify" || key == "build-before" || key == "build-after" {
+            if key == "build-jass" || key == "build-as" || key == "backup" || key == "build-opts" || key == "build-uglify" || key == "build-before" || key == "build-after" {
                 // Find the SetDir node in the AST to get its range.
                 for item in &ast.items {
                     if let Statement::SetDir(sd) = item {

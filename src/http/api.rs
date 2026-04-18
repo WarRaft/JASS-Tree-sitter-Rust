@@ -1041,22 +1041,22 @@ pub async fn build_execute(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
     let uri = &params.uri;
-    let has_jass = crate::lng::jass::build::has_build_setting(uri, "build-jass");
-    let has_as = crate::lng::jass::build::has_build_setting(uri, "build-as");
+    let has_jass = crate::lng::jass::builder::has_build_setting(uri, "build-jass");
+    let has_as = crate::lng::jass::builder::has_build_setting(uri, "build-as");
     let result = if has_jass && has_as {
-        let r1 = crate::lng::jass::build::build_jass(uri);
-        let r2 = crate::lng::jass::build::build_as(uri);
+        let r1 = crate::lng::jass::builder::build_jass(uri);
+        let r2 = crate::lng::jass::builder::build_as(uri);
         if r1.ok && r2.ok {
-            crate::lng::jass::build::BuildResult {
+            crate::lng::jass::builder::BuildResult {
                 ok: true,
                 path: format!("{}, {}", r1.path, r2.path),
                 message: format!("JASS: {} | AS: {}", r1.message, r2.message),
             }
         } else if !r1.ok { r1 } else { r2 }
     } else if has_as {
-        crate::lng::jass::build::build_as(uri)
+        crate::lng::jass::builder::build_as(uri)
     } else {
-        crate::lng::jass::build::build_jass(uri)
+        crate::lng::jass::builder::build_jass(uri)
     };
     Ok(Json(json!(result)))
 }
@@ -1066,8 +1066,26 @@ pub async fn build_hooks(
     Json(params): Json<UriParam>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
-    let (before_cmd, after_cmd, cwd) = crate::lng::jass::build::resolve_hooks(&params.uri);
+    let (before_cmd, after_cmd, cwd) = crate::lng::jass::builder::resolve_hooks(&params.uri);
     Ok(Json(json!({ "before_cmd": before_cmd, "after_cmd": after_cmd, "cwd": cwd })))
+}
+
+pub async fn build_fix_local(
+    Query(auth): Query<AuthQuery>,
+    Json(params): Json<UriParam>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    auth.check()?;
+    let result = crate::lng::jass::builder::fix_local(&params.uri);
+    Ok(Json(json!(result)))
+}
+
+pub async fn build_fix_local_preview(
+    Query(auth): Query<AuthQuery>,
+    Json(params): Json<UriParam>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    auth.check()?;
+    let result = crate::lng::jass::builder::fix_local_preview(&params.uri);
+    Ok(Json(json!(result)))
 }
 
 pub async fn rescan_status(

@@ -175,6 +175,8 @@ pub struct Cursor {
     /// Keyed by variable name; used by `eval_expr` to propagate values
     /// and by type hints to display `type(value)`.
     comptime_values: HashMap<String, ComptimeValue>,
+    /// Precomputed compile-time values from AST annotation pass.
+    ast_comptime_values: HashMap<(usize, usize), ComptimeValue>,
 
     // Working state
     rope: Rope,
@@ -369,6 +371,7 @@ impl Cursor {
             type_map: TypeMap::default(),
             type_hints: Vec::new(),
             comptime_values: HashMap::new(),
+            ast_comptime_values: ast.comptime_values.clone(),
             rope: rope.clone(),
             id_roles: HashMap::new(),
             directive_nodes: HashSet::new(),
@@ -933,6 +936,13 @@ impl Cursor {
     /// if the expression consists exclusively of literals, `comptime` globals,
     /// and pure operators.
     fn eval_expr(&self, expr: &Expr) -> Option<ComptimeValue> {
+        if let Some(v) = self
+            .ast_comptime_values
+            .get(&(expr.cst_node().start_byte(), expr.cst_node().end_byte()))
+        {
+            return Some(v.clone());
+        }
+
         match expr {
             Expr::Literal(node) => self.eval_literal(node),
             Expr::Id(id) => {

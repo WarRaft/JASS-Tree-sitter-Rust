@@ -93,22 +93,28 @@ pub static SET_DEFS: &[SetDef] = &[
         sort_order: 4,
     },
     SetDef {
+        key: "build-opts",
+        kind: SetValueKind::Tags(&["uglify", "nolocal"]),
+        default: "",
+        sort_order: 5,
+    },
+    SetDef {
         key: "build-uglify",
         kind: SetValueKind::Bool,
         default: "0",
-        sort_order: 5,
+        sort_order: 6,
     },
     SetDef {
         key: "build-before",
         kind: SetValueKind::Command,
         default: "",
-        sort_order: 6,
+        sort_order: 7,
     },
     SetDef {
         key: "build-after",
         kind: SetValueKind::Command,
         default: "",
-        sort_order: 7,
+        sort_order: 8,
     },
 ];
 

@@ -853,13 +853,23 @@ pub fn set_def_backup() -> &'static str {
     )
 }
 
+pub fn set_def_build_opt() -> &'static str {
+    pick(
+        "Build option tags: `uglify`, `nolocal`",
+        "Теги опций сборки: `uglify`, `nolocal`",
+        "Теги опцій збірки: `uglify`, `nolocal`",
+        "构建选项标签：`uglify`、`nolocal`",
+        "建構選項標籤：`uglify`、`nolocal`",
+    )
+}
+
 pub fn set_def_build_uglify() -> &'static str {
     pick(
-        "Minify identifiers in build output",
-        "Минифицировать идентификаторы в сборке",
-        "Мініфікувати ідентифікатори у збірці",
-        "在构建输出中压缩标识符",
-        "在建構輸出中壓縮標識符",
+        "Legacy alias for `//set build-opts uglify`",
+        "Устаревший алиас для `//set build-opts uglify`",
+        "Застарілий аліас для `//set build-opts uglify`",
+        "`//set build-opts uglify` 的旧别名",
+        "`//set build-opts uglify` 的舊別名",
     )
 }
 
@@ -891,6 +901,7 @@ pub fn set_def_detail(key: &str) -> &'static str {
         "build-jass" => set_def_build_jass(),
         "build-as" => set_def_build_as(),
         "backup" => set_def_backup(),
+        "build-opts" => set_def_build_opt(),
         "build-uglify" => set_def_build_uglify(),
         "build-before" => set_def_build_before(),
         "build-after" => set_def_build_after(),

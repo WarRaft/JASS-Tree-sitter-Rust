@@ -108,6 +108,8 @@ pub async fn start_server() -> std::io::Result<u16> {
         // ── Build ────────────────────────────────────────────────────
         .route("/build/execute", post(crate::http::api::build_execute))
         .route("/build/hooks", post(crate::http::api::build_hooks))
+        .route("/build/fix-local", post(crate::http::api::build_fix_local))
+        .route("/build/fix-local-preview", post(crate::http::api::build_fix_local_preview))
         // ── Rescan & UJAPI ───────────────────────────────────────────
         .route("/rescan/status", get(crate::http::api::rescan_status))
         .route("/ujapi/download", post(crate::http::api::ujapi_download))

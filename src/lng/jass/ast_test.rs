@@ -14,6 +14,18 @@ mod tests {
         f(&ast);
     }
 
+    fn with_annotated_ast(src: &str, f: impl FnOnce(&Ast)) {
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&tree_sitter_jass::language().into())
+            .expect("Failed to set language");
+        let tree = parser.parse(src, None).expect("Failed to parse");
+        let mut ast = build_ast(tree.root_node());
+        rewrite_imports(&mut ast, src.as_bytes());
+        annotate_comptime_values(&mut ast, src.as_bytes());
+        f(&ast);
+    }
+
     fn node_text<'a>(src: &'a str, node: &Node) -> &'a str {
         &src[node.start_byte()..node.end_byte()]
     }
@@ -636,6 +648,62 @@ endfunction
             }
             // Blizzard.j should NOT have any native_statement nodes
             assert_eq!(natives, 0, "Blizzard.j should have 0 natives, but found: {:?}", leaked_native_names);
+        });
+    }
+
+    #[test]
+    fn annotate_comptime_globals_and_use_site() {
+        let src = "
+globals
+    constant integer A = 2 + 3
+    constant integer B = A * 10
+endglobals
+
+function main takes nothing returns nothing
+    local integer x = B + 1
+endfunction
+";
+
+        with_annotated_ast(src, |ast| {
+            // Expect at least one computed value from A, B and x initializer.
+            assert!(!ast.comptime_values.is_empty());
+
+            let mut x_value = None;
+            for item in &ast.items {
+                if let Statement::Function(f) = item {
+                    if let Some(Statement::Local(l)) = f.body.first() {
+                        if let Some(expr) = &l.value {
+                            x_value = ast.comptime_of_expr(expr).cloned();
+                        }
+                    }
+                }
+            }
+
+            assert!(matches!(x_value, Some(crate::lng::jass::type_map::ComptimeValue::Integer(51))));
+        });
+    }
+
+    #[test]
+    fn annotate_comptime_parens_unary_bool() {
+        let src = "
+function main takes nothing returns nothing
+    local boolean b = not (1 < 2)
+endfunction
+";
+
+        with_annotated_ast(src, |ast| {
+            let mut got = None;
+            for item in &ast.items {
+                if let Statement::Function(f) = item {
+                    if let Some(Statement::Local(l)) = f.body.first() {
+                        if let Some(expr) = &l.value {
+                            got = ast.comptime_of_expr(expr).cloned();
+                        }
+                    }
+                }
+            }
+
+            assert!(matches!(got, Some(crate::lng::jass::type_map::ComptimeValue::Bool(false))));
         });
     }
 }

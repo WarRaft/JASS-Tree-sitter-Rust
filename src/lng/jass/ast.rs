@@ -1,4 +1,6 @@
 use crate::lng::jass::kind::{Field, Kind};
+use crate::lng::jass::type_map::ComptimeValue;
+use std::collections::HashMap;
 use tree_sitter::Node;
 
 const FIELD_NAME: u16 = Field::Name as u16;
@@ -299,6 +301,17 @@ pub enum Statement<'tree> {
 pub struct Ast<'tree> {
     pub items: Vec<Statement<'tree>>,
     pub errors: Vec<CstError<'tree>>,
+    /// Compile-time evaluated values keyed by expression span
+    /// `(start_byte, end_byte)`.
+    pub comptime_values: HashMap<(usize, usize), ComptimeValue>,
+}
+
+impl<'tree> Ast<'tree> {
+    /// Return the compile-time value for `expr` when available.
+    pub fn comptime_of_expr(&self, expr: &Expr<'tree>) -> Option<&ComptimeValue> {
+        self.comptime_values
+            .get(&(expr.cst_node().start_byte(), expr.cst_node().end_byte()))
+    }
 }
 
 // ─── Building the AST from CST ──────────────────────────────────────────────
@@ -313,7 +326,369 @@ pub fn build_ast<'tree>(root: Node<'tree>) -> Ast<'tree> {
     // Full-tree scan: collect ERROR/MISSING nodes nested deep inside expressions.
     collect_errors(&root, &mut errors);
 
-    Ast { items, errors }
+    Ast {
+        items,
+        errors,
+        comptime_values: HashMap::new(),
+    }
+}
+
+/// Compute and store compile-time values for evaluable expressions.
+///
+/// Values are stored in [`Ast::comptime_values`] and can be consumed by later
+/// compile/build stages without re-evaluating expression trees.
+pub fn annotate_comptime_values(ast: &mut Ast, src: &[u8]) {
+    let mut out = HashMap::<(usize, usize), ComptimeValue>::new();
+    let mut env = HashMap::<String, ComptimeValue>::new();
+
+    for item in &ast.items {
+        annotate_stmt(item, src, &mut env, &mut out);
+    }
+
+    ast.comptime_values = out;
+}
+
+fn annotate_stmt<'tree>(
+    stmt: &Statement<'tree>,
+    src: &[u8],
+    env: &mut HashMap<String, ComptimeValue>,
+    out: &mut HashMap<(usize, usize), ComptimeValue>,
+) {
+    match stmt {
+        Statement::Globals(g) => {
+            for v in &g.vars {
+                annotate_var_stmt(v, src, env, out);
+            }
+        }
+        Statement::VarStmt(v) => annotate_var_stmt(v, src, env, out),
+        Statement::Function(f) => {
+            // Function body can read compile-time globals but should not mutate
+            // the file-level constant environment.
+            let mut local_env = env.clone();
+            for s in &f.body {
+                annotate_stmt(s, src, &mut local_env, out);
+            }
+        }
+        Statement::Local(l) => {
+            if let Some(v) = &l.value {
+                let cv = annotate_expr(v, src, env, out);
+                if let Some(name) = l.name.as_ref().and_then(|id| node_text(src, &id.node)) {
+                    if let Some(val) = cv {
+                        env.insert(name.to_string(), val);
+                    } else {
+                        env.remove(name);
+                    }
+                }
+            }
+        }
+        Statement::Set(s) => {
+            if let Some(idx) = &s.index {
+                let _ = annotate_expr(idx, src, env, out);
+            }
+            if let Some(v) = &s.value {
+                let cv = annotate_expr(v, src, env, out);
+                if let Some(name) = s.variable.as_ref().and_then(|id| node_text(src, &id.node)) {
+                    if let Some(val) = cv {
+                        env.insert(name.to_string(), val);
+                    } else {
+                        env.remove(name);
+                    }
+                }
+            }
+        }
+        Statement::Call(c) => {
+            if let Some(fc) = &c.func {
+                for arg in &fc.args {
+                    let _ = annotate_expr(arg, src, env, out);
+                }
+            }
+        }
+        Statement::Return(r) => {
+            if let Some(v) = &r.value {
+                let _ = annotate_expr(v, src, env, out);
+            }
+        }
+        Statement::Exitwhen(e) => {
+            if let Some(c) = &e.condition {
+                let _ = annotate_expr(c, src, env, out);
+            }
+        }
+        Statement::If(i) => {
+            if let Some(c) = &i.condition {
+                let _ = annotate_expr(c, src, env, out);
+            }
+
+            let mut then_env = env.clone();
+            for s in &i.body {
+                annotate_stmt(s, src, &mut then_env, out);
+            }
+
+            for b in &i.branches {
+                let mut branch_env = env.clone();
+                if let Some(c) = &b.condition {
+                    let _ = annotate_expr(c, src, &branch_env, out);
+                }
+                for s in &b.body {
+                    annotate_stmt(s, src, &mut branch_env, out);
+                }
+            }
+        }
+        Statement::Loop(l) => {
+            // Loop effects are not merged into outer env to avoid unsoundness.
+            let mut loop_env = env.clone();
+            for s in &l.body {
+                annotate_stmt(s, src, &mut loop_env, out);
+            }
+        }
+        Statement::Type(_)
+        | Statement::Native(_)
+        | Statement::Comment(_)
+        | Statement::Import(_)
+        | Statement::SetDir(_)
+        | Statement::IgnoreDir(_)
+        | Statement::UjapiImport(_)
+        | Statement::EntryDir(_)
+        | Statement::Error(_) => {}
+    }
+}
+
+fn annotate_var_stmt<'tree>(
+    v: &VarStmt<'tree>,
+    src: &[u8],
+    env: &mut HashMap<String, ComptimeValue>,
+    out: &mut HashMap<(usize, usize), ComptimeValue>,
+) {
+    for d in &v.decls {
+        if let Some(expr) = &d.value {
+            let cv = annotate_expr(expr, src, env, out);
+            if let Some(name) = d.name.as_ref().and_then(|id| node_text(src, &id.node)) {
+                if v.is_constant {
+                    if let Some(val) = cv {
+                        env.insert(name.to_string(), val);
+                    } else {
+                        env.remove(name);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn annotate_expr<'tree>(
+    expr: &Expr<'tree>,
+    src: &[u8],
+    env: &HashMap<String, ComptimeValue>,
+    out: &mut HashMap<(usize, usize), ComptimeValue>,
+) -> Option<ComptimeValue> {
+    let val = match expr {
+        Expr::Literal(node) => eval_literal(node, src),
+        Expr::Id(id) => {
+            let name = node_text(src, &id.node)?;
+            match name {
+                "true" => Some(ComptimeValue::Bool(true)),
+                "false" => Some(ComptimeValue::Bool(false)),
+                "null" => Some(ComptimeValue::Null),
+                _ => env.get(name).cloned(),
+            }
+        }
+        Expr::Parens { inner, .. } => annotate_expr(inner, src, env, out),
+        Expr::Unary { node, operand } => {
+            let v = annotate_expr(operand, src, env, out)?;
+            let op = node_text_between(src, node.start_byte(), operand.cst_node().start_byte())?;
+            eval_unary_comptime(op, &v)
+        }
+        Expr::Binary { left, right, .. } => {
+            let lv = annotate_expr(left, src, env, out)?;
+            let rv = annotate_expr(right, src, env, out)?;
+            let op = node_text_between(src, left.cst_node().end_byte(), right.cst_node().start_byte())?;
+            eval_binary_comptime(op, &lv, &rv)
+        }
+        Expr::Call(fc) => {
+            for arg in &fc.args {
+                let _ = annotate_expr(arg, src, env, out);
+            }
+            None
+        }
+        Expr::FuncRef(_) => None,
+        Expr::Index { array, index, .. } => {
+            let _ = annotate_expr(array, src, env, out);
+            let _ = annotate_expr(index, src, env, out);
+            None
+        }
+    };
+
+    if let Some(v) = val.clone() {
+        out.insert((expr.cst_node().start_byte(), expr.cst_node().end_byte()), v);
+    }
+    val
+}
+
+fn node_text<'a>(src: &'a [u8], node: &Node) -> Option<&'a str> {
+    std::str::from_utf8(&src[node.start_byte()..node.end_byte()]).ok()
+}
+
+fn node_text_between<'a>(src: &'a [u8], start: usize, end: usize) -> Option<&'a str> {
+    std::str::from_utf8(&src[start..end]).ok().map(str::trim)
+}
+
+fn eval_literal(node: &Node, src: &[u8]) -> Option<ComptimeValue> {
+    let kind = Kind::try_from(node.kind_id()).ok()?;
+    let text = node_text(src, node)?;
+    match kind {
+        Kind::Number => parse_integer_literal(text).map(ComptimeValue::Integer),
+        Kind::Float => text.parse::<f64>().ok().map(ComptimeValue::Real),
+        Kind::StringLiteral => {
+            let inner = if text.len() >= 2 { &text[1..text.len() - 1] } else { "" };
+            Some(ComptimeValue::Str(unescape_jass_string(inner)))
+        }
+        Kind::Rawcode => {
+            let inner = if text.len() >= 2 { &text[1..text.len() - 1] } else { "" };
+            let mut val: i64 = 0;
+            for b in inner.bytes() {
+                val = (val << 8) | (b as i64);
+            }
+            Some(ComptimeValue::Integer(val))
+        }
+        _ => None,
+    }
+}
+
+fn parse_integer_literal(text: &str) -> Option<i64> {
+    if text.len() > 2 && (text.starts_with("0x") || text.starts_with("0X")) {
+        i64::from_str_radix(&text[2..], 16).ok()
+    } else if text.starts_with('$') && text.len() > 1 {
+        i64::from_str_radix(&text[1..], 16).ok()
+    } else if text.starts_with('0') && text.len() > 1 && text.chars().all(|c| c.is_ascii_digit()) {
+        i64::from_str_radix(&text[1..], 8).ok()
+    } else {
+        text.parse::<i64>().ok()
+    }
+}
+
+fn unescape_jass_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn eval_binary_comptime(op: &str, left: &ComptimeValue, right: &ComptimeValue) -> Option<ComptimeValue> {
+    use ComptimeValue::*;
+    match op {
+        "+" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Integer(a.wrapping_add(*b))),
+            (Real(a), Real(b)) => Some(Real(a + b)),
+            (Integer(a), Real(b)) => Some(Real(*a as f64 + b)),
+            (Real(a), Integer(b)) => Some(Real(a + *b as f64)),
+            (Str(a), Str(b)) => Some(Str(format!("{}{}", a, b))),
+            (Str(a), Integer(b)) => Some(Str(format!("{}{}", a, b))),
+            (Str(a), Real(b)) => Some(Str(format!("{}{}", a, b))),
+            (Integer(a), Str(b)) => Some(Str(format!("{}{}", a, b))),
+            (Real(a), Str(b)) => Some(Str(format!("{}{}", a, b))),
+            _ => None,
+        },
+        "-" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Integer(a.wrapping_sub(*b))),
+            (Real(a), Real(b)) => Some(Real(a - b)),
+            (Integer(a), Real(b)) => Some(Real(*a as f64 - b)),
+            (Real(a), Integer(b)) => Some(Real(a - *b as f64)),
+            _ => None,
+        },
+        "*" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Integer(a.wrapping_mul(*b))),
+            (Real(a), Real(b)) => Some(Real(a * b)),
+            (Integer(a), Real(b)) => Some(Real(*a as f64 * b)),
+            (Real(a), Integer(b)) => Some(Real(a * *b as f64)),
+            _ => None,
+        },
+        "/" => match (left, right) {
+            (Integer(a), Integer(b)) if *b != 0 => Some(Integer(a / b)),
+            (Real(a), Real(b)) if *b != 0.0 => Some(Real(a / b)),
+            (Integer(a), Real(b)) if *b != 0.0 => Some(Real(*a as f64 / b)),
+            (Real(a), Integer(b)) if *b != 0 => Some(Real(a / *b as f64)),
+            _ => None,
+        },
+        "and" => match (left, right) {
+            (Bool(a), Bool(b)) => Some(Bool(*a && *b)),
+            _ => None,
+        },
+        "or" => match (left, right) {
+            (Bool(a), Bool(b)) => Some(Bool(*a || *b)),
+            _ => None,
+        },
+        "==" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Bool(a == b)),
+            (Real(a), Real(b)) => Some(Bool(a == b)),
+            (Str(a), Str(b)) => Some(Bool(a == b)),
+            (Bool(a), Bool(b)) => Some(Bool(a == b)),
+            _ => None,
+        },
+        "!=" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Bool(a != b)),
+            (Real(a), Real(b)) => Some(Bool(a != b)),
+            (Str(a), Str(b)) => Some(Bool(a != b)),
+            (Bool(a), Bool(b)) => Some(Bool(a != b)),
+            _ => None,
+        },
+        "<" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Bool(a < b)),
+            (Real(a), Real(b)) => Some(Bool(a < b)),
+            (Str(a), Str(b)) => Some(Bool(a < b)),
+            _ => None,
+        },
+        ">" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Bool(a > b)),
+            (Real(a), Real(b)) => Some(Bool(a > b)),
+            (Str(a), Str(b)) => Some(Bool(a > b)),
+            _ => None,
+        },
+        "<=" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Bool(a <= b)),
+            (Real(a), Real(b)) => Some(Bool(a <= b)),
+            (Str(a), Str(b)) => Some(Bool(a <= b)),
+            _ => None,
+        },
+        ">=" => match (left, right) {
+            (Integer(a), Integer(b)) => Some(Bool(a >= b)),
+            (Real(a), Real(b)) => Some(Bool(a >= b)),
+            (Str(a), Str(b)) => Some(Bool(a >= b)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn eval_unary_comptime(op: &str, val: &ComptimeValue) -> Option<ComptimeValue> {
+    use ComptimeValue::*;
+    match op {
+        "-" => match val {
+            Integer(v) => Some(Integer(-v)),
+            Real(v) => Some(Real(-v)),
+            _ => None,
+        },
+        "not" => match val {
+            Bool(v) => Some(Bool(!v)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Rewrite leading root-level comments into `Statement::Import` or
