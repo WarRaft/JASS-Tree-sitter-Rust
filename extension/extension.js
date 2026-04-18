@@ -1285,15 +1285,21 @@ module.exports = {
          * @param {boolean} fresh
          */
         function _applyBinaryResponse(uri, buf, fresh) {
+            const startedAt = Date.now()
+            let sections = 0
+            const sectionKinds = []
+            debugLog(`document/update apply START uri=${uri} fresh=${fresh} payloadBytes=${buf.length}`)
             let offset = 0
             while (offset + 5 <= buf.length) {
                 const type = buf[offset]; offset += 1
                 const len = buf.readUInt32LE(offset); offset += 4
                 if (offset + len > buf.length) break
                 const data = buf.slice(offset, offset + len); offset += len
+                sections++
 
                 switch (type) {
                     case SECTION_SEMANTIC: {
+                        sectionKinds.push(`semantic:${len}`)
                         // Full semantic tokens: [u32 resultId][u32... tokens]
                         const resultId = data.readUInt32LE(0)
                         const tokenData = data.slice(4)
@@ -1308,6 +1314,7 @@ module.exports = {
                         break
                     }
                     case SECTION_SEMANTIC_EDIT: {
+                        sectionKinds.push(`semantic_edit:${len}`)
                         // Token-aware delta: [u32 resultId][...stream of 5×u32 tuples]
                         // Each tuple is either:
                         //   regular token: [deltaLine, deltaChar, len, type, mods]
@@ -1353,6 +1360,7 @@ module.exports = {
                         break
                     }
                     case SECTION_INLAY_HINTS: {
+                        sectionKinds.push(`inlay:${len}`)
                         if (!fresh) break
                         const hints = []
                         let p = 0
@@ -1380,6 +1388,7 @@ module.exports = {
                         break
                     }
                     case SECTION_DIAGNOSTICS: {
+                        sectionKinds.push(`diagnostics:${len}`)
                         if (!fresh) break
                         const diags = []
                         let p = 0
@@ -1433,6 +1442,7 @@ module.exports = {
                         break
                     }
                     case SECTION_FOLDING: {
+                        sectionKinds.push(`folding:${len}`)
                         if (!fresh) break
                         const ranges = []
                         let p = 0
@@ -1452,6 +1462,7 @@ module.exports = {
                         break
                     }
                     case SECTION_SYMBOLS: {
+                        sectionKinds.push(`symbols:${len}`)
                         if (!fresh) break
                         try {
                             const raw = JSON.parse(data.toString('utf8'))
@@ -1477,6 +1488,7 @@ module.exports = {
                         break
                     }
                     case SECTION_LINKS: {
+                        sectionKinds.push(`links:${len}`)
                         if (!fresh) break
                         const links = []
                         let p = 0
@@ -1505,6 +1517,7 @@ module.exports = {
                         break
                     }
                     case SECTION_COLORS: {
+                        sectionKinds.push(`colors:${len}`)
                         if (!fresh) break
                         const colors = []
                         let p = 0
@@ -1526,6 +1539,7 @@ module.exports = {
                         break
                     }
                     case SECTION_CODE_LENSES: {
+                        sectionKinds.push(`code_lenses:${len}`)
                         if (!fresh) break
                         const lenses = []
                         let p = 0
@@ -1556,6 +1570,7 @@ module.exports = {
                         break
                     }
                     case SECTION_TREE_URIS: {
+                        sectionKinds.push(`tree_uris:${len}`)
                         let p = 0
                         const changedUris = []
                         const docTree = new Set()
@@ -1576,8 +1591,12 @@ module.exports = {
                         break
                     }
                     // Future section types: just add cases here
+                    default:
+                        sectionKinds.push(`unknown_${type}:${len}`)
+                        break
                 }
             }
+            debugLog(`document/update apply END uri=${uri} fresh=${fresh} sections=${sections} kinds=${sectionKinds.join(',') || '-'} elapsedMs=${Date.now() - startedAt}`)
         }
 
         /**
@@ -1607,8 +1626,10 @@ module.exports = {
             if (q) {
                 q.sections.push(body)
                 q.version = version
+                debugLog(`document/update enqueue uri=${uri} lang=${languageId} version=${version} queuedBodies=${q.sections.length} locked=${!!_locked.get(uri)} bodyBytes=${body.length}`)
             } else {
                 _queue.set(uri, {version, languageId, sections: [body]})
+                debugLog(`document/update enqueue uri=${uri} lang=${languageId} version=${version} queuedBodies=1 locked=${!!_locked.get(uri)} bodyBytes=${body.length}`)
             }
             if (_locked.get(uri)) return
             _flush(uri)
@@ -1617,6 +1638,7 @@ module.exports = {
         function _flush(uri) {
             const q = _queue.get(uri)
             if (!q) {
+                debugLog(`document/update idle uri=${uri}`)
                 _locked.set(uri, false)
                 return
             }
@@ -1626,16 +1648,27 @@ module.exports = {
             const params = {uri, languageId: q.languageId, version: String(q.version), hints: 'ref,type'}
             const lastId = semanticResultId.get(uri)
             if (lastId !== undefined) params.lastResultId = String(lastId)
+            const payload = Buffer.concat(q.sections)
+            const startedAt = Date.now()
+            debugLog(`document/update send uri=${uri} lang=${q.languageId} version=${q.version} queuedBodies=${q.sections.length} payloadBytes=${payload.length} lastResultId=${lastId === undefined ? '-' : lastId}`)
 
-            client.http.postBinary('/document/update', params, Buffer.concat(q.sections)).then(buf => {
+            client.http.postBinary('/document/update', params, payload).then(buf => {
                 if (buf.length >= 4) {
                     const echoedVersion = buf.readUInt32LE(0)
                     const fresh = echoedVersion === _docVersion.get(uri)
+                    debugLog(`document/update response uri=${uri} version=${q.version} echoedVersion=${echoedVersion} fresh=${fresh} responseBytes=${buf.length} elapsedMs=${Date.now() - startedAt}`)
                     _applyBinaryResponse(uri, buf.slice(4), fresh)
+                } else {
+                    debugLog(`document/update response uri=${uri} version=${q.version} malformed responseBytes=${buf.length} elapsedMs=${Date.now() - startedAt}`)
                 }
             }).catch(e => {
+                debugLog(`document/update error uri=${uri} version=${q.version} elapsedMs=${Date.now() - startedAt} error=${e && e.message ? e.message : e}`)
                 console.error('document/update error:', e)
             }).finally(() => {
+                const pending = _queue.get(uri)
+                if (pending) {
+                    debugLog(`document/update flush-next uri=${uri} pendingBodies=${pending.sections.length} nextVersion=${pending.version}`)
+                }
                 _flush(uri)
             })
         }

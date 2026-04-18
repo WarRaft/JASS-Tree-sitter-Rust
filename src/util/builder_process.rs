@@ -25,7 +25,8 @@ use once_cell::sync::Lazy;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::http::diagnostic::Diagnostic;
+use crate::http::diagnostic::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
+use crate::http::range::Range;
 
 // ─── Global builder process registry ──────────────────────────────────────────
 
@@ -181,11 +182,12 @@ async fn run_builder(
 
 async fn _run_builder_impl(
     entry_uri: &Url,
-    _config: &BuilderConfig,
-    _cancel_token: &CancellationToken,
+    config: &BuilderConfig,
+    cancel_token: &CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use crate::lng::jass::builder::collect;
     use crate::util::parse_cache::PARSE_CACHE;
+    use std::collections::HashMap;
     use std::sync::Arc;
 
     // Step 1: Collect file order (dependencies first, entry last)
@@ -196,26 +198,125 @@ async fn _run_builder_impl(
 
     // Step 2: Read all files and build unified AST
     let mut file_sources = Vec::new();
+    let mut missing_sources = Vec::new();
     for uri in &file_order {
+        if cancel_token.is_cancelled() {
+            log::debug!("builder: cancelled during source collection for {}", entry_uri.path());
+            return Ok(());
+        }
         if let Some(source) = collect::read_source(uri) {
             file_sources.push((uri.clone(), source));
         } else {
             log::warn!("builder: could not read {}", uri.path());
+            missing_sources.push(uri.clone());
         }
     }
 
     // Step 3: Run diagnostics
     // For now, just log that we're building
-    log::info!("builder: processing {} files for {}", file_order.len(), entry_uri.path());
+    log::info!(
+        "builder: processing {} files for {} ({:?}, {} opt tags)",
+        file_order.len(),
+        entry_uri.path(),
+        config.mode,
+        config.opts.len()
+    );
 
-    // TODO: Actually build AST, run diagnostics, collect results
-    // For now, collect empty diagnostics
-    let mut results = Vec::new();
+    // Collect diagnostics per file.
+    let mut result_map: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
     for uri in &file_order {
-        results.push(BuilderDiagnostics {
-            uri: uri.clone(),
-            diagnostics: Vec::new(),
-        });
+        result_map.entry(uri.clone()).or_default();
+    }
+
+    for uri in &missing_sources {
+        result_map
+            .entry(entry_uri.clone())
+            .or_default()
+            .push(Diagnostic {
+                range: Range::default(),
+                message: format!("builder: cannot read source for {}", uri.path()),
+                severity: Some(DiagnosticSeverity::Warning),
+                source: Some("build".to_string()),
+                code: Some(DiagnosticCode::String("build-read-failed".to_string())),
+                ..Default::default()
+            });
+    }
+
+    // Project-wide function diagnostics: distribute to each file in the tree.
+    for uri in &file_order {
+        if cancel_token.is_cancelled() {
+            log::debug!("builder: cancelled during diagnostics for {}", entry_uri.path());
+            return Ok(());
+        }
+
+        // Clone snapshot Arc and drop DashMap guard immediately to avoid
+        // lock-ordering deadlocks with nested graph/cache reads.
+        let Some(snapshot) = PARSE_CACHE.get(uri).map(|s| Arc::clone(s.value())) else {
+            continue;
+        };
+
+        let file_unused_suppressed = snapshot.file_symbols.file_ignore_tags.contains("unused");
+        let file_cycle_suppressed = snapshot.file_symbols.file_ignore_tags.contains("cycle");
+        let diag = crate::util::call_graph::diagnose_functions(uri);
+
+        for name in &diag.unused {
+            if file_unused_suppressed {
+                continue;
+            }
+            let per_decl_suppressed = snapshot
+                .file_symbols
+                .functions
+                .iter()
+                .any(|f| f.name == *name && f.ignore_tags.contains("unused"));
+            if per_decl_suppressed {
+                continue;
+            }
+            if let Some(range) = find_function_decl_range(&snapshot, name) {
+                result_map
+                    .entry(uri.clone())
+                    .or_default()
+                    .push(Diagnostic {
+                        range,
+                        message: crate::util::i18n::unused_function(name),
+                        severity: Some(DiagnosticSeverity::Hint),
+                        source: Some("build".to_string()),
+                        code: Some(DiagnosticCode::String("unused-function-project".to_string())),
+                        ..Default::default()
+                    });
+            }
+        }
+
+        for name in &diag.in_cycle {
+            if file_cycle_suppressed {
+                continue;
+            }
+            let per_decl_suppressed = snapshot
+                .file_symbols
+                .functions
+                .iter()
+                .any(|f| f.name == *name && f.ignore_tags.contains("cycle"));
+            if per_decl_suppressed {
+                continue;
+            }
+            if let Some(range) = find_function_decl_range(&snapshot, name) {
+                result_map
+                    .entry(uri.clone())
+                    .or_default()
+                    .push(Diagnostic {
+                        range,
+                        message: crate::util::i18n::cyclic_call_chain(name),
+                        severity: Some(DiagnosticSeverity::Warning),
+                        source: Some("build".to_string()),
+                        code: Some(DiagnosticCode::String("cyclic-call-project".to_string())),
+                        ..Default::default()
+                    });
+            }
+        }
+    }
+
+    let mut results = Vec::new();
+    for (uri, diagnostics) in result_map {
+        results.push(BuilderDiagnostics { uri, diagnostics });
     }
 
     // Step 4: Merge diagnostics with builder augmentation
@@ -228,8 +329,8 @@ async fn _run_builder_impl(
     // 2. Remove any old "build" source diagnostics (in case builder re-ran)
     // 3. Add new "build" source diagnostics from the builder
     for result in results {
-        if let Some(old_snap_ref) = PARSE_CACHE.get(&result.uri) {
-            let old_snap = Arc::clone(&old_snap_ref);
+        // Clone snapshot Arc first, then drop guard before insert().
+        if let Some(old_snap) = PARSE_CACHE.get(&result.uri).map(|s| Arc::clone(s.value())) {
             let mut merged_diags = old_snap.diagnostics.clone();
 
             // Remove old "build" diagnostics (from previous builder run)
@@ -261,6 +362,21 @@ async fn _run_builder_impl(
     }
 
     Ok(())
+}
+
+fn find_function_decl_range(
+    snapshot: &crate::util::parse_cache::ParseSnapshot,
+    name: &str,
+) -> Option<Range> {
+    for (&decl_key, group) in &snapshot.ref_map.groups {
+        if !snapshot.func_decl_keys.contains(&decl_key) || group.name != name {
+            continue;
+        }
+        if let Some(occ) = group.occurrences.iter().find(|o| o.is_decl) {
+            return Some(occ.range.clone());
+        }
+    }
+    None
 }
 
 #[cfg(test)]

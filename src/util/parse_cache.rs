@@ -297,11 +297,17 @@ impl Drop for CascadeGuard {
 
 /// Cancel any in-flight parse for `uri` and return a fresh token.
 pub fn new_cancel_token(uri: &Url) -> CancellationToken {
+    let had_old = CANCEL_TOKENS.contains_key(uri);
     if let Some(old) = CANCEL_TOKENS.get(uri) {
         old.cancel();
     }
     let token = CancellationToken::new();
     CANCEL_TOKENS.insert(uri.clone(), token.clone());
+    crate::debug_log!(
+        "parse_cache::new_cancel_token uri={}, replaced_existing={}",
+        uri.path(),
+        had_old
+    );
     token
 }
 
@@ -497,6 +503,11 @@ pub fn mark_parse_pending(uri: &Url) -> u64 {
     PARSE_DONE_TX
         .entry(uri.clone())
         .or_insert_with(|| watch::channel(0).0);
+    crate::debug_log!(
+        "parse_cache::mark_parse_pending uri={}, generation={}",
+        uri.path(),
+        generation
+    );
     generation
 }
 
@@ -506,14 +517,28 @@ pub fn mark_parse_pending(uri: &Url) -> u64 {
 /// completions cannot regress the counter.
 pub fn mark_parse_done(uri: &Url, generation: u64) {
     if let Some(tx) = PARSE_DONE_TX.get(uri) {
+        let mut advanced = false;
         tx.send_if_modified(|current| {
             if generation > *current {
                 *current = generation;
+                advanced = true;
                 true
             } else {
                 false
             }
         });
+        crate::debug_log!(
+            "parse_cache::mark_parse_done uri={}, generation={}, advanced={}",
+            uri.path(),
+            generation,
+            advanced
+        );
+    } else {
+        crate::debug_log!(
+            "parse_cache::mark_parse_done uri={}, generation={}, advanced=false, watcher_missing=true",
+            uri.path(),
+            generation
+        );
     }
 }
 

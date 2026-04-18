@@ -17,6 +17,7 @@ pub mod uglify;
 
 use serde::Serialize;
 use url::Url;
+use crate::http::diagnostic::Diagnostic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PipelineMode {
@@ -35,6 +36,20 @@ impl BuildOptions {
         Self {
             mode: PipelineMode::Build,
             write_output: true,
+        }
+    }
+
+    pub const fn diagnostics() -> Self {
+        Self {
+            mode: PipelineMode::Diagnostics,
+            write_output: false,
+        }
+    }
+
+    pub const fn build_preview() -> Self {
+        Self {
+            mode: PipelineMode::Build,
+            write_output: false,
         }
     }
 }
@@ -62,6 +77,18 @@ impl BuildResult {
     }
 }
 
+/// Extended builder outcome for diagnostics/build pipelines.
+#[derive(Debug, Clone, Serialize)]
+pub struct BuilderReport {
+    pub result: BuildResult,
+    pub diagnostics: Vec<Diagnostic>,
+    pub files: usize,
+    pub functions: usize,
+    pub globals: usize,
+    pub preview: Option<String>,
+    pub applied_fixes: Vec<String>,
+}
+
 // ─── Public build commands ────────────────────────────────────────────────────
 
 /// Merge all JASS files in the import tree into a single `.j` file.
@@ -69,9 +96,49 @@ pub fn build_jass(uri: &Url) -> BuildResult {
     build_jass::run_with_options(uri, BuildOptions::build())
 }
 
+/// Analyze JASS project without writing output.
+pub fn diagnose_jass(uri: &Url) -> BuildResult {
+    build_jass::run_with_options(uri, BuildOptions::diagnostics())
+}
+
+/// Build JASS preview without writing output.
+pub fn build_jass_preview(uri: &Url) -> BuildResult {
+    build_jass::run_with_options(uri, BuildOptions::build_preview())
+}
+
+/// Analyze JASS project and return an extended report.
+pub fn diagnose_jass_report(uri: &Url) -> BuilderReport {
+    crate::lng::jass::builder::build_jass::run_report_with_options(uri, BuildOptions::diagnostics())
+}
+
+/// Build JASS preview and return an extended report.
+pub fn build_jass_preview_report(uri: &Url) -> BuilderReport {
+    crate::lng::jass::builder::build_jass::run_report_with_options(uri, BuildOptions::build_preview())
+}
+
 /// Write an AngelScript stub output file (not yet implemented).
 pub fn build_as(uri: &Url) -> BuildResult {
     build_as::run_with_options(uri, BuildOptions::build())
+}
+
+/// Analyze AngelScript output generation without writing output.
+pub fn diagnose_as(uri: &Url) -> BuildResult {
+    build_as::run_with_options(uri, BuildOptions::diagnostics())
+}
+
+/// Build AngelScript preview without writing output.
+pub fn build_as_preview(uri: &Url) -> BuildResult {
+    build_as::run_with_options(uri, BuildOptions::build_preview())
+}
+
+/// Analyze AngelScript output generation and return an extended report.
+pub fn diagnose_as_report(uri: &Url) -> BuilderReport {
+    crate::lng::jass::builder::build_as::run_report_with_options(uri, BuildOptions::diagnostics())
+}
+
+/// Build AngelScript preview and return an extended report.
+pub fn build_as_preview_report(uri: &Url) -> BuilderReport {
+    crate::lng::jass::builder::build_as::run_report_with_options(uri, BuildOptions::build_preview())
 }
 
 /// Check whether `key` exists in any `//entry` file of the connected component.

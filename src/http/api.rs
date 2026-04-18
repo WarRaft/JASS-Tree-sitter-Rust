@@ -5,6 +5,7 @@
 //! requests use JSON.
 
 use crate::http::server::{TokenParam, check_token};
+use crate::debug_log;
 use axum::extract::{Json, Query};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -14,6 +15,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 use url::Url;
 
 // ─── Auth helper ─────────────────────────────────────────────────────────────
@@ -1037,15 +1039,89 @@ pub async fn graph_exports(
 
 pub async fn build_execute(
     Query(auth): Query<AuthQuery>,
-    Json(params): Json<UriParam>,
+    Json(params): Json<BuildExecuteParams>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     auth.check()?;
     let uri = &params.uri;
+    let mode = params.mode.as_deref().unwrap_or("build").to_ascii_lowercase();
+    let with_report = params.report.unwrap_or(false);
     let has_jass = crate::lng::jass::builder::has_build_setting(uri, "build-jass");
     let has_as = crate::lng::jass::builder::has_build_setting(uri, "build-as");
+
+    if with_report {
+        let response = if has_jass && has_as {
+            let r1 = match mode.as_str() {
+                "diagnostics" | "diagnose" => crate::lng::jass::builder::diagnose_jass_report(uri),
+                "preview" => crate::lng::jass::builder::build_jass_preview_report(uri),
+                _ => crate::lng::jass::builder::BuilderReport {
+                    result: crate::lng::jass::builder::build_jass(uri),
+                    diagnostics: Vec::new(),
+                    files: 0,
+                    functions: 0,
+                    globals: 0,
+                    preview: None,
+                    applied_fixes: Vec::new(),
+                },
+            };
+            let r2 = match mode.as_str() {
+                "diagnostics" | "diagnose" => crate::lng::jass::builder::diagnose_as_report(uri),
+                "preview" => crate::lng::jass::builder::build_as_preview_report(uri),
+                _ => crate::lng::jass::builder::BuilderReport {
+                    result: crate::lng::jass::builder::build_as(uri),
+                    diagnostics: Vec::new(),
+                    files: 0,
+                    functions: 0,
+                    globals: 0,
+                    preview: None,
+                    applied_fixes: Vec::new(),
+                },
+            };
+            json!({ "jass": r1, "as": r2 })
+        } else if has_as {
+            let r = match mode.as_str() {
+                "diagnostics" | "diagnose" => crate::lng::jass::builder::diagnose_as_report(uri),
+                "preview" => crate::lng::jass::builder::build_as_preview_report(uri),
+                _ => crate::lng::jass::builder::BuilderReport {
+                    result: crate::lng::jass::builder::build_as(uri),
+                    diagnostics: Vec::new(),
+                    files: 0,
+                    functions: 0,
+                    globals: 0,
+                    preview: None,
+                    applied_fixes: Vec::new(),
+                },
+            };
+            json!(r)
+        } else {
+            let r = match mode.as_str() {
+                "diagnostics" | "diagnose" => crate::lng::jass::builder::diagnose_jass_report(uri),
+                "preview" => crate::lng::jass::builder::build_jass_preview_report(uri),
+                _ => crate::lng::jass::builder::BuilderReport {
+                    result: crate::lng::jass::builder::build_jass(uri),
+                    diagnostics: Vec::new(),
+                    files: 0,
+                    functions: 0,
+                    globals: 0,
+                    preview: None,
+                    applied_fixes: Vec::new(),
+                },
+            };
+            json!(r)
+        };
+        return Ok(Json(response));
+    }
+
     let result = if has_jass && has_as {
-        let r1 = crate::lng::jass::builder::build_jass(uri);
-        let r2 = crate::lng::jass::builder::build_as(uri);
+        let r1 = match mode.as_str() {
+            "diagnostics" | "diagnose" => crate::lng::jass::builder::diagnose_jass(uri),
+            "preview" => crate::lng::jass::builder::build_jass_preview(uri),
+            _ => crate::lng::jass::builder::build_jass(uri),
+        };
+        let r2 = match mode.as_str() {
+            "diagnostics" | "diagnose" => crate::lng::jass::builder::diagnose_as(uri),
+            "preview" => crate::lng::jass::builder::build_as_preview(uri),
+            _ => crate::lng::jass::builder::build_as(uri),
+        };
         if r1.ok && r2.ok {
             crate::lng::jass::builder::BuildResult {
                 ok: true,
@@ -1054,11 +1130,29 @@ pub async fn build_execute(
             }
         } else if !r1.ok { r1 } else { r2 }
     } else if has_as {
-        crate::lng::jass::builder::build_as(uri)
+        match mode.as_str() {
+            "diagnostics" | "diagnose" => crate::lng::jass::builder::diagnose_as(uri),
+            "preview" => crate::lng::jass::builder::build_as_preview(uri),
+            _ => crate::lng::jass::builder::build_as(uri),
+        }
     } else {
-        crate::lng::jass::builder::build_jass(uri)
+        match mode.as_str() {
+            "diagnostics" | "diagnose" => crate::lng::jass::builder::diagnose_jass(uri),
+            "preview" => crate::lng::jass::builder::build_jass_preview(uri),
+            _ => crate::lng::jass::builder::build_jass(uri),
+        }
     };
     Ok(Json(json!(result)))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildExecuteParams {
+    pub uri: Url,
+    /// "build" (default), "preview", or "diagnostics"/"diagnose".
+    pub mode: Option<String>,
+    /// Return extended `BuilderReport` object instead of plain `BuildResult`.
+    pub report: Option<bool>,
 }
 
 pub async fn build_hooks(
@@ -1612,6 +1706,14 @@ pub struct DocumentUpdateQuery {
 /// Empty string → no hints.  Space/comma-separated tags: `ref`, `type`.
 fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) -> Vec<u8> {
     use crate::util::parse_cache::PARSE_CACHE;
+    let started_at = Instant::now();
+
+    debug_log!(
+        "build_update_response: START uri={}, prev_result_id={}, hints={}",
+        uri.path(),
+        prev_result_id.map(|id| id.to_string()).unwrap_or_else(|| "-".into()),
+        if hints.is_empty() { "-" } else { hints }
+    );
 
     let mut buf = Vec::new();
 
@@ -1621,7 +1723,10 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) ->
     // own write lock, causing a lock-ordering deadlock).
     let snap = match PARSE_CACHE.get(uri) {
         Some(s) => std::sync::Arc::clone(s.value()),
-        None => return buf,
+        None => {
+            debug_log!("build_update_response: cache miss uri={}", uri.path());
+            return buf;
+        },
     };
 
     // ── Section 0x01/0x03: Semantic tokens (full or delta) ────────
@@ -1868,6 +1973,18 @@ fn build_update_response(uri: &Url, prev_result_id: Option<u32>, hints: &str) ->
         }
     }
 
+    debug_log!(
+        "build_update_response: END uri={}, diagnostics={}, symbols={}, links={}, folding={}, colors={}, total_bytes={}, elapsed_ms={}",
+        uri.path(),
+        snap.diagnostics.len(),
+        snap.symbols.len(),
+        snap.links.len(),
+        snap.folding.len(),
+        snap.colors.len(),
+        buf.len(),
+        started_at.elapsed().as_millis()
+    );
+
     buf
 }
 
@@ -1937,6 +2054,15 @@ pub async fn document_update(
     Query(params): Query<DocumentUpdateQuery>,
     body: axum::body::Bytes,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let request_started_at = Instant::now();
+    debug_log!(
+        "document_update: START uri={}, lang={}, version={}, body_len={}",
+        params.uri,
+        params.language_id,
+        params.version,
+        body.len()
+    );
+
     check_token(&TokenParam { token: params.token })
         .map_err(|(s, m)| (s, m.to_string()))?;
 
@@ -1944,6 +2070,8 @@ pub async fn document_update(
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid URI".into()))?;
     let lang = params.language_id.as_str();
     let version = params.version;
+
+    debug_log!("document_update: uri parsed, lang={}, version={}", lang, version);
 
     // Build a response that only contains the echoed version prefix (no TLV
     // sections).  Used when there is nothing to return — unrecognised
@@ -1958,11 +2086,14 @@ pub async fn document_update(
     let mut has_work = false;
 
     if body.len() >= 5 && body[0] == section::OPEN_URI {
+        debug_log!("document_update: OPEN_URI section");
         // ── Open by URI — server reads from disk ──────────────────
         let file_path = uri.to_file_path()
             .map_err(|_| (StatusCode::BAD_REQUEST, "URI is not a file:// path".into()))?;
         let text = tokio::fs::read_to_string(&file_path).await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read {}: {e}", file_path.display())))?;
+
+        debug_log!("document_update: read file {} bytes", text.len());
 
         let init_result = match lang {
             "bni" => crate::lng::bni::open::init(&uri, &text),
@@ -1975,9 +2106,11 @@ pub async fn document_update(
         if let Err(e) = init_result {
             return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{lang} init: {e}")));
         }
+        debug_log!("document_update: {} init done", lang);
         crate::util::import_graph::IMPORT_GRAPH.ensure_node_pub(&uri);
         has_work = true;
     } else if body.len() >= 5 && body[0] == section::FULL_TEXT {
+        debug_log!("document_update: FULL_TEXT section");
         // ── Open (full text) ─────────────────────────────────────
         let text_len = u32::from_le_bytes(
             body[1..5].try_into().map_err(|_| (StatusCode::BAD_REQUEST, "bad header".into()))?
@@ -1987,6 +2120,8 @@ pub async fn document_update(
         }
         let text = std::str::from_utf8(&body[5..5+text_len])
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid UTF-8: {e}")))?;
+
+        debug_log!("document_update: parsed FULL_TEXT {} bytes", text.len());
 
         let init_result = match lang {
             "bni" => crate::lng::bni::open::init(&uri, text),
@@ -1999,14 +2134,17 @@ pub async fn document_update(
         if let Err(e) = init_result {
             return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{lang} init: {e}")));
         }
+        debug_log!("document_update: {} FULL_TEXT init done", lang);
         crate::util::import_graph::IMPORT_GRAPH.ensure_node_pub(&uri);
         has_work = true;
     } else if body.len() >= 5 && body[0] == section::CONTENT_CHANGE {
+        debug_log!("document_update: CONTENT_CHANGE section");
         // ── Change (incremental edits) ───────────────────────────
         let changes = parse_content_changes(&body)
             .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
         if !changes.is_empty() {
+            debug_log!("document_update: applying {} changes", changes.len());
             let edit_result = match lang {
                 "bni" => crate::lng::bni::change::apply_edits(&uri, changes),
                 "jass" => crate::lng::jass::change::apply_edits(&uri, changes),
@@ -2018,39 +2156,84 @@ pub async fn document_update(
             if let Err(e) = edit_result {
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("{lang} edit: {e}")));
             }
+            debug_log!("document_update: {} edits applied", lang);
             has_work = true;
         }
     }
 
     if !has_work {
+        debug_log!("document_update: no work, returning empty");
         return empty(version);
     }
 
     // ── Parse ─────────────────────────────────────────────────────
     // The client-side serial queue guarantees only one in-flight request
     // per URI, so no server-side cancellation race is needed.
+    debug_log!("document_update: starting parse for lang={}", lang);
     let parse_gen = crate::util::parse_cache::mark_parse_pending(&uri);
+    let parse_started_at = Instant::now();
+    debug_log!(
+        "document_update: parse pending uri={}, lang={}, version={}, parse_gen={}",
+        uri.path(),
+        lang,
+        version,
+        parse_gen
+    );
     let res = match lang {
         "bni" => crate::lng::bni::parse::parse_and_notify(&uri).await,
-        "jass" => crate::lng::jass::parse::parse_and_notify(&uri, Some(parse_gen)).await,
+        "jass" => {
+            debug_log!(
+                "document_update: entering jass parse_and_notify uri={}, parse_gen={}",
+                uri.path(),
+                parse_gen
+            );
+            crate::lng::jass::parse::parse_and_notify(&uri, Some(parse_gen)).await
+        },
         "angelscript" => crate::lng::ass::parse::parse_and_notify(&uri, Some(parse_gen)).await,
         "wts" => crate::lng::wts::parse::parse_and_notify(&uri).await,
         "slk" => crate::lng::slk::parse::parse_and_notify(&uri).await,
         _ => Ok(()),
     };
+    debug_log!(
+        "document_update: parse_and_notify returned uri={}, parse_gen={}, elapsed_ms={}",
+        uri.path(),
+        parse_gen,
+        parse_started_at.elapsed().as_millis()
+    );
     if let Err(e) = res {
         log::error!("{} parse: {}", lang, e);
+        debug_log!(
+            "document_update: {} parse error uri={}, parse_gen={}, error={}",
+            lang,
+            uri.path(),
+            parse_gen,
+            e
+        );
     }
     crate::util::parse_cache::mark_parse_done(&uri, parse_gen);
+    debug_log!(
+        "document_update: mark_parse_done completed uri={}, parse_gen={}",
+        uri.path(),
+        parse_gen
+    );
 
     // ── Build binary TLV response ────────────────────────────────
     // The first 4 bytes are the echoed client version (u32 LE) so the
     // client can discard stale responses that no longer match its
     // current document state.
+    debug_log!("document_update: building update response uri={}, parse_gen={}", uri.path(), parse_gen);
     let tlv = build_update_response(&uri, params.last_result_id, &params.hints);
     let mut resp = Vec::with_capacity(4 + tlv.len());
     resp.extend_from_slice(&version.to_le_bytes());
     resp.extend_from_slice(&tlv);
+    debug_log!(
+        "document_update: END uri={}, version={}, parse_gen={}, response_len={}, total_elapsed_ms={}",
+        params.uri,
+        version,
+        parse_gen,
+        resp.len(),
+        request_started_at.elapsed().as_millis()
+    );
     Ok(([(axum::http::header::CONTENT_TYPE, "application/octet-stream")], resp))
 }
 

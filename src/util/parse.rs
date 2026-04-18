@@ -39,6 +39,7 @@ use std::collections::HashSet;
 use std::error::Error;
 use std::future::Future;
 use std::pin::Pin;
+use std::time::Instant;
 use url::Url;
 
 // ─── Symbol types (moved from scope_resolver) ───────────────────────────────
@@ -725,8 +726,15 @@ fn collect_as_frozen_imports(
 ///    Handlers that need data later call [`peek_or_load`].
 /// 3. **Parse from disk** — last resort, reads + parses the file.
 pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) -> bool {
+    let started_at = Instant::now();
+    crate::debug_log!("ensure_file_symbols START uri={}", dep_uri.path());
     // Already fully parsed — PARSE_CACHE has everything.
     if PARSE_CACHE.contains_key(dep_uri) {
+        crate::debug_log!(
+            "ensure_file_symbols HIT parse_cache uri={}, elapsed_ms={}",
+            dep_uri.path(),
+            started_at.elapsed().as_millis()
+        );
         return true;
     }
 
@@ -738,25 +746,42 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
         if cached.symbols.is_entry {
             IMPORT_GRAPH.mark_entry(dep_uri, true);
         }
+        crate::debug_log!(
+            "ensure_file_symbols HIT disk_cache uri={}, is_entry={}, elapsed_ms={}",
+            dep_uri.path(),
+            cached.symbols.is_entry,
+            started_at.elapsed().as_millis()
+        );
         return true;
     }
 
     // Parse from disk.
     let path = match dep_uri.to_file_path() {
         Ok(p) if p.is_file() => p,
-        _ => return false,
+        _ => {
+            crate::debug_log!("ensure_file_symbols FAIL invalid_path uri={}", dep_uri.path());
+            return false;
+        },
     };
+    crate::debug_log!("ensure_file_symbols reading from disk uri={}, path={}", dep_uri.path(), path.display());
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(e) => {
+            crate::debug_log!("ensure_file_symbols FAIL read uri={}, error={}", dep_uri.path(), e);
+            return false;
+        },
     };
     let mut parser = tree_sitter::Parser::new();
     if parser.set_language(&ts_language).is_err() {
+        crate::debug_log!("ensure_file_symbols FAIL set_language uri={}", dep_uri.path());
         return false;
     }
     let tree = match parser.parse(&content, None) {
         Some(t) => t,
-        None => return false,
+        None => {
+            crate::debug_log!("ensure_file_symbols FAIL parser.parse uri={}", dep_uri.path());
+            return false;
+        },
     };
 
     let rope = Rope::from(content.as_str());
@@ -825,6 +850,12 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             IMPORT_GRAPH.mark_entry(dep_uri, true);
         }
 
+        crate::debug_log!(
+            "ensure_file_symbols END uri={}, lang=angelscript, imports_loaded=true, elapsed_ms={}",
+            dep_uri.path(),
+            started_at.elapsed().as_millis()
+        );
+
         return true;
     }
 
@@ -859,6 +890,7 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
             }
         }
     }
+    let dep_import_count = dep_imports.len();
     if !dep_imports.is_empty() {
         IMPORT_GRAPH.update(dep_uri, dep_imports);
     }
@@ -901,6 +933,13 @@ pub fn ensure_file_symbols(dep_uri: &Url, ts_language: tree_sitter::Language) ->
     if file_symbols.is_entry {
         IMPORT_GRAPH.mark_entry(dep_uri, true);
     }
+    crate::debug_log!(
+        "ensure_file_symbols END uri={}, lang=jass, imports={}, frozen_imports={}, elapsed_ms={}",
+        dep_uri.path(),
+        dep_import_count,
+        file_symbols.frozen_imports.len(),
+        started_at.elapsed().as_millis()
+    );
     true
 }
 
@@ -978,20 +1017,35 @@ pub async fn cascade_parse_and_notify(
     _parse_from_disk_fn: Option<&ParseFn>,
     generation: Option<u64>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let started_at = Instant::now();
+    crate::debug_log!(
+        "cascade_parse_and_notify START uri={}, generation={}",
+        uri.path(),
+        generation.map(|g| g.to_string()).unwrap_or_else(|| "-".into())
+    );
     // Cycle guard.
     let _guard = match CascadeGuard::try_enter(uri) {
         Some(g) => g,
         None => {
+            crate::debug_log!("cascade_parse_and_notify uri={} already in progress", uri.path());
             log::debug!("cascade: skipping {} (already in progress)", uri.path());
             return Ok(());
         }
     };
 
     // Pass 1: parse the current file.
+    crate::debug_log!("cascade_parse_and_notify START Pass 1 (parse_fn) uri={}", uri.path());
     let mut cascade = parse_fn(uri.clone()).await?;
+    crate::debug_log!(
+        "cascade_parse_and_notify END Pass 1 uri={}, cascade_size={}, elapsed_ms={}",
+        uri.path(),
+        cascade.len(),
+        started_at.elapsed().as_millis()
+    );
 
     // Drain pending-import waiters.
     let pending_waiters = drain_pending(uri);
+    crate::debug_log!("cascade_parse_and_notify drained {} pending waiters", pending_waiters.len());
     for waiter in pending_waiters {
         if !cascade.contains(&waiter) {
             cascade.push(waiter);
@@ -999,10 +1053,13 @@ pub async fn cascade_parse_and_notify(
     }
 
     // Pass 2: cascade re-parse affected peers.
+    crate::debug_log!("cascade_parse_and_notify START Pass 2 (cascade) uri={}, cascade_size={}", uri.path(), cascade.len());
     let mut count = 0usize;
+    let total_peers = cascade.len();
 
-    for peer_uri in &cascade {
+    for (index, peer_uri) in cascade.iter().enumerate() {
         if count >= MAX_CASCADE_PEERS {
+            crate::debug_log!("cascade_parse_and_notify cascade capped at {} peers", MAX_CASCADE_PEERS);
             log::warn!(
                 "cascade: capped at {} peers for {}",
                 MAX_CASCADE_PEERS,
@@ -1012,22 +1069,45 @@ pub async fn cascade_parse_and_notify(
         }
 
         if REPARSE_GUARD.contains(peer_uri) {
+            crate::debug_log!(
+                "cascade_parse_and_notify skipping peer (guarded) uri={}, peer={}/{}, peer_uri={}",
+                uri.path(),
+                index + 1,
+                total_peers,
+                peer_uri.path()
+            );
             log::debug!("cascade: skipping {} (guarded)", peer_uri.path());
             continue;
         }
 
         let ok = if ROPE_MAP.contains_key(peer_uri) && TREE_MAP.contains_key(peer_uri) {
+            crate::debug_log!(
+                "cascade_parse_and_notify reparsing open peer uri={}, peer={}/{}, peer_uri={}",
+                uri.path(),
+                index + 1,
+                total_peers,
+                peer_uri.path()
+            );
             match parse_by_uri(peer_uri).await {
                 Ok(_) => true,
                 Err(e) => {
+                    crate::debug_log!("cascade_parse_and_notify reparse error for {}: {}", peer_uri, e);
                     log::error!("cascade re-parse {}: {}", peer_uri, e);
                     false
                 }
             }
         } else {
+            crate::debug_log!(
+                "cascade_parse_and_notify parsing closed peer from disk uri={}, peer={}/{}, peer_uri={}",
+                uri.path(),
+                index + 1,
+                total_peers,
+                peer_uri.path()
+            );
             match parse_from_disk_by_uri(peer_uri).await {
                 Ok(_) => true,
                 Err(e) => {
+                    crate::debug_log!("cascade_parse_and_notify disk parse error for {}: {}", peer_uri.path(), e);
                     log::debug!("cascade disk-parse {}: {}", peer_uri.path(), e);
                     false
                 }
@@ -1036,15 +1116,31 @@ pub async fn cascade_parse_and_notify(
 
         if ok {
             count += 1;
+            crate::debug_log!(
+                "cascade_parse_and_notify peer done uri={}, peer={}/{}, peer_uri={}, reparsed_peers={}",
+                uri.path(),
+                index + 1,
+                total_peers,
+                peer_uri.path(),
+                count
+            );
         }
     }
 
 
+    crate::debug_log!("cascade_parse_and_notify END Pass 2, reparsed_peers={}", count);
     // Signal that this parse generation is complete.
     if let Some(g) = generation {
+        crate::debug_log!("cascade_parse_and_notify marking parse done uri={}, generation={}", uri.path(), g);
         mark_parse_done(uri, g);
     }
 
+    crate::debug_log!(
+        "cascade_parse_and_notify END uri={}, generation={}, total_elapsed_ms={}",
+        uri.path(),
+        generation.map(|g| g.to_string()).unwrap_or_else(|| "-".into()),
+        started_at.elapsed().as_millis()
+    );
     Ok(())
 }
 

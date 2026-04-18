@@ -25,6 +25,7 @@ pub async fn ws_debug_log(
 
 async fn handle_debug_log(socket: WebSocket) {
     let (mut sink, mut stream) = socket.split();
+    let recent = crate::util::debug_log::recent();
 
     // Send initial greeting so the client knows the connection is alive
     let port = crate::http::server::BINARY_SERVER
@@ -34,6 +35,12 @@ async fn handle_debug_log(socket: WebSocket) {
     let _ = sink
         .send(Message::Text(format!("server connected on port {port}").into()))
         .await;
+
+    for msg in recent {
+        if sink.send(Message::Text(msg.into())).await.is_err() {
+            return;
+        }
+    }
 
     let mut rx = crate::util::debug_log::subscribe();
 

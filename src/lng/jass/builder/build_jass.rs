@@ -25,16 +25,31 @@ use super::render::{
 use super::project::{collect_project, ProjectAst};
 use super::sort::topo_sort;
 use super::uglify::{apply_rename, build_rename_map, collect_decl_names};
-use crate::lng::jass::builder::{BuildOptions, BuildResult, PipelineMode};
+use crate::lng::jass::builder::{BuildOptions, BuildResult, BuilderReport, PipelineMode};
 use crate::lng::jass::builder::collect::{build_opt_tags, find_build_setting};
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
 /// Execute the JASS builder with explicit pipeline options.
 pub fn run_with_options(uri: &Url, options: BuildOptions) -> BuildResult {
+    run_report_with_options(uri, options).result
+}
+
+/// Execute the JASS builder and return the extended pipeline report.
+pub fn run_report_with_options(uri: &Url, options: BuildOptions) -> BuilderReport {
     let project = match collect_project(uri, "build-jass", "war3map.j") {
         Ok(p) => p,
-        Err(e) => return e,
+        Err(e) => {
+            return BuilderReport {
+                result: e,
+                diagnostics: Vec::new(),
+                files: 0,
+                functions: 0,
+                globals: 0,
+                preview: None,
+                applied_fixes: Vec::new(),
+            }
+        }
     };
 
     let uglify = find_build_setting(uri, "build-opts")
@@ -49,36 +64,55 @@ pub fn run_with_options(uri: &Url, options: BuildOptions) -> BuildResult {
             .unwrap_or(false);
 
     let plan = analyze_project(&project, options.mode, uglify);
+    let files = project.files.len();
+    let functions = plan.sorted_funcs.len();
+    let globals = plan.globals.len();
 
     if options.mode == PipelineMode::Diagnostics {
-        return BuildResult::ok(
-            String::new(),
-            format!(
-                "jass diagnostics: {} file(s), {} function(s), {} global(s)",
-                project.files.len(),
-                plan.sorted_funcs.len(),
-                plan.globals.len(),
+        return BuilderReport {
+            result: BuildResult::ok(
+                String::new(),
+                format!(
+                    "jass diagnostics: {} file(s), {} function(s), {} global(s)",
+                    files,
+                    functions,
+                    globals,
+                ),
             ),
-        );
+            diagnostics: Vec::new(),
+            files,
+            functions,
+            globals,
+            preview: None,
+            applied_fixes: Vec::new(),
+        };
     }
 
     let out = render_plan(&plan, &project.out_path);
 
     if !options.write_output {
-        return BuildResult::ok(
-            String::new(),
-            format!(
-                "jass build preview: {} function(s), {} global(s)",
-                plan.sorted_funcs.len(),
-                plan.globals.len(),
+        return BuilderReport {
+            result: BuildResult::ok(
+                String::new(),
+                format!(
+                    "jass build preview: {} function(s), {} global(s)",
+                    functions,
+                    globals,
+                ),
             ),
-        );
+            diagnostics: Vec::new(),
+            files,
+            functions,
+            globals,
+            preview: Some(out),
+            applied_fixes: Vec::new(),
+        };
     }
 
     if let Some(parent) = project.out_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match std::fs::write(&project.out_path, &out) {
+    let result = match std::fs::write(&project.out_path, &out) {
         Ok(_) => BuildResult::ok(
             project.out_path.display().to_string(),
             crate::util::i18n::build_ok(plan.globals.len(), plan.sorted_funcs.len(), plan.bare_stmt_count),
@@ -87,6 +121,16 @@ pub fn run_with_options(uri: &Url, options: BuildOptions) -> BuildResult {
             &project.out_path.display().to_string(),
             &e.to_string(),
         )),
+    };
+
+    BuilderReport {
+        result,
+        diagnostics: Vec::new(),
+        files,
+        functions,
+        globals,
+        preview: None,
+        applied_fixes: Vec::new(),
     }
 }
 

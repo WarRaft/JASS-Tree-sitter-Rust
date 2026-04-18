@@ -20,6 +20,7 @@ use lapce_xi_rope::Rope;
 use std::collections::HashSet;
 use std::error::Error;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -32,6 +33,8 @@ use url::Url;
 ///
 /// Returns the list of peer URIs that should be cascade-re-parsed.
 pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    let started_at = Instant::now();
+    crate::debug_log!("jass::parse START uri={}", uri.path());
     let token = new_cancel_token(uri);
 
     // ── Clone owned data from DashMap guards and drop the guards immediately ──
@@ -47,14 +50,38 @@ pub async fn parse(uri: &Url) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> 
     let uri_owned = uri.clone();
     let cancel = token.clone();
 
+    crate::debug_log!("jass::parse spawning blocking task uri={}", uri.path());
     // ── Run CPU-heavy parse on the blocking thread pool ──
-    let handle = tokio::task::spawn_blocking(move || _parse(&uri_owned, &rope, &tree, &cancel));
+    let handle = tokio::task::spawn_blocking(move || {
+        crate::debug_log!("jass::_parse blocking task START uri={}", uri_owned.path());
+        let result = _parse(&uri_owned, &rope, &tree, &cancel);
+        crate::debug_log!("jass::_parse blocking task END uri={}", uri_owned.path());
+        result
+    });
 
     // ── Race the blocking work against cancellation ──
-    tokio::select! {
-        res = handle => res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?,
-        _ = token.cancelled() => Ok(vec![]),
-    }
+    crate::debug_log!("jass::parse waiting for blocking result uri={}", uri.path());
+    let result = tokio::select! {
+        res = handle => {
+            crate::debug_log!(
+                "jass::parse blocking result arrived uri={}, elapsed_ms={}",
+                uri.path(),
+                started_at.elapsed().as_millis()
+            );
+            res.map_err(|e| -> Box<dyn Error + Send + Sync> { e.into() })?
+        },
+        _ = token.cancelled() => {
+            crate::debug_log!("jass::parse cancelled");
+            Ok(vec![])
+        },
+    };
+    crate::debug_log!(
+        "jass::parse END uri={}, result={}, elapsed_ms={}",
+        uri.path(),
+        if result.is_ok() { "OK" } else { "ERR" },
+        started_at.elapsed().as_millis()
+    );
+    result
 }
 
 /// Parse + cascade re-parse + push diagnostics + refresh all open editors.
@@ -80,8 +107,22 @@ pub async fn parse_and_notify(
     uri: &Url,
     generation: Option<u64>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let started_at = Instant::now();
+    crate::debug_log!(
+        "jass::parse_and_notify START uri={}, generation={}",
+        uri.path(),
+        generation.map(|g| g.to_string()).unwrap_or_else(|| "-".into())
+    );
     let parse_fn: ParseFn = Box::new(|u| Box::pin(async move { parse(&u).await }));
-    cascade_parse_and_notify(uri, &parse_fn, None, generation).await
+    crate::debug_log!("jass::parse_and_notify calling cascade_parse_and_notify");
+    let result = cascade_parse_and_notify(uri, &parse_fn, None, generation).await;
+    crate::debug_log!(
+        "jass::parse_and_notify END uri={}, result={}, elapsed_ms={}",
+        uri.path(),
+        if result.is_ok() { "OK" } else { "ERR" },
+        started_at.elapsed().as_millis()
+    );
+    result
 }
 
 /// Core parse logic (runs on the blocking thread pool).
@@ -117,17 +158,28 @@ fn _parse(
     tree: &tree_sitter::Tree,
     cancel: &CancellationToken,
 ) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
+    let started_at = Instant::now();
+    crate::debug_log!("jass::_parse internal START uri={}", uri.path());
     let root = tree.root_node();
 
     // 1. Build AST from CST
+    crate::debug_log!("jass::_parse building AST uri={}", uri.path());
     let mut ast = build_ast(root);
+    crate::debug_log!(
+        "jass::_parse AST built uri={}, item_count={}, elapsed_ms={}",
+        uri.path(),
+        ast.items.len(),
+        started_at.elapsed().as_millis()
+    );
 
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() {
+        crate::debug_log!("jass::_parse cancelled at checkpoint 1");
         return Ok(vec![]);
     }
 
     // 2. Rewrite leading `//import` / `//import!` comments into Import nodes
+    crate::debug_log!("jass::_parse rewriting imports uri={}", uri.path());
     let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
     rewrite_imports(&mut ast, &src);
 
@@ -136,6 +188,7 @@ fn _parse(
 
     // 3. Extract resolved import URLs, document links, and diagnostics
     //    for non-existent import paths.
+    crate::debug_log!("jass::_parse resolving imports uri={}", uri.path());
     let mut imports = HashSet::new();
     let mut frozen_imports = HashSet::new();
     let mut links = Vec::new();
@@ -169,6 +222,16 @@ fn _parse(
             );
         }
     }
+    crate::debug_log!(
+        "jass::_parse imports resolved uri={}, imports={}, frozen_imports={}, links={}, import_diagnostics={}, ujapi_hints={}, elapsed_ms={}",
+        uri.path(),
+        imports.len(),
+        frozen_imports.len(),
+        links.len(),
+        import_diagnostics.len(),
+        ujapi_hints.len(),
+        started_at.elapsed().as_millis()
+    );
 
     // ── Cancellation checkpoint ──
     if cancel.is_cancelled() {
@@ -196,6 +259,11 @@ fn _parse(
     let mut component: HashSet<Url>;
     {
         component = IMPORT_GRAPH.visible_component(uri);
+        crate::debug_log!(
+            "jass::_parse visible component initial uri={}, component_size={}",
+            uri.path(),
+            component.len()
+        );
 
         // Iteratively ensure every peer is in the scope resolver.
         // `ensure_file_symbols` may register new import edges in the graph
@@ -205,18 +273,37 @@ fn _parse(
         ensured.insert(uri.clone());
         const MAX_ROUNDS: usize = 64;
 
-        for _round in 0..MAX_ROUNDS {
+        for round in 0..MAX_ROUNDS {
+            crate::debug_log!(
+                "jass::_parse ensure round uri={}, round={}, component_size={}, ensured={}",
+                uri.path(),
+                round + 1,
+                component.len(),
+                ensured.len()
+            );
             let mut discovered_new = false;
             for peer_uri in component.iter().cloned().collect::<Vec<_>>() {
                 if !ensured.insert(peer_uri.clone()) {
                     continue;
                 }
+                crate::debug_log!(
+                    "jass::_parse ensure peer uri={}, peer_uri={}",
+                    uri.path(),
+                    peer_uri.path()
+                );
                 let ts_lang = if crate::util::open::is_as_uri(&peer_uri) {
                     tree_sitter_as::language().into()
                 } else {
                     tree_sitter_jass::language().into()
                 };
-                if !ensure_file_symbols(&peer_uri, ts_lang) {
+                let ensured_ok = ensure_file_symbols(&peer_uri, ts_lang);
+                crate::debug_log!(
+                    "jass::_parse ensure peer result uri={}, peer_uri={}, ok={}",
+                    uri.path(),
+                    peer_uri.path(),
+                    ensured_ok
+                );
+                if !ensured_ok {
                     // Dependency not available yet — register so that when it
                     // finishes parsing we get a cascade re-parse.
                     register_pending(&peer_uri, uri);
@@ -242,6 +329,12 @@ fn _parse(
 
         // O(1)-per-name: get all symbols from the connected component.
         let visible_entries = all_visible_entries(&component);
+        crate::debug_log!(
+            "jass::_parse visible entries uri={}, component_size={}, visible_entries={}",
+            uri.path(),
+            component.len(),
+            visible_entries.len()
+        );
 
         // Cache snapshots by URI to avoid repeated redb reads.
         let mut snapshot_cache: std::collections::HashMap<Url, Option<std::sync::Arc<crate::util::parse_cache::ParseSnapshot>>> = std::collections::HashMap::new();
@@ -281,6 +374,11 @@ fn _parse(
                 type_name: entry.type_name.clone(),
             });
         }
+        crate::debug_log!(
+            "jass::_parse imported symbols built uri={}, imported_symbols={}",
+            uri.path(),
+            imported_symbols.len()
+        );
     }
 
     // ── Cancellation checkpoint ──
@@ -290,6 +388,15 @@ fn _parse(
 
     // 5. Single-pass cursor: diagnostics + symbols + folding + id_roles + scopes
     let mut cursor = Cursor::walk(&ast, rope, &imported_symbols);
+    crate::debug_log!(
+        "jass::_parse cursor walk done uri={}, diagnostics={}, functions={}, globals={}, types={}, elapsed_ms={}",
+        uri.path(),
+        cursor.diagnostics.len(),
+        cursor.file_symbols.functions.len(),
+        cursor.file_symbols.globals.len(),
+        cursor.file_symbols.types.len(),
+        started_at.elapsed().as_millis()
+    );
     cursor.file_symbols.frozen_imports = frozen_imports;
     cursor.file_symbols.file_settings = cursor.file_settings.clone();
     cursor.file_symbols.file_ignore_tags = cursor.file_ignore_tags.clone();
@@ -346,6 +453,13 @@ fn _parse(
     {
         use crate::util::call_graph::diagnose_functions;
         let func_diag = diagnose_functions(uri);
+        crate::debug_log!(
+            "jass::_parse call graph diagnostics uri={}, unused={}, in_cycle={}, inlinable={}",
+            uri.path(),
+            func_diag.unused.len(),
+            func_diag.in_cycle.len(),
+            func_diag.inlinable.len()
+        );
 
         // File-level `//ignore unused` suppresses all unused-function diagnostics.
         let file_unused_suppressed = cursor.file_ignore_tags.contains("unused");
@@ -590,6 +704,14 @@ fn _parse(
         vec![]
     };
 
+    crate::debug_log!(
+        "jass::_parse internal END uri={}, diagnostics={}, cascade_count={}, exports_changed={}, total_elapsed_ms={}",
+        uri.path(),
+        new_snapshot.diagnostics.len(),
+        cascade.len(),
+        did_change,
+        started_at.elapsed().as_millis()
+    );
     Ok(cascade)
 }
 
