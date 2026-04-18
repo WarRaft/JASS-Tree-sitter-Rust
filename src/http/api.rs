@@ -2286,6 +2286,12 @@ pub async fn document_update(
         parse_gen
     );
 
+    if lang == "jass" {
+        // Builder runs asynchronously; wait a short window so merged build
+        // diagnostics can make it into this response.
+        crate::util::builder_process::wait_builders_for_uri(&uri, 600).await;
+    }
+
     // ── Build binary TLV response ────────────────────────────────
     // The first 4 bytes are the echoed client version (u32 LE) so the
     // client can discard stale responses that no longer match its

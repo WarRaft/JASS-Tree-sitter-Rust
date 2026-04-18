@@ -6,7 +6,7 @@ use crate::http::diagnostic::{Diagnostic, DiagnosticSeverity};
 use crate::http::ref_map::{DeclKey, RefMap, build_ref_map};
 use crate::util::file_cache;
 use crate::util::parse_cache::{
-    PARSE_CACHE, ParseSnapshot, exports_changed, new_cancel_token,
+    PARSE_CACHE, ParseSnapshot, exports_changed, new_cancel_token, peek_or_load,
 };
 use crate::util::import_graph::IMPORT_GRAPH;
 use crate::util::parse::{
@@ -18,7 +18,7 @@ use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
 use crate::util::builder_process;
 use lapce_xi_rope::Rope;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Instant;
@@ -186,7 +186,6 @@ fn _parse(
     tree: &tree_sitter::Tree,
     cancel: &CancellationToken,
 ) -> Result<Vec<Url>, Box<dyn Error + Send + Sync>> {
-    let started_at = Instant::now();
     let Some(prepared) = _prepare_jass_analysis(uri, rope, tree, cancel)? else {
         return Ok(vec![]);
     };
@@ -228,22 +227,28 @@ fn _parse(
         IMPORT_GRAPH.recompute_entry_cache();
     }
 
-    // 11. Spawn builder process for the entry point (if any).
+    // 11. Spawn builder process for every entry tree that contains this file.
     //
-    // When a file in an import tree is parsed, we find its entry point.
-    // The builder process runs in the background to collect multi-file
-    // diagnostics (unused functions, type mismatches across files, etc.).
-    //
-    // If a new parse starts before the builder finishes, the old builder
-    // is cancelled and a new one is spawned.
-    if let Some(entry_uri) = crate::lng::jass::builder::collect::find_entry_point(uri) {
+    // A file can belong to multiple entry trees (shared imports). For each such
+    // entry URI we cancel any in-flight builder and spawn a fresh one.
+    let mut entry_uris: Vec<Url> = IMPORT_GRAPH.cached_entry_points_for(uri).into_iter().collect();
+    if entry_uris.is_empty() {
+        // No entry root owns this file: still run builder diagnostics for the
+        // current file tree so build-sourced warnings are not silently skipped.
+        entry_uris.push(uri.clone());
+    }
+    entry_uris.sort_by(|a, b| a.path().cmp(b.path()));
+    entry_uris.dedup();
+    for entry_uri in entry_uris {
         builder_process::cancel_builder_for_entry(&entry_uri);
+
+        let opts = peek_or_load(&entry_uri)
+            .map(|snap| crate::lng::jass::builder::collect::build_opt_tags(&snap.file_symbols.file_settings))
+            .unwrap_or_default();
 
         let config = builder_process::BuilderConfig {
             mode: crate::lng::jass::builder::PipelineMode::Diagnostics,
-            opts: crate::lng::jass::builder::collect::build_opt_tags(
-                &new_snapshot.file_symbols.file_settings,
-            ),
+            opts,
         };
         builder_process::spawn_builder_task(&entry_uri, config);
     }
@@ -262,14 +267,6 @@ fn _parse(
         vec![]
     };
 
-    crate::debug_log!(
-        "jass::_parse internal END uri={}, diagnostics={}, cascade_count={}, exports_changed={}, total_elapsed_ms={}",
-        uri.path(),
-        new_snapshot.diagnostics.len(),
-        cascade.len(),
-        did_change,
-        started_at.elapsed().as_millis()
-    );
     Ok(cascade)
 }
 
@@ -325,23 +322,11 @@ fn collect_jass_import_resolution(
 fn build_jass_imported_symbols(uri: &Url, component: &HashSet<Url>) -> Vec<ImportedSymbol> {
     // O(1)-per-name: get all symbols from the connected component.
     let visible_entries = all_visible_entries(component);
-    crate::debug_log!(
-        "jass::_parse visible entries uri={}, component_size={}, visible_entries={}",
-        uri.path(),
-        component.len(),
-        visible_entries.len()
-    );
 
     let imported_symbols = crate::util::parse::jass_imported_symbols_from_entries(
         uri,
         &visible_entries,
         true,
-    );
-
-    crate::debug_log!(
-        "jass::_parse imported symbols built uri={}, imported_symbols={}",
-        uri.path(),
-        imported_symbols.len()
     );
 
     imported_symbols
@@ -436,41 +421,20 @@ fn _prepare_jass_analysis<'tree>(
     tree: &'tree tree_sitter::Tree,
     cancel: &CancellationToken,
 ) -> Result<Option<JassPreparedAnalysis<'tree>>, Box<dyn Error + Send + Sync>> {
-    let started_at = Instant::now();
-    crate::debug_log!("jass::_parse internal START uri={}", uri.path());
     let root = tree.root_node();
 
-    crate::debug_log!("jass::_parse building AST uri={}", uri.path());
     let mut ast = build_ast(root);
-    crate::debug_log!(
-        "jass::_parse AST built uri={}, item_count={}, elapsed_ms={}",
-        uri.path(),
-        ast.items.len(),
-        started_at.elapsed().as_millis()
-    );
 
     if cancel.is_cancelled() {
         crate::debug_log!("jass::_parse cancelled at checkpoint 1");
         return Ok(None);
     }
 
-    crate::debug_log!("jass::_parse rewriting imports uri={}", uri.path());
     let src: Vec<u8> = rope.slice_to_cow(0..rope.len()).as_bytes().to_vec();
     rewrite_imports(&mut ast, &src);
     annotate_comptime_values(&mut ast, &src);
 
-    crate::debug_log!("jass::_parse resolving imports uri={}", uri.path());
     let import_resolution = collect_jass_import_resolution(uri, &ast, &src, rope);
-    crate::debug_log!(
-        "jass::_parse imports resolved uri={}, imports={}, frozen_imports={}, links={}, import_diagnostics={}, ujapi_hints={}, elapsed_ms={}",
-        uri.path(),
-        import_resolution.imports.len(),
-        import_resolution.frozen_imports.len(),
-        import_resolution.links.len(),
-        import_resolution.import_diagnostics.len(),
-        import_resolution.ujapi_hints.len(),
-        started_at.elapsed().as_millis()
-    );
 
     if cancel.is_cancelled() {
         return Ok(None);
@@ -499,7 +463,6 @@ fn _analyze_jass(
     prepared: JassPreparedAnalysis<'_>,
     cancel: &CancellationToken,
 ) -> Result<Option<JassAnalysisResult>, Box<dyn Error + Send + Sync>> {
-    let started_at = Instant::now();
     let JassPreparedAnalysis {
         ast,
         import_resolution,
@@ -525,15 +488,6 @@ fn _analyze_jass(
 
     // 5. Single-pass cursor: diagnostics + symbols + folding + id_roles + scopes
     let mut cursor = Cursor::walk(&ast, rope, &imported_symbols);
-    crate::debug_log!(
-        "jass::_parse cursor walk done uri={}, diagnostics={}, functions={}, globals={}, types={}, elapsed_ms={}",
-        uri.path(),
-        cursor.diagnostics.len(),
-        cursor.file_symbols.functions.len(),
-        cursor.file_symbols.globals.len(),
-        cursor.file_symbols.types.len(),
-        started_at.elapsed().as_millis()
-    );
     cursor.file_symbols.frozen_imports = frozen_imports;
     cursor.file_symbols.file_settings = cursor.file_settings.clone();
     cursor.file_symbols.file_ignore_tags = cursor.file_ignore_tags.clone();
@@ -571,13 +525,6 @@ fn _analyze_jass(
         arg_decl_keys.clone(),
     );
     {
-        crate::debug_log!(
-            "jass::_parse call graph diagnostics uri={}, unused={}, in_cycle={}, inlinable={}",
-            uri.path(),
-            func_diag.unused.len(),
-            func_diag.in_cycle.len(),
-            func_diag.inlinable.len()
-        );
 
         // File-level `//ignore unused` suppresses all unused-function diagnostics.
         let file_unused_suppressed = cursor.file_ignore_tags.contains("unused");
@@ -707,12 +654,46 @@ fn _analyze_jass(
         }
     }
 
+    // 8c. Name collision diagnostics (immediate parse-side visibility).
+    // Rule: no variable/argument declaration may match any function name
+    // in this file (exact-case). The builder performs the project-wide
+    // pass; this parse-side check makes the warning available immediately.
+    {
+        let mut function_names: HashMap<String, String> = HashMap::new();
+        for f in &cursor.file_symbols.functions {
+            function_names
+                .entry(f.name.clone())
+                .or_insert_with(|| f.name.clone());
+        }
+
+        for (&decl_key, group) in &ref_map.groups {
+            if !var_decl_keys.contains(&decl_key) && !arg_decl_keys.contains(&decl_key) {
+                continue;
+            }
+            let Some(func_name) = function_names.get(&group.name) else {
+                continue;
+            };
+            if let Some(decl_occ) = group.occurrences.iter().find(|o| o.is_decl) {
+                all_diagnostics.push(Diagnostic {
+                    range: decl_occ.range.clone(),
+                    message: crate::util::i18n::name_collides_with_function(&group.name, func_name),
+                    severity: Some(DiagnosticSeverity::Warning),
+                    source: Some("jass".into()),
+                    code: Some(crate::http::diagnostic::DiagnosticCode::String(
+                        "name-collision-function".into(),
+                    )),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
     // 8b. Diagnostic: `//set build-*` in a non-entry file.
     //     Build directives must always be in `//entry` files regardless of
     //     whether any entry points exist in the component.
     if !new_snapshot_is_entry {
         for (key, _) in &cursor_file_settings {
-            if key == "build-jass" || key == "build-as" || key == "backup" || key == "build-opts" || key == "build-uglify" || key == "build-before" || key == "build-after" {
+            if key == "build-jass" || key == "build-as" || key == "backup" || key == "build-opts" || key == "build-before" || key == "build-after" {
                 // Find the SetDir node in the AST to get its range.
                 for item in &ast.items {
                     if let Statement::SetDir(sd) = item {
@@ -753,14 +734,6 @@ fn _analyze_jass(
         colors: cursor.colors,
     });
 
-    crate::debug_log!(
-        "jass::_parse analysis END uri={}, diagnostics={}, old_component_size={}, new_component_size={}, total_elapsed_ms={}",
-        uri.path(),
-        new_snapshot.diagnostics.len(),
-        old_component.len(),
-        component.len(),
-        started_at.elapsed().as_millis()
-    );
 
     Ok(Some(JassAnalysisResult {
         previous_snapshot: true_old_snapshot,

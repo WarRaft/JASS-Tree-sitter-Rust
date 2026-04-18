@@ -19,6 +19,7 @@
 //! This way we keep accurate syntax errors and local hints, while adding
 //! cross-file analysis that requires whole-project knowledge.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -26,7 +27,9 @@ use tokio_util::sync::CancellationToken;
 use url::Url;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crate::http::diagnostic::{Diagnostic, DiagnosticCode, DiagnosticSeverity};
+use crate::http::ref_map::{DeclKey, RefMap};
 use crate::http::range::Range;
+use crate::util::import_graph::IMPORT_GRAPH;
 
 // ─── Global builder process registry ──────────────────────────────────────────
 
@@ -93,6 +96,45 @@ pub fn cancel_builder_for_entry(entry_uri: &Url) {
         // Spawn a new token for the next build.
         let new_state = Arc::new(BuilderProcessState::new());
         BUILDER_PROCESSES.insert(entry_uri.clone(), new_state);
+    }
+}
+
+fn builder_roots_for_uri(uri: &Url) -> Vec<Url> {
+    let mut roots: Vec<Url> = IMPORT_GRAPH.cached_entry_points_for(uri).into_iter().collect();
+    // Always include the current URI because parse fallback may key builder
+    // tasks by the file itself when no stable entry root is available yet.
+    roots.push(uri.clone());
+    roots.sort_by(|a, b| a.path().cmp(b.path()));
+    roots.dedup();
+    roots
+}
+
+/// Wait a short time for builder tasks that affect `uri` to finish.
+///
+/// This is used by the document-update response path so newly merged
+/// builder diagnostics can be included without requiring an extra edit.
+pub async fn wait_builders_for_uri(uri: &Url, timeout_ms: u64) {
+    use std::time::Duration;
+
+    let roots = builder_roots_for_uri(uri);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+
+    loop {
+        let mut any_running = false;
+        for root in &roots {
+            if let Some(state) = BUILDER_PROCESSES.get(root) {
+                if state.is_running.load(Ordering::Acquire) {
+                    any_running = true;
+                    break;
+                }
+            }
+        }
+
+        if !any_running || tokio::time::Instant::now() >= deadline {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
@@ -172,6 +214,9 @@ async fn run_builder(
     config: &BuilderConfig,
     cancel_token: &CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Keep config wired into the builder task API even in diagnostics mode.
+    let _ = (&config.mode, &config.opts);
+
     // Ensure the task can be cancelled
     tokio::select! {
         _ = cancel_token.cancelled() => {
@@ -188,13 +233,11 @@ async fn run_builder(
 
 async fn _run_builder_impl(
     entry_uri: &Url,
-    config: &BuilderConfig,
+    _config: &BuilderConfig,
     cancel_token: &CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use crate::lng::jass::builder::collect;
     use crate::util::parse_cache::PARSE_CACHE;
-    use std::collections::HashMap;
-    use std::sync::Arc;
 
     // Step 1: Collect file order (dependencies first, entry last)
     let file_order = collect::collect_file_order(entry_uri);
@@ -219,14 +262,6 @@ async fn _run_builder_impl(
     }
 
     // Step 3: Run diagnostics
-    // For now, just log that we're building
-    log::info!(
-        "builder: processing {} files for {} ({:?}, {} opt tags)",
-        file_order.len(),
-        entry_uri.path(),
-        config.mode,
-        config.opts.len()
-    );
 
     // Collect diagnostics per file.
     let mut result_map: HashMap<Url, Vec<Diagnostic>> = HashMap::new();
@@ -246,6 +281,41 @@ async fn _run_builder_impl(
                 code: Some(DiagnosticCode::String("build-read-failed".to_string())),
                 ..Default::default()
             });
+    }
+
+    // ── Step 3a: Collect all project-wide function names (exact-case).
+    let mut function_names: HashMap<String, String> = HashMap::new();
+    for uri in &file_order {
+        if let Some(snap) = PARSE_CACHE.get(uri).map(|s| Arc::clone(s.value())) {
+            for f in &snap.file_symbols.functions {
+                function_names
+                    .entry(f.name.clone())
+                    .or_insert_with(|| f.name.clone());
+            }
+        }
+    }
+
+    // ── Step 3b: Detect variable/argument declarations that collide with function names.
+    // Rule: no variable/argument name may equal any function name in the entry tree.
+    for uri in &file_order {
+        if cancel_token.is_cancelled() {
+            log::debug!(
+                "builder: cancelled during function-name collision check for {}",
+                entry_uri.path()
+            );
+            return Ok(());
+        }
+        let Some(snapshot) = PARSE_CACHE.get(uri).map(|s| Arc::clone(s.value())) else {
+            continue;
+        };
+
+        let collisions = collect_function_name_collision_diagnostics(
+            &snapshot.ref_map,
+            &snapshot.var_decl_keys,
+            &snapshot.arg_decl_keys,
+            &function_names,
+        );
+        result_map.entry(uri.clone()).or_default().extend(collisions);
     }
 
     // Project-wide function diagnostics: distribute to each file in the tree.
@@ -385,15 +455,113 @@ fn find_function_decl_range(
     None
 }
 
+fn collect_function_name_collision_diagnostics(
+    ref_map: &RefMap,
+    var_decl_keys: &std::collections::HashSet<DeclKey>,
+    arg_decl_keys: &std::collections::HashSet<DeclKey>,
+    function_names: &HashMap<String, String>,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for (&decl_key, group) in &ref_map.groups {
+        if !var_decl_keys.contains(&decl_key) && !arg_decl_keys.contains(&decl_key) {
+            continue;
+        }
+        let Some(func_name) = function_names.get(&group.name) else {
+            continue;
+        };
+        if let Some(occ) = group.occurrences.iter().find(|o| o.is_decl) {
+            out.push(Diagnostic {
+                range: occ.range.clone(),
+                message: crate::util::i18n::name_collides_with_function(&group.name, func_name),
+                severity: Some(DiagnosticSeverity::Warning),
+                source: Some("build".to_string()),
+                code: Some(DiagnosticCode::String("name-collision-function-project".to_string())),
+                ..Default::default()
+            });
+        }
+    }
+    out
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::http::highlight::DocumentHighlightKind;
+    use crate::http::position::Position;
+    use crate::http::ref_map::{Occurrence, RefGroup};
+    use std::collections::HashSet;
 
     #[test]
     fn test_builder_state_creation() {
         let uri = Url::parse("file:///test.j").unwrap();
         let state = get_or_create_builder_state(&uri);
         assert!(!state.is_running.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn test_function_name_collision_for_local_var() {
+        let mut ref_map = RefMap::default();
+        ref_map.groups.insert(
+            7,
+            RefGroup {
+                name: "Cunt_ret".to_string(),
+                occurrences: vec![Occurrence {
+                    range: Range {
+                        start: Position { line: 1, character: 12 },
+                        end: Position { line: 1, character: 20 },
+                    },
+                    kind: DocumentHighlightKind::Write,
+                    is_decl: true,
+                }],
+            },
+        );
+
+        let var_decl_keys = HashSet::from([7]);
+        let arg_decl_keys = HashSet::new();
+        let function_names = HashMap::from([("Cunt_ret".to_string(), "Cunt_ret".to_string())]);
+
+        let out = collect_function_name_collision_diagnostics(
+            &ref_map,
+            &var_decl_keys,
+            &arg_decl_keys,
+            &function_names,
+        );
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].code, Some(DiagnosticCode::String("name-collision-function-project".to_string())));
+    }
+
+    #[test]
+    fn test_function_name_collision_is_case_sensitive() {
+        let mut ref_map = RefMap::default();
+        ref_map.groups.insert(
+            7,
+            RefGroup {
+                name: "cunt_ret".to_string(),
+                occurrences: vec![Occurrence {
+                    range: Range {
+                        start: Position { line: 1, character: 12 },
+                        end: Position { line: 1, character: 20 },
+                    },
+                    kind: DocumentHighlightKind::Write,
+                    is_decl: true,
+                }],
+            },
+        );
+
+        let var_decl_keys = HashSet::from([7]);
+        let arg_decl_keys = HashSet::new();
+        let function_names = HashMap::from([("Cunt_ret".to_string(), "Cunt_ret".to_string())]);
+
+        let out = collect_function_name_collision_diagnostics(
+            &ref_map,
+            &var_decl_keys,
+            &arg_decl_keys,
+            &function_names,
+        );
+
+        assert!(out.is_empty());
     }
 }
 

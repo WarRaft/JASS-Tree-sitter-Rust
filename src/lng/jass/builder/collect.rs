@@ -45,28 +45,6 @@ pub fn has_build_setting(uri: &Url, key: &str) -> bool {
     find_build_setting(uri, key).is_some()
 }
 
-/// Find the entry point URI in the connected component of `uri`.
-///
-/// Returns the first `//entry` file found in the component, or `None` if there
-/// is no entry point (e.g., a library file with no explicit entry marker).
-pub fn find_entry_point(uri: &Url) -> Option<Url> {
-    // Check the current file first.
-    if let Some(snap) = peek_or_load(uri) {
-        if snap.file_symbols.is_entry {
-            return Some(uri.clone());
-        }
-    }
-    // Search the visible component (entry-point-aware).
-    for u in &IMPORT_GRAPH.visible_component(uri) {
-        if let Some(snap) = peek_or_load(u) {
-            if snap.file_symbols.is_entry {
-                return Some(u.clone());
-            }
-        }
-    }
-    None
-}
-
 // ─── File ordering ────────────────────────────────────────────────────────────
 
 /// Return the ordered list of files for the build starting at `entry_uri`.
@@ -120,9 +98,6 @@ pub fn resolve_output_path(base_dir: &Path, target: &str, default_file: &str) ->
 /// Current tags:
 /// - `uglify`
 /// - `nolocal`
-///
-/// Legacy compatibility:
-/// - `//set build-uglify 1` implies the `uglify` tag.
 pub fn build_opt_tags(settings: &HashMap<String, String>) -> HashSet<String> {
     let mut tags = HashSet::new();
 
@@ -134,9 +109,6 @@ pub fn build_opt_tags(settings: &HashMap<String, String>) -> HashSet<String> {
         }
     }
 
-    if settings.get("build-uglify").map(|v| v == "1").unwrap_or(false) {
-        tags.insert("uglify".to_string());
-    }
 
     tags
 }

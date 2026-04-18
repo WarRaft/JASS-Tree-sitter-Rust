@@ -19,8 +19,8 @@ use crate::lng::jass::ast::{annotate_comptime_values, build_ast, rewrite_imports
 use crate::util::import_graph::resolve_import;
 
 use super::render::{
-    render_body_epilogue, render_body_with_hoisting, render_function, render_globals_vars,
-    render_var_stmt, HoistRenderState, id_str,
+    render_body_epilogue, render_body_with_hoisting, render_function_with_reserved_and_renames,
+    render_globals_vars_with_renames, render_var_stmt_with_renames, HoistRenderState, id_str,
 };
 use super::project::{collect_project, ProjectAst};
 use super::sort::topo_sort;
@@ -58,10 +58,7 @@ pub fn run_report_with_options(uri: &Url, options: BuildOptions) -> BuilderRepor
             settings.insert("build-opts".to_string(), v);
             build_opt_tags(&settings).contains("uglify")
         })
-        .unwrap_or(false)
-        || find_build_setting(uri, "build-uglify")
-            .map(|(_, v)| v == "1")
-            .unwrap_or(false);
+        .unwrap_or(false);
 
     let plan = analyze_project(&project, options.mode, uglify);
     let files = project.files.len();
@@ -157,13 +154,179 @@ struct JassBuildPlan {
     sorted_funcs: Vec<String>,
     /// All user-defined identifiers collected from non-frozen files.
     declared_names: Vec<String>,
+    /// Top-level global names reserved by user declarations or generated temps.
+    global_declared_names: HashSet<String>,
+    /// Exact-case function/native names used for var/local/arg vs function collision renames.
+    function_declared_names: HashSet<String>,
+    /// Project-wide renames for globals that collide with function/native names.
+    global_variable_renames: HashMap<String, String>,
     uglify: bool,
+}
+
+/// Collect all top-level names from a file's AST that occupy the global JASS
+/// namespace: global variable names AND function/native names.
+///
+/// This is used to pre-populate the reserved-name set before rendering so that
+/// generated temp-globals (e.g. `Cunt_ret`) never collide with any user-declared
+/// identifier, regardless of the order files or functions appear in.
+fn collect_top_level_names(
+    src: &str,
+    items: &[Statement<'_>],
+    out: &mut HashSet<String>,
+) {
+    for item in items {
+        match item {
+            Statement::Globals(g) => {
+                for var in &g.vars {
+                    for decl in &var.decls {
+                        if let Some(id) = &decl.name {
+                            out.insert(id_str(src, id).to_string());
+                        }
+                    }
+                }
+            }
+            Statement::VarStmt(v) => {
+                for decl in &v.decls {
+                    if let Some(id) = &decl.name {
+                        out.insert(id_str(src, id).to_string());
+                    }
+                }
+            }
+            Statement::Function(f) => {
+                if let Some(id) = &f.name {
+                    out.insert(id_str(src, id).to_string());
+                }
+            }
+            Statement::Native(n) => {
+                if let Some(id) = &n.name {
+                    out.insert(id_str(src, id).to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_generated_global_names(lines: &[String], out: &mut HashSet<String>) {
+    for line in lines {
+        let before_eq = line.split('=').next().unwrap_or("").trim();
+        if before_eq.is_empty() {
+            continue;
+        }
+        let tokens: Vec<&str> = before_eq
+            .split_whitespace()
+            .filter(|t| *t != "constant" && *t != "array")
+            .collect();
+        if let Some(name) = tokens.last() {
+            out.insert((*name).to_string());
+        }
+    }
+}
+
+fn collect_function_and_global_names(
+    src: &str,
+    items: &[Statement<'_>],
+    function_names: &mut HashSet<String>,
+    global_names: &mut HashSet<String>,
+) {
+    for item in items {
+        match item {
+            Statement::Globals(g) => {
+                for var in &g.vars {
+                    for decl in &var.decls {
+                        if let Some(id) = &decl.name {
+                            global_names.insert(id_str(src, id).to_string());
+                        }
+                    }
+                }
+            }
+            Statement::VarStmt(v) => {
+                for decl in &v.decls {
+                    if let Some(id) = &decl.name {
+                        global_names.insert(id_str(src, id).to_string());
+                    }
+                }
+            }
+            Statement::Function(f) => {
+                if let Some(id) = &f.name {
+                    function_names.insert(id_str(src, id).to_string());
+                }
+            }
+            Statement::Native(n) => {
+                if let Some(id) = &n.name {
+                    function_names.insert(id_str(src, id).to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn build_global_rename_map(
+    function_names: &HashSet<String>,
+    global_names: &HashSet<String>,
+    reserved_names: &HashSet<String>,
+) -> HashMap<String, String> {
+    let mut used_names = reserved_names.clone();
+    let mut globals: Vec<String> = global_names.iter().cloned().collect();
+    globals.sort();
+
+    let mut renames = HashMap::new();
+    for name in globals {
+        if !function_names.contains(&name) {
+            continue;
+        }
+
+        let mut suffix = 1u32;
+        loop {
+            let candidate = format!("{name}{suffix}");
+            if used_names.insert(candidate.clone()) {
+                renames.insert(name.clone(), candidate);
+                break;
+            }
+            suffix += 1;
+        }
+    }
+
+    renames
 }
 
 fn analyze_project(project: &ProjectAst, _mode: PipelineMode, uglify: bool) -> JassBuildPlan {
     let mut plan = JassBuildPlan { uglify, ..JassBuildPlan::default() };
     let mut seen_frozen_urls = HashSet::<Url>::new();
+    let mut function_names = HashSet::<String>::new();
+    let mut global_names = HashSet::<String>::new();
 
+    // ── Pass 1: collect ALL top-level names (globals + function names) from every
+    //   non-frozen file so that the render pass has a complete reserved-name set.
+    //   This prevents generated return-temp names (e.g. `Cunt_ret`) from colliding
+    //   with any user identifier, regardless of file/declaration order.
+    for file in &project.files {
+        if file.is_frozen {
+            continue;
+        }
+        let tree = match parse_jass(&file.source) {
+            Some(t) => t,
+            None => continue,
+        };
+        let ast = build_ast(tree.root_node());
+        collect_top_level_names(&file.source, &ast.items, &mut plan.global_declared_names);
+        collect_function_and_global_names(&file.source, &ast.items, &mut function_names, &mut global_names);
+    }
+
+    plan.global_variable_renames = build_global_rename_map(
+        &function_names,
+        &global_names,
+        &plan.global_declared_names,
+    );
+    plan.function_declared_names = function_names;
+    for renamed in plan.global_variable_renames.values() {
+        plan.global_declared_names.insert(renamed.clone());
+    }
+    plan.main_state
+        .set_variable_renames(plan.global_variable_renames.clone());
+
+    // ── Pass 2: render
     for file in &project.files {
         if file.is_frozen {
             continue;
@@ -181,6 +344,7 @@ fn analyze_project(project: &ProjectAst, _mode: PipelineMode, uglify: bool) -> J
         let mut ast = build_ast(tree.root_node());
         rewrite_imports(&mut ast, file.source.as_bytes());
         annotate_comptime_values(&mut ast, file.source.as_bytes());
+
 
         if uglify {
             collect_decl_names(&file.source, &ast.items, &mut plan.declared_names);
@@ -214,10 +378,18 @@ fn analyze_project(project: &ProjectAst, _mode: PipelineMode, uglify: bool) -> J
                     }
                 }
                 Statement::Globals(g) => {
-                    plan.globals.extend(render_globals_vars(&file.source, g));
+                    plan.globals.extend(render_globals_vars_with_renames(
+                        &file.source,
+                        g,
+                        &plan.global_variable_renames,
+                    ));
                 }
                 Statement::VarStmt(v) => {
-                    plan.globals.push(render_var_stmt(&file.source, v));
+                    plan.globals.push(render_var_stmt_with_renames(
+                        &file.source,
+                        v,
+                        &plan.global_variable_renames,
+                    ));
                 }
                 Statement::Function(f) => {
                     let name = f
@@ -229,7 +401,15 @@ fn analyze_project(project: &ProjectAst, _mode: PipelineMode, uglify: bool) -> J
                         if !plan.functions.contains_key(&name) {
                             plan.function_order.push(name.clone());
                         }
-                        let (func_text, extra_globals) = render_function(&file.source, f);
+                        let (func_text, extra_globals) =
+                            render_function_with_reserved_and_renames(
+                                &file.source,
+                                f,
+                                &plan.global_declared_names,
+                                &plan.function_declared_names,
+                                &plan.global_variable_renames,
+                            );
+                        collect_generated_global_names(&extra_globals, &mut plan.global_declared_names);
                         plan.globals.extend(extra_globals);
                         plan.functions.insert(name, func_text);
                     }
@@ -423,5 +603,9 @@ fn normalize_output(raw: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "build_jass_test.rs"]
+mod build_jass_test;
 
 

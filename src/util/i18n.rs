@@ -400,6 +400,31 @@ pub fn cyclic_call_chain(name: &str) -> String {
     }
 }
 
+pub fn name_collides_with_function(name: &str, func_name: &str) -> String {
+    match locale() {
+        Locale::En => format!(
+            "Name `{}` collides with function `{}`; variables/arguments cannot use function names",
+            name, func_name
+        ),
+        Locale::Ru => format!(
+            "Имя `{}` конфликтует с функцией `{}`; переменные/аргументы не могут использовать имена функций",
+            name, func_name
+        ),
+        Locale::Uk => format!(
+            "Ім'я `{}` конфліктує з функцією `{}`; змінні/аргументи не можуть використовувати імена функцій",
+            name, func_name
+        ),
+        Locale::Zh => format!(
+            "名称 `{}` 与函数 `{}` 冲突；变量/参数不能使用函数名",
+            name, func_name
+        ),
+        Locale::Tc => format!(
+            "名稱 `{}` 與函式 `{}` 衝突；變數/參數不能使用函式名稱",
+            name, func_name
+        ),
+    }
+}
+
 pub fn inlinable_function(name: &str) -> String {
     match locale() {
         Locale::En => format!(
@@ -842,15 +867,6 @@ pub fn set_def_build_opt() -> &'static str {
     )
 }
 
-pub fn set_def_build_uglify() -> &'static str {
-    pick(
-        "Legacy alias for `//set build-opts uglify`",
-        "Устаревший алиас для `//set build-opts uglify`",
-        "Застарілий аліас для `//set build-opts uglify`",
-        "`//set build-opts uglify` 的旧别名",
-        "`//set build-opts uglify` 的舊別名",
-    )
-}
 
 pub fn set_def_build_before() -> &'static str {
     pick(
@@ -881,7 +897,6 @@ pub fn set_def_detail(key: &str) -> &'static str {
         "build-as" => set_def_build_as(),
         "backup" => set_def_backup(),
         "build-opts" => set_def_build_opt(),
-        "build-uglify" => set_def_build_uglify(),
         "build-before" => set_def_build_before(),
         "build-after" => set_def_build_after(),
         _ => "",
