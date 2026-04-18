@@ -45,6 +45,28 @@ pub fn has_build_setting(uri: &Url, key: &str) -> bool {
     find_build_setting(uri, key).is_some()
 }
 
+/// Find the entry point URI in the connected component of `uri`.
+///
+/// Returns the first `//entry` file found in the component, or `None` if there
+/// is no entry point (e.g., a library file with no explicit entry marker).
+pub fn find_entry_point(uri: &Url) -> Option<Url> {
+    // Check the current file first.
+    if let Some(snap) = peek_or_load(uri) {
+        if snap.file_symbols.is_entry {
+            return Some(uri.clone());
+        }
+    }
+    // Search the visible component (entry-point-aware).
+    for u in &IMPORT_GRAPH.visible_component(uri) {
+        if let Some(snap) = peek_or_load(u) {
+            if snap.file_symbols.is_entry {
+                return Some(u.clone());
+            }
+        }
+    }
+    None
+}
+
 // ─── File ordering ────────────────────────────────────────────────────────────
 
 /// Return the ordered list of files for the build starting at `entry_uri`.
@@ -203,4 +225,3 @@ fn expand_template_vars(
         .replace("{{target-jass}}", &target_jass_str)
         .replace("{{target-as}}", &target_as_str)
 }
-

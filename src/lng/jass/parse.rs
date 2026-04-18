@@ -15,6 +15,7 @@ use crate::util::parse::{
 use crate::util::roper::node::NodeExt;
 use crate::util::roper::uri_map::ROPE_MAP;
 use crate::util::tree_map::TREE_MAP;
+use crate::util::builder_process;
 use lapce_xi_rope::Rope;
 use std::collections::HashSet;
 use std::error::Error;
@@ -554,6 +555,26 @@ fn _parse(
 
     // ── Recompute entry-point cache after PARSE_CACHE update ──
     IMPORT_GRAPH.recompute_entry_cache();
+
+    // 11. Spawn builder process for the entry point (if any).
+    //
+    // When a file in an import tree is parsed, we find its entry point.
+    // The builder process runs in the background to collect multi-file
+    // diagnostics (unused functions, type mismatches across files, etc.).
+    //
+    // If a new parse starts before the builder finishes, the old builder
+    // is cancelled and a new one is spawned.
+    if let Some(entry_uri) = crate::lng::jass::builder::collect::find_entry_point(uri) {
+        builder_process::cancel_builder_for_entry(&entry_uri);
+
+        let config = builder_process::BuilderConfig {
+            mode: crate::lng::jass::builder::PipelineMode::Diagnostics,
+            opts: crate::lng::jass::builder::collect::build_opt_tags(
+                &new_snapshot.file_symbols.file_settings,
+            ),
+        };
+        builder_process::spawn_builder_task(&entry_uri, config);
+    }
 
     // 10. Export diff — decide on cascade.
     let did_change = exports_changed(old_snapshot.as_deref(), &new_snapshot);

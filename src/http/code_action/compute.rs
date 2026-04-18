@@ -750,20 +750,96 @@ fn find_endglobals_line(rope: &lapce_xi_rope::Rope) -> Option<usize> {
 }
 
 /// Generate a unique global variable name `funcname_varname`, appending a
-/// numeric suffix if the name already appears in the file text.
-fn unique_global_name(func_name: &str, var_name: &str, rope: &lapce_xi_rope::Rope) -> String {
-    let full_text = rope.slice_to_cow(0..rope.len());
+/// numeric suffix if the name already appears in declared names.
+/// Format: `funcname_varname_2`, `funcname_varname_3`, etc.
+fn unique_global_name(
+    func_name: &str,
+    var_name: &str,
+    declared: &std::collections::HashSet<String>,
+) -> String {
     let base = format!("{}_{}", func_name, var_name);
-    if !full_text.contains(&base) {
+    if !declared.contains(&base) {
         return base;
     }
-    let mut suffix = 1u32;
+    let mut suffix = 2u32;
     loop {
-        let candidate = format!("{}{}", base, suffix);
-        if !full_text.contains(&candidate) {
+        let candidate = format!("{}_{}", base, suffix);
+        if !declared.contains(&candidate) {
             return candidate;
         }
         suffix += 1;
+    }
+}
+
+/// Collect every declared identifier name from the AST (globals, params, locals).
+fn collect_declared_names(ast: &crate::lng::jass::ast::Ast, src: &str) -> std::collections::HashSet<String> {
+    use crate::lng::jass::ast::Statement;
+
+    let mut names = std::collections::HashSet::new();
+    for item in &ast.items {
+        match item {
+            Statement::Globals(g) => {
+                for v in &g.vars {
+                    for d in &v.decls {
+                        if let Some(id) = &d.name {
+                            names.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
+                        }
+                    }
+                }
+            }
+            Statement::VarStmt(v) => {
+                for d in &v.decls {
+                    if let Some(id) = &d.name {
+                        names.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
+                    }
+                }
+            }
+            Statement::Function(f) => {
+                // Collect parameters
+                for p in &f.params {
+                    if let Some(id) = &p.name {
+                        names.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
+                    }
+                }
+                // Collect locals in function body
+                collect_local_names(src, &f.body, &mut names);
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+fn collect_local_names(
+    src: &str,
+    stmts: &[crate::lng::jass::ast::Statement],
+    out: &mut std::collections::HashSet<String>,
+) {
+    use crate::lng::jass::ast::Statement;
+
+    for stmt in stmts {
+        match stmt {
+            Statement::Local(l) => {
+                if let Some(id) = &l.name {
+                    out.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
+                }
+            }
+            Statement::VarStmt(v) => {
+                for d in &v.decls {
+                    if let Some(id) = &d.name {
+                        out.insert(src[id.node.start_byte()..id.node.end_byte()].to_string());
+                    }
+                }
+            }
+            Statement::If(s) => {
+                collect_local_names(src, &s.body, out);
+                for b in &s.branches {
+                    collect_local_names(src, &b.body, out);
+                }
+            }
+            Statement::Loop(s) => collect_local_names(src, &s.body, out),
+            _ => {}
+        }
     }
 }
 
@@ -779,12 +855,33 @@ fn unique_global_name(func_name: &str, var_name: &str, rope: &lapce_xi_rope::Rop
 ///    ```
 fn returned_local_edits(
     diag: &Diagnostic,
+    uri: &url::Url,
     rope: &lapce_xi_rope::Rope,
+) -> Option<Vec<TextEdit>> {
+    let mut generated = std::collections::HashSet::new();
+    // Collect initial declared names from AST
+    let tree = TREE_MAP.get(uri)?;
+    let tree = tree.value().clone();
+    let ast = crate::lng::jass::ast::build_ast(tree.root_node());
+    let full_text = rope.slice_to_cow(0..rope.len());
+    generated = collect_declared_names(&ast, &full_text);
+
+    returned_local_edits_with_tracking(diag, uri, rope, &mut generated)
+}
+
+fn returned_local_edits_with_tracking(
+    diag: &Diagnostic,
+    uri: &url::Url,
+    rope: &lapce_xi_rope::Rope,
+    generated_names: &mut std::collections::HashSet<String>,
 ) -> Option<Vec<TextEdit>> {
     let var = leak_var(diag)?;
     let type_name = leak_type(diag)?;
     let func_name = leak_func_name(diag)?;
-    let global_name = unique_global_name(&func_name, &var, rope);
+
+    let global_name = unique_global_name(&func_name, &var, generated_names);
+    // Track that we've used this name
+    generated_names.insert(global_name.clone());
 
     let mut edits = Vec::new();
 
@@ -930,6 +1027,19 @@ fn compute_leak_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
     // ── Per-variable quick fixes ──────────────────────────────────────────
     // Group by (line, var) to avoid duplicate edits at the same location.
     let mut seen = std::collections::HashSet::new();
+    // Track generated names to avoid collisions between fixes
+    let mut generated_names = std::collections::HashSet::new();
+    // Collect initial declared names from AST
+    if !leak_diags.is_empty() {
+        let tree = match TREE_MAP.get(uri) {
+            Some(t) => t.value().clone(),
+            None => return actions,
+        };
+        let ast = crate::lng::jass::ast::build_ast(tree.root_node());
+        let full_text = rope.slice_to_cow(0..rope.len());
+        generated_names = collect_declared_names(&ast, &full_text);
+    }
+
     for diag in &leak_diags {
         let var = match leak_var(diag) {
             Some(v) => v,
@@ -941,7 +1051,7 @@ fn compute_leak_fixes(params: &CodeActionParams) -> Vec<CodeAction> {
         }
         if is_returned_local(diag) {
             // Returned local: create global + rewrite return.
-            if let Some(edits) = returned_local_edits(diag, rope) {
+            if let Some(edits) = returned_local_edits_with_tracking(diag, uri, rope, &mut generated_names) {
                 let title = crate::util::i18n::fix_handle_leak(&var);
                 let mut changes = HashMap::new();
                 changes.insert(uri.clone(), edits);
@@ -1004,6 +1114,17 @@ fn compute_fix_all_leaks(
     // so that insertions don't shift line numbers of subsequent edits.
     let mut seen = std::collections::HashSet::new();
     let mut edits: Vec<(usize, TextEdit)> = Vec::new();
+    // Track generated names to avoid collisions between fixes
+    let mut generated_names = std::collections::HashSet::new();
+    // Collect initial declared names from AST
+    {
+        let tree = TREE_MAP.get(uri)?;
+        let tree = tree.value().clone();
+        let ast = crate::lng::jass::ast::build_ast(tree.root_node());
+        let full_text = rope.slice_to_cow(0..rope.len());
+        generated_names = collect_declared_names(&ast, &full_text);
+    }
+
     for diag in &leak_diags {
         let var = match leak_var(diag) {
             Some(v) => v,
@@ -1014,7 +1135,7 @@ fn compute_fix_all_leaks(
             continue;
         }
         if is_returned_local(diag) {
-            if let Some(ret_edits) = returned_local_edits(diag, rope) {
+            if let Some(ret_edits) = returned_local_edits_with_tracking(diag, uri, rope, &mut generated_names) {
                 for e in ret_edits {
                     edits.push((diag.range.start.line, e));
                 }

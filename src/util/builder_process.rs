@@ -1,0 +1,277 @@
+//! Builder subprocess management.
+//!
+//! Spawns and manages a separate builder process that:
+//! - Runs in a separate task to avoid blocking the main parse loop
+//! - Takes parse diagnostics and preserves them
+//! - Generates additional multi-file diagnostics (unused functions, type mismatches, etc.)
+//! - Has its own cancellation token
+//! - Can be killed if a new parse/build cycle starts
+//!
+//! # Architecture: Builder as multi-file diagnostic source
+//!
+//! The builder **augments** diagnostics from the parse phase:
+//!
+//! 1. **Parse phase**: Generates syntax and local diagnostics (source="jass")
+//! 2. **Builder phase**: Preserves parse diagnostics AND adds multi-file diagnostics
+//! 3. **Builder adds**: Unused variables/functions (cross-file), type mismatches, etc. (source="build")
+//! 4. **PARSE_CACHE merged**: Contains both parse AND build diagnostics
+//!
+//! This way we keep accurate syntax errors and local hints, while adding
+//! cross-file analysis that requires whole-project knowledge.
+
+use std::sync::Arc;
+use dashmap::DashMap;
+use once_cell::sync::Lazy;
+use tokio_util::sync::CancellationToken;
+use url::Url;
+use std::sync::atomic::{AtomicBool, Ordering};
+use crate::http::diagnostic::Diagnostic;
+
+// ─── Global builder process registry ──────────────────────────────────────────
+
+/// Per-URI builder process state.
+///
+/// Stores the cancellation token of the current running builder task.
+/// When a new build starts for the same URI, the old token is cancelled.
+pub struct BuilderProcessState {
+    /// The cancellation token for the in-flight builder task.
+    pub cancel_token: CancellationToken,
+    /// Whether a build is currently in progress.
+    pub is_running: AtomicBool,
+}
+
+impl BuilderProcessState {
+    pub fn new() -> Self {
+        Self {
+            cancel_token: CancellationToken::new(),
+            is_running: AtomicBool::new(false),
+        }
+    }
+}
+
+/// Per-entry-URI builder process state.
+///
+/// When parsing a file, we look for its entry point. The builder process
+/// is keyed by entry URI, not the individual file URI, so that all files
+/// in an import tree share the same builder.
+pub static BUILDER_PROCESSES: Lazy<DashMap<Url, Arc<BuilderProcessState>>> =
+    Lazy::new(DashMap::new);
+
+/// Results collected by the builder for one file.
+///
+/// These get merged into `PARSE_CACHE` once the builder finishes.
+#[derive(Debug, Clone)]
+pub struct BuilderDiagnostics {
+    /// URI of the file these diagnostics apply to
+    pub uri: Url,
+    /// List of diagnostics with source="build"
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Get or create the builder process state for an entry URI.
+pub fn get_or_create_builder_state(entry_uri: &Url) -> Arc<BuilderProcessState> {
+    BUILDER_PROCESSES
+        .entry(entry_uri.clone())
+        .or_insert_with(|| Arc::new(BuilderProcessState::new()))
+        .clone()
+}
+
+/// Cancel the in-flight builder process for an entry URI (if any).
+///
+/// Called when a new parse starts for a file in that import tree.
+pub fn cancel_builder_for_entry(entry_uri: &Url) {
+    if let Some(state) = BUILDER_PROCESSES.get(entry_uri) {
+        state.cancel_token.cancel();
+
+        // Spawn a new token for the next build.
+        let new_state = Arc::new(BuilderProcessState::new());
+        BUILDER_PROCESSES.insert(entry_uri.clone(), new_state);
+    }
+}
+
+/// Spawn the builder process for an entry URI.
+///
+/// This runs on a spawned task, not the main parse thread, so it doesn't
+/// block the parse loop. It collects multi-file diagnostics and stores them
+/// in `PARSE_CACHE` with `source: "build"`.
+///
+/// # Arguments
+///
+/// * `entry_uri` — the entry file URI that triggered the build
+/// * `config` — build configuration (mode, options, etc.)
+///
+/// The builder will:
+/// 1. Collect the file order from the entry
+/// 2. Read all files from disk/memory
+/// 3. Build a shared AST
+/// 4. Run diagnostics in the builder's own cancellation context
+/// 5. Merge results into `PARSE_CACHE`
+pub fn spawn_builder_task(entry_uri: &Url, config: BuilderConfig) {
+    let entry_uri = entry_uri.clone();
+    let state = get_or_create_builder_state(&entry_uri);
+    let cancel_token = state.cancel_token.clone();
+
+    state.is_running.store(true, Ordering::Release);
+
+    tokio::spawn(async move {
+        // Set the running flag
+        defer_runner(|| {
+            state.is_running.store(false, Ordering::Release);
+        });
+
+        // Run the builder in its own context with cancellation
+        if let Err(e) = run_builder(&entry_uri, &config, &cancel_token).await {
+            log::error!("builder: {}", e);
+        }
+    });
+}
+
+fn defer_runner<F: FnOnce()>(f: F) -> impl Drop {
+    struct DeferGuard<F: FnOnce()> {
+        f: Option<F>,
+    }
+    impl<F: FnOnce()> Drop for DeferGuard<F> {
+        fn drop(&mut self) {
+            if let Some(f) = self.f.take() {
+                f()
+            }
+        }
+    }
+    DeferGuard { f: Some(f) }
+}
+
+// ─── Builder configuration ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct BuilderConfig {
+    /// Build mode: diagnostics-only or full build
+    pub mode: crate::lng::jass::builder::PipelineMode,
+    /// Build options (uglify, nolocal, etc.)
+    pub opts: std::collections::HashSet<String>,
+}
+
+// ─── Builder implementation ───────────────────────────────────────────────────
+
+/// Core builder task that runs in a separate tokio task.
+///
+/// This is where all the heavy lifting happens. It:
+/// 1. Collects file order from the entry
+/// 2. Reads all files
+/// 3. Builds a master AST
+/// 4. Runs diagnostics / transformations
+/// 5. Collects results and merges them into PARSE_CACHE
+async fn run_builder(
+    entry_uri: &Url,
+    config: &BuilderConfig,
+    cancel_token: &CancellationToken,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Ensure the task can be cancelled
+    tokio::select! {
+        _ = cancel_token.cancelled() => {
+            log::debug!("builder: cancelled for {}", entry_uri.path());
+            return Ok(());
+        }
+        result = async {
+            _run_builder_impl(entry_uri, config, cancel_token).await
+        } => {
+            result
+        }
+    }
+}
+
+async fn _run_builder_impl(
+    entry_uri: &Url,
+    _config: &BuilderConfig,
+    _cancel_token: &CancellationToken,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use crate::lng::jass::builder::collect;
+    use crate::util::parse_cache::PARSE_CACHE;
+    use std::sync::Arc;
+
+    // Step 1: Collect file order (dependencies first, entry last)
+    let file_order = collect::collect_file_order(entry_uri);
+    if file_order.is_empty() {
+        return Err("no files to build".into());
+    }
+
+    // Step 2: Read all files and build unified AST
+    let mut file_sources = Vec::new();
+    for uri in &file_order {
+        if let Some(source) = collect::read_source(uri) {
+            file_sources.push((uri.clone(), source));
+        } else {
+            log::warn!("builder: could not read {}", uri.path());
+        }
+    }
+
+    // Step 3: Run diagnostics
+    // For now, just log that we're building
+    log::info!("builder: processing {} files for {}", file_order.len(), entry_uri.path());
+
+    // TODO: Actually build AST, run diagnostics, collect results
+    // For now, collect empty diagnostics
+    let mut results = Vec::new();
+    for uri in &file_order {
+        results.push(BuilderDiagnostics {
+            uri: uri.clone(),
+            diagnostics: Vec::new(),
+        });
+    }
+
+    // Step 4: Merge diagnostics with builder augmentation
+    //
+    // The builder preserves parse diagnostics (syntax, local errors) and adds
+    // its own cross-file diagnostics. Both are kept in PARSE_CACHE.
+    //
+    // Strategy:
+    // 1. Keep all parse diagnostics (source="jass" or None)
+    // 2. Remove any old "build" source diagnostics (in case builder re-ran)
+    // 3. Add new "build" source diagnostics from the builder
+    for result in results {
+        if let Some(old_snap_ref) = PARSE_CACHE.get(&result.uri) {
+            let old_snap = Arc::clone(&old_snap_ref);
+            let mut merged_diags = old_snap.diagnostics.clone();
+
+            // Remove old "build" diagnostics (from previous builder run)
+            merged_diags.retain(|d| d.source.as_deref() != Some("build"));
+
+            // Add new "build" diagnostics
+            merged_diags.extend(result.diagnostics);
+
+            // Create a new snapshot with merged diagnostics
+            let new_snap = Arc::new(crate::util::parse_cache::ParseSnapshot {
+                folding: old_snap.folding.clone(),
+                symbols: old_snap.symbols.clone(),
+                semantic: std::sync::RwLock::new(Default::default()),
+                diagnostics: merged_diags,
+                links: old_snap.links.clone(),
+                ref_map: old_snap.ref_map.clone(),
+                file_symbols: old_snap.file_symbols.clone(),
+                _type_map: old_snap._type_map.clone(),
+                type_hints: old_snap.type_hints.clone(),
+                ujapi_hints: old_snap.ujapi_hints.clone(),
+                func_decl_keys: old_snap.func_decl_keys.clone(),
+                var_decl_keys: old_snap.var_decl_keys.clone(),
+                arg_decl_keys: old_snap.arg_decl_keys.clone(),
+                colors: old_snap.colors.clone(),
+            });
+
+            PARSE_CACHE.insert(result.uri, new_snap);
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_builder_state_creation() {
+        let uri = Url::parse("file:///test.j").unwrap();
+        let state = get_or_create_builder_state(&uri);
+        assert!(!state.is_running.load(Ordering::Acquire));
+    }
+}
+

@@ -411,6 +411,8 @@ fn collect_leak_edits(
 ) -> Vec<LineEdit> {
     let mut edits = Vec::new();
     let mut seen = HashSet::new();
+    // Track names we've added in this pass to avoid collisions between fixes
+    let mut generated_names = index.declared_names.clone();
 
     for diag in diags {
         let var = match leak_var(diag) {
@@ -423,7 +425,13 @@ fn collect_leak_edits(
         }
 
         if is_returned_local(diag) {
-            edits.extend(returned_local_edits(diag, index, method));
+            let fix_edits = returned_local_edits_with_tracking(
+                diag,
+                index,
+                method,
+                &mut generated_names,
+            );
+            edits.extend(fix_edits);
         } else if let Some(edit) = leak_text_edit(diag, index) {
             edits.push(edit);
         }
@@ -461,9 +469,9 @@ fn unique_global_name(func_name: &str, var_name: &str, declared: &HashSet<String
     if !declared.contains(&base) {
         return base;
     }
-    let mut suffix = 1u32;
+    let mut suffix = 2u32;
     loop {
-        let candidate = format!("{}{}", base, suffix);
+        let candidate = format!("{}_{}", base, suffix);
         if !declared.contains(&candidate) {
             return candidate;
         }
@@ -476,9 +484,9 @@ fn unique_local_name(func_name: &str, var_name: &str, declared: &HashSet<String>
     if !declared.contains(&base) {
         return base;
     }
-    let mut suffix = 1u32;
+    let mut suffix = 2u32;
     loop {
-        let candidate = format!("{}{}", base, suffix);
+        let candidate = format!("{}_{}", base, suffix);
         if !declared.contains(&candidate) {
             return candidate;
         }
@@ -491,6 +499,16 @@ fn returned_local_edits(
     diag: &Diagnostic,
     index: &AstFixIndex,
     method: LeakFixMethod,
+) -> Vec<LineEdit> {
+    let mut generated = index.declared_names.clone();
+    returned_local_edits_with_tracking(diag, index, method, &mut generated)
+}
+
+fn returned_local_edits_with_tracking(
+    diag: &Diagnostic,
+    index: &AstFixIndex,
+    method: LeakFixMethod,
+    generated_names: &mut HashSet<String>,
 ) -> Vec<LineEdit> {
     let var = match leak_var(diag) {
         Some(v) => v,
@@ -515,7 +533,9 @@ fn returned_local_edits(
 
     match method {
         LeakFixMethod::GlobalTemp => {
-            let global_name = unique_global_name(&func_name, &var, &index.declared_names);
+            let global_name = unique_global_name(&func_name, &var, generated_names);
+            // Track that we've used this name
+            generated_names.insert(global_name.clone());
 
             if let Some(endglobals_line) = index.endglobals_line {
                 let glob_indent = index.line_indent(endglobals_line);
@@ -544,7 +564,10 @@ fn returned_local_edits(
             });
         }
         LeakFixMethod::LocalTemp => {
-            let local_name = unique_local_name(&func_name, &var, &index.declared_names);
+            let local_name = unique_local_name(&func_name, &var, generated_names);
+            // Track that we've used this name
+            generated_names.insert(local_name.clone());
+
             let (local_insert_line, local_indent) = index
                 .functions
                 .get(&func_name)
