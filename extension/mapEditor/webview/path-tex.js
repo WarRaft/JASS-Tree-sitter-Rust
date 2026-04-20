@@ -24,7 +24,7 @@ window._W3E_PATH_TEX = (function () {
         let params = new URLSearchParams({token: bs.token, path: texPath});
         if (data.isArchive && data.archivePath) params.set('archive', data.archivePath);
 
-        fetch('http://127.0.0.1:' + bs.port + '/w3e/pathTex?' + params)
+        fetch('http://127.0.0.1:' + bs.port + '/mapEditor/pathTex?' + params)
             .then(function (resp) {
                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                 return resp.json();

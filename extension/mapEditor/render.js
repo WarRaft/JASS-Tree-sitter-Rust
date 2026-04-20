@@ -316,7 +316,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             uri: mapInfo.terrainUri,
         })
         if (mapInfo.archivePath) params.set('archive', mapInfo.archivePath)
-        binaryTerrainUrl = JSON.stringify(`http://127.0.0.1:${bs.port}/w3e/terrain?${params}`)
+        binaryTerrainUrl = JSON.stringify(`http://127.0.0.1:${bs.port}/mapEditor/terrain?${params}`)
     }
 
     return `<!DOCTYPE html>

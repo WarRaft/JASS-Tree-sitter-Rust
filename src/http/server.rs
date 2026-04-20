@@ -9,7 +9,7 @@ use crate::http::game_path::{game_path_set_handler, game_path_status_handler};
 use crate::http::mdx_texture::mdx_texture_handler;
 use crate::http::path_tex::path_tex_handler;
 use crate::http::tile_textures::tile_textures_handler;
-use crate::http::snapshot::{decorations_handler, snapshot_handler};
+use crate::http::snapshot::{decorations_handler, snapshot_handler, units_handler};
 use crate::http::terrain::terrain_handler;
 use axum::{Router, http::StatusCode, routing::{get, post}, serve::{Listener, ListenerExt}};
 use once_cell::sync::OnceCell;
@@ -69,35 +69,37 @@ pub async fn start_server() -> std::io::Result<u16> {
     };
 
     let app = Router::new()
-        // ── Existing routes ──────────────────────────────────────────
-        .route("/w3e/terrain", get(terrain_handler))
-        .route("/w3e/file", get(file_lookup_handler))
-        .route("/w3e/snapshot", get(snapshot_handler))
-        .route("/w3e/decorations", get(decorations_handler))
-        .route("/w3e/tileTextures", get(tile_textures_handler))
-        .route("/w3e/gamePath/status", get(game_path_status_handler))
-        .route("/w3e/gamePath/set", post(game_path_set_handler))
-        .route("/w3e/pathTex", get(path_tex_handler))
+        // ── Map Editor routes ────────────────────────────────────────
+        .route("/mapEditor/terrain", get(terrain_handler))
+        .route("/mapEditor/file", get(file_lookup_handler))
+        .route("/mapEditor/snapshot", get(snapshot_handler))
+        .route("/mapEditor/decorations", get(decorations_handler))
+        .route("/mapEditor/units", get(units_handler))
+        .route("/mapEditor/tileTextures", get(tile_textures_handler))
+        .route("/mapEditor/gamePath/status", get(game_path_status_handler))
+        .route("/mapEditor/gamePath/set", post(game_path_set_handler))
+        .route("/mapEditor/pathTex", get(path_tex_handler))
         .route("/mdx/texture", get(mdx_texture_handler))
         .route("/blp/render", get(blp_render_handler))
         // ── Render routes (POST with JSON body) ──────────────────────
         .route("/render/blp", post(crate::http::api::blp_render))
         .route("/render/mdx", post(crate::http::api::mdx_render))
-        .route("/render/doo", post(crate::http::api::doo_render))
         .route("/render/w3r", post(crate::http::api::w3r_render))
         .route("/render/w3i", post(crate::http::api::w3i_render))
         .route("/render/w3e", post(crate::http::api::w3e_render))
+        // ── Map Editor specific routes ────────────────────────────────
+        .route("/mapEditor/doo", post(crate::http::api::doo_render))
         .route("/render/w3obj", post(crate::http::api::w3obj_render))
         .route("/render/slk", post(crate::http::api::slk_render))
         // ── SLK edit ─────────────────────────────────────────────────
         .route("/slk/edit", post(crate::http::api::slk_edit))
-        // ── W3E catalog ──────────────────────────────────────────────
-        .route("/w3e/catalog/terrain", post(crate::http::api::w3e_terrain_slk))
-        .route("/w3e/catalog/doodads", post(crate::http::api::w3e_doodads_slk))
-        .route("/w3e/catalog/units", post(crate::http::api::w3e_units_slk))
-        .route("/w3e/catalog/destructables", post(crate::http::api::w3e_destructables_slk))
-        .route("/w3e/lookupFile", post(crate::http::api::w3e_lookup_file))
-        .route("/w3e/modelVariants", post(crate::http::api::w3e_model_variants))
+        // ── Map Editor catalog ───────────────────────────────────────
+        .route("/mapEditor/catalog/terrain", post(crate::http::api::w3e_terrain_slk))
+        .route("/mapEditor/catalog/doodads", post(crate::http::api::w3e_doodads_slk))
+        .route("/mapEditor/catalog/units", post(crate::http::api::w3e_units_slk))
+        .route("/mapEditor/catalog/destructables", post(crate::http::api::w3e_destructables_slk))
+        .route("/mapEditor/lookupFile", post(crate::http::api::w3e_lookup_file))
+        .route("/mapEditor/modelVariants", post(crate::http::api::w3e_model_variants))
         // ── MPQ ──────────────────────────────────────────────────────
         .route("/mpq/info", post(crate::http::api::mpq_info))
         .route("/mpq/list", post(crate::http::api::mpq_list))

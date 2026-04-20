@@ -1,7 +1,7 @@
 //! Game-path endpoints — set/get game installation path.
 //!
-//! `GET  /w3e/gamePath/status` — return current status.
-//! `POST /w3e/gamePath/set`    — update the game path, return new status.
+//! `GET  /mapEditor/gamePath/status` — return current status.
+//! `POST /mapEditor/gamePath/set`    — update the game path, return new status.
 
 use crate::http::server::{TokenParam, check_token};
 use axum::extract::Query;
@@ -54,7 +54,7 @@ pub async fn game_path_set_handler(
     let game_path = body.game_path.clone();
     tokio::task::spawn_blocking(move || {
         crate::lng::map_editor::game_path::set_game_path(&game_path);
-        // Eagerly build the full data snapshot so /w3e/snapshot is ready.
+        // Eagerly build the full data snapshot so /mapEditor/snapshot is ready.
         crate::lng::map_editor::snapshot::build_snapshot(None);
     })
     .await

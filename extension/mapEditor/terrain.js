@@ -919,7 +919,7 @@
                     const codeStrings = codes.map(function (c) { return typeof c === 'string' ? c : c.text })
                     const params = new URLSearchParams({token: bs.token, codes: codeStrings.join(',')})
                     if (DATA.archivePath) params.set('archive', DATA.archivePath)
-                    const url = 'http://127.0.0.1:' + bs.port + '/w3e/tileTextures?' + params
+                    const url = 'http://127.0.0.1:' + bs.port + '/mapEditor/tileTextures?' + params
                     _showLoading()
                     fetch(url)
                     .then(function (resp) {
@@ -1456,8 +1456,8 @@
             let _destFileMap = DATA.destructableFileMap || {}
             let _unitFileMap = DATA.unitFileMap || {}
             let _cliffTypeMap = DATA.cliffTypeMap || {}
-            const _doodItems = DATA.doodadPlacements || []
-            const _unitItems = DATA.unitPlacements || []
+            let _doodItems = DATA.doodadPlacements || []
+            let _unitItems = DATA.unitPlacements || []
 
             const _modelCache = {} // path → [{geometry, material}]
             const _pendingItems = {} // path → [items]
@@ -2771,18 +2771,35 @@
             _onAnimateWater = _updateWaterAnimation
 
             // Reload when game path changes (snapshot updated)
-            W3E.onSnapshotChanged(function (snapshot) {
+            W3E.onSnapshotChanged(function (snapshot, decorations, units) {
+                // Update placement arrays from decorations/units placed items
+                if (decorations && decorations.placed) {
+                    _doodItems = decorations.placed.map((p, i) => ({
+                        r: p.raw, t: p.text, v: p.variation,
+                        m: p.modelPath || '',
+                        i: i,
+                        p: [p.position.x, p.position.y, p.position.z],
+                        a: p.angle,
+                        s: [p.scale.x, p.scale.y, p.scale.z]
+                    }))
+                    // Clear model cache so models are re-resolved with updated SLK paths
+                    for (const key in _modelCache) delete _modelCache[key]
+                }
+                if (units && units.placed) {
+                    _unitItems = units.placed.map(p => ({
+                        r: p.raw, m: p.modelPath || '',
+                        p: [p.position.x, p.position.y, p.position.z],
+                        a: p.angle,
+                        s: [p.scale.x, p.scale.y, p.scale.z]
+                    }))
+                }
+
                 // Use DOOD/DEST data maps — they are rebuilt from the snapshot
                 // which now includes w3d/w3b merges from the map archive.
                 const doodDataMap = window._W3E_DOODADS ? window._W3E_DOODADS.getDataMap() : {}
                 if (Object.keys(doodDataMap).length > 0) {
                     _doodFileMap = {}
                     for (const [rawId, d] of Object.entries(doodDataMap)) {
-                        if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0, fixedRot: d.fixedRot != null ? d.fixedRot : -1}
-                    }
-                } else if (snapshot.doodadsSlk && snapshot.doodadsSlk.doodads) {
-                    _doodFileMap = {}
-                    for (const [rawId, d] of Object.entries(snapshot.doodadsSlk.doodads)) {
                         if (d.file) _doodFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0, fixedRot: d.fixedRot != null ? d.fixedRot : -1}
                     }
                 }
@@ -2792,15 +2809,10 @@
                     for (const [rawId, d] of Object.entries(destDataMap)) {
                         if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || '', maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0}
                     }
-                } else if (snapshot.destructablesSlk && snapshot.destructablesSlk.destructables) {
-                    _destFileMap = {}
-                    for (const [rawId, d] of Object.entries(snapshot.destructablesSlk.destructables)) {
-                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || '', maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0}
-                    }
                 }
-                if (snapshot.unitsSlk && snapshot.unitsSlk.units) {
+                if (units && units.unitsMerged && units.unitsMerged.units) {
                     _unitFileMap = {}
-                    for (const [rawId, u] of Object.entries(snapshot.unitsSlk.units)) {
+                    for (const [rawId, u] of Object.entries(units.unitsMerged.units)) {
                         if (u.file) _unitFileMap[rawId] = u.file
                     }
                 }

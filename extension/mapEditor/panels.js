@@ -463,13 +463,12 @@ function renderDooContent(data, isUnit) {
         ? `<div class="meta-banner error">✕ Parse error: ${esc(data._error)}</div>`
         : ''
 
-    // ── Header info
-    const headerRows = [
-        ['Magic', `<code>${esc(data.magic)}</code>`],
-        ['Format', data.format],
-        ['Sub-format', data.subformat],
-        ['Items', data.items ? data.items.length : 0],
-    ]
+    // ── Header info (only show binary format fields if present)
+    const headerRows = []
+    if (data.magic != null) headerRows.push(['Magic', `<code>${esc(data.magic)}</code>`])
+    if (data.format != null) headerRows.push(['Format', data.format])
+    if (data.subformat != null) headerRows.push(['Sub-format', data.subformat])
+    headerRows.push(['Items', data.items ? data.items.length : 0])
     if (data.cliffs) headerRows.push(['Cliffs', data.cliffs.length])
 
     const headerHtml = headerRows.map(([k, v]) =>

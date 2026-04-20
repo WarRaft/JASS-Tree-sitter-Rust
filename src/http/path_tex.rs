@@ -1,4 +1,4 @@
-//! Path texture endpoint: `GET /w3e/pathTex?token=...&path=...&archive=...`
+//! Path texture endpoint: `GET /mapEditor/pathTex?token=...&path=...&archive=...`
 //!
 //! Loads a TGA pathing texture via cascading file lookup, decodes it,
 //! and returns per-pixel RGB data as JSON.

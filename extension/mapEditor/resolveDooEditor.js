@@ -17,7 +17,7 @@
  */
 async function resolveDooEditor(document, webviewPanel, _token, client) {
     /** @type {DooRenderResult} */
-    const result = await client.sendRequest('render/doo', {
+    const result = await client.sendRequest('mapEditor/doo', {
         uri: document.uri.toString(),
         resolveModels: false,
     })

@@ -1,7 +1,7 @@
 //! SLK data endpoints — tile textures.
 //!
 //! All catalog data (terrain, doodads, units, destructables, westrings) is now
-//! served via the single `/w3e/snapshot` endpoint.  Only tile textures remain
+//! served via the single `/mapEditor/snapshot` endpoint.  Only tile textures remain
 //! here because they require per-request tile codes and return heavy image data.
 
 use crate::http::server::{TokenParam, check_token};

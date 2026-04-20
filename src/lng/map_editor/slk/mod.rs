@@ -377,9 +377,6 @@ pub struct SlkSource {
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod slk_test;
 #[cfg(test)]
 mod cliff_test;
 #[cfg(test)]

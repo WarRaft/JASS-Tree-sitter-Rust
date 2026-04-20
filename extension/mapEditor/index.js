@@ -49,71 +49,98 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
     let _pendingMdxData = null
     let _pendingBlpData = null
 
+    // ── Cached decorations / units data ────────────────────────
+    let _cachedDecorations = null
+    let _cachedUnits = null
+
+    async function _fetchDecorations() {
+        const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+        if (!bs || !isArchive) return null
+        const params = new URLSearchParams({token: bs.token, archive: filePath})
+        try {
+            const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/decorations?${params}`)
+            if (!resp.ok) return null
+            const data = await resp.json()
+            _cachedDecorations = data
+            return data
+        } catch (_) {
+            return null
+        }
+    }
+
+    async function _fetchUnits() {
+        const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+        if (!bs || !isArchive) return null
+        const params = new URLSearchParams({token: bs.token, archive: filePath})
+        try {
+            const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/units?${params}`)
+            if (!resp.ok) return null
+            const data = await resp.json()
+            _cachedUnits = data
+            return data
+        } catch (_) {
+            return null
+        }
+    }
+
+    /// Build DOO-compatible data from decorations.placed
+    function _buildDoodadDooData(decorations) {
+        if (!decorations || !decorations.placed) return null
+        return {
+            items: decorations.placed.map(p => ({
+                rawcode: {raw: p.raw, text: p.text},
+                variation: p.variation,
+                position: p.position,
+                angle: p.angle,
+                scale: p.scale,
+                resolvedModelPath: p.modelPath || '',
+                skin: p.skin != null ? p.skin : null,
+                flag: p.flag,
+                doodad: p.health != null ? {health: p.health, num: p.num} : null,
+                kind: p.kind,
+                error: p.error || null,
+            })),
+        }
+    }
+
+    /// Build DOO-compatible data from units.placed
+    function _buildUnitDooData(units) {
+        if (!units || !units.placed) return null
+        return {
+            items: units.placed.map(p => ({
+                rawcode: {raw: p.raw, text: p.text},
+                variation: p.variation,
+                position: p.position,
+                angle: p.angle,
+                scale: p.scale,
+                resolvedModelPath: p.modelPath || '',
+                skin: p.skin != null ? p.skin : null,
+                flag: p.flag,
+                unit: {player: p.player},
+            })),
+        }
+    }
+
     if (isArchive) {
-        // ── 1. Get archive file list & header ───────────────────
-        try {
-            archiveInfo = await client.sendRequest('mpq/info', {archivePath: filePath})
-            if (archiveInfo.error) archiveInfo = null
-        } catch (_) {
-            archiveInfo = null
-        }
+        // ── Parallel fetch all archive data ─────────────────────
+        const [archiveInfoResult, terrainResult, w3iResult, w3rResult, decorationsResult, unitsResult] = await Promise.all([
+            client.sendRequest('mpq/info', {archivePath: filePath}).catch(() => null),
+            client.sendRequest('render/w3e', {uri: document.uri.toString(), archivePath: filePath}).catch(() => null),
+            client.sendRequest('render/w3i', {uri: document.uri.toString(), archivePath: filePath}).catch(() => null),
+            client.sendRequest('render/w3r', {uri: document.uri.toString(), archivePath: filePath}).catch(() => null),
+            _fetchDecorations(),
+            _fetchUnits(),
+        ])
 
-        // ── 2. Load terrain from archive ────────────────────────
-        try {
-            const result = await client.sendRequest('render/w3e', {
-                uri: document.uri.toString(),
-                archivePath: filePath,
-            })
-            if (!result.error) terrainData = result
-        } catch (_) {
-        }
+        if (archiveInfoResult && !archiveInfoResult.error) archiveInfo = archiveInfoResult
+        if (terrainResult && !terrainResult.error) terrainData = terrainResult
+        if (w3iResult && !w3iResult.error) w3iData = w3iResult
+        else if (w3iResult && w3iResult.format != null) w3iData = w3iResult
+        if (w3rResult && !w3rResult.error) w3rData = w3rResult
 
-        // ── 3. Load w3i from archive ────────────────────────────
-        try {
-            const result = await client.sendRequest('render/w3i', {
-                uri: document.uri.toString(),
-                archivePath: filePath,
-            })
-            if (!result.error) w3iData = result
-            else if (result.format != null) w3iData = result // partial data with _error
-        } catch (_) {
-        }
-
-        // ── 4. Load unit DOO from archive ─────────────────────────
-        try {
-            const result = await client.sendRequest('render/doo', {
-                uri: document.uri.toString(),
-                isUnit: true,
-                archivePath: filePath,
-                tileset: terrainData && terrainData.tileset ? terrainData.tileset : undefined,
-                resolveModels: false,
-            })
-            if (!result.error) unitDooData = result
-        } catch (_) {
-        }
-
-        // ── 5. Load doodad DOO from archive ───────────────────────
-        try {
-            const result = await client.sendRequest('render/doo', {
-                uri: document.uri.toString(),
-                isUnit: false,
-                archivePath: filePath,
-                tileset: terrainData && terrainData.tileset ? terrainData.tileset : undefined,
-                resolveModels: true,
-            })
-            if (!result.error) doodadDooData = result
-        } catch (_) {
-        }
-
-        // ── 6. Load w3r (regions) from archive ──────────────────────
-        try {
-            const result = await client.sendRequest('render/w3r', {
-                uri: document.uri.toString(),
-                archivePath: filePath,
-            })
-            if (!result.error) w3rData = result
-        } catch (_) {
-        }
+        // Build DOO data from decorations/units placed items
+        doodadDooData = _buildDoodadDooData(decorationsResult)
+        unitDooData = _buildUnitDooData(unitsResult)
 
         mapName = fname
         if (archiveInfo && archiveInfo.files) {
@@ -165,7 +192,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         if (terrainData && terrainData.tileset) params.tileset = terrainData.tileset
         params.resolveModels = !isDooUnit
 
-        const result = await client.sendRequest('render/doo', params)
+        const result = await client.sendRequest('mapEditor/doo', params)
         if (result.error) {
             webviewPanel.webview.html = errorHtml(result.error.message)
             return
@@ -312,7 +339,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const unitPath = path.join(mapRoot, 'war3mapUnits.doo')
             if (fs.existsSync(unitPath)) {
                 try {
-                    const r = await client.sendRequest('render/doo', {
+                    const r = await client.sendRequest('mapEditor/doo', {
                         uri: Uri.file(unitPath).toString(),
                         isUnit: true,
                         tileset: terrainData && terrainData.tileset ? terrainData.tileset : undefined,
@@ -328,7 +355,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const doodadPath = path.join(mapRoot, 'war3map.doo')
             if (fs.existsSync(doodadPath)) {
                 try {
-                    const r = await client.sendRequest('render/doo', {
+                    const r = await client.sendRequest('mapEditor/doo', {
                         uri: Uri.file(doodadPath).toString(),
                         isUnit: false,
                         tileset: terrainData && terrainData.tileset ? terrainData.tileset : undefined,
@@ -422,11 +449,11 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
     try {
         const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
         if (bs) {
-            const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/gamePath/status?token=${encodeURIComponent(bs.token)}`)
+            const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/gamePath/status?token=${encodeURIComponent(bs.token)}`)
             if (resp.ok) gamePathStatus = await resp.json()
         }
         if (!gamePathStatus.hasPath) {
-                    const buf = await client.http.getBinary('/w3e/gamePath/status')
+                    const buf = await client.http.getBinary('/mapEditor/gamePath/status')
                     gamePathStatus = JSON.parse(buf.toString('utf8'))
                 }
     } catch (_) {
@@ -503,8 +530,8 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
     // ── Snapshot-based data flow ───────────────────────────────────
     // When the game path changes:
-    //   1. POST /w3e/gamePath/set → Rust builds snapshot
-    //   2. GET  /w3e/snapshot     → full GameSnapshot JSON
+    //   1. POST /mapEditor/gamePath/set → Rust builds snapshot
+    //   2. GET  /mapEditor/snapshot     → full GameSnapshot JSON
     //   3. postMessage('gamePathChanged', {status, snapshot})
     //
     // The webview receives the complete snapshot in one message.
@@ -513,11 +540,17 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
      * Fetch the snapshot and send it to the webview along with status.
      */
     async function emitGamePathChanged(status) {
-        const snapshot = await fetchSnapshot()
+        const [snapshot, decorations, units] = await Promise.all([
+            fetchSnapshot(),
+            isArchive ? _fetchDecorations() : Promise.resolve(null),
+            isArchive ? _fetchUnits() : Promise.resolve(null),
+        ])
         webviewPanel.webview.postMessage({
             command: 'gamePathChanged',
             status,
             snapshot,
+            decorations,
+            units,
         })
     }
 
@@ -527,10 +560,11 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         if (!bs) return null
         const params = new URLSearchParams({token: bs.token})
         if (isArchive) params.set('archive', filePath)
-        const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/snapshot?${params}`)
+        const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/snapshot?${params}`)
         if (!resp.ok) return null
         return await resp.json()
     }
+
 
     // ── Helper: set game path via HTTP (POST) ────────────────────
     async function setGamePathViaHttp(gamePath) {
@@ -538,7 +572,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         if (!bs) return null
         try {
             const resp = await fetch(
-                `http://127.0.0.1:${bs.port}/w3e/gamePath/set?token=${encodeURIComponent(bs.token)}`,
+                `http://127.0.0.1:${bs.port}/mapEditor/gamePath/set?token=${encodeURIComponent(bs.token)}`,
                 {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -587,7 +621,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             if (opts && opts.tileset) params.set('tileset', opts.tileset)
             if (kind && kind !== 'any') params.set('kind', kind)
             try {
-                const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
+                const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/file?${params}`)
                 if (resp.ok) {
                     buf = Buffer.from(await resp.arrayBuffer())
                     resolvedPath = resp.headers.get('x-resolved-path') || searchPath
@@ -597,7 +631,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
         if (!buf) {
             try {
-                const result = await client.sendRequest('w3e/lookupFile', {
+                const result = await client.sendRequest('mapEditor/lookupFile', {
                     path: searchPath,
                     archivePath: isArchive ? filePath : undefined,
                 })
@@ -629,7 +663,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         }
 
         try {
-            const result = await client.sendRequest('w3e/modelVariants', {
+            const result = await client.sendRequest('mapEditor/modelVariants', {
                 path: searchPath,
                 archivePath: isArchive ? filePath : undefined,
                 tileset: tileset || undefined,
@@ -806,7 +840,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 }
                 const params = new URLSearchParams({token: bs.token, path: msg.path})
                 if (isArchive) params.set('archive', filePath)
-                const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
+                const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/file?${params}`)
                 if (!resp.ok) {
                     window.showWarningMessage(`SLK not found: ${msg.path}`)
                     return
@@ -941,7 +975,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             webviewPanel.webview.postMessage({command: 'loadingStart'})
             try {
                 const status = await setGamePathViaHttp(msg.value) ||
-                    await client.sendRequest('w3e/gamePath/set', {gamePath: msg.value})
+                    await client.sendRequest('mapEditor/gamePath/set', {gamePath: msg.value})
                 await emitGamePathChanged(status)
             } catch (_) {
             } finally {
@@ -953,11 +987,11 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 let status = null
                 const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
                 if (bs) {
-                    const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/gamePath/status?token=${encodeURIComponent(bs.token)}`)
+                    const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/gamePath/status?token=${encodeURIComponent(bs.token)}`)
                     if (resp.ok) status = await resp.json()
                 }
                 if (!status) {
-                    const buf = await client.http.getBinary('/w3e/gamePath/status')
+                    const buf = await client.http.getBinary('/mapEditor/gamePath/status')
                     status = JSON.parse(buf.toString('utf8'))
                 }
                 await emitGamePathChanged(status)
@@ -979,7 +1013,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             webviewPanel.webview.postMessage({command: 'loadingStart'})
             try {
                 const status = await setGamePathViaHttp(selectedPath) ||
-                    await client.sendRequest('w3e/gamePath/set', {gamePath: selectedPath})
+                    await client.sendRequest('mapEditor/gamePath/set', {gamePath: selectedPath})
                 if (status && !status.allPresent) {
                     const missing = Object.entries(status.mpqStatus || {}).filter(([, ok]) => !ok).map(([f]) => f)
                     if (missing.length > 0) {

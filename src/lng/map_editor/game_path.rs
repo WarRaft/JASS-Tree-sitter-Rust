@@ -4,8 +4,8 @@
 //! so it survives LSP server restarts.
 //!
 //! Exposed via two LSP requests:
-//! - `w3e/gamePath/set`   – update the path (writes to memory + disk)
-//! - `w3e/gamePath/status` – query the current path and check required MPQ files
+//! - `mapEditor/gamePath/set`   – update the path (writes to memory + disk)
+//! - `mapEditor/gamePath/status` – query the current path and check required MPQ files
 
 use crate::util::cache_db::{db, META_TABLE};
 use log::error;
@@ -250,7 +250,7 @@ pub fn get_tileset_mpq(tileset: &str) -> Option<String> {
 
 // ─── Status ──────────────────────────────────────────────────────────────────
 
-/// Response for `w3e/gamePath/status`.
+/// Response for `mapEditor/gamePath/status`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GamePathStatus {

@@ -1,4 +1,4 @@
-//! Binary file lookup endpoint: `GET /w3e/file?token=...&path=...&archive=...`
+//! Binary file lookup endpoint: `GET /mapEditor/file?token=...&path=...&archive=...`
 //!
 //! Returns raw binary bytes — no base64/JSON overhead.
 //! The `X-Source` response header indicates where the file was found

@@ -6,7 +6,9 @@ use super::{
     SlkSource, parse_slk, parse_unit_strings, rawcode_to_u32, slk_bool, slk_f64, slk_index_by,
     slk_str, slk_u8, slk_u32,
 };
+use super::{mod_value_string, mod_value_u32, mod_value_f64, mod_value_bool};
 use crate::lng::map_editor::westrings::GameString;
+use crate::lng::w3abdhqtu::parse::{W3ObjectData, ModificationValue};
 use serde::Serialize;
 use std::collections::HashMap;
 
@@ -108,6 +110,15 @@ pub struct UnitInfo {
     // ── Identity (UnitData) ──────────────────────────────────────
     /// Rawcode text, e.g. `"Hamg"`.
     pub unit_id: String,
+    /// Base (original) rawcode for custom units from `.w3u`.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub base_id: String,
+    /// Whether this unit was modified by `war3map.w3u`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub w3u_modified: bool,
+    /// Default (pre-modification) values for fields changed by `.w3u`.
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub defaults: HashMap<String, String>,
     pub name: GameString,
     pub comment: String,
     pub sort: String,
@@ -277,11 +288,16 @@ pub struct UnitsSlkResult {
     pub source: String,
     /// Per-file source info for all loaded SLK files.
     pub sources: Vec<SlkSource>,
-    /// Units keyed by rawcode `u32` (little-endian interpretation of the
-    /// 4-byte unitID).
+    /// Default units from the SLK (before `war3map.w3u` merge).
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub units_default: HashMap<u32, UnitInfo>,
+    /// Units keyed by rawcode `u32` — the **current** (merged) state.
     pub units: HashMap<u32, UnitInfo>,
     /// Pre-parsed Profile strings from `*UnitStrings.txt`, keyed by rawcode.
     pub unit_strings: HashMap<u32, UnitStringsEntry>,
+    /// Errors encountered while merging `war3map.w3u` data.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub w3u_errors: Vec<String>,
 }
 
 /// Try to load and parse unit SLK files via the cascading lookup.
@@ -371,6 +387,9 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
             key,
             UnitInfo {
                 unit_id,
+                base_id: String::new(),
+                w3u_modified: false,
+                defaults: HashMap::new(),
                 name,
                 comment: row.get("comment(s)").cloned().unwrap_or_default(),
                 sort: row.get("sort").cloned().unwrap_or_default(),
@@ -604,7 +623,294 @@ pub fn load_units_slk(archive_path: Option<&str>) -> Option<UnitsSlkResult> {
     Some(UnitsSlkResult {
         source: source.to_string(),
         sources,
+        units_default: HashMap::new(),
         units,
         unit_strings,
+        w3u_errors: Vec::new(),
     })
 }
+
+// ─── UnitMetaData.slk ────────────────────────────────────────────────────────
+
+/// A single entry from `Units\UnitMetaData.slk`.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct UnitMetaEntry {
+    pub id: String,
+    pub field: String,
+    pub meta_type: String,
+}
+
+pub type UnitMetaMap = HashMap<String, UnitMetaEntry>;
+
+/// Load and parse the embedded `Units\UnitMetaData.slk`.
+pub fn load_unit_metadata() -> UnitMetaMap {
+    let data = include_bytes!("../../../lng/slk/fixtures/Units/UnitMetaData.slk");
+    let rows = parse_slk(data);
+
+    let mut map = HashMap::new();
+    for row in rows {
+        let id = match row.get("ID") {
+            Some(s) if !s.is_empty() => s.clone(),
+            _ => continue,
+        };
+        let field = row.get("field").cloned().unwrap_or_default();
+        let meta_type = row.get("type").cloned().unwrap_or_default();
+        if field.is_empty() { continue; }
+        map.insert(id.clone(), UnitMetaEntry { id, field, meta_type });
+    }
+    map
+}
+
+// ─── Merge war3map.w3u into units ────────────────────────────────────────────
+
+/// Apply `war3map.w3u` modifications to the units map.
+///
+/// Returns a list of human-readable error messages for problems encountered.
+pub fn merge_w3u_into_units(
+    units: &mut HashMap<u32, UnitInfo>,
+    w3u: &W3ObjectData,
+    meta: &UnitMetaMap,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let defaults = units.clone();
+
+    // Process original-table modifications.
+    for def in &w3u.table.originals {
+        let key = def.original_id.raw;
+        let base = match units.get_mut(&key) {
+            Some(u) => u,
+            None => {
+                errors.push(format!(
+                    "w3u original: base unit '{}' (0x{:08X}) not found in UnitData.slk",
+                    def.original_id.text, key
+                ));
+                continue;
+            }
+        };
+        base.w3u_modified = true;
+        for set in &def.sets {
+            for modif in &set.modifications {
+                apply_unit_modification(base, &modif.modification_id.text, &modif.value, meta, &mut errors);
+            }
+        }
+    }
+
+    // Process custom-table entries.
+    for def in &w3u.table.customs {
+        let orig_key = def.original_id.raw;
+        let base = match defaults.get(&orig_key) {
+            Some(u) => u.clone(),
+            None => {
+                errors.push(format!(
+                    "w3u custom: base unit '{}' (0x{:08X}) not found in UnitData.slk for custom '{}'",
+                    def.original_id.text, orig_key, def.custom_id.text
+                ));
+                continue;
+            }
+        };
+
+        let mut custom = base;
+        custom.base_id = def.original_id.text.clone();
+        custom.unit_id = def.custom_id.text.clone();
+        custom.w3u_modified = true;
+        custom.defaults = HashMap::new();
+
+        for set in &def.sets {
+            for modif in &set.modifications {
+                apply_unit_modification(&mut custom, &modif.modification_id.text, &modif.value, meta, &mut errors);
+            }
+        }
+
+        let custom_key = def.custom_id.raw;
+        units.insert(custom_key, custom);
+    }
+
+    errors
+}
+
+/// Apply a single modification to a `UnitInfo`.
+fn apply_unit_modification(
+    unit: &mut UnitInfo,
+    mod_id: &str,
+    value: &ModificationValue,
+    meta: &UnitMetaMap,
+    errors: &mut Vec<String>,
+) {
+    let entry = match meta.get(mod_id) {
+        Some(e) => e,
+        None => {
+            errors.push(format!(
+                "w3u: unknown modification rawcode '{}' for unit '{}'",
+                mod_id, unit.unit_id
+            ));
+            return;
+        }
+    };
+
+    let field = entry.field.as_str();
+    match field {
+        "Name" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.defaults.entry("name".into()).or_insert_with(|| unit.name.value.clone());
+                unit.name = crate::lng::map_editor::westrings::resolve_game_string(&s);
+            }
+        }
+        "file" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.defaults.entry("file".into()).or_insert_with(|| unit.file.clone());
+                unit.file = s;
+            }
+        }
+        "race" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.defaults.entry("race".into()).or_insert_with(|| unit.race.clone());
+                unit.race = s;
+            }
+        }
+        "unitSound" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.defaults.entry("unitSound".into()).or_insert_with(|| unit.unit_sound.clone());
+                unit.unit_sound = s;
+            }
+        }
+        "modelScale" => {
+            if let Some(v) = mod_value_f64(value) {
+                unit.defaults.entry("modelScale".into()).or_insert_with(|| unit.model_scale.to_string());
+                unit.model_scale = v;
+            }
+        }
+        "scale" => {
+            if let Some(v) = mod_value_f64(value) {
+                unit.defaults.entry("scale".into()).or_insert_with(|| unit.scale.to_string());
+                unit.scale = v;
+            }
+        }
+        "HP" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("hp".into()).or_insert_with(|| unit.hp.to_string());
+                unit.hp = v;
+            }
+        }
+        "realHP" => {
+            if let Some(v) = mod_value_f64(value) {
+                unit.defaults.entry("realHp".into()).or_insert_with(|| unit.real_hp.to_string());
+                unit.real_hp = v;
+            }
+        }
+        "def" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("def".into()).or_insert_with(|| unit.def.to_string());
+                unit.def = v;
+            }
+        }
+        "defType" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.defaults.entry("defType".into()).or_insert_with(|| unit.def_type.clone());
+                unit.def_type = s;
+            }
+        }
+        "spd" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("spd".into()).or_insert_with(|| unit.spd.to_string());
+                unit.spd = v;
+            }
+        }
+        "level" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("level".into()).or_insert_with(|| unit.level.to_string());
+                unit.level = v;
+            }
+        }
+        "sight" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("sight".into()).or_insert_with(|| unit.sight.to_string());
+                unit.sight = v;
+            }
+        }
+        "nsight" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("nsight".into()).or_insert_with(|| unit.nsight.to_string());
+                unit.nsight = v;
+            }
+        }
+        "goldcost" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("goldCost".into()).or_insert_with(|| unit.gold_cost.to_string());
+                unit.gold_cost = v;
+            }
+        }
+        "lumbercost" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("lumberCost".into()).or_insert_with(|| unit.lumber_cost.to_string());
+                unit.lumber_cost = v;
+            }
+        }
+        "bldtm" => {
+            if let Some(v) = mod_value_u32(value) {
+                unit.defaults.entry("bldTm".into()).or_insert_with(|| unit.bld_tm.to_string());
+                unit.bld_tm = v;
+            }
+        }
+        "collision" => {
+            if let Some(v) = mod_value_f64(value) {
+                unit.defaults.entry("collision".into()).or_insert_with(|| unit.collision.to_string());
+                unit.collision = v;
+            }
+        }
+        "pathTex" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.defaults.entry("pathTex".into()).or_insert_with(|| unit.path_tex.clone());
+                unit.path_tex = s;
+            }
+        }
+        "tilesets" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.defaults.entry("tilesets".into()).or_insert_with(|| unit.tilesets.clone());
+                unit.tilesets = s;
+            }
+        }
+        "isbldg" => {
+            if let Some(b) = mod_value_bool(value) {
+                unit.defaults.entry("isBldg".into()).or_insert_with(|| unit.is_bldg.to_string());
+                unit.is_bldg = b;
+            }
+        }
+        "maxPitch" => {
+            if let Some(v) = mod_value_f64(value) {
+                unit.defaults.entry("maxPitch".into()).or_insert_with(|| unit.max_pitch.to_string());
+                unit.max_pitch = v;
+            }
+        }
+        "maxRoll" => {
+            if let Some(v) = mod_value_f64(value) {
+                unit.defaults.entry("maxRoll".into()).or_insert_with(|| unit.max_roll.to_string());
+                unit.max_roll = v;
+            }
+        }
+        "Tip" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.tip = Some(s);
+            }
+        }
+        "Ubertip" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.ubertip = Some(s);
+            }
+        }
+        "Hotkey" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.hotkey = Some(s);
+            }
+        }
+        "Propernames" => {
+            if let Some(s) = mod_value_string(value) {
+                unit.propernames = Some(s);
+            }
+        }
+        // Many more fields exist in UnitMetaData.slk — handle key ones,
+        // silently skip the rest for now.
+        _ => {}
+    }
+}
+

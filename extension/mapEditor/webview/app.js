@@ -25,7 +25,7 @@ window.W3E = (function () {
     function onStatusChanged(fn) { _statusListeners.push(fn); }
     function onSnapshotChanged(fn) { _snapshotListeners.push(fn); }
 
-    function _applyGamePathChanged(status, snapshot) {
+    function _applyGamePathChanged(status, snapshot, decorations, units) {
         for (let i = 0; i < _statusListeners.length; i++) {
             try { _statusListeners[i](status); } catch (_) {}
         }
@@ -43,19 +43,58 @@ window.W3E = (function () {
         }
         TILESET.rebuildCliffs(snapshot.cliffTypesSlk, _cliffTileCodes);
 
-        // The snapshot now includes w3d/w3b merges when an archive path
-        // is provided, so always rebuild from the snapshot.
-        if (snapshot.doodadsSlk) {
-            DOOD.rebuild(snapshot.doodadsSlk);
+        // Doodads & destructables come from the decorations endpoint
+        // (separate from the snapshot since they are archive-specific).
+        if (decorations) {
+            if (decorations.doodadsMerged) {
+                DOOD.rebuild(decorations.doodadsMerged);
+            }
+            if (decorations.destructablesMerged) {
+                DEST.rebuild(decorations.destructablesMerged);
+            }
+            // Update placed doodad items from decorations.placed
+            if (decorations.placed) {
+                PLACED.setDoodadDooItems(decorations.placed.map((p, i) => ({
+                    raw: p.raw,
+                    text: p.text,
+                    variation: p.variation,
+                    model: p.modelPath || '',
+                    index: i,
+                    position: p.position,
+                    angle: p.angle,
+                    scale: p.scale,
+                    skin: p.skin != null ? p.skin : null,
+                    flag: p.flag,
+                    health: p.health != null ? p.health : null,
+                    num: p.num != null ? p.num : null,
+                    kind: p.kind,
+                    error: p.error || null,
+                })));
+            }
         }
-        if (snapshot.destructablesSlk) {
-            DEST.rebuild(snapshot.destructablesSlk);
+        // Units come from the units endpoint (archive-specific, like decorations).
+        if (units && units.unitsMerged) {
+            UNITS.rebuild(units.unitsMerged);
         }
-        UNITS.rebuild(snapshot.unitsSlk);
+        if (units && units.placed) {
+            PLACED.setUnitDooItems(units.placed.map((p, i) => ({
+                raw: p.raw,
+                text: p.text,
+                variation: p.variation,
+                model: p.modelPath || '',
+                index: i,
+                position: p.position,
+                angle: p.angle,
+                scale: p.scale,
+                skin: p.skin != null ? p.skin : null,
+                flag: p.flag,
+                player: p.player,
+            })));
+        }
         PLACED.updatePlacedNames();
 
         for (let j = 0; j < _snapshotListeners.length; j++) {
-            try { _snapshotListeners[j](snapshot); } catch (_) {}
+            try { _snapshotListeners[j](snapshot, decorations, units); } catch (_) {}
         }
     }
 
@@ -731,7 +770,7 @@ window.W3E = (function () {
         window.addEventListener('message', e => {
             const msg = e.data;
             if (msg && msg.command === 'gamePathChanged') {
-                try { _applyGamePathChanged(msg.status, msg.snapshot); } catch (_) {}
+                try { _applyGamePathChanged(msg.status, msg.snapshot, msg.decorations, msg.units); } catch (_) {}
                 setLoading(false);
             }
             if (msg && msg.command === 'loadingDone') setLoading(false);

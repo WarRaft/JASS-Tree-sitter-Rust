@@ -1,10 +1,8 @@
-//! Snapshot endpoint — returns the pre-built game data snapshot.
+//! Snapshot / decorations / units HTTP handlers.
 //!
-//! `GET /w3e/snapshot` — returns the entire cached snapshot as JSON.
-//!
-//! When the `archive` query parameter is provided, the snapshot is rebuilt
-//! on-the-fly with `war3map.w3d` / `war3map.w3b` merges from the archive
-//! so that custom doodads and destructables are included.
+//! `GET /mapEditor/snapshot` — cached game snapshot as JSON.
+//! `GET /mapEditor/decorations` — decorations payload as JSON.
+//! `GET /mapEditor/units` — units payload as JSON.
 
 use crate::http::server::{TokenParam, check_token};
 use axum::extract::Query;
@@ -15,7 +13,7 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 pub struct SnapshotParams {
     pub token: String,
-    /// Optional map archive path — when provided, merge w3d/w3b into the snapshot.
+    /// Optional map archive path — build archive-context snapshot.
     pub archive: Option<String>,
 }
 
@@ -25,12 +23,18 @@ pub struct DecorationsParams {
     pub archive: String,
 }
 
+#[derive(Deserialize)]
+pub struct UnitsParams {
+    pub token: String,
+    pub archive: String,
+}
+
 pub async fn snapshot_handler(
     Query(params): Query<SnapshotParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
     check_token(&TokenParam { token: params.token }).map_err(|(s, m)| (s, m.to_string()))?;
 
-    // If an archive path is provided, build a fresh snapshot with w3d/w3b merges.
+    // If an archive path is provided, build a fresh archive-context snapshot.
     if let Some(ref archive_path) = params.archive {
         let ap = archive_path.clone();
         let json = tokio::task::spawn_blocking(move || {
@@ -69,7 +73,8 @@ pub async fn decorations_handler(
 
     let ap = params.archive.clone();
     let json = tokio::task::spawn_blocking(move || {
-        crate::lng::map_editor::snapshot::build_decorations_for_archive(&ap)
+        let payload = crate::lng::map_editor::decorations::build_decorations_for_archive(&ap);
+        crate::lng::map_editor::decorations::serialize_decorations_json(&payload)
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?;
@@ -83,3 +88,25 @@ pub async fn decorations_handler(
     ))
 }
 
+
+pub async fn units_handler(
+    Query(params): Query<UnitsParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    check_token(&TokenParam { token: params.token }).map_err(|(s, m)| (s, m.to_string()))?;
+
+    let ap = params.archive.clone();
+    let json = tokio::task::spawn_blocking(move || {
+        let payload = crate::lng::map_editor::units::build_units_for_archive(&ap);
+        crate::lng::map_editor::units::serialize_units_json(&payload)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        json,
+    ))
+}

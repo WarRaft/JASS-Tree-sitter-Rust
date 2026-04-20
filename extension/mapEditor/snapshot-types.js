@@ -2,13 +2,13 @@
  * @fileoverview Game data snapshot contract — type definitions shared between
  * Rust backend and JS frontend.
  *
- * These types mirror the Rust structs in `src/lng/w3e/snapshot.rs` and
- * `src/lng/w3e/slk.rs`.  Both sides MUST stay in sync.
+ * These types mirror the Rust structs in `src/lng/map_editor/snapshot.rs` and
+ * `src/lng/map_editor/slk.rs`.  Both sides MUST stay in sync.
  *
  * ── Data flow ──
  *   1. Rust reads all game files ONCE when the game path is set
  *   2. Builds a `GameSnapshot` (pre-serialised to JSON)
- *   3. JS fetches `/w3e/snapshot` → gets the full snapshot
+ *   3. JS fetches `/mapEditor/snapshot` → gets the full snapshot
  *   4. Extension host sends snapshot to webview via postMessage
  *   5. Webview applies data directly (westrings, SLK catalogs, etc.)
  */
@@ -16,15 +16,33 @@
 // ─── Top-level snapshot ──────────────────────────────────────────────────────
 
 /**
- * The complete game data snapshot returned by `/w3e/snapshot`.
+ * The complete game data snapshot returned by `/mapEditor/snapshot`.
  * @typedef {Object} GameSnapshot
  * @property {Object<string, string>} westrings - WESTRING_* → resolved value map
  * @property {TerrainSlkResult|null} terrainSlk - Terrain tile data
- * @property {DoodadsSlkResult|null} doodadsSlk - Doodad catalog
- * @property {UnitsSlkResult|null} unitsSlk - Unit catalog (merged from SLK + TXT)
- * @property {DestructablesSlkResult|null} destructablesSlk - Destructable catalog
  * @property {CliffTypesSlkResult|null} cliffTypesSlk - Cliff type catalog
  * @property {CliffVariationsResult|null} cliffVariations - Max variation per cliff pattern
+ */
+
+/**
+ * Units payload returned by `/mapEditor/units`.
+ * @typedef {Object} UnitsPayload
+ * @property {UnitsSlkResult|null} unitsRaw - Original units from SLK (before w3u merge)
+ * @property {UnitsSlkResult|null} unitsMerged - Units after applying war3map.w3u modifications
+ * @property {UnitPlaced[]} placed - Placed units from war3mapUnits.doo
+ */
+
+/**
+ * A placed unit entry from war3mapUnits.doo.
+ * @typedef {Object} UnitPlaced
+ * @property {number} raw - Rawcode u32
+ * @property {string} text - Rawcode text
+ * @property {{x:number,y:number,z:number}} position
+ * @property {number} angle - Angle in radians
+ * @property {{x:number,y:number,z:number}} scale
+ * @property {number} player - Player index
+ * @property {string} modelPath - Resolved model path
+ * @property {string} [error] - Error message if any
  */
 
 // ─── GameString ──────────────────────────────────────────────────────────────
@@ -267,7 +285,9 @@
  * @typedef {Object} UnitsSlkResult
  * @property {string} source
  * @property {SlkSource[]} sources - Per-file source info
+ * @property {Object<string, UnitInfo>} [unitsDefault] - Default units (before w3u merge)
  * @property {Object<string, UnitInfo>} units - Keyed by rawcode u32
+ * @property {string[]} [w3uErrors] - Errors from merging war3map.w3u
  */
 
 // ─── Destructables ───────────────────────────────────────────────────────────
