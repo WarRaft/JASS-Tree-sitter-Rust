@@ -12,6 +12,7 @@
 
 use crate::lng::map_editor::game_path::get_game_path;
 use log::debug;
+use serde::Serialize;
 use std::path::Path;
 
 /// MPQ archives to search (after the tileset MPQ).
@@ -62,6 +63,121 @@ pub fn lookup_file_resolved_ext(relative_path: &str, archive_path: Option<&str>,
     None
 }
 
+/// Kind-aware resolved lookup.
+///
+/// `kind`:
+/// - `Some("model")`   => only model extension fallback (.mdx/.mdl)
+/// - `Some("texture")` => only texture extension fallback (.tga/.blp)
+/// - otherwise          => generic lookup (`lookup_file_resolved_ext`)
+pub fn lookup_file_resolved_kind_ext(
+    relative_path: &str,
+    archive_path: Option<&str>,
+    tileset: Option<&str>,
+    kind: Option<&str>,
+) -> Option<(Vec<u8>, String, String)> {
+    let kind_lc = kind.unwrap_or("").to_ascii_lowercase();
+    if kind_lc == "model" {
+        if let result @ Some(_) = lookup_model_with_ext_fallback(relative_path, archive_path, tileset) {
+            return result;
+        }
+        if let Some(base) = strip_variation_digits(relative_path) {
+            debug!("lookup_file(model): variation fallback {relative_path} -> {base}");
+            return lookup_model_with_ext_fallback(&base, archive_path, tileset);
+        }
+        return None;
+    }
+    if kind_lc == "texture" {
+        if let result @ Some(_) = lookup_texture_with_ext_fallback(relative_path, archive_path, tileset) {
+            return result;
+        }
+        return None;
+    }
+    lookup_file_resolved_ext(relative_path, archive_path, tileset)
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ModelVariantFound {
+    pub path: String,
+    pub resolved_path: String,
+    pub source: String,
+}
+
+fn no_ext_lower(path: &str) -> String {
+    let p = path.replace('\\', "/").to_ascii_lowercase();
+    let slash = p.rfind('/').unwrap_or(0);
+    let dot = p.rfind('.');
+    if let Some(d) = dot {
+        if d > slash {
+            return p[..d].to_string();
+        }
+    }
+    p
+}
+
+fn model_variant_stem(search_path: &str) -> String {
+    let last_sep = search_path.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
+    let filename = &search_path[last_sep..];
+    let (stem, had_ext) = match filename.rfind('.') {
+        Some(dot) => (&filename[..dot], true),
+        None => (filename, false),
+    };
+    let base_stem = if had_ext {
+        stem.trim_end_matches(|c: char| c.is_ascii_digit())
+    } else {
+        stem
+    };
+    format!("{}{}", &search_path[..last_sep], base_stem)
+}
+
+/// Resolve existing model variants for doodad/destructable model path.
+///
+/// Probe order (limit 10): `stem0..stem9`, where `stem` is derived from `search_path`:
+/// - with extension: strip extension and trailing digits from filename stem
+/// - without extension: keep filename stem as-is
+///
+/// If at least one digit variant is found, returns only found digit variants.
+/// Otherwise probes base `stem` and returns it if found.
+pub fn resolve_model_variants_ext(
+    search_path: &str,
+    archive_path: Option<&str>,
+    tileset: Option<&str>,
+) -> Vec<ModelVariantFound> {
+    let stem = model_variant_stem(search_path);
+    if stem.is_empty() {
+        return Vec::new();
+    }
+
+    let mut digit_variants: Vec<ModelVariantFound> = Vec::new();
+    for i in 0..10 {
+        let candidate = format!("{}{}", stem, i);
+        if let Some((_buf, source, resolved_path)) = lookup_model_with_ext_fallback(&candidate, archive_path, tileset) {
+            // Strict path match by stem: candidate4 must not resolve to candidate.
+            if no_ext_lower(&resolved_path) == no_ext_lower(&candidate) {
+                digit_variants.push(ModelVariantFound {
+                    path: candidate,
+                    resolved_path,
+                    source,
+                });
+            }
+        }
+    }
+    if !digit_variants.is_empty() {
+        return digit_variants;
+    }
+
+    if let Some((_buf, source, resolved_path)) = lookup_model_with_ext_fallback(&stem, archive_path, tileset) {
+        if no_ext_lower(&resolved_path) == no_ext_lower(&stem) {
+            return vec![ModelVariantFound {
+                path: stem,
+                resolved_path,
+                source,
+            }];
+        }
+    }
+
+    Vec::new()
+}
+
 /// Core lookup with extension fallback (.mdx↔.mdl, .tga↔.blp) but
 /// **without** variation digit stripping.
 fn lookup_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
@@ -100,6 +216,60 @@ fn lookup_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, til
             return result;
         }
         // Texture
+        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.tga"), archive_path, tileset) {
+            return result;
+        }
+        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.blp"), archive_path, tileset) {
+            return result;
+        }
+    }
+
+    lookup_cascade(relative_path, archive_path, tileset)
+}
+
+/// Model-only lookup with extension fallback (.mdx/.mdl) and no texture probing.
+fn lookup_model_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
+    let lower = relative_path.to_ascii_lowercase();
+
+    if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
+        let base = &relative_path[..relative_path.len() - 4];
+        let mdx_path = format!("{base}.mdx");
+        if let result @ Some(_) = lookup_cascade(&mdx_path, archive_path, tileset) {
+            return result;
+        }
+        let mdl_path = format!("{base}.mdl");
+        return lookup_cascade(&mdl_path, archive_path, tileset);
+    }
+
+    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+    if !lower[last_sep..].contains('.') {
+        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.mdx"), archive_path, tileset) {
+            return result;
+        }
+        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.mdl"), archive_path, tileset) {
+            return result;
+        }
+    }
+
+    lookup_cascade(relative_path, archive_path, tileset)
+}
+
+/// Texture-only lookup with extension fallback (.tga/.blp) and no model probing.
+fn lookup_texture_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
+    let lower = relative_path.to_ascii_lowercase();
+
+    if lower.ends_with(".tga") || lower.ends_with(".blp") {
+        let base = &relative_path[..relative_path.len() - 4];
+        let tga_path = format!("{base}.tga");
+        if let result @ Some(_) = lookup_cascade(&tga_path, archive_path, tileset) {
+            return result;
+        }
+        let blp_path = format!("{base}.blp");
+        return lookup_cascade(&blp_path, archive_path, tileset);
+    }
+
+    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+    if !lower[last_sep..].contains('.') {
         if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.tga"), archive_path, tileset) {
             return result;
         }

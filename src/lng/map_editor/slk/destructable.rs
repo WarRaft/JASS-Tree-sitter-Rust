@@ -35,6 +35,9 @@ pub struct Destructable {
     pub tilesets: String,
     pub tileset_specific: bool,
     pub file: String,
+    /// Resolved existing model variants for this destructable (ModelSet).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub model_set: Vec<String>,
     pub lightweight: bool,
     pub fat_los: bool,
     pub tex_id: u32,
@@ -153,6 +156,8 @@ pub fn load_destructables_slk(archive_path: Option<&str>) -> Option<Destructable
         );
 
         let key = rawcode_to_u32(&destructable_id);
+        let file = row.get("file").cloned().unwrap_or_default();
+        let num_var = slk_u32(&row, "numVar", 1);
         destructables.insert(key, Destructable {
             destructable_id,
             base_id: String::new(),
@@ -164,7 +169,8 @@ pub fn load_destructables_slk(archive_path: Option<&str>) -> Option<Destructable
             category: row.get("category").cloned().unwrap_or_default(),
             tilesets: row.get("tilesets").cloned().unwrap_or_default(),
             tileset_specific: slk_bool(&row, "tilesetSpecific"),
-            file: row.get("file").cloned().unwrap_or_default(),
+            file: file.clone(),
+            model_set: Vec::new(),
             lightweight: slk_bool(&row, "lightweight"),
             fat_los: slk_bool(&row, "fatLOS"),
             tex_id: slk_u32(&row, "texID", 0),
@@ -178,7 +184,7 @@ pub fn load_destructables_slk(archive_path: Option<&str>) -> Option<Destructable
             cliff_height: slk_u32(&row, "cliffHeight", 0),
             targ_type: row.get("targType").cloned().unwrap_or_default(),
             armor: row.get("armor").cloned().unwrap_or_default(),
-            num_var: slk_u32(&row, "numVar", 1),
+            num_var,
             hp: slk_u32(&row, "HP", 0),
             occ_h: slk_f64(&row, "occH", 0.0),
             fly_h: slk_f64(&row, "flyH", 0.0),
@@ -219,6 +225,7 @@ pub fn load_destructables_slk(archive_path: Option<&str>) -> Option<Destructable
         w3b_errors: Vec::new(),
     })
 }
+
 
 // ─── DestructableMetaData.slk ────────────────────────────────────────────────
 

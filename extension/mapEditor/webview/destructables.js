@@ -10,6 +10,8 @@ window._W3E_DESTRUCTABLES = (function () {
     let _allDestructables = [];
     let _filteredDestructables = [];
     let _destructablesSlkLoaded = false;
+    let _currentDestId = null;
+    let _detailHandlersAttached = false;
 
     /** @returns {boolean} true if original (from SLK, not in w3b) */
     function _isOriginal(d) { return !(d.baseId || d.w3bModified); }
@@ -414,8 +416,18 @@ window._W3E_DESTRUCTABLES = (function () {
         S.patchWvState({_destCollapse: state});
     }
 
+    if (U && typeof U.onModelVariantsResolved === 'function') {
+        U.onModelVariantsResolved(function () {
+            if (_currentDestId && _destructableDataMap[_currentDestId]) {
+                showDetail(_currentDestId);
+            }
+        });
+    }
+
+
     function showDetail(destId) {
         let vscode = S.getVscode();
+        _currentDestId = destId;
         const d = _destructableDataMap[destId];
         if (!d) {
             const win = document.getElementById('destructableDetailWindow');
@@ -448,18 +460,7 @@ window._W3E_DESTRUCTABLES = (function () {
                 const dtTexId = d.texId || 0;
                 const dtTexFile = d.texFile || '';
                 if (filePath) {
-                    const paths = U.buildModelPaths(filePath, numVar);
-                    const links = paths.map(p =>
-                        '<a href="#" class="dd-model-link" data-path="' + U.esc(p) + '"'
-                        + (dtTexId ? ' data-tex-id="' + dtTexId + '"' : '')
-                        + (dtTexFile ? ' data-tex-file="' + U.esc(dtTexFile) + '"' : '')
-                        + '>' + U.esc(p) + '</a>'
-                    ).join('');
-                    let fileRow = '<tr><td class="key">file</td><td>' + links + '</td>';
-                    if (d.defaults && d.defaults['file'] !== undefined) {
-                        fileRow += '<td class="dd-default">' + U.esc(d.defaults['file']) + '</td>';
-                    }
-                    rows += fileRow + '</tr>';
+                    rows += U.renderModelFileRow({filePath: filePath, numVar: numVar, defaults: d.defaults, vscode: vscode, includeTexAttrs: true, texId: dtTexId, texFile: dtTexFile});
                 }
                 let numVarRow = '<tr><td class="key">numVar</td><td>' + numVar + '</td>';
                 if (d.defaults && d.defaults['numVar'] !== undefined) {
@@ -531,30 +532,35 @@ window._W3E_DESTRUCTABLES = (function () {
         win.setAttribute('title-text', '\ud83c\udfda ' + titleName + (titleSuffix ? ' ' + titleSuffix : ''));
         win.show();
 
-        body.addEventListener('collapse-toggle', function (e) {
-            const state = _getDestCollapseState();
-            state[e.detail.title] = e.detail.open;
-            _setDestCollapseState(state);
-        });
+        if (!_detailHandlersAttached) {
+            body.addEventListener('collapse-toggle', function (e) {
+                const state = _getDestCollapseState();
+                state[e.detail.title] = e.detail.open;
+                _setDestCollapseState(state);
+            });
 
-        body.addEventListener('click', function (e) {
-            let link = e.target.closest('.dd-model-link');
-            if (link) {
-                e.preventDefault();
-                let cmd = {command: 'openModel', path: link.getAttribute('data-path')};
-                let tId = link.getAttribute('data-tex-id');
-                let tFile = link.getAttribute('data-tex-file');
-                if (tId) cmd.texId = parseInt(tId, 10);
-                if (tFile) cmd.texFile = tFile;
-                if (vscode) vscode.postMessage(cmd);
-                return;
-            }
-            let ptLink = e.target.closest('.dd-pathtex-link');
-            if (ptLink) {
-                e.preventDefault();
-                window._W3E_PATH_TEX.showPathTex(ptLink.getAttribute('data-pathtex'));
-            }
-        });
+            body.addEventListener('click', function (e) {
+                let link = e.target.closest('.dd-model-link');
+                if (link) {
+                    e.preventDefault();
+                    let cmd = {command: 'openModel', path: link.getAttribute('data-path')};
+                    let tId = link.getAttribute('data-tex-id');
+                    let tFile = link.getAttribute('data-tex-file');
+                    if (tId) cmd.texId = parseInt(tId, 10);
+                    if (tFile) cmd.texFile = tFile;
+                    const curVscode = S.getVscode();
+                    if (curVscode) curVscode.postMessage(cmd);
+                    return;
+                }
+                let ptLink = e.target.closest('.dd-pathtex-link');
+                if (ptLink) {
+                    e.preventDefault();
+                    window._W3E_PATH_TEX.showPathTex(ptLink.getAttribute('data-pathtex'));
+                }
+            });
+
+            _detailHandlersAttached = true;
+        }
     }
 
     // ── W3B errors window ──────────────────────────────────────

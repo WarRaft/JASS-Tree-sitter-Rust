@@ -2,6 +2,7 @@
 
 (async function () {
     const DATA = window.__W3E_DATA__
+    const U = window._W3E_UTILS || null
     if (!DATA) return
 
     const vscode = (typeof acquireVsCodeApi === 'function') ? acquireVsCodeApi() : null
@@ -1890,18 +1891,6 @@
                 }
             }
 
-            // Resolve the model file path for a doodad, applying variation logic.
-            // Always strips extension — the server handles .mdx/.mdl resolution.
-            function _resolveModelPath(baseFile, numVar, variation) {
-                let lastSlash = Math.max(baseFile.lastIndexOf('/'), baseFile.lastIndexOf('\\'))
-                let dotIdx = baseFile.lastIndexOf('.')
-                let hasExt = dotIdx > lastSlash && dotIdx >= 0
-                let base = hasExt ? baseFile.substring(0, dotIdx) : baseFile
-                if (numVar <= 1) return base
-                let idx = (variation || 0) % numVar
-                return base + idx
-            }
-
             // Bilinear interpolation of final ground height at fractional
             // tilepoint coordinates, matching HiveWE Terrain::interpolated_height.
             // Coordinates are in tile units (world / 128), NOT game units.
@@ -2315,17 +2304,17 @@
                     }
                 }
 
-                const pathsNeeded = {} // modelPath → true (for loading dedup)
-                const byCacheKey = {} // cacheKey → {path, items, texId, texFile}
+                const byCacheKey = {} // cacheKey → {file, variation, resolved, items, texId, texFile}
                 const _unmappedItems = [] // items with no rawcode→file mapping
                 for (const item of _doodItems) {
                     const entry = _doodFileMap[item.r] || _destFileMap[item.r]
                     if (!entry) { _unmappedItems.push(item); continue }
                     const file = typeof entry === 'string' ? entry : entry.file
-                    const numVar = typeof entry === 'object' ? (entry.numVar || 1) : 1
-                    const resolved = _resolveModelPath(file, numVar, item.v)
                     const texFile = typeof entry === 'object' ? (entry.texFile || '') : ''
                     const texId = typeof entry === 'object' ? (entry.texId || 0) : 0
+                    const preResolved = typeof item.m === 'string' && item.m ? item.m : ''
+                    const requestedFile = preResolved || file
+                    const variation = preResolved ? 0 : (item.v || 0)
 
                     // fixedRot override: positive or zero → fixed angle in degrees
                     // (HiveWE Doodad::acceptable_angle: fixedRot >= 0 → radians(fixedRot))
@@ -2341,18 +2330,36 @@
                     const tilt = _computeTerrainTilt(item.p[0], item.p[1], item.a || 0, mp, mr)
                     if (tilt) { item.rx = tilt.rx; item.ry = tilt.ry }
 
-                    const cacheKey = texFile ? (resolved + '|' + texFile) : resolved
-                    if (!byCacheKey[cacheKey]) byCacheKey[cacheKey] = {path: resolved, items: [], texId, texFile}
+                    const cacheKey = requestedFile.toLowerCase() + '|' + variation + (texFile ? '|' + texFile : '')
+                    if (!byCacheKey[cacheKey]) {
+                        byCacheKey[cacheKey] = {
+                            file: requestedFile,
+                            variation,
+                            resolved: !!preResolved,
+                            items: [],
+                            texId,
+                            texFile,
+                        }
+                    }
                     byCacheKey[cacheKey].items.push(item)
-                    pathsNeeded[resolved] = true
                 }
                 for (const item of _unitItems) {
                     const file = _unitFileMap[item.r]
                     if (!file) { _unmappedItems.push(item); continue }
-                    const cacheKey = file
-                    if (!byCacheKey[cacheKey]) byCacheKey[cacheKey] = {path: file, items: [], texId: 0, texFile: ''}
+                    const preResolved = typeof item.m === 'string' && item.m ? item.m : ''
+                    const requestedFile = preResolved || file
+                    const cacheKey = requestedFile.toLowerCase() + '|0'
+                    if (!byCacheKey[cacheKey]) {
+                        byCacheKey[cacheKey] = {
+                            file: requestedFile,
+                            variation: 0,
+                            resolved: !!preResolved,
+                            items: [],
+                            texId: 0,
+                            texFile: '',
+                        }
+                    }
                     byCacheKey[cacheKey].items.push(item)
-                    pathsNeeded[file] = true
                 }
 
                 // Collect cliff/ramp models from terrain data
@@ -2368,14 +2375,13 @@
                 for (const item of cliffItems) {
                     // Cache key includes texture path so different cliff types get separate entries
                     const texKey = item.cliffTex || ''
-                    const cacheKey = texKey ? (item.path + '|' + texKey) : item.path
+                    const cacheKey = item.path.toLowerCase() + '|0' + (texKey ? '|' + texKey : '')
                     if (!byCacheKey[cacheKey]) byCacheKey[cacheKey] = {
-                        path: item.path, items: [],
+                        file: item.path, variation: 0, resolved: true, items: [],
                         _cliff: true,
                         _cliffTex: item.cliffTex,
                     }
                     byCacheKey[cacheKey].items.push(item)
-                    pathsNeeded[item.path] = true
                 }
 
 
@@ -2386,24 +2392,29 @@
 
                 // Place already-cached models; collect uncached for loading
                 const toLoad = []
+                const toLoadSet = new Set()
                 for (const [cacheKey, info] of Object.entries(byCacheKey)) {
                     const grp = info._cliff ? cliffGroup : undefined
+                    const rawKey = info.file.toLowerCase() + '|' + info.variation
                     if (_modelCache[cacheKey]) {
                         _placeInstances(info.items, _modelCache[cacheKey], grp)
-                    } else if (_rawModelData[info.path]) {
+                    } else if (_rawModelData[rawKey]) {
                         // Model data already loaded but not yet built for this texture variant
                         const replTex = _buildReplTex(info)
-                        const entries = _buildModel(_rawModelData[info.path], replTex, !!info._cliff)
+                        const entries = _buildModel(_rawModelData[rawKey], replTex, !!info._cliff)
                         _modelCache[cacheKey] = entries
                         _placeInstances(info.items, entries, grp)
                     } else {
                         _pendingItems[cacheKey] = info
-                        if (!toLoad.includes(info.path)) toLoad.push(info.path)
+                        if (!toLoadSet.has(rawKey)) {
+                            toLoadSet.add(rawKey)
+                            toLoad.push({path: info.file, variation: info.variation, resolved: !!info.resolved})
+                        }
                     }
                 }
 
                 if (toLoad.length > 0 && vscode) {
-                    vscode.postMessage({command: 'loadMapObjects', paths: toLoad})
+                    vscode.postMessage({command: 'loadMapObjects', entries: toLoad})
                 }
             }
 
@@ -2411,10 +2422,11 @@
             window.addEventListener('message', function (e) {
                 const msg = e.data
                 if (msg && msg.command === 'mapObjectModel') {
-                    _rawModelData[msg.path] = msg
-                    // Build entries for each pending cache key that references this model path
+                    const rawKey = msg.path.toLowerCase() + '|' + (msg.variation || 0)
+                    _rawModelData[rawKey] = msg
+                    // Build entries for each pending cache key that references this model path+variation
                     for (const [cacheKey, info] of Object.entries(_pendingItems)) {
-                        if (info.path !== msg.path) continue
+                        if (info.file.toLowerCase() !== msg.path.toLowerCase() || info.variation !== (msg.variation || 0)) continue
                         const replTex = _buildReplTex(info)
                         const entries = _buildModel(msg, replTex, !!info._cliff)
                         _modelCache[cacheKey] = entries
@@ -2424,7 +2436,7 @@
                 } else if (msg && msg.command === 'mapObjectModelNotFound') {
                     // Model file could not be loaded — red cubes for all (cliffs centered)
                     for (const [cacheKey, info] of Object.entries(_pendingItems)) {
-                        if (info.path !== msg.path) continue
+                        if (info.file.toLowerCase() !== msg.path.toLowerCase() || info.variation !== (msg.variation || 0)) continue
                         _modelCache[cacheKey] = _fallbackEntries
                         if (info._cliff) {
                             if (info.items && cliffGroup.visible) {
@@ -2743,7 +2755,9 @@
                 })
 
                 _waterMesh = new THREE.Mesh(waterGeo, waterMat)
-                _waterMesh.renderOrder = 10  // render after terrain
+                // Keep water before transparent doodad layers (renderOrder 1/2),
+                // otherwise non-depth-writing layers can appear below water.
+                _waterMesh.renderOrder = 0
                 waterGroup.add(_waterMesh)
 
                 // Reset animation state

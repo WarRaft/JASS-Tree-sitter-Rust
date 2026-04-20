@@ -85,6 +85,8 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 uri: document.uri.toString(),
                 isUnit: true,
                 archivePath: filePath,
+                tileset: terrainData && terrainData.tileset ? terrainData.tileset : undefined,
+                resolveModels: false,
             })
             if (!result.error) unitDooData = result
         } catch (_) {
@@ -96,6 +98,8 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                 uri: document.uri.toString(),
                 isUnit: false,
                 archivePath: filePath,
+                tileset: terrainData && terrainData.tileset ? terrainData.tileset : undefined,
+                resolveModels: true,
             })
             if (!result.error) doodadDooData = result
         } catch (_) {
@@ -158,6 +162,8 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         // ── .doo file ────────────────────────────────────────────
         const params = {uri: document.uri.toString(), isUnit: isDooUnit}
         if (document._mpqArchivePath) params.archivePath = document._mpqArchivePath
+        if (terrainData && terrainData.tileset) params.tileset = terrainData.tileset
+        params.resolveModels = !isDooUnit
 
         const result = await client.sendRequest('render/doo', params)
         if (result.error) {
@@ -309,6 +315,8 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     const r = await client.sendRequest('render/doo', {
                         uri: Uri.file(unitPath).toString(),
                         isUnit: true,
+                        tileset: terrainData && terrainData.tileset ? terrainData.tileset : undefined,
+                        resolveModels: false,
                     })
                     if (!r.error) unitDooData = r
                 } catch (_) {
@@ -323,6 +331,8 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     const r = await client.sendRequest('render/doo', {
                         uri: Uri.file(doodadPath).toString(),
                         isUnit: false,
+                        tileset: terrainData && terrainData.tileset ? terrainData.tileset : undefined,
+                        resolveModels: true,
                     })
                     if (!r.error) doodadDooData = r
                 } catch (_) {
@@ -548,8 +558,26 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
     // ── Helper: lookup a game file via HTTP server or WebSocket fallback ──
     // The server handles .mdx/.mdl and .tga/.blp extension fallback internally,
     // so callers just send the path as-is — no extension juggling needed.
+    function _pathNoExtLower(p) {
+        const s = String(p || '').replace(/\\/g, '/').toLowerCase()
+        const slash = s.lastIndexOf('/')
+        const dot = s.lastIndexOf('.')
+        const hasExt = dot > slash && dot >= 0
+        return hasExt ? s.substring(0, dot) : s
+    }
+
+    function _isAllowedResolvedPath(resolvedPath, kind) {
+        if (!kind || kind === 'any') return true
+        const ext = (String(resolvedPath || '').split('.').pop() || '').toLowerCase()
+        if (kind === 'model') return ext === 'mdx' || ext === 'mdl'
+        if (kind === 'texture') return ext === 'blp' || ext === 'tga'
+        return true
+    }
+
     async function lookupGameFile(searchPath, opts) {
         const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
+        const kind = opts && opts.kind ? String(opts.kind) : 'any'
+        const strictPath = !!(opts && opts.strictPath)
         let buf = null
         let resolvedPath = searchPath
 
@@ -557,6 +585,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             const params = new URLSearchParams({token: bs.token, path: searchPath})
             if (isArchive) params.set('archive', filePath)
             if (opts && opts.tileset) params.set('tileset', opts.tileset)
+            if (kind && kind !== 'any') params.set('kind', kind)
             try {
                 const resp = await fetch(`http://127.0.0.1:${bs.port}/w3e/file?${params}`)
                 if (resp.ok) {
@@ -579,7 +608,42 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             } catch (_) {}
         }
 
+        if (buf && !_isAllowedResolvedPath(resolvedPath, kind)) {
+            buf = null
+        }
+        if (buf && strictPath && _pathNoExtLower(resolvedPath) !== _pathNoExtLower(searchPath)) {
+            buf = null
+        }
+
         return buf ? {buf, resolvedPath} : null
+    }
+
+    const _modelVariantsCache = new Map()
+    const _modelVariantsFoundCache = new Map()
+
+    async function resolveExistingModelVariants(searchPath, opts) {
+        const tileset = opts && opts.tileset ? opts.tileset : ''
+        const cacheKey = `${tileset}|${String(searchPath || '').toLowerCase()}`
+        if (_modelVariantsCache.has(cacheKey)) {
+            return _modelVariantsCache.get(cacheKey)
+        }
+
+        try {
+            const result = await client.sendRequest('w3e/modelVariants', {
+                path: searchPath,
+                archivePath: isArchive ? filePath : undefined,
+                tileset: tileset || undefined,
+            })
+            const variants = result && Array.isArray(result.variants) ? result.variants : []
+            const found = result && Array.isArray(result.found) ? result.found : []
+            _modelVariantsCache.set(cacheKey, variants)
+            _modelVariantsFoundCache.set(cacheKey, found)
+            return variants
+        } catch (_) {
+            _modelVariantsCache.set(cacheKey, [])
+            _modelVariantsFoundCache.set(cacheKey, [])
+            return []
+        }
     }
 
 
@@ -636,7 +700,12 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             // render MDX data, and send the result back to the webview for
             // the embedded model viewer float-window.
             try {
-                const found = await lookupGameFile(msg.path)
+                const mapTileset = terrainData && terrainData.tileset ? terrainData.tileset : null
+                const found = await lookupGameFile(msg.path, {
+                    tileset: mapTileset,
+                    kind: 'model',
+                    strictPath: true,
+                })
 
                 if (!found) {
                     const missingName = msg.path.replace(/\\/g, '/').split('/').pop() || msg.path
@@ -764,33 +833,62 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         } else if (msg.command === 'extractTo' && isArchive && msg.name) {
             const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
             await commands.executeCommand('mpq.extractTo', uri)
-        } else if (msg.command === 'loadMapObjects' && msg.paths) {
+        } else if (msg.command === 'resolveModelVariants' && msg.filePath) {
+            const mapTileset = terrainData && terrainData.tileset ? terrainData.tileset : null
+            const cacheKey = `${mapTileset || ''}|${String(msg.filePath || '').toLowerCase()}`
+            const variants = await resolveExistingModelVariants(msg.filePath, {tileset: mapTileset})
+            const found = _modelVariantsFoundCache.get(cacheKey) || []
+            webviewPanel.webview.postMessage({
+                command: 'modelVariantsResolved',
+                filePath: msg.filePath,
+                numVar: msg.numVar,
+                variants,
+                found,
+            })
+        } else if (msg.command === 'loadMapObjects' && (msg.entries || msg.paths)) {
             // Bulk-load MDX models for placing doodads/units on the terrain.
+            // entries: [{path: originalFilePath, variation: index, resolved?: boolean}]
+            // If resolved=true, path already comes from Rust DOO parsing and must be used as-is.
             const fs = require('fs')
             const os = require('os')
             const mapTileset = terrainData && terrainData.tileset ? terrainData.tileset : null
+            const entries = msg.entries || (msg.paths || []).map(p => ({path: p, variation: 0}))
 
-            for (const modelPath of msg.paths) {
+            for (const entry of entries) {
+                const {path: modelPath, variation, resolved} = entry
+                const varIdx = variation || 0
                 try {
-                    const found = await lookupGameFile(modelPath, {tileset: mapTileset})
+                    let found = null
+                    if (resolved) {
+                        // Path already resolved in Rust during DOO parsing.
+                        found = await lookupGameFile(modelPath, {tileset: mapTileset, kind: 'model', strictPath: true})
+                    } else {
+                        // Resolve actual variants via Rust — identical to the detail window flow.
+                        // Rust handles both digit variants (B0..B9) and the base model fallback (B itself).
+                        const variants = await resolveExistingModelVariants(modelPath, {tileset: mapTileset})
+                        if (variants.length > 0) {
+                            // Rust found concrete variants — pick by variation index (wraps around)
+                            const selectedPath = variants[varIdx % variants.length]
+                            found = await lookupGameFile(selectedPath, {tileset: mapTileset, kind: 'model', strictPath: true})
+                        }
+                        if (!found) {
+                            // Rust returned nothing (game path not set, etc.) — try the original path
+                            // without strictPath so extension fallback (.mdl↔.mdx) can still work
+                            found = await lookupGameFile(modelPath, {tileset: mapTileset, kind: 'model'})
+                        }
+                    }
+                    const resolvedExt = found ? (found.resolvedPath.split('.').pop() || '').toLowerCase() : ''
 
-                    if (!found) {
+                    if (!found || resolvedExt !== 'mdx') {
                         webviewPanel.webview.postMessage({
                             command: 'mapObjectModelNotFound',
                             path: modelPath,
+                            variation: varIdx,
                         })
                         continue
                     }
 
                     const {buf, resolvedPath} = found
-                    const resolvedExt = (resolvedPath.split('.').pop() || '').toLowerCase()
-                    if (resolvedExt !== 'mdx') {
-                        webviewPanel.webview.postMessage({
-                            command: 'mapObjectModelNotFound',
-                            path: modelPath,
-                        })
-                        continue
-                    }
 
                     const fname = resolvedPath.replace(/\\/g, '/').split('/').pop() || 'model.mdx'
                     const tmpDir = path.join(os.tmpdir(), `vscode-mdx-map-${Date.now()}`)
@@ -807,6 +905,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                             webviewPanel.webview.postMessage({
                                 command: 'mapObjectModel',
                                 path: modelPath,
+                                variation: varIdx,
                                 geosets: renderResult.geosets,
                                 textures: renderResult.textures || [],
                                 materials: renderResult.materials || [],
@@ -815,12 +914,14 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                             webviewPanel.webview.postMessage({
                                 command: 'mapObjectModelNotFound',
                                 path: modelPath,
+                                variation: varIdx,
                             })
                         }
                     } catch (_) {
                         webviewPanel.webview.postMessage({
                             command: 'mapObjectModelNotFound',
                             path: modelPath,
+                            variation: varIdx,
                         })
                     }
 
@@ -830,6 +931,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     webviewPanel.webview.postMessage({
                         command: 'mapObjectModelNotFound',
                         path: modelPath,
+                        variation: varIdx,
                     })
                 }
             }

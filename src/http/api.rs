@@ -129,6 +129,8 @@ pub struct DooRenderParams {
     #[serde(default)]
     pub is_unit: bool,
     pub archive_path: Option<String>,
+    pub tileset: Option<String>,
+    pub resolve_models: Option<bool>,
 }
 
 pub async fn doo_render(
@@ -154,9 +156,98 @@ async fn doo_render_impl(params: &DooRenderParams) -> Result<Value, String> {
         tokio::fs::read(&path).await.map_err(|e| e.to_string())?
     };
     let (data, meta) = DooData::read(&buf, params.is_unit, 26).map_err(|e| e.to_string())?;
-    let mut val = serde_json::to_value(data).map_err(|e| e.to_string())?;
+    let mut val = serde_json::to_value(&data).map_err(|e| e.to_string())?;
+    let resolve_models = params.resolve_models.unwrap_or(false) && !params.is_unit;
+    if resolve_models {
+        attach_doo_resolved_models(&mut val, &data, params);
+    }
     val["_meta"] = serde_json::to_value(meta).unwrap_or_default();
     Ok(val)
+}
+
+fn attach_doo_resolved_models(
+    out: &mut Value,
+    data: &crate::lng::doo::parse::DooData,
+    params: &DooRenderParams,
+) {
+    let Some(items_json) = out.get_mut("items").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    if items_json.is_empty() || data.items.is_empty() {
+        return;
+    }
+
+    let archive_path = params.archive_path.as_deref();
+    let tileset = params.tileset.as_deref();
+
+    let doodads = if !params.is_unit {
+        crate::lng::map_editor::slk::load_doodads_slk(archive_path).map(|r| r.doodads)
+    } else {
+        None
+    };
+    let destructables = if !params.is_unit {
+        crate::lng::map_editor::slk::load_destructables_slk(archive_path).map(|r| r.destructables)
+    } else {
+        None
+    };
+    let units = if params.is_unit {
+        crate::lng::map_editor::slk::load_units_slk(archive_path).map(|r| r.units)
+    } else {
+        None
+    };
+
+    // Cache resolved variant lists per base model path to avoid repeated probing.
+    let mut variants_cache: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+
+    for (i, item) in data.items.iter().enumerate() {
+        if i >= items_json.len() {
+            break;
+        }
+
+        let base_file = if params.is_unit {
+            units
+                .as_ref()
+                .and_then(|m| m.get(&item.rawcode.raw))
+                .map(|u| u.file.as_str())
+        } else {
+            doodads
+                .as_ref()
+                .and_then(|m| m.get(&item.rawcode.raw))
+                .map(|d| d.file.as_str())
+                .or_else(|| {
+                    destructables
+                        .as_ref()
+                        .and_then(|m| m.get(&item.rawcode.raw))
+                        .map(|d| d.file.as_str())
+                })
+        };
+
+        let Some(base_file) = base_file else {
+            continue;
+        };
+        if base_file.is_empty() {
+            continue;
+        }
+
+        let cache_key = base_file.to_ascii_lowercase();
+        let variants = variants_cache.entry(cache_key).or_insert_with(|| {
+            crate::lng::map_editor::file_lookup::resolve_model_variants_ext(
+                base_file,
+                archive_path,
+                tileset,
+            )
+            .into_iter()
+            .map(|v| v.path)
+            .collect::<Vec<String>>()
+        });
+
+        if variants.is_empty() {
+            continue;
+        }
+
+        let idx = (item.variation as usize) % variants.len();
+        items_json[i]["resolvedModelPath"] = json!(variants[idx]);
+    }
 }
 
 // ─── W3R ──────────────────────────────────────────────────────────────────────
@@ -448,6 +539,14 @@ pub struct LookupFileParams {
     pub archive_path: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelVariantsParams {
+    pub path: String,
+    pub archive_path: Option<String>,
+    pub tileset: Option<String>,
+}
+
 pub async fn w3e_lookup_file(
     Query(auth): Query<AuthQuery>,
     Json(params): Json<LookupFileParams>,
@@ -470,6 +569,31 @@ pub async fn w3e_lookup_file(
         None => json!(null),
     };
     Ok(Json(result_val))
+}
+
+pub async fn w3e_model_variants(
+    Query(auth): Query<AuthQuery>,
+    Json(params): Json<ModelVariantsParams>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    auth.check()?;
+    let path = params.path.clone();
+    let ap = params.archive_path.clone();
+    let ts = params.tileset.clone();
+    let found = tokio::task::spawn_blocking(move || {
+        crate::lng::map_editor::file_lookup::resolve_model_variants_ext(
+            &path,
+            ap.as_deref(),
+            ts.as_deref(),
+        )
+    })
+    .await
+    .unwrap_or_default();
+
+    let variants: Vec<String> = found.iter().map(|v| v.path.clone()).collect();
+    Ok(Json(json!({
+        "variants": variants,
+        "found": found,
+    })))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

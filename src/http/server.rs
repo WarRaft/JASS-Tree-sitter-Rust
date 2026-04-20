@@ -9,7 +9,7 @@ use crate::http::game_path::{game_path_set_handler, game_path_status_handler};
 use crate::http::mdx_texture::mdx_texture_handler;
 use crate::http::path_tex::path_tex_handler;
 use crate::http::tile_textures::tile_textures_handler;
-use crate::http::snapshot::snapshot_handler;
+use crate::http::snapshot::{decorations_handler, snapshot_handler};
 use crate::http::terrain::terrain_handler;
 use axum::{Router, http::StatusCode, routing::{get, post}, serve::{Listener, ListenerExt}};
 use once_cell::sync::OnceCell;
@@ -73,6 +73,7 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/w3e/terrain", get(terrain_handler))
         .route("/w3e/file", get(file_lookup_handler))
         .route("/w3e/snapshot", get(snapshot_handler))
+        .route("/w3e/decorations", get(decorations_handler))
         .route("/w3e/tileTextures", get(tile_textures_handler))
         .route("/w3e/gamePath/status", get(game_path_status_handler))
         .route("/w3e/gamePath/set", post(game_path_set_handler))
@@ -96,6 +97,7 @@ pub async fn start_server() -> std::io::Result<u16> {
         .route("/w3e/catalog/units", post(crate::http::api::w3e_units_slk))
         .route("/w3e/catalog/destructables", post(crate::http::api::w3e_destructables_slk))
         .route("/w3e/lookupFile", post(crate::http::api::w3e_lookup_file))
+        .route("/w3e/modelVariants", post(crate::http::api::w3e_model_variants))
         // ── MPQ ──────────────────────────────────────────────────────
         .route("/mpq/info", post(crate::http::api::mpq_info))
         .route("/mpq/list", post(crate::http::api::mpq_list))

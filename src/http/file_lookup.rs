@@ -20,6 +20,9 @@ pub struct FileLookupParams {
     pub archive: Option<String>,
     /// Optional tileset letter (e.g. `"L"`) — enables lookup in `{tileset}.mpq`.
     pub tileset: Option<String>,
+    /// Optional lookup kind: "model" | "texture".
+    /// If omitted, generic lookup is used.
+    pub kind: Option<String>,
 }
 
 pub async fn file_lookup_handler(
@@ -30,9 +33,15 @@ pub async fn file_lookup_handler(
     let path = params.path.clone();
     let archive = params.archive.clone();
     let tileset = params.tileset.clone();
+    let kind = params.kind.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        crate::lng::map_editor::file_lookup::lookup_file_resolved_ext(&path, archive.as_deref(), tileset.as_deref())
+        crate::lng::map_editor::file_lookup::lookup_file_resolved_kind_ext(
+            &path,
+            archive.as_deref(),
+            tileset.as_deref(),
+            kind.as_deref(),
+        )
     })
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?;

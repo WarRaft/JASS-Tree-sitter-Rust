@@ -237,6 +237,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             raw: it.rawcode.raw,
             text: it.rawcode.text,
             variation: it.variation,
+            model: it.resolvedModelPath || '',
             index: i,
             position: it.position,
             angle: it.angle,
@@ -253,6 +254,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             r: it.rawcode.raw,
             t: it.rawcode.text,
             v: it.variation,
+            m: it.resolvedModelPath || '',
             i: i,
             p: [it.position.x, it.position.y, it.position.z],
             a: it.angle,
@@ -261,6 +263,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
     const unitPlacements = mapInfo.unitDooData && mapInfo.unitDooData.items
         ? mapInfo.unitDooData.items.map(it => ({
             r: it.rawcode.raw,
+            m: it.resolvedModelPath || '',
             p: [it.position.x, it.position.y, it.position.z],
             a: it.angle,
             s: [it.scale.x, it.scale.y, it.scale.z]
@@ -272,6 +275,7 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
             raw: it.rawcode.raw,
             text: it.rawcode.text,
             variation: it.variation,
+            model: it.resolvedModelPath || '',
             index: i,
             position: it.position,
             angle: it.angle,

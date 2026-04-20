@@ -18,7 +18,8 @@
 async function resolveDooEditor(document, webviewPanel, _token, client) {
     /** @type {DooRenderResult} */
     const result = await client.sendRequest('render/doo', {
-        uri: document.uri.toString()
+        uri: document.uri.toString(),
+        resolveModels: false,
     })
 
     if (result.error) {

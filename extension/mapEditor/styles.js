@@ -990,6 +990,24 @@ function editorStyles() {
         }
 
         /* ── Doodad detail model links ───────────────────────── */
+        .dd-model-row td {
+            vertical-align: top;
+        }
+        .dd-model-cell {
+            white-space: normal;
+        }
+        .dd-model-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 0;
+        }
+        .dd-model-label,
+        .dd-default-label {
+            color: var(--vscode-descriptionForeground, #888);
+            font-size: 11px;
+            line-height: 1.3;
+        }
         .dd-model-link {
             display: block;
             font-family: var(--vscode-editor-font-family, monospace);
@@ -998,10 +1016,36 @@ function editorStyles() {
             text-decoration: none;
             padding: 1px 0;
             cursor: pointer;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
         }
         .dd-model-link:hover {
             text-decoration: underline;
             color: var(--vscode-textLink-activeForeground, #4fc3f7);
+        }
+        .dd-model-name,
+        .dd-default-value {
+            display: block;
+            font-family: var(--vscode-editor-font-family, monospace);
+            font-size: 11px;
+            line-height: 1.4;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            word-break: break-word;
+        }
+        .dd-default-block {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            margin-top: 2px;
+            padding-top: 4px;
+            border-top: 1px dashed rgba(255, 255, 255, 0.12);
+        }
+        .dd-default-value,
+        .dd-default-block .dd-model-name {
+            color: var(--vscode-descriptionForeground, #888);
+            opacity: 0.9;
         }
 
         /* ── Placed doodad ID links ─────────────────────────── */

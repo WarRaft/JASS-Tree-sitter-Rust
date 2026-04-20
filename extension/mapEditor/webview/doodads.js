@@ -10,6 +10,8 @@ window._W3E_DOODADS = (function () {
     let _allDoodads = [];
     let _filteredDoodads = [];
     let _doodadsSlkLoaded = false;
+    let _currentDoodId = null;
+    let _detailHandlersAttached = false;
 
     /** @returns {boolean} true if original (from SLK, not in w3d) */
     function _isOriginal(d) { return !(d.baseId || d.w3dModified); }
@@ -375,8 +377,18 @@ window._W3E_DOODADS = (function () {
         S.patchWvState({_doodCollapse: state});
     }
 
+    if (U && typeof U.onModelVariantsResolved === 'function') {
+        U.onModelVariantsResolved(function () {
+            if (_currentDoodId && _doodadDataMap[_currentDoodId]) {
+                showDetail(_currentDoodId);
+            }
+        });
+    }
+
+
     function showDetail(doodId) {
         let vscode = S.getVscode();
+        _currentDoodId = doodId;
         const d = _doodadDataMap[doodId];
         if (!d) {
             const win = document.getElementById('doodadDetailWindow');
@@ -417,15 +429,7 @@ window._W3E_DOODADS = (function () {
                 const filePath = d.file;
                 const numVar = d.numVar || 1;
                 if (filePath) {
-                    const paths = U.buildModelPaths(filePath, numVar);
-                    const links = paths.map(p =>
-                        '<a href="#" class="dd-model-link" data-path="' + U.esc(p) + '">' + U.esc(p) + '</a>'
-                    ).join('');
-                    let fileRow = '<tr><td class="key">file</td><td>' + links + '</td>';
-                    if (d.defaults && d.defaults['file'] !== undefined) {
-                        fileRow += '<td class="dd-default">' + U.esc(d.defaults['file']) + '</td>';
-                    }
-                    rows += fileRow + '</tr>';
+                    rows += U.renderModelFileRow({filePath: filePath, numVar: numVar, defaults: d.defaults, vscode: vscode, includeTexAttrs: false});
                 }
                 let numVarRow = '<tr><td class="key">numVar</td><td>' + numVar + '</td>';
                 if (d.defaults && d.defaults['numVar'] !== undefined) {
@@ -495,25 +499,30 @@ window._W3E_DOODADS = (function () {
         win.setAttribute('title-text', '\ud83c\udf33 ' + (U.gsValue(d.name) || d.doodId));
         win.show();
 
-        body.addEventListener('collapse-toggle', function (e) {
-            const state = _getDoodCollapseState();
-            state[e.detail.title] = e.detail.open;
-            _setDoodCollapseState(state);
-        });
+        if (!_detailHandlersAttached) {
+            body.addEventListener('collapse-toggle', function (e) {
+                const state = _getDoodCollapseState();
+                state[e.detail.title] = e.detail.open;
+                _setDoodCollapseState(state);
+            });
 
-        body.addEventListener('click', function (e) {
-            let link = e.target.closest('.dd-model-link');
-            if (link) {
-                e.preventDefault();
-                if (vscode) vscode.postMessage({command: 'openModel', path: link.getAttribute('data-path')});
-                return;
-            }
-            let ptLink = e.target.closest('.dd-pathtex-link');
-            if (ptLink) {
-                e.preventDefault();
-                window._W3E_PATH_TEX.showPathTex(ptLink.getAttribute('data-pathtex'));
-            }
-        });
+            body.addEventListener('click', function (e) {
+                let link = e.target.closest('.dd-model-link');
+                if (link) {
+                    e.preventDefault();
+                    const curVscode = S.getVscode();
+                    if (curVscode) curVscode.postMessage({command: 'openModel', path: link.getAttribute('data-path')});
+                    return;
+                }
+                let ptLink = e.target.closest('.dd-pathtex-link');
+                if (ptLink) {
+                    e.preventDefault();
+                    window._W3E_PATH_TEX.showPathTex(ptLink.getAttribute('data-pathtex'));
+                }
+            });
+
+            _detailHandlersAttached = true;
+        }
     }
 
     // ── W3D errors window ──────────────────────────────────────

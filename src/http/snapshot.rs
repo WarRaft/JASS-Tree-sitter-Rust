@@ -19,6 +19,12 @@ pub struct SnapshotParams {
     pub archive: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct DecorationsParams {
+    pub token: String,
+    pub archive: String,
+}
+
 pub async fn snapshot_handler(
     Query(params): Query<SnapshotParams>,
 ) -> Result<impl IntoResponse, (StatusCode, String)> {
@@ -46,6 +52,27 @@ pub async fn snapshot_handler(
         .ok_or_else(|| {
             (StatusCode::SERVICE_UNAVAILABLE, "Snapshot not built yet — set a game path first".to_string())
         })?;
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        json,
+    ))
+}
+
+pub async fn decorations_handler(
+    Query(params): Query<DecorationsParams>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    check_token(&TokenParam { token: params.token }).map_err(|(s, m)| (s, m.to_string()))?;
+
+    let ap = params.archive.clone();
+    let json = tokio::task::spawn_blocking(move || {
+        crate::lng::map_editor::snapshot::build_decorations_for_archive(&ap)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Task error: {e}")))?;
 
     Ok((
         [

@@ -34,6 +34,10 @@ pub struct Doodad {
     pub tilesets: String,
     pub tileset_specific: bool,
     pub file: String,
+    /// Resolved existing model variants for this doodad (ModelSet).
+    /// Contains actual existing paths returned by Rust resolver.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub model_set: Vec<String>,
     pub dood_class: String,
     pub sound_loop: String,
     pub num_var: u32,
@@ -135,6 +139,8 @@ pub fn load_doodads_slk(archive_path: Option<&str>) -> Option<DoodadsSlkResult> 
         }
 
         let key = rawcode_to_u32(&dood_id);
+        let file = row.get("file").cloned().unwrap_or_default();
+        let num_var = slk_u32(&row, "numVar", 1);
         doodads.insert(key, Doodad {
             dood_id,
             base_id: String::new(),
@@ -145,10 +151,11 @@ pub fn load_doodads_slk(archive_path: Option<&str>) -> Option<DoodadsSlkResult> 
             category: row.get("category").cloned().unwrap_or_default(),
             tilesets: row.get("tilesets").cloned().unwrap_or_default(),
             tileset_specific: slk_bool(&row, "tilesetSpecific"),
-            file: row.get("file").cloned().unwrap_or_default(),
+            file: file.clone(),
+            model_set: Vec::new(),
             dood_class: slk_str(&row, "doodClass"),
             sound_loop: slk_str(&row, "soundLoop"),
-            num_var: slk_u32(&row, "numVar", 1),
+            num_var,
             def_scale: slk_f64(&row, "defScale", 1.0),
             min_scale: slk_f64(&row, "minScale", 0.0),
             max_scale: slk_f64(&row, "maxScale", 0.0),
@@ -184,6 +191,7 @@ pub fn load_doodads_slk(archive_path: Option<&str>) -> Option<DoodadsSlkResult> 
         w3d_errors: Vec::new(),
     })
 }
+
 
 // ─── DoodadMetaData.slk ──────────────────────────────────────────────────────
 

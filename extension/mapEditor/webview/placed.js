@@ -25,6 +25,21 @@ window._W3E_PLACED = (function () {
         return v != null ? Number(v).toFixed(1) : '—';
     }
 
+    // Right-aligned text that keeps the end of long paths visible: ...\suffix\file
+    function _clTruncTextRightEdge(ctx, text, rightX, y, maxW) {
+        if (!text || maxW <= 0) return;
+        if (ctx.measureText(text).width <= maxW) {
+            ctx.fillText(text, rightX, y);
+            return;
+        }
+        const ell = '...';
+        let s = String(text);
+        while (s.length > 1 && ctx.measureText(ell + s).width > maxW) {
+            s = s.substring(1);
+        }
+        ctx.fillText(ell + s, rightX, y);
+    }
+
     // ── Row renderers ─────────────────────────────────────────────
     function _renderPlacedDoodadRow(ctx, item, x, y, w, h, c) {
         let mid = y + h / 2;
@@ -42,12 +57,30 @@ window._W3E_PLACED = (function () {
         ctx.textAlign = 'right';
         let angleDeg = item.angle != null ? (item.angle * 180 / Math.PI).toFixed(0) + '\u00b0' : '';
         ctx.fillText(angleDeg, x + w, mid);
-        let posText = _fmtPlacedF(item.position.x) + ', ' + _fmtPlacedF(item.position.y);
-        ctx.fillText(posText, x + w - 42, mid);
-        let posW = ctx.measureText(posText).width;
+        let angleW = ctx.measureText(angleDeg).width;
+
+        let varText = (item.variation != null && !Number.isNaN(Number(item.variation))) ? String(Number(item.variation)) : '0';
+        let modelPath = item.model || '';
+        let modelVar = modelPath ? ('[' + varText + ']') : '';
+        let modelRight = x + w - angleW - 10;
+        let modelSlotW = Math.max(0, Math.min(260, w * 0.45));
+        let modelLeft = modelRight - modelSlotW;
+
+        // modelPath[variation] at right edge, with per-part colors
+        if (modelPath) {
+            ctx.font = '10px ' + c.mono;
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#c586c0';
+            ctx.fillText(modelVar, modelRight, mid);
+            let varW = ctx.measureText(modelVar).width;
+
+            ctx.fillStyle = '#8ab4f8';
+            _clTruncTextRightEdge(ctx, modelPath, modelRight - varW, mid, modelSlotW - varW - 2);
+        }
+
         ctx.textAlign = 'left';
-        let nameX = x + 78;
-        let nameEnd = x + w - 42 - posW - 12;
+        let nameX = x + 76;
+        let nameEnd = modelPath ? (modelLeft - 8) : (x + w - angleW - 10);
         let nameW = nameEnd - nameX;
         if (nameW > 10) {
             ctx.font = '12px ' + c.font;
@@ -71,17 +104,37 @@ window._W3E_PLACED = (function () {
         ctx.font = '10px ' + c.mono;
         ctx.fillStyle = c.desc;
         ctx.textAlign = 'right';
-        if (item.player != null) {
-            ctx.fillText('P' + item.player, x + w, mid);
+        let playerText = item.player != null ? ('P' + item.player) : '';
+        if (playerText) {
+            ctx.fillText(playerText, x + w, mid);
         }
+        let playerW = playerText ? ctx.measureText(playerText).width : 0;
         let angleDeg = item.angle != null ? (item.angle * 180 / Math.PI).toFixed(0) + '\u00b0' : '';
-        ctx.fillText(angleDeg, x + w - 28, mid);
-        let posText = _fmtPlacedF(item.position.x) + ', ' + _fmtPlacedF(item.position.y);
-        ctx.fillText(posText, x + w - 68, mid);
-        let posW = ctx.measureText(posText).width;
+        ctx.fillText(angleDeg, x + w - playerW - (playerW ? 8 : 0), mid);
+        let angleW = ctx.measureText(angleDeg).width;
+
+        let varText = (item.variation != null && !Number.isNaN(Number(item.variation))) ? String(Number(item.variation)) : '0';
+        let modelPath = item.model || '';
+        let modelVar = modelPath ? ('[' + varText + ']') : '';
+        let rightPad = playerW + (playerW ? 8 : 0) + angleW + 10;
+        let modelRight = x + w - rightPad;
+        let modelSlotW = Math.max(0, Math.min(260, w * 0.42));
+        let modelLeft = modelRight - modelSlotW;
+
+        if (modelPath) {
+            ctx.font = '10px ' + c.mono;
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#c586c0';
+            ctx.fillText(modelVar, modelRight, mid);
+            let varW = ctx.measureText(modelVar).width;
+
+            ctx.fillStyle = '#8ab4f8';
+            _clTruncTextRightEdge(ctx, modelPath, modelRight - varW, mid, modelSlotW - varW - 2);
+        }
+
         ctx.textAlign = 'left';
         let nameX = x + 78;
-        let nameEnd = x + w - 68 - posW - 12;
+        let nameEnd = modelPath ? (modelLeft - 8) : (x + w - rightPad - 6);
         let nameW = nameEnd - nameX;
         if (nameW > 10) {
             ctx.font = '12px ' + c.font;

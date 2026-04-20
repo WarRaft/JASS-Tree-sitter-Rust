@@ -141,11 +141,160 @@ window._W3E_UTILS = (function () {
         const hasExt = dotIdx > lastSlash && dotIdx >= 0;
         const base = hasExt ? filePath.substring(0, dotIdx) : filePath;
         if (numVar <= 1) return [base];
+        const dir = lastSlash >= 0 ? base.substring(0, lastSlash + 1) : '';
+        const name = lastSlash >= 0 ? base.substring(lastSlash + 1) : base;
+        // For explicit file paths (with extension), only use numeric variation
+        // expansion when the filename itself ends with digits.
+        if (hasExt && !/\d+$/.test(name)) return [base];
+        // Strip trailing digit only when path had an explicit extension.
+        // Without extension the SLK already stores the base name (e.g. "Seaweed0"),
+        // so variation indices are appended directly: Seaweed00, Seaweed01, …
+        const variationBase = hasExt ? dir + name.replace(/\d+$/, '') : dir + name;
         const paths = [];
         for (let i = 0; i < numVar; i++) {
-            paths.push(base + i);
+            paths.push(variationBase + i);
         }
         return paths;
+    }
+
+    // ── Shared model variants resolver (used by doodads/destructables) ──
+    const _modelVariantsCache = {};
+    const _modelVariantsPending = {};
+    const _modelVariantsListeners = [];
+    let _modelVariantsMessageBound = false;
+
+    function _modelVariantsKey(filePath) {
+        return String(filePath || '').toLowerCase();
+    }
+
+    function _emitModelVariantsResolved(filePath, variants, found) {
+        for (let i = 0; i < _modelVariantsListeners.length; i++) {
+            try {
+                _modelVariantsListeners[i](filePath, variants, found);
+            } catch (_) {}
+        }
+    }
+
+    function _ensureModelVariantsMessageListener() {
+        if (_modelVariantsMessageBound) return;
+        _modelVariantsMessageBound = true;
+        window.addEventListener('message', function (e) {
+            const msg = e && e.data;
+            if (!msg || msg.command !== 'modelVariantsResolved' || !msg.filePath) return;
+            const key = _modelVariantsKey(msg.filePath);
+            const variants = Array.isArray(msg.variants) ? msg.variants : [];
+            const found = Array.isArray(msg.found) ? msg.found : [];
+            _modelVariantsCache[key] = {variants: variants, found: found};
+            delete _modelVariantsPending[key];
+            _emitModelVariantsResolved(msg.filePath, variants, found);
+        });
+    }
+
+    function resolveModelVariants(filePath, numVar, vscode) {
+        if (!filePath) return {paths: [], resolving: false, found: []};
+        _ensureModelVariantsMessageListener();
+        const key = _modelVariantsKey(filePath);
+        if (Object.prototype.hasOwnProperty.call(_modelVariantsCache, key)) {
+            const data = _modelVariantsCache[key] || {};
+            return {
+                paths: Array.isArray(data.variants) ? data.variants : [],
+                found: Array.isArray(data.found) ? data.found : [],
+                resolving: false,
+            };
+        }
+        if (!_modelVariantsPending[key] && vscode) {
+            _modelVariantsPending[key] = true;
+            vscode.postMessage({command: 'resolveModelVariants', filePath: filePath, numVar: numVar || 1});
+        }
+        return {paths: [], resolving: true, found: []};
+    }
+
+    function onModelVariantsResolved(callback) {
+        if (typeof callback !== 'function') return function () {};
+        _ensureModelVariantsMessageListener();
+        _modelVariantsListeners.push(callback);
+        return function () {
+            const idx = _modelVariantsListeners.indexOf(callback);
+            if (idx >= 0) _modelVariantsListeners.splice(idx, 1);
+        };
+    }
+
+    function _hasDifferentDefault(currentValue, defaultValue) {
+        return defaultValue !== undefined && String(currentValue ?? '') !== String(defaultValue ?? '');
+    }
+
+    function _modelLink(path, extraAttrs) {
+        return '<a href="#" class="dd-model-link" data-path="' + esc(path) + '"' + (extraAttrs || '') + '>' + esc(path) + '</a>';
+    }
+
+    function _modelLinks(paths, extraAttrs) {
+        return paths.map(function (path) {
+            return _modelLink(path, extraAttrs);
+        }).join('');
+    }
+
+    // Shared doodad/destructable model detail row.
+    // includeTexAttrs=true adds data-tex-id/data-tex-file for destructables.
+    function renderModelFileRow(opts) {
+        const filePath = opts && opts.filePath ? String(opts.filePath) : '';
+        if (!filePath) return '';
+        const numVar = opts && opts.numVar ? opts.numVar : 1;
+        const defaults = opts && opts.defaults ? opts.defaults : null;
+        const vscode = opts && opts.vscode ? opts.vscode : null;
+        const includeTexAttrs = !!(opts && opts.includeTexAttrs);
+        const texId = opts && opts.texId ? opts.texId : 0;
+        const texFile = opts && opts.texFile ? String(opts.texFile) : '';
+        const extraAttrs = includeTexAttrs
+            ? ((texId ? ' data-tex-id="' + texId + '"' : '')
+                + (texFile ? ' data-tex-file="' + esc(texFile) + '"' : ''))
+            : '';
+
+        const currentInfo = resolveModelVariants(filePath, numVar || 1, vscode);
+        const currentPaths = currentInfo.paths;
+        const defaultFile = defaults && defaults.file !== undefined ? String(defaults.file) : undefined;
+        const defaultNumVarRaw = defaults && defaults.numVar !== undefined ? defaults.numVar : undefined;
+        const parsedDefaultNumVar = defaultNumVarRaw != null && String(defaultNumVarRaw).trim() !== ''
+            ? Number(defaultNumVarRaw)
+            : numVar || 1;
+        const defaultNumVar = Number.isFinite(parsedDefaultNumVar) && parsedDefaultNumVar > 0 ? parsedDefaultNumVar : numVar || 1;
+        const defaultInfo = defaultFile ? resolveModelVariants(defaultFile, defaultNumVar, vscode) : {paths: [], resolving: false};
+        const defaultPaths = defaultInfo.paths;
+        const showDefaultFile = _hasDifferentDefault(filePath, defaultFile);
+        const showDefaultNames = defaultPaths.length > 0 && currentPaths.join('\n') !== defaultPaths.join('\n');
+
+        let html = '<div class="dd-model-stack">'
+            + '<div class="dd-model-label">As set</div>'
+            + _modelLink(filePath, extraAttrs);
+
+        if (currentPaths.length > 0) {
+            html += '<div class="dd-model-label">' + (currentPaths.length > 1 ? 'Names' : 'Name') + '</div>'
+                + _modelLinks(currentPaths, extraAttrs);
+        } else if (currentInfo.resolving) {
+            html += '<div class="dd-model-label">Names</div>'
+                + '<div class="dd-default-value">Resolving variants...</div>';
+        }
+
+        if (showDefaultFile) {
+            html += '<div class="dd-default-block">'
+                + '<div class="dd-default-label">Default file</div>'
+                + _modelLink(defaultFile, extraAttrs)
+                + '</div>';
+        }
+
+        if (showDefaultNames) {
+            html += '<div class="dd-default-block">'
+                + '<div class="dd-default-label">' + (defaultPaths.length > 1 ? 'Default names' : 'Default name') + '</div>'
+                + _modelLinks(defaultPaths, extraAttrs)
+                + '</div>';
+        } else if (showDefaultFile && defaultInfo.resolving) {
+            html += '<div class="dd-default-block">'
+                + '<div class="dd-default-label">Default names</div>'
+                + '<div class="dd-default-value">Resolving variants...</div>'
+                + '</div>';
+        }
+
+        html += '</div>';
+        return '<tr class="dd-model-row"><td class="key">file</td><td class="dd-model-cell" colspan="2">' + html + '</td></tr>';
     }
 
     return {
@@ -159,6 +308,9 @@ window._W3E_UTILS = (function () {
         categoryBadge,
         tilesetBadges,
         buildModelPaths,
+        resolveModelVariants,
+        onModelVariantsResolved,
+        renderModelFileRow,
     };
 })();
 
