@@ -215,7 +215,10 @@ function _connectWS(port, path) {
                         try {
                             const data = JSON.parse(text)
                             for (const cb of messageCbs) cb(data)
-                        } catch { /* not JSON — ignore */ }
+                        } catch {
+                            // Plain text message (e.g. debug log)
+                            for (const cb of messageCbs) cb(text)
+                        }
                     } else if (opcode === 0x8) { // close
                         socket.end()
                         fireClose()
@@ -1141,9 +1144,51 @@ module.exports = {
         })
 
         // ── Start the client and perform document sync ────────────────
+        /** @type {Promise<void>} resolves when ws/log is connected */
+        let wsLogReady = Promise.resolve()
+
         const clientReady = client.start().then(() => {
             const info = getBinaryServer()
             debugLog(`server started on port ${info ? info.port : '?'}`)
+
+            // Connect to debug log WebSocket FIRST, then proceed
+            if (info) {
+                const qs = new (require('url').URLSearchParams)({token: info.token})
+                // Retry connection until server is listening
+                const connectWithRetry = (attempt = 0) => {
+                    return _connectWS(info.port, `/ws/log?${qs.toString()}`).catch(err => {
+                        if (attempt < 10) {
+                            return new Promise(r => setTimeout(r, 50)).then(() => connectWithRetry(attempt + 1))
+                        }
+                        throw err
+                    })
+                }
+                // Wait for WebSocket connection AND first message (greeting)
+                wsLogReady = new Promise((resolve, reject) => {
+                    connectWithRetry().then(ws => {
+                        let resolved = false
+                        ws.onMessage(data => {
+                            const msg = typeof data === 'string' ? data : JSON.stringify(data)
+                            debugLog(msg)
+                            // Resolve on first message (server greeting)
+                            if (!resolved) {
+                                resolved = true
+                                resolve()
+                            }
+                        })
+                        ws.onClose(() => {
+                            debugLog('[ws/log disconnected]')
+                            if (!resolved) {
+                                resolved = true
+                                reject(new Error('WebSocket closed before greeting'))
+                            }
+                        })
+                    }).catch(reject)
+                }).catch(err => {
+                    debugLog(`[ws/log failed: ${err.message}]`)
+                })
+            }
+            return wsLogReady
         }).catch(err => {
             debugLog(`server start FAILED: ${err.message}`)
             window.showErrorMessage(`❌ Failed to start server:\n\n${err.message}`)
@@ -1153,7 +1198,7 @@ module.exports = {
         /** Track documents we've sent didOpen for */
         const openedDocs = new Set()
 
-        // Send didOpen for all already-open documents
+        // Send didOpen for all already-open documents (AFTER ws/log connected)
         clientReady.then(() => {
             for (const doc of workspace.textDocuments) {
                 if (SUPPORTED_LANGUAGES.has(doc.languageId) && (doc.uri.scheme === 'file' || doc.uri.scheme === 'mpq')) {

@@ -1,27 +1,31 @@
 /**
- * @fileoverview Game data snapshot contract — type definitions shared between
+ * @fileoverview Game data contract — type definitions shared between
  * Rust backend and JS frontend.
  *
- * These types mirror the Rust structs in `src/lng/map_editor/snapshot.rs` and
- * `src/lng/map_editor/slk.rs`.  Both sides MUST stay in sync.
+ * These types mirror the Rust structs in `src/lng/map_editor/slk.rs`.
+ * Both sides MUST stay in sync.
  *
  * ── Data flow ──
- *   1. Rust reads all game files ONCE when the game path is set
- *   2. Builds a `GameSnapshot` (pre-serialised to JSON)
- *   3. JS fetches `/mapEditor/snapshot` → gets the full snapshot
- *   4. Extension host sends snapshot to webview via postMessage
- *   5. Webview applies data directly (westrings, SLK catalogs, etc.)
+ *   1. Rust reads game files on demand via separate endpoints
+ *   2. JS fetches each endpoint in parallel:
+ *      - /mapEditor/westrings
+ *      - /mapEditor/terrainSlk
+ *      - /mapEditor/cliffTypes
+ *      - /mapEditor/cliffVariations
+ *      - /mapEditor/water
+ *   3. Extension host assembles data and sends to webview via postMessage
  */
 
-// ─── Top-level snapshot ──────────────────────────────────────────────────────
+// ─── Top-level game data ─────────────────────────────────────────────────────
 
 /**
- * The complete game data snapshot returned by `/mapEditor/snapshot`.
+ * The complete game data assembled from separate endpoints.
  * @typedef {Object} GameSnapshot
  * @property {Object<string, string>} westrings - WESTRING_* → resolved value map
  * @property {TerrainSlkResult|null} terrainSlk - Terrain tile data
  * @property {CliffTypesSlkResult|null} cliffTypesSlk - Cliff type catalog
  * @property {CliffVariationsResult|null} cliffVariations - Max variation per cliff pattern
+ * @property {WaterSlkResult|null} waterSlk - Water parameters
  */
 
 /**

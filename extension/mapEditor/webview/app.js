@@ -110,7 +110,7 @@ window.W3E = (function () {
     let _rgCanvasList = null;
     let _rgSort = {field: null, dir: 'asc'};
     let _rgVisibility = {}; // num → boolean (true = visible)
-    let _rgMasterEnabled = true; // master toggle for region overlay
+    let _rgMasterEnabled = false; // master toggle for region overlay (default off)
     let _rgVisibilityListeners = [];
 
     function _rgSaveSort() {

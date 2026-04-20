@@ -528,22 +528,21 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         }, 300)
     }
 
-    // ── Snapshot-based data flow ───────────────────────────────────
+    // ── Game data flow ─────────────────────────────────────────────
     // When the game path changes:
-    //   1. POST /mapEditor/gamePath/set → Rust builds snapshot
-    //   2. GET  /mapEditor/snapshot     → full GameSnapshot JSON
-    //   3. postMessage('gamePathChanged', {status, snapshot})
-    //
-    // The webview receives the complete snapshot in one message.
+    //   1. POST /mapEditor/gamePath/set
+    //   2. Parallel GET requests for each data type
+    //   3. postMessage('gamePathChanged', {status, snapshot, ...})
 
     /**
-     * Fetch the snapshot and send it to the webview along with status.
+     * Fetch game data and send it to the webview along with status.
+     * If forceRefresh is false, uses cached decorations/units if available.
      */
-    async function emitGamePathChanged(status) {
+    async function emitGamePathChanged(status, forceRefresh = false) {
         const [snapshot, decorations, units] = await Promise.all([
-            fetchSnapshot(),
-            isArchive ? _fetchDecorations() : Promise.resolve(null),
-            isArchive ? _fetchUnits() : Promise.resolve(null),
+            fetchGameData(),
+            isArchive ? (forceRefresh || !_cachedDecorations ? _fetchDecorations() : Promise.resolve(_cachedDecorations)) : Promise.resolve(null),
+            isArchive ? (forceRefresh || !_cachedUnits ? _fetchUnits() : Promise.resolve(_cachedUnits)) : Promise.resolve(null),
         ])
         webviewPanel.webview.postMessage({
             command: 'gamePathChanged',
@@ -554,15 +553,31 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         })
     }
 
-    // ── Helper: fetch the full snapshot from the binary HTTP server ──
-    async function fetchSnapshot() {
+    // ── Helper: fetch game data from separate endpoints ──
+    async function fetchGameData() {
         const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
         if (!bs) return null
-        const params = new URLSearchParams({token: bs.token})
-        if (isArchive) params.set('archive', filePath)
-        const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/snapshot?${params}`)
-        if (!resp.ok) return null
-        return await resp.json()
+
+        const baseParams = new URLSearchParams({token: bs.token})
+        if (isArchive) baseParams.set('archive', filePath)
+
+        const fetchJson = async (endpoint) => {
+            try {
+                const resp = await fetch(`http://127.0.0.1:${bs.port}${endpoint}?${baseParams}`)
+                if (resp.ok) return await resp.json()
+            } catch (_) {}
+            return null
+        }
+
+        const [westrings, terrainSlk, cliffTypesSlk, cliffVariations, waterSlk] = await Promise.all([
+            fetchJson('/mapEditor/westrings'),
+            fetchJson('/mapEditor/terrainSlk'),
+            fetchJson('/mapEditor/cliffTypes'),
+            fetchJson('/mapEditor/cliffVariations'),
+            fetchJson('/mapEditor/water'),
+        ])
+
+        return {westrings, terrainSlk, cliffTypesSlk, cliffVariations, waterSlk}
     }
 
 
@@ -976,7 +991,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
             try {
                 const status = await setGamePathViaHttp(msg.value) ||
                     await client.sendRequest('mapEditor/gamePath/set', {gamePath: msg.value})
-                await emitGamePathChanged(status)
+                await emitGamePathChanged(status, true)
             } catch (_) {
             } finally {
                 webviewPanel.webview.postMessage({command: 'loadingDone'})
@@ -994,7 +1009,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                     const buf = await client.http.getBinary('/mapEditor/gamePath/status')
                     status = JSON.parse(buf.toString('utf8'))
                 }
-                await emitGamePathChanged(status)
+                await emitGamePathChanged(status, true)
             } catch (_) {
             } finally {
                 webviewPanel.webview.postMessage({command: 'loadingDone'})
@@ -1020,7 +1035,7 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
                         window.showWarningMessage(`Missing MPQ files: ${missing.join(', ')}`)
                     }
                 }
-                await emitGamePathChanged(status)
+                await emitGamePathChanged(status, true)
             } catch (_) {
             } finally {
                 webviewPanel.webview.postMessage({command: 'loadingDone'})

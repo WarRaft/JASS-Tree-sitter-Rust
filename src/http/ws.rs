@@ -53,7 +53,10 @@ async fn handle_debug_log(socket: WebSocket) {
                         break;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    let _ = sink.send(Message::Text(format!("[LAGGED: {} messages lost]", n).into())).await;
+                    continue;
+                }
                 Err(_) => break,
             }
         }

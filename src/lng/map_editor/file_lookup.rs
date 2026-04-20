@@ -9,13 +9,21 @@
 //! 5.  `War3xLocal.mpq`
 //! 6.  `War3x.mpq`
 //! 7.  `War3.mpq`
+//!
+//! The main entry-point is [`Lookuper`]: create it once per request with the
+//! map archive path and tileset, then call its methods for every file search.
+//! All MPQ archive handles are opened once and reused, so a bulk operation
+//! (e.g. resolving thousands of model variants) pays the `open()` cost only once.
+//!
+//! The stand-alone free functions (`lookup_file`, `lookup_file_exists`, …)
+//! are kept for backward-compatibility; they simply create a temporary
+//! `Lookuper` on each call.
 
 use crate::lng::map_editor::game_path::get_game_path;
 use log::debug;
 use serde::Serialize;
-use std::path::Path;
 
-/// MPQ archives to search (after the tileset MPQ).
+/// MPQ archives to search after the tileset MPQ (in priority order).
 const MPQ_SEARCH_ORDER: &[&str] = &[
     "War3Patch.mpq",
     "War3xLocal.mpq",
@@ -23,77 +31,7 @@ const MPQ_SEARCH_ORDER: &[&str] = &[
     "War3.mpq",
 ];
 
-/// Try to find `relative_path` (e.g. `"TerrainArt\Terrain.slk"`) using the
-/// cascading lookup.  Returns `(file_bytes, source_label)` on success.
-/// Automatically includes the global tileset MPQ (set via `set_tileset`).
-pub fn lookup_file(relative_path: &str, archive_path: Option<&str>) -> Option<(Vec<u8>, String)> {
-    let ts = super::game_path::get_tileset();
-    lookup_file_ext(relative_path, archive_path, ts.as_deref())
-}
-
-/// Like `lookup_file`, but with an explicit tileset override.
-pub fn lookup_file_ext(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String)> {
-    lookup_file_resolved_ext(relative_path, archive_path, tileset)
-        .map(|(buf, source, _resolved)| (buf, source))
-}
-
-/// Like `lookup_file`, but also returns the actual path that matched
-/// (may differ from `relative_path` when `.mdx` → `.mdl` fallback triggers).
-/// Automatically includes the global tileset MPQ.
-pub fn lookup_file_resolved(relative_path: &str, archive_path: Option<&str>) -> Option<(Vec<u8>, String, String)> {
-    let ts = super::game_path::get_tileset();
-    lookup_file_resolved_ext(relative_path, archive_path, ts.as_deref())
-}
-
-/// Like `lookup_file_resolved`, but with an optional tileset for tileset-specific MPQ lookup.
-pub fn lookup_file_resolved_ext(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
-    // Try the exact path first (with extension fallbacks).
-    if let result @ Some(_) = lookup_with_ext_fallback(relative_path, archive_path, tileset) {
-        return result;
-    }
-
-    // Variation fallback: strip trailing digits from the filename stem and retry.
-    // e.g. "Doodads\grass1" → "Doodads\grass"
-    // e.g. "Doodads\grass1.mdx" → "Doodads\grass.mdx"
-    if let Some(base) = strip_variation_digits(relative_path) {
-        debug!("lookup_file: variation fallback {relative_path} → {base}");
-        return lookup_with_ext_fallback(&base, archive_path, tileset);
-    }
-
-    None
-}
-
-/// Kind-aware resolved lookup.
-///
-/// `kind`:
-/// - `Some("model")`   => only model extension fallback (.mdx/.mdl)
-/// - `Some("texture")` => only texture extension fallback (.tga/.blp)
-/// - otherwise          => generic lookup (`lookup_file_resolved_ext`)
-pub fn lookup_file_resolved_kind_ext(
-    relative_path: &str,
-    archive_path: Option<&str>,
-    tileset: Option<&str>,
-    kind: Option<&str>,
-) -> Option<(Vec<u8>, String, String)> {
-    let kind_lc = kind.unwrap_or("").to_ascii_lowercase();
-    if kind_lc == "model" {
-        if let result @ Some(_) = lookup_model_with_ext_fallback(relative_path, archive_path, tileset) {
-            return result;
-        }
-        if let Some(base) = strip_variation_digits(relative_path) {
-            debug!("lookup_file(model): variation fallback {relative_path} -> {base}");
-            return lookup_model_with_ext_fallback(&base, archive_path, tileset);
-        }
-        return None;
-    }
-    if kind_lc == "texture" {
-        if let result @ Some(_) = lookup_texture_with_ext_fallback(relative_path, archive_path, tileset) {
-            return result;
-        }
-        return None;
-    }
-    lookup_file_resolved_ext(relative_path, archive_path, tileset)
-}
+// ─── ModelVariantFound ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelVariantFound {
@@ -101,6 +39,555 @@ pub struct ModelVariantFound {
     pub resolved_path: String,
     pub source: String,
 }
+
+// ─── Lookuper ─────────────────────────────────────────────────────────────────
+
+/// A configured file-search context that keeps all MPQ archive handles open.
+///
+/// Create once per request, then call its methods for every file lookup.
+/// This avoids re-opening the same MPQ archives on every individual check.
+///
+/// ```rust
+/// let lu = Lookuper::new(Some(archive_path), tileset.as_deref());
+/// let data = lu.lookup("TerrainArt\\Terrain.slk");
+/// let variants = lu.resolve_model_variants("Doodads\\Cinematic\\FlameStrike");
+/// ```
+pub struct Lookuper {
+    /// 1a – open map archive handle (optional)
+    map_archive: Option<storm_rs::MpqArchive>,
+    /// 1b – tileset MPQ extracted from the map archive  (label_prefix, archive)
+    map_tileset_archive: Option<(String, storm_rs::MpqArchive)>,
+    /// game directory (None when game path is not configured)
+    game_dir: Option<std::path::PathBuf>,
+    /// 2 – game tileset MPQ  (label, archive)
+    game_tileset_archive: Option<(String, storm_rs::MpqArchive)>,
+    /// 4-7 – War3Patch / War3xLocal / War3x / War3  (label, archive)
+    game_mpqs: Vec<(String, storm_rs::MpqArchive)>,
+}
+
+impl Lookuper {
+    // ── Construction ───────────────────────────────────────────────────────────
+
+    /// Build a fully explicit `Lookuper`.
+    ///
+    /// - `archive_path` – absolute path to the `.w3x`/`.w3m` map archive (or `None`).
+    /// - `tileset`      – one-letter tileset code (e.g. `"L"`), or `None`.
+    /// - `game_path`    – absolute path to the Warcraft III installation directory (or `None`).
+    ///
+    /// All archive handles are opened here; subsequent lookups just reuse them.
+    pub fn new(
+        archive_path: Option<&str>,
+        tileset: Option<&str>,
+        game_path: Option<&str>,
+    ) -> Self {
+        // 1a. Open the map archive once.
+        let map_archive = archive_path.and_then(|ap| storm_rs::MpqArchive::open(ap).ok());
+
+        // 1b. Tileset MPQ embedded inside the map archive.
+        let map_tileset_archive: Option<(String, storm_rs::MpqArchive)> = (|| {
+            let ts = tileset?;
+            if ts.is_empty() {
+                return None;
+            }
+            let ch = ts.chars().next()?.to_ascii_uppercase();
+            let ts_mpq = format!("{ch}.mpq");
+            let ts_buf = map_archive.as_ref()?.read_file(&ts_mpq).ok()?;
+            let temp_dir = std::env::temp_dir()
+                .join("jass-tree-sitter")
+                .join("map-tileset");
+            std::fs::create_dir_all(&temp_dir).ok()?;
+            let temp_path = temp_dir.join(&ts_mpq);
+            std::fs::write(&temp_path, &ts_buf).ok()?;
+            let archive =
+                storm_rs::MpqArchive::open(temp_path.to_string_lossy().as_ref()).ok()?;
+            Some((format!("{{MAP}}\\{ts_mpq}"), archive))
+        })();
+
+        // Game directory.
+        let game_dir = game_path
+            .filter(|p| !p.is_empty())
+            .map(std::path::PathBuf::from);
+
+        // 2. Game tileset MPQ.
+        let game_tileset_archive: Option<(String, storm_rs::MpqArchive)> = (|| {
+            let ts = tileset?;
+            if ts.is_empty() {
+                return None;
+            }
+            let ch = ts.chars().next()?.to_ascii_uppercase();
+            let ts_mpq = format!("{ch}.mpq");
+            let ts_path = super::game_path::get_tileset_mpq(ts)?;
+            let archive = storm_rs::MpqArchive::open(&ts_path).ok()?;
+            Some((format!("{{GAME}}\\{ts_mpq}"), archive))
+        })();
+
+        // 4-7. Standard War3* MPQ chain.
+        let mut game_mpqs: Vec<(String, storm_rs::MpqArchive)> = Vec::new();
+        if let Some(ref gdir) = game_dir {
+            for &mpq_name in MPQ_SEARCH_ORDER {
+                let mpq_file = gdir.join(mpq_name);
+                if !mpq_file.exists() {
+                    continue;
+                }
+                if let Ok(archive) =
+                    storm_rs::MpqArchive::open(mpq_file.to_string_lossy().as_ref())
+                {
+                    game_mpqs.push((mpq_name.to_string(), archive));
+                }
+            }
+        }
+
+        Self {
+            map_archive,
+            map_tileset_archive,
+            game_dir,
+            game_tileset_archive,
+            game_mpqs,
+        }
+    }
+
+    /// Convenience constructor that reads both tileset and game path from global state.
+    pub fn from_archive(archive_path: Option<&str>) -> Self {
+        let ts = super::game_path::get_tileset();
+        let gp = get_game_path();
+        Self::new(
+            archive_path,
+            ts.as_deref(),
+            if gp.is_empty() { None } else { Some(gp.as_str()) },
+        )
+    }
+
+    // ── Map-archive direct access ──────────────────────────────────────────────
+
+    /// Read a file directly from the map archive (no cascade, no ext fallback).
+    /// Returns `None` if the map archive is not open or the file is absent.
+    pub fn read_map_file(&self, path: &str) -> Option<Vec<u8>> {
+        let mpq_path = path.replace('/', "\\");
+        self.map_archive.as_ref()?.read_file(&mpq_path).ok()
+    }
+
+    // ── Core cascade ───────────────────────────────────────────────────────────
+
+    /// Search the full cascade for exactly `relative_path` (no extension fallbacks).
+    /// Returns `(bytes, source_label, resolved_path)` on success.
+    fn lookup_exact(&self, relative_path: &str) -> Option<(Vec<u8>, String, String)> {
+        let mpq_path = relative_path.replace('/', "\\");
+        let fs_path = relative_path.replace('\\', "/");
+
+        // 1a. Map archive.
+        if let Some(ref archive) = self.map_archive {
+            if let Ok(buf) = archive.read_file(&mpq_path) {
+                debug!("Lookuper: FOUND {relative_path} in map archive");
+                return Some((buf, format!("{{MAP}}\\{mpq_path}"), relative_path.into()));
+            }
+        }
+
+        // 1b. Tileset MPQ inside map archive.
+        if let Some((ref label_pfx, ref archive)) = self.map_tileset_archive {
+            if let Ok(buf) = archive.read_file(&mpq_path) {
+                debug!("Lookuper: FOUND {relative_path} in map tileset archive");
+                return Some((
+                    buf,
+                    format!("{label_pfx}\\{mpq_path}"),
+                    relative_path.into(),
+                ));
+            }
+        }
+
+        // Need game_dir for everything below.
+        let game_dir = self.game_dir.as_deref()?;
+
+        // 2. Game tileset MPQ.
+        if let Some((ref label, ref archive)) = self.game_tileset_archive {
+            if let Ok(buf) = archive.read_file(&mpq_path) {
+                debug!("Lookuper: FOUND {relative_path} in game tileset archive");
+                return Some((buf, format!("{label}\\{mpq_path}"), relative_path.into()));
+            }
+        }
+
+        // 3. Disk.
+        let disk_path = game_dir.join(&fs_path);
+        if disk_path.is_file() {
+            if let Ok(buf) = std::fs::read(&disk_path) {
+                debug!("Lookuper: FOUND {relative_path} on disk");
+                return Some((buf, format!("{{GAME}}\\{mpq_path}"), relative_path.into()));
+            }
+        }
+
+        // 4-7. War3* MPQ chain.
+        for (label, archive) in &self.game_mpqs {
+            if let Ok(buf) = archive.read_file(&mpq_path) {
+                debug!("Lookuper: FOUND {relative_path} in {label}");
+                return Some((
+                    buf,
+                    format!("{{GAME}}\\{label}\\{mpq_path}"),
+                    relative_path.into(),
+                ));
+            }
+        }
+
+        None
+    }
+
+    /// Check existence in the full cascade (no extension fallbacks).
+    fn exists_exact(&self, relative_path: &str) -> bool {
+        let mpq_path = relative_path.replace('/', "\\");
+        let fs_path = relative_path.replace('\\', "/");
+
+        if let Some(ref a) = self.map_archive {
+            if a.read_file(&mpq_path).is_ok() {
+                return true;
+            }
+        }
+        if let Some((_, ref a)) = self.map_tileset_archive {
+            if a.read_file(&mpq_path).is_ok() {
+                return true;
+            }
+        }
+        let Some(game_dir) = self.game_dir.as_deref() else {
+            return false;
+        };
+        if let Some((_, ref a)) = self.game_tileset_archive {
+            if a.read_file(&mpq_path).is_ok() {
+                return true;
+            }
+        }
+        if game_dir.join(&fs_path).is_file() {
+            return true;
+        }
+        for (_, a) in &self.game_mpqs {
+            if a.read_file(&mpq_path).is_ok() {
+                return true;
+            }
+        }
+        false
+    }
+
+    // ── Extension-fallback helpers ─────────────────────────────────────────────
+
+    fn lookup_with_ext_fallback(
+        &self,
+        relative_path: &str,
+    ) -> Option<(Vec<u8>, String, String)> {
+        let lower = relative_path.to_ascii_lowercase();
+
+        if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
+            let base = &relative_path[..relative_path.len() - 4];
+            if let r @ Some(_) = self.lookup_exact(&format!("{base}.mdx")) {
+                return r;
+            }
+            return self.lookup_exact(&format!("{base}.mdl"));
+        }
+
+        if lower.ends_with(".tga") || lower.ends_with(".blp") {
+            let base = &relative_path[..relative_path.len() - 4];
+            if let r @ Some(_) = self.lookup_exact(&format!("{base}.tga")) {
+                return r;
+            }
+            return self.lookup_exact(&format!("{base}.blp"));
+        }
+
+        let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+        if !lower[last_sep..].contains('.') {
+            if let r @ Some(_) = self.lookup_exact(&format!("{relative_path}.mdx")) {
+                return r;
+            }
+            if let r @ Some(_) = self.lookup_exact(&format!("{relative_path}.mdl")) {
+                return r;
+            }
+            if let r @ Some(_) = self.lookup_exact(&format!("{relative_path}.tga")) {
+                return r;
+            }
+            if let r @ Some(_) = self.lookup_exact(&format!("{relative_path}.blp")) {
+                return r;
+            }
+        }
+
+        self.lookup_exact(relative_path)
+    }
+
+    fn lookup_model_with_ext_fallback(
+        &self,
+        relative_path: &str,
+    ) -> Option<(Vec<u8>, String, String)> {
+        let lower = relative_path.to_ascii_lowercase();
+
+        if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
+            let base = &relative_path[..relative_path.len() - 4];
+            if let r @ Some(_) = self.lookup_exact(&format!("{base}.mdx")) {
+                return r;
+            }
+            return self.lookup_exact(&format!("{base}.mdl"));
+        }
+
+        let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+        if !lower[last_sep..].contains('.') {
+            if let r @ Some(_) = self.lookup_exact(&format!("{relative_path}.mdx")) {
+                return r;
+            }
+            if let r @ Some(_) = self.lookup_exact(&format!("{relative_path}.mdl")) {
+                return r;
+            }
+        }
+
+        self.lookup_exact(relative_path)
+    }
+
+    fn lookup_texture_with_ext_fallback(
+        &self,
+        relative_path: &str,
+    ) -> Option<(Vec<u8>, String, String)> {
+        let lower = relative_path.to_ascii_lowercase();
+
+        if lower.ends_with(".tga") || lower.ends_with(".blp") {
+            let base = &relative_path[..relative_path.len() - 4];
+            if let r @ Some(_) = self.lookup_exact(&format!("{base}.tga")) {
+                return r;
+            }
+            return self.lookup_exact(&format!("{base}.blp"));
+        }
+
+        let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+        if !lower[last_sep..].contains('.') {
+            if let r @ Some(_) = self.lookup_exact(&format!("{relative_path}.tga")) {
+                return r;
+            }
+            if let r @ Some(_) = self.lookup_exact(&format!("{relative_path}.blp")) {
+                return r;
+            }
+        }
+
+        self.lookup_exact(relative_path)
+    }
+
+    fn exists_with_ext_fallback(&self, relative_path: &str) -> bool {
+        let lower = relative_path.to_ascii_lowercase();
+
+        if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
+            let base = &relative_path[..relative_path.len() - 4];
+            if self.exists_exact(&format!("{base}.mdx")) {
+                return true;
+            }
+            return self.exists_exact(&format!("{base}.mdl"));
+        }
+
+        if lower.ends_with(".tga") || lower.ends_with(".blp") {
+            let base = &relative_path[..relative_path.len() - 4];
+            if self.exists_exact(&format!("{base}.tga")) {
+                return true;
+            }
+            return self.exists_exact(&format!("{base}.blp"));
+        }
+
+        let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
+        if !lower[last_sep..].contains('.') {
+            if self.exists_exact(&format!("{relative_path}.mdx")) {
+                return true;
+            }
+            if self.exists_exact(&format!("{relative_path}.mdl")) {
+                return true;
+            }
+            if self.exists_exact(&format!("{relative_path}.tga")) {
+                return true;
+            }
+            if self.exists_exact(&format!("{relative_path}.blp")) {
+                return true;
+            }
+        }
+
+        self.exists_exact(relative_path)
+    }
+
+    // ── Public lookup API ──────────────────────────────────────────────────────
+
+    /// Full generic lookup: extension fallback + variation-digit fallback.
+    ///
+    /// Returns `(bytes, source_label, resolved_path)`.
+    pub fn lookup(&self, relative_path: &str) -> Option<(Vec<u8>, String, String)> {
+        if let r @ Some(_) = self.lookup_with_ext_fallback(relative_path) {
+            return r;
+        }
+        if let Some(base) = strip_variation_digits(relative_path) {
+            debug!("Lookuper::lookup: variation fallback {relative_path} → {base}");
+            return self.lookup_with_ext_fallback(&base);
+        }
+        None
+    }
+
+    /// Model-only lookup (`.mdx` / `.mdl`) with variation-digit fallback.
+    pub fn lookup_model(&self, relative_path: &str) -> Option<(Vec<u8>, String, String)> {
+        if let r @ Some(_) = self.lookup_model_with_ext_fallback(relative_path) {
+            return r;
+        }
+        if let Some(base) = strip_variation_digits(relative_path) {
+            debug!("Lookuper::lookup_model: variation fallback {relative_path} → {base}");
+            return self.lookup_model_with_ext_fallback(&base);
+        }
+        None
+    }
+
+    /// Texture-only lookup (`.tga` / `.blp`).
+    pub fn lookup_texture(&self, relative_path: &str) -> Option<(Vec<u8>, String, String)> {
+        self.lookup_texture_with_ext_fallback(relative_path)
+    }
+
+    /// Dispatch lookup by `kind` (`"model"`, `"texture"`, or generic).
+    pub fn lookup_kind(
+        &self,
+        relative_path: &str,
+        kind: Option<&str>,
+    ) -> Option<(Vec<u8>, String, String)> {
+        match kind.unwrap_or("").to_ascii_lowercase().as_str() {
+            "model" => self.lookup_model(relative_path),
+            "texture" => self.lookup_texture(relative_path),
+            _ => self.lookup(relative_path),
+        }
+    }
+
+    /// Check existence with extension fallback + variation-digit fallback.
+    pub fn exists(&self, relative_path: &str) -> bool {
+        if self.exists_with_ext_fallback(relative_path) {
+            return true;
+        }
+        if let Some(base) = strip_variation_digits(relative_path) {
+            return self.exists_with_ext_fallback(&base);
+        }
+        false
+    }
+
+    /// Resolve all existing model variants for a doodad/destructable model path.
+    ///
+    /// Probes `stem0`..`stem9` (where `stem` is derived from `search_path`).
+    /// If at least one digit variant is found, returns only those.
+    /// Otherwise falls back to the base stem without a digit suffix.
+    pub fn resolve_model_variants(&self, search_path: &str) -> Vec<ModelVariantFound> {
+        let stem = model_variant_stem(search_path);
+        if stem.is_empty() {
+            return Vec::new();
+        }
+
+        let mut digit_variants: Vec<ModelVariantFound> = Vec::new();
+        for i in 0..10u32 {
+            let candidate = format!("{stem}{i}");
+            if let Some((_buf, source, resolved_path)) =
+                self.lookup_model_with_ext_fallback(&candidate)
+            {
+                if no_ext_lower(&resolved_path) == no_ext_lower(&candidate) {
+                    digit_variants.push(ModelVariantFound {
+                        path: candidate,
+                        resolved_path,
+                        source,
+                    });
+                }
+            }
+        }
+
+        if !digit_variants.is_empty() {
+            return digit_variants;
+        }
+
+        if let Some((_buf, source, resolved_path)) =
+            self.lookup_model_with_ext_fallback(&stem)
+        {
+            if no_ext_lower(&resolved_path) == no_ext_lower(&stem) {
+                return vec![ModelVariantFound {
+                    path: stem,
+                    resolved_path,
+                    source,
+                }];
+            }
+        }
+
+        Vec::new()
+    }
+}
+
+// ─── Free-function shims (backward compatibility) ─────────────────────────────
+//
+// Each function creates a temporary Lookuper.  Code that calls these functions
+// in a tight loop should be updated to create one Lookuper and reuse it.
+
+/// Find `relative_path` using the cascading lookup.
+/// Returns `(file_bytes, source_label)` on success.
+pub fn lookup_file(relative_path: &str, archive_path: Option<&str>) -> Option<(Vec<u8>, String)> {
+    Lookuper::from_archive(archive_path)
+        .lookup(relative_path)
+        .map(|(b, s, _)| (b, s))
+}
+
+/// Like `lookup_file`, but with an explicit tileset override.
+pub fn lookup_file_ext(
+    relative_path: &str,
+    archive_path: Option<&str>,
+    tileset: Option<&str>,
+) -> Option<(Vec<u8>, String)> {
+    let gp = get_game_path();
+    Lookuper::new(archive_path, tileset, if gp.is_empty() { None } else { Some(gp.as_str()) })
+        .lookup(relative_path)
+        .map(|(b, s, _)| (b, s))
+}
+
+/// Like `lookup_file`, but also returns the resolved path.
+pub fn lookup_file_resolved(
+    relative_path: &str,
+    archive_path: Option<&str>,
+) -> Option<(Vec<u8>, String, String)> {
+    Lookuper::from_archive(archive_path).lookup(relative_path)
+}
+
+/// Like `lookup_file_resolved`, but with an explicit tileset override.
+pub fn lookup_file_resolved_ext(
+    relative_path: &str,
+    archive_path: Option<&str>,
+    tileset: Option<&str>,
+) -> Option<(Vec<u8>, String, String)> {
+    let gp = get_game_path();
+    Lookuper::new(archive_path, tileset, if gp.is_empty() { None } else { Some(gp.as_str()) })
+        .lookup(relative_path)
+}
+
+/// Kind-aware resolved lookup (`"model"`, `"texture"`, or generic).
+pub fn lookup_file_resolved_kind_ext(
+    relative_path: &str,
+    archive_path: Option<&str>,
+    tileset: Option<&str>,
+    kind: Option<&str>,
+) -> Option<(Vec<u8>, String, String)> {
+    let gp = get_game_path();
+    Lookuper::new(archive_path, tileset, if gp.is_empty() { None } else { Some(gp.as_str()) })
+        .lookup_kind(relative_path, kind)
+}
+
+/// Check whether `relative_path` exists anywhere in the cascade.
+pub fn lookup_file_exists(relative_path: &str, archive_path: Option<&str>) -> bool {
+    Lookuper::from_archive(archive_path).exists(relative_path)
+}
+
+/// Like `lookup_file_exists`, but with an explicit tileset override.
+pub fn lookup_file_exists_ext(
+    relative_path: &str,
+    archive_path: Option<&str>,
+    tileset: Option<&str>,
+) -> bool {
+    let gp = get_game_path();
+    Lookuper::new(archive_path, tileset, if gp.is_empty() { None } else { Some(gp.as_str()) })
+        .exists(relative_path)
+}
+
+/// Resolve existing model variants for a doodad/destructable model path.
+///
+/// Prefer passing a pre-built [`Lookuper`] in performance-sensitive callers.
+pub fn resolve_model_variants_ext(
+    search_path: &str,
+    archive_path: Option<&str>,
+    tileset: Option<&str>,
+) -> Vec<ModelVariantFound> {
+    let gp = get_game_path();
+    Lookuper::new(archive_path, tileset, if gp.is_empty() { None } else { Some(gp.as_str()) })
+        .resolve_model_variants(search_path)
+}
+
+// ─── Private helpers ──────────────────────────────────────────────────────────
 
 fn no_ext_lower(path: &str) -> String {
     let p = path.replace('\\', "/").to_ascii_lowercase();
@@ -115,7 +602,10 @@ fn no_ext_lower(path: &str) -> String {
 }
 
 fn model_variant_stem(search_path: &str) -> String {
-    let last_sep = search_path.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
+    let last_sep = search_path
+        .rfind(['/', '\\'])
+        .map(|i| i + 1)
+        .unwrap_or(0);
     let filename = &search_path[last_sep..];
     let (stem, had_ext) = match filename.rfind('.') {
         Some(dot) => (&filename[..dot], true),
@@ -129,422 +619,25 @@ fn model_variant_stem(search_path: &str) -> String {
     format!("{}{}", &search_path[..last_sep], base_stem)
 }
 
-/// Resolve existing model variants for doodad/destructable model path.
-///
-/// Probe order (limit 10): `stem0..stem9`, where `stem` is derived from `search_path`:
-/// - with extension: strip extension and trailing digits from filename stem
-/// - without extension: keep filename stem as-is
-///
-/// If at least one digit variant is found, returns only found digit variants.
-/// Otherwise probes base `stem` and returns it if found.
-pub fn resolve_model_variants_ext(
-    search_path: &str,
-    archive_path: Option<&str>,
-    tileset: Option<&str>,
-) -> Vec<ModelVariantFound> {
-    let stem = model_variant_stem(search_path);
-    if stem.is_empty() {
-        return Vec::new();
-    }
-
-    let mut digit_variants: Vec<ModelVariantFound> = Vec::new();
-    for i in 0..10 {
-        let candidate = format!("{}{}", stem, i);
-        if let Some((_buf, source, resolved_path)) = lookup_model_with_ext_fallback(&candidate, archive_path, tileset) {
-            // Strict path match by stem: candidate4 must not resolve to candidate.
-            if no_ext_lower(&resolved_path) == no_ext_lower(&candidate) {
-                digit_variants.push(ModelVariantFound {
-                    path: candidate,
-                    resolved_path,
-                    source,
-                });
-            }
-        }
-    }
-    if !digit_variants.is_empty() {
-        return digit_variants;
-    }
-
-    if let Some((_buf, source, resolved_path)) = lookup_model_with_ext_fallback(&stem, archive_path, tileset) {
-        if no_ext_lower(&resolved_path) == no_ext_lower(&stem) {
-            return vec![ModelVariantFound {
-                path: stem,
-                resolved_path,
-                source,
-            }];
-        }
-    }
-
-    Vec::new()
-}
-
-/// Core lookup with extension fallback (.mdx↔.mdl, .tga↔.blp) but
-/// **without** variation digit stripping.
-fn lookup_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
-    let lower = relative_path.to_ascii_lowercase();
-
-    // ── Model extension normalization: always try .mdx first, then .mdl ──
-    if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
-        let base = &relative_path[..relative_path.len() - 4];
-        let mdx_path = format!("{base}.mdx");
-        if let result @ Some(_) = lookup_cascade(&mdx_path, archive_path, tileset) {
-            return result;
-        }
-        let mdl_path = format!("{base}.mdl");
-        return lookup_cascade(&mdl_path, archive_path, tileset);
-    }
-
-    // ── Texture extension normalization: always try .tga first, then .blp ──
-    if lower.ends_with(".tga") || lower.ends_with(".blp") {
-        let base = &relative_path[..relative_path.len() - 4];
-        let tga_path = format!("{base}.tga");
-        if let result @ Some(_) = lookup_cascade(&tga_path, archive_path, tileset) {
-            return result;
-        }
-        let blp_path = format!("{base}.blp");
-        return lookup_cascade(&blp_path, archive_path, tileset);
-    }
-
-    // ── No extension: try as model (.mdx, .mdl), then as texture (.tga, .blp), then exact ──
-    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
-    if !lower[last_sep..].contains('.') {
-        // Model
-        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.mdx"), archive_path, tileset) {
-            return result;
-        }
-        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.mdl"), archive_path, tileset) {
-            return result;
-        }
-        // Texture
-        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.tga"), archive_path, tileset) {
-            return result;
-        }
-        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.blp"), archive_path, tileset) {
-            return result;
-        }
-    }
-
-    lookup_cascade(relative_path, archive_path, tileset)
-}
-
-/// Model-only lookup with extension fallback (.mdx/.mdl) and no texture probing.
-fn lookup_model_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
-    let lower = relative_path.to_ascii_lowercase();
-
-    if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
-        let base = &relative_path[..relative_path.len() - 4];
-        let mdx_path = format!("{base}.mdx");
-        if let result @ Some(_) = lookup_cascade(&mdx_path, archive_path, tileset) {
-            return result;
-        }
-        let mdl_path = format!("{base}.mdl");
-        return lookup_cascade(&mdl_path, archive_path, tileset);
-    }
-
-    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
-    if !lower[last_sep..].contains('.') {
-        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.mdx"), archive_path, tileset) {
-            return result;
-        }
-        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.mdl"), archive_path, tileset) {
-            return result;
-        }
-    }
-
-    lookup_cascade(relative_path, archive_path, tileset)
-}
-
-/// Texture-only lookup with extension fallback (.tga/.blp) and no model probing.
-fn lookup_texture_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
-    let lower = relative_path.to_ascii_lowercase();
-
-    if lower.ends_with(".tga") || lower.ends_with(".blp") {
-        let base = &relative_path[..relative_path.len() - 4];
-        let tga_path = format!("{base}.tga");
-        if let result @ Some(_) = lookup_cascade(&tga_path, archive_path, tileset) {
-            return result;
-        }
-        let blp_path = format!("{base}.blp");
-        return lookup_cascade(&blp_path, archive_path, tileset);
-    }
-
-    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
-    if !lower[last_sep..].contains('.') {
-        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.tga"), archive_path, tileset) {
-            return result;
-        }
-        if let result @ Some(_) = lookup_cascade(&format!("{relative_path}.blp"), archive_path, tileset) {
-            return result;
-        }
-    }
-
-    lookup_cascade(relative_path, archive_path, tileset)
-}
-
-/// Internal: search the full cascade for exactly `relative_path` (no extension fallbacks).
-fn lookup_cascade(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> Option<(Vec<u8>, String, String)> {
-    // Normalise to backslash for MPQ lookups and forward-slash for FS.
-    let mpq_path = relative_path.replace('/', "\\");
-    let fs_path = relative_path.replace('\\', "/");
-
-    // ── 1. Map archive ───────────────────────────────────────────
-    if let Some(ap) = archive_path {
-        if let Ok(archive) = storm_rs::MpqArchive::open(ap) {
-            // 1a. Direct file in map archive.
-            if let Ok(buf) = archive.read_file(&mpq_path) {
-                debug!("lookup_file: FOUND {relative_path} in map archive");
-                let label = format!("{{MAP}}\\{}", mpq_path);
-                return Some((buf, label, relative_path.into()));
-            }
-
-            // 1b. Tileset MPQ inside map archive — extract, open, search.
-            if let Some(ts) = tileset {
-                if !ts.is_empty() {
-                    let ch = ts.chars().next().unwrap_or('_').to_ascii_uppercase();
-                    let ts_mpq = format!("{ch}.mpq");
-                    if let Ok(ts_buf) = archive.read_file(&ts_mpq) {
-                        let temp_dir = std::env::temp_dir().join("jass-tree-sitter").join("map-tileset");
-                        if std::fs::create_dir_all(&temp_dir).is_ok() {
-                            let temp_path = temp_dir.join(&ts_mpq);
-                            if std::fs::write(&temp_path, &ts_buf).is_ok() {
-                                if let Ok(ts_archive) = storm_rs::MpqArchive::open(temp_path.to_string_lossy().as_ref()) {
-                                    if let Ok(buf) = ts_archive.read_file(&mpq_path) {
-                                        debug!("lookup_file: FOUND {relative_path} in map's {ts_mpq}");
-                                        let label = format!("{{MAP}}\\{}\\{}", ts_mpq, mpq_path);
-                                        return Some((buf, label, relative_path.into()));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // ── 2–7. Game folder + MPQ chain ─────────────────────────────
-    let game_path = get_game_path();
-    if game_path.is_empty() {
-        debug!("lookup_file: game path is empty, cannot search for {relative_path}");
-        return None;
-    }
-    let game_dir = Path::new(&game_path);
-
-    // 2. {tileset}.mpq (pre-discovered: loose file on disk or extracted from War3*.mpq)
-    if let Some(ts) = tileset {
-        if !ts.is_empty() {
-            let ch = ts.chars().next().unwrap_or('_').to_ascii_uppercase();
-            let ts_mpq = format!("{ch}.mpq");
-            if let Some(ts_path) = super::game_path::get_tileset_mpq(ts) {
-                debug!("lookup_file: trying {relative_path} in {ts_mpq} ({ts_path})");
-                if let Ok(archive) = storm_rs::MpqArchive::open(&ts_path) {
-                    if let Ok(buf) = archive.read_file(&mpq_path) {
-                        debug!("lookup_file: FOUND {relative_path} in {ts_mpq}");
-                        let label = format!("{{GAME}}\\{}\\{}", ts_mpq, mpq_path);
-                        return Some((buf, label, relative_path.into()));
-                    }
-                }
-                debug!("lookup_file: {relative_path} NOT in {ts_mpq}");
-            }
-        }
-    }
-
-    // 3. Direct file on disk
-    let disk_path = game_dir.join(&fs_path);
-    debug!("lookup_file: trying {relative_path} on disk at {}", disk_path.display());
-    if disk_path.is_file() {
-        if let Ok(buf) = std::fs::read(&disk_path) {
-            debug!("lookup_file: FOUND {relative_path} on disk");
-            let label = format!("{{GAME}}\\{}", mpq_path);
-            return Some((buf, label, relative_path.into()));
-        }
-    }
-
-    // 4–7. MPQ archives: standard chain (tileset already checked above)
-    for &mpq_name in MPQ_SEARCH_ORDER {
-        let mpq_file = game_dir.join(mpq_name);
-        if !mpq_file.exists() {
-            debug!("lookup_file: skipping {mpq_name} (not found at {})", mpq_file.display());
-            continue;
-        }
-        debug!("lookup_file: trying {relative_path} in {mpq_name}");
-        if let Ok(archive) = storm_rs::MpqArchive::open(mpq_file.to_string_lossy().as_ref()) {
-            if let Ok(buf) = archive.read_file(&mpq_path) {
-                debug!("lookup_file: FOUND {relative_path} in {mpq_name}");
-                let label = format!("{{GAME}}\\{}\\{}", mpq_name, mpq_path);
-                return Some((buf, label, relative_path.into()));
-            }
-        }
-        debug!("lookup_file: {relative_path} NOT in {mpq_name}");
-    }
-
-
-    None
-}
-
-/// Check whether `relative_path` exists anywhere in the cascade (without
-/// reading the contents).  Returns `true` on first hit.
-/// Automatically includes the global tileset MPQ.
-pub fn lookup_file_exists(relative_path: &str, archive_path: Option<&str>) -> bool {
-    let ts = super::game_path::get_tileset();
-    lookup_file_exists_ext(relative_path, archive_path, ts.as_deref())
-}
-
-/// Like `lookup_file_exists`, but with an optional tileset.
-pub fn lookup_file_exists_ext(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> bool {
-    // Try the exact path first (with extension fallbacks).
-    if exists_with_ext_fallback(relative_path, archive_path, tileset) {
-        return true;
-    }
-
-    // Variation fallback: strip trailing digits from the filename stem and retry.
-    if let Some(base) = strip_variation_digits(relative_path) {
-        return exists_with_ext_fallback(&base, archive_path, tileset);
-    }
-
-    false
-}
-
-/// Core existence check with extension fallback (.mdx↔.mdl, .tga↔.blp)
-/// but **without** variation digit stripping.
-fn exists_with_ext_fallback(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> bool {
-    let lower = relative_path.to_ascii_lowercase();
-
-    // ── Model extension normalization: always try .mdx first, then .mdl ──
-    if lower.ends_with(".mdx") || lower.ends_with(".mdl") {
-        let base = &relative_path[..relative_path.len() - 4];
-        if exists_cascade(&format!("{base}.mdx"), archive_path, tileset) {
-            return true;
-        }
-        return exists_cascade(&format!("{base}.mdl"), archive_path, tileset);
-    }
-
-    // ── Texture extension normalization: always try .tga first, then .blp ──
-    if lower.ends_with(".tga") || lower.ends_with(".blp") {
-        let base = &relative_path[..relative_path.len() - 4];
-        if exists_cascade(&format!("{base}.tga"), archive_path, tileset) {
-            return true;
-        }
-        return exists_cascade(&format!("{base}.blp"), archive_path, tileset);
-    }
-
-    // ── No extension: try as model (.mdx, .mdl), then as texture (.tga, .blp), then exact ──
-    let last_sep = lower.rfind(['/', '\\']).unwrap_or(0);
-    if !lower[last_sep..].contains('.') {
-        if exists_cascade(&format!("{relative_path}.mdx"), archive_path, tileset) { return true; }
-        if exists_cascade(&format!("{relative_path}.mdl"), archive_path, tileset) { return true; }
-        if exists_cascade(&format!("{relative_path}.tga"), archive_path, tileset) { return true; }
-        if exists_cascade(&format!("{relative_path}.blp"), archive_path, tileset) { return true; }
-    }
-
-    exists_cascade(relative_path, archive_path, tileset)
-}
-
-/// Internal: check existence in the full cascade (no extension fallbacks).
-fn exists_cascade(relative_path: &str, archive_path: Option<&str>, tileset: Option<&str>) -> bool {
-    let mpq_path = relative_path.replace('/', "\\");
-    let fs_path = relative_path.replace('\\', "/");
-
-    // 1. Map archive
-    if let Some(ap) = archive_path {
-        if let Ok(archive) = storm_rs::MpqArchive::open(ap) {
-            // 1a. Direct file in map archive.
-            if archive.read_file(&mpq_path).is_ok() {
-                return true;
-            }
-
-            // 1b. Tileset MPQ inside map archive.
-            if let Some(ts) = tileset {
-                if !ts.is_empty() {
-                    let ch = ts.chars().next().unwrap_or('_').to_ascii_uppercase();
-                    let ts_mpq = format!("{ch}.mpq");
-                    if let Ok(ts_buf) = archive.read_file(&ts_mpq) {
-                        let temp_dir = std::env::temp_dir().join("jass-tree-sitter").join("map-tileset");
-                        if std::fs::create_dir_all(&temp_dir).is_ok() {
-                            let temp_path = temp_dir.join(&ts_mpq);
-                            if std::fs::write(&temp_path, &ts_buf).is_ok() {
-                                if let Ok(ts_archive) = storm_rs::MpqArchive::open(temp_path.to_string_lossy().as_ref()) {
-                                    if ts_archive.read_file(&mpq_path).is_ok() {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // 2–7. Game folder + MPQ chain
-    let game_path = get_game_path();
-    if game_path.is_empty() {
-        return false;
-    }
-    let game_dir = Path::new(&game_path);
-
-    // 2. {tileset}.mpq (pre-discovered)
-    if let Some(ts) = tileset {
-        if !ts.is_empty() {
-            if let Some(ts_path) = super::game_path::get_tileset_mpq(ts) {
-                if let Ok(archive) = storm_rs::MpqArchive::open(&ts_path) {
-                    if archive.read_file(&mpq_path).is_ok() {
-                        return true;
-                    }
-                }
-            }
-        }
-    }
-
-    // 3. Direct file on disk
-    if game_dir.join(&fs_path).is_file() {
-        return true;
-    }
-
-    // 4–7. MPQ archives: standard chain (tileset already checked above)
-    for &mpq_name in MPQ_SEARCH_ORDER {
-        let mpq_file = game_dir.join(mpq_name);
-        if !mpq_file.exists() {
-            continue;
-        }
-        if let Ok(archive) = storm_rs::MpqArchive::open(mpq_file.to_string_lossy().as_ref()) {
-            if archive.read_file(&mpq_path).is_ok() {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 /// Strip trailing ASCII digits from the filename stem.
 ///
-/// Used for doodad/destructable variation fallback: the game appends a
-/// variation index (`0`, `1`, …) to the base model path.  If the
-/// variation-specific file doesn't exist, the engine falls back to the
-/// base path without the digit suffix.
-///
-/// Examples:
-/// * `"Doodads\\grass1"` → `Some("Doodads\\grass")`
+/// * `"Doodads\\grass1"`     → `Some("Doodads\\grass")`
 /// * `"Doodads\\grass1.mdx"` → `Some("Doodads\\grass.mdx")`
-/// * `"Doodads\\grass"` → `None`  (no trailing digits)
-/// * `"123"` → `None`  (entire stem is digits — not a variation)
+/// * `"Doodads\\grass"`      → `None`  (no trailing digits)
+/// * `"123"`                 → `None`  (entire stem is digits)
 fn strip_variation_digits(path: &str) -> Option<String> {
     let last_sep = path.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
     let filename = &path[last_sep..];
 
-    // Split filename into stem and extension.
     let (stem, ext) = match filename.rfind('.') {
         Some(dot) => (&filename[..dot], &filename[dot..]),
         None => (filename, ""),
     };
 
-    // Strip trailing digits from the stem.
     let trimmed = stem.trim_end_matches(|c: char| c.is_ascii_digit());
     if trimmed.len() == stem.len() || trimmed.is_empty() {
-        return None; // No trailing digits, or the entire stem is digits.
+        return None;
     }
 
     Some(format!("{}{}{}", &path[..last_sep], trimmed, ext))
 }
-

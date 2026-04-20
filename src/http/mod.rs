@@ -1,9 +1,12 @@
 pub(crate) mod api;
 pub(crate) mod blp_render;
 pub(crate) mod call_hierarchy;
+pub(crate) mod cliff_types;
+pub(crate) mod cliff_variations;
 pub(crate) mod code_action;
 pub(crate) mod color;
 pub(crate) mod completion;
+pub(crate) mod decorations;
 pub(crate) mod diagnostic;
 pub(crate) mod diff;
 pub(crate) mod document_link;
@@ -25,9 +28,11 @@ pub(crate) mod rename;
 pub(crate) mod semantic;
 pub(crate) mod server;
 pub(crate) mod signature_help;
-pub(crate) mod tile_textures;
-pub(crate) mod snapshot;
 pub(crate) mod terrain;
+pub(crate) mod terrain_slk;
+pub(crate) mod tile_textures;
 pub(crate) mod type_hierarchy;
+pub(crate) mod units;
+pub(crate) mod water;
+pub(crate) mod westrings;
 pub(crate) mod ws;
-

@@ -36,12 +36,12 @@ async fn main() {
         std::io::stdout().flush().ok();
     }
 
-    // ── Eagerly build snapshot if game path already configured ──
+    // ── Eagerly discover tileset MPQs if game path already configured ──
     tokio::task::spawn_blocking(|| {
         let gp = lng::map_editor::game_path::get_game_path();
         if !gp.is_empty() {
-            log::info!("Game path found on startup, building snapshot…");
-            lng::map_editor::snapshot::build_snapshot(None);
+            log::info!("Game path found on startup, discovering tileset MPQs…");
+            lng::map_editor::game_path::discover_tileset_mpqs();
         }
     });
 

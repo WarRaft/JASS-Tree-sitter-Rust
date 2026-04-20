@@ -610,6 +610,7 @@ pub async fn mpq_info(
     Query(auth): Query<AuthQuery>,
     Json(params): Json<MpqArchiveParam>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
+    debug_log!("MPQ info request for archive: {}", params.archive_path);
     auth.check()?;
     let path = params.archive_path.clone();
     let result = tokio::task::spawn_blocking(move || crate::lng::mpq::send::get_info_pub(&path))

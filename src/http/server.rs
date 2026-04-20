@@ -4,13 +4,19 @@
 //! Webviews `fetch()` binary terrain/model data directly — zero JSON/base64 overhead.
 
 use crate::http::blp_render::blp_render_handler;
+use crate::http::cliff_types::cliff_types_handler;
+use crate::http::cliff_variations::cliff_variations_handler;
+use crate::http::decorations::decorations_handler;
 use crate::http::file_lookup::file_lookup_handler;
 use crate::http::game_path::{game_path_set_handler, game_path_status_handler};
 use crate::http::mdx_texture::mdx_texture_handler;
 use crate::http::path_tex::path_tex_handler;
-use crate::http::tile_textures::tile_textures_handler;
-use crate::http::snapshot::{decorations_handler, snapshot_handler, units_handler};
 use crate::http::terrain::terrain_handler;
+use crate::http::terrain_slk::terrain_slk_handler;
+use crate::http::tile_textures::tile_textures_handler;
+use crate::http::units::units_handler;
+use crate::http::water::water_handler;
+use crate::http::westrings::westrings_handler;
 use axum::{Router, http::StatusCode, routing::{get, post}, serve::{Listener, ListenerExt}};
 use once_cell::sync::OnceCell;
 use serde::Deserialize;
@@ -72,7 +78,11 @@ pub async fn start_server() -> std::io::Result<u16> {
         // ── Map Editor routes ────────────────────────────────────────
         .route("/mapEditor/terrain", get(terrain_handler))
         .route("/mapEditor/file", get(file_lookup_handler))
-        .route("/mapEditor/snapshot", get(snapshot_handler))
+        .route("/mapEditor/westrings", get(westrings_handler))
+        .route("/mapEditor/terrainSlk", get(terrain_slk_handler))
+        .route("/mapEditor/cliffTypes", get(cliff_types_handler))
+        .route("/mapEditor/cliffVariations", get(cliff_variations_handler))
+        .route("/mapEditor/water", get(water_handler))
         .route("/mapEditor/decorations", get(decorations_handler))
         .route("/mapEditor/units", get(units_handler))
         .route("/mapEditor/tileTextures", get(tile_textures_handler))
@@ -162,7 +172,7 @@ pub async fn start_server() -> std::io::Result<u16> {
     });
 
     log::info!("Binary HTTP server listening on http://127.0.0.1:{port}");
-    crate::debug_log!("server started on port {port}");
+    crate::debug_log!("[rust] server started on port {port}");
 
     // Spawn the server — it runs forever alongside the LSP loop.
     tokio::spawn(async move {

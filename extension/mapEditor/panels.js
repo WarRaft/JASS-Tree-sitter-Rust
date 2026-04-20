@@ -530,7 +530,7 @@ function renderW3rContent(data) {
     <table class="info">${headerHtml}</table>
     <div style="padding:6px 10px 2px;flex-shrink:0;display:flex;align-items:center;gap:6px;">
         <label id="rgMasterToggle" style="display:inline-flex;align-items:center;gap:3px;cursor:pointer;font-size:11px;user-select:none;" title="Enable/disable region overlay on terrain">
-            <input type="checkbox" id="rgMasterCheckbox" checked style="cursor:pointer;margin:0;" />
+            <input type="checkbox" id="rgMasterCheckbox" style="cursor:pointer;margin:0;" />
         </label>
         <button id="rgShowAllBtn" style="font-size:11px;padding:2px 8px;cursor:pointer;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:3px;" title="Show all regions on terrain">Show All</button>
         <button id="rgHideAllBtn" style="font-size:11px;padding:2px 8px;cursor:pointer;background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff);border:none;border-radius:3px;" title="Hide all regions on terrain">Hide All</button>
