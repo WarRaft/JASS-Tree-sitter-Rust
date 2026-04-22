@@ -599,9 +599,22 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
         return null
     }
 
-    // ── Push initial snapshot if game path is already set ─────────
+    // ── Push initial snapshot once the WebView signals it is ready ────────
+    // The WebView sends 'webviewReady' after W3E.init() registers the message
+    // listener.  Triggering emitGamePathChanged from here (rather than
+    // immediately) avoids the race where gamePathChanged is delivered before
+    // the JS listener is registered — which happens whenever server-side data
+    // is cached and the HTTP responses return faster than the WebView loads its
+    // scripts (~10 ms vs ~100 ms).  A 1 s fallback fires if the ready signal
+    // is somehow never received (e.g. terrain.js threw before postMessage).
+    let _gamePathEmitted = false
     if (gamePathStatus.allPresent) {
-        emitGamePathChanged(gamePathStatus).catch(() => {})
+        setTimeout(() => {
+            if (!_gamePathEmitted) {
+                _gamePathEmitted = true
+                emitGamePathChanged(gamePathStatus).catch(() => {})
+            }
+        }, 1000)
     }
 
     // ── Helper: lookup a game file via HTTP server or WebSocket fallback ──
@@ -699,7 +712,13 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
     // ── Message handling ────────────────────────────────────────
     webviewPanel.webview.onDidReceiveMessage(async (msg) => {
-        if (msg.command === 'openFile' && isArchive) {
+        if (msg.command === 'webviewReady') {
+            // WebView JS is initialized — safe to deliver the initial snapshot.
+            if (gamePathStatus.allPresent && !_gamePathEmitted) {
+                _gamePathEmitted = true
+                emitGamePathChanged(gamePathStatus).catch(() => {})
+            }
+        } else if (msg.command === 'openFile' && isArchive) {
             const uri = MpqFileSystemProvider.makeUri(filePath, msg.name)
             const ext = (msg.name.split('.').pop() || '').toLowerCase()
             const viewTypeMap = {

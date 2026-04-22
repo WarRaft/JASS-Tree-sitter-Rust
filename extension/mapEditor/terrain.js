@@ -21,8 +21,17 @@
         w3rRegions: DATA.w3rRegions || null
     })
 
+    // ── Notify the extension host that the WebView is ready ─────────────
+    // The host delays emitGamePathChanged until this signal so that the
+    // gamePathChanged message is never delivered before the JS listener
+    // is registered (race condition when server data is cached).
+    if (vscode) {
+        vscode.postMessage({command: 'webviewReady'})
+    }
+
     // ── Three.js setup ──────────────────────────────────────────
     try {
+
         const hasTerrain = DATA.hasTerrain
         const canvas = document.getElementById('terrain')
         const renderer = new THREE.WebGLRenderer({canvas, antialias: true})
@@ -50,45 +59,44 @@
         if (hasTerrain) {
             const D = DATA.renderData
 
-            // ── Binary data: fetch from HTTP server or decode base64 ─
-            // When the binary HTTP server is available, we fetch raw bytes
-            // directly — zero JSON/base64 overhead. Falls back to base64.
-            const binaryUrl = DATA.binaryTerrainUrl
+             // ── Binary data: fetch from HTTP server or decode base64 ─
+             // When the binary HTTP server is available, we fetch raw bytes
+             // directly — zero JSON/base64 overhead. Falls back to base64.
+             const binaryUrl = DATA.binaryTerrainUrl
 
-            if (binaryUrl) {
-                // ── Direct binary fetch (optimal path) ───────────
-                try {
-                    const resp = await fetch(binaryUrl)
-                    if (resp.ok) {
-                        const buf = await resp.arrayBuffer()
-                        const view = new DataView(buf)
-                        let off = 0
-                        D.w = view.getUint32(off, true); off += 4
-                        D.h = view.getUint32(off, true); off += 4
-                        D.offsetX = view.getFloat32(off, true); off += 4
-                        D.offsetY = view.getFloat32(off, true); off += 4
-                        D.totalTiles = view.getUint32(off, true); off += 4
+             if (binaryUrl) {
+                 // ── Direct binary fetch (optimal path) ───────────
+                 try {
+                     const resp = await fetch(binaryUrl)
+                     if (!resp.ok) {
+                         throw new Error('HTTP ' + resp.status)
+                     }
+                     const buf = await resp.arrayBuffer()
+                     const view = new DataView(buf)
+                     let off = 0
+                     D.w = view.getUint32(off, true); off += 4
+                     D.h = view.getUint32(off, true); off += 4
+                     D.offsetX = view.getFloat32(off, true); off += 4
+                     D.offsetY = view.getFloat32(off, true); off += 4
+                     D.totalTiles = view.getUint32(off, true); off += 4
 
-                        const N = D.w * D.h
-                        D.groundHeight = new Uint16Array(buf, off, N); off += N * 2
-                        D.waterHeight = new Uint16Array(buf, off, N); off += N * 2
-                        D.groundTexture = new Uint8Array(buf, off, N); off += N
-                        D.groundVariation = new Uint8Array(buf, off, N); off += N
-                        D.cliffVariation = new Uint8Array(buf, off, N); off += N
-                        D.cliffTexture = new Uint8Array(buf, off, N); off += N
-                        D.layerHeight = new Uint8Array(buf, off, N); off += N
-                        D.flags = new Uint8Array(buf, off, N)
-                    } else {
-                        throw new Error('HTTP ' + resp.status)
-                    }
-                } catch (e) {
-                    console.warn('Binary fetch failed, falling back to base64:', e)
-                    decodeFallback(D)
-                }
-            } else {
-                // ── Base64 fallback ──────────────────────────────
-                decodeFallback(D)
-            }
+                     const N = D.w * D.h
+                     D.groundHeight = new Uint16Array(buf, off, N); off += N * 2
+                     D.waterHeight = new Uint16Array(buf, off, N); off += N * 2
+                     D.groundTexture = new Uint8Array(buf, off, N); off += N
+                     D.groundVariation = new Uint8Array(buf, off, N); off += N
+                     D.cliffVariation = new Uint8Array(buf, off, N); off += N
+                     D.cliffTexture = new Uint8Array(buf, off, N); off += N
+                     D.layerHeight = new Uint8Array(buf, off, N); off += N
+                     D.flags = new Uint8Array(buf, off, N)
+                 } catch (e) {
+                     console.warn('Binary fetch failed, falling back to base64:', e)
+                     decodeFallback(D)
+                 }
+             } else {
+                 // ── Base64 fallback ──────────────────────────────
+                 decodeFallback(D)
+             }
 
             function decodeFallback(D) {
                 function b64ToUint8(b64) {
@@ -828,7 +836,11 @@
                 canvasTex.needsUpdate = true
                 if (useTextures) {
                     mat.map = canvasTex
-                    mat.transparent = true
+                    // Keep terrain in opaque pass (transparent=false) to ensure it renders
+                    // before water and writes to the depth buffer first — matching HiveWE
+                    // render_ground() (opaque) → render_water() (depthMask=false) order.
+                    // alphaTest still discards fully-transparent pixels (cliff cell edges).
+                    mat.transparent = false
                     mat.alphaTest = 0.01
                     mat.needsUpdate = true
                 }
@@ -860,87 +872,87 @@
             function _showLoading() { if (_loadingBar) _loadingBar.classList.add('active') }
             function _hideLoading() { if (_loadingBar) _loadingBar.classList.remove('active') }
 
-            function loadAndComposite(textures) {
-                if (!textures || textures.length === 0) {
-                    _hideLoading()
-                    return
-                }
-                const tileImages = new Array(textures.length).fill(null)
-                let toLoad = 0
-                let loaded = 0
+             function loadAndComposite(textures) {
+                 if (!textures || textures.length === 0) {
+                     _hideLoading()
+                     return
+                 }
+                 const tileImages = new Array(textures.length).fill(null)
+                 let toLoad = 0
+                 let loaded = 0
 
-                textures.forEach((entry, i) => {
-                    if (!entry || !entry.dataUrl) return
-                    toLoad++
-                    const img = new Image()
-                    img.onload = () => {
-                        tileImages[i] = img
-                        if (++loaded === toLoad) {
-                            buildComposited(tileImages)
-                            _hideLoading()
-                        }
-                    }
-                    img.onerror = () => {
-                        console.warn('[W3E TEX] image', i, 'load error')
-                        if (++loaded === toLoad) {
-                            buildComposited(tileImages)
-                            _hideLoading()
-                        }
-                    }
-                    img.src = entry.dataUrl
-                })
+                 textures.forEach((entry, i) => {
+                     if (!entry || !entry.dataUrl) return
+                     toLoad++
+                     const img = new Image()
+                     img.onload = () => {
+                         tileImages[i] = img
+                         if (++loaded === toLoad) {
+                             buildComposited(tileImages)
+                             _hideLoading()
+                         }
+                     }
+                     img.onerror = () => {
+                         console.warn('[W3E TEX] image', i, 'load error')
+                         if (++loaded === toLoad) {
+                             buildComposited(tileImages)
+                             _hideLoading()
+                         }
+                     }
+                     img.src = entry.dataUrl
+                 })
 
-                if (toLoad === 0) {
-                    buildComposited(tileImages)
-                    _hideLoading()
-                } else {
-                    _showLoading()
-                }
-            }
+                 if (toLoad === 0) {
+                     buildComposited(tileImages)
+                     _hideLoading()
+                 } else {
+                     _showLoading()
+                 }
+             }
 
             // Initial load from render data
             loadAndComposite(TILE_TEXTURES)
 
             // Reload textures when game path changes — subscribe directly
-            // to the 'status' source node for immediate reaction.
-            // Fetches tile textures via HTTP (avoids large IPC payloads).
-            W3E.onStatusChanged(function (status) {
-                const bs = DATA.binaryServer
-                const codes = DATA.groundTileCodes
+             // to the 'status' source node for immediate reaction.
+             // Fetches tile textures via HTTP (avoids large IPC payloads).
+             W3E.onStatusChanged(function (status) {
+                 const bs = DATA.binaryServer
+                 const codes = DATA.groundTileCodes
 
-                if (!status || !status.hasPath) {
-                    // Game path cleared → fall back to palette mode
-                    loadAndComposite(codes ? codes.map(function () { return null }) : [])
-                    return
-                }
+                 if (!status || !status.hasPath) {
+                     // Game path cleared → fall back to palette mode
+                     loadAndComposite(codes ? codes.map(function () { return null }) : [])
+                     return
+                 }
 
-                if (bs && codes && codes.length > 0) {
-                    // codes are Rawcode objects {raw, text} — extract text strings
-                    const codeStrings = codes.map(function (c) { return typeof c === 'string' ? c : c.text })
-                    const params = new URLSearchParams({token: bs.token, codes: codeStrings.join(',')})
-                    if (DATA.archivePath) params.set('archive', DATA.archivePath)
-                    const url = 'http://127.0.0.1:' + bs.port + '/mapEditor/tileTextures?' + params
-                    _showLoading()
-                    fetch(url)
-                    .then(function (resp) {
-                        return resp.ok ? resp.json() : null
-                    })
-                    .then(function (textures) {
-                        if (textures) {
-                            loadAndComposite(textures)
-                        } else {
-                            console.warn('[W3E TEX] no textures in response')
-                            _hideLoading()
-                        }
-                    })
-                    .catch(function (e) {
-                        console.error('[W3E TEX] fetch error:', e)
-                        _hideLoading()
-                    })
-                } else {
-                    console.warn('[W3E TEX] no binary server or no codes, cannot fetch textures')
-                }
-            })
+                 if (bs && codes && codes.length > 0) {
+                     // codes are Rawcode objects {raw, text} — extract text strings
+                     const codeStrings = codes.map(function (c) { return typeof c === 'string' ? c : c.text })
+                     const params = new URLSearchParams({token: bs.token, codes: codeStrings.join(',')})
+                     if (DATA.archivePath) params.set('archive', DATA.archivePath)
+                     const url = 'http://127.0.0.1:' + bs.port + '/mapEditor/tileTextures?' + params
+                     _showLoading()
+                     fetch(url)
+                     .then(function (resp) {
+                         return resp.ok ? resp.json() : null
+                     })
+                     .then(function (textures) {
+                         if (textures) {
+                             loadAndComposite(textures)
+                         } else {
+                             console.warn('[W3E TEX] no textures in response')
+                             _hideLoading()
+                         }
+                     })
+                     .catch(function (e) {
+                         console.error('[W3E TEX] fetch error:', e)
+                         _hideLoading()
+                     })
+                 } else {
+                     console.warn('[W3E TEX] no binary server or no codes, cannot fetch textures')
+                 }
+             })
 
             // ── Wireframe grid ───────────────────────────────────
             // Two-level wireframe:
@@ -1109,7 +1121,7 @@
             if (showRamp) buildRampDiamonds()
             if (useTextures && canvasTex) {
                 mat.map = canvasTex
-                mat.transparent = true
+                mat.transparent = false // opaque pass — see comment in buildComposited
                 mat.alphaTest = 0.01
                 mat.needsUpdate = true
             }
@@ -1151,7 +1163,7 @@
                 useTextures = e.target.checked
                 const useTex = !!(useTextures && canvasTex)
                 mat.map = useTex ? canvasTex : colorTex
-                mat.transparent = useTex
+                mat.transparent = false // always opaque — terrain must render before water
                 mat.alphaTest = useTex ? 0.01 : 0
                 mat.needsUpdate = true
                 saveCbState()
@@ -1459,12 +1471,12 @@
             let _doodItems = DATA.doodadPlacements || []
             let _unitItems = DATA.unitPlacements || []
 
-            const _modelCache = {} // path → [{geometry, material}]
-            const _pendingItems = {} // path → [items]
-            const _textureLoader = new THREE.TextureLoader()
-            _textureLoader.crossOrigin = 'anonymous'
+             const _modelCache = {} // path → [{geometry, material}]
+             const _pendingItems = {} // path → [items]
+             const _textureLoader = new THREE.TextureLoader()
+             _textureLoader.crossOrigin = 'anonymous'
 
-            // ── Team Color / Team Glow texture generation (matches MdlVis) ──
+             // ── Team Color / Team Glow texture generation (matches MdlVis) ──
             const _TEAM_GLOW_ALPHA = [
                 1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,1,
                 1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
@@ -1556,27 +1568,27 @@
                 return 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params
             }
 
-            // Load cliff tile texture previews into <tile-item> elements
-            function _loadCliffTilePreviews() {
-                const items = document.querySelectorAll('#ctCliffSection tile-item')
-                if (!items.length) return
-                items.forEach(function (el) {
-                    const texPath = el.getAttribute('tile-path')
-                    if (!texPath) return
-                    const url = _texUrl(texPath)
-                    if (!url) return
-                    const img = new Image()
-                    img.crossOrigin = 'anonymous'
-                    img.onload = function () {
-                        const pc = document.createElement('canvas')
-                        pc.width = 64
-                        pc.height = 64
-                        pc.getContext('2d').drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, 64, 64)
-                        el.setAttribute('tile-preview', pc.toDataURL())
-                    }
-                    img.src = url
-                })
-            }
+             // Load cliff tile texture previews into <tile-item> elements
+             function _loadCliffTilePreviews() {
+                 const items = document.querySelectorAll('#ctCliffSection tile-item')
+                 if (!items.length) return
+                 items.forEach(function (el) {
+                     const texPath = el.getAttribute('tile-path')
+                     if (!texPath) return
+                     const url = _texUrl(texPath)
+                     if (!url) return
+                     const img = new Image()
+                     img.crossOrigin = 'anonymous'
+                     img.onload = function () {
+                         const pc = document.createElement('canvas')
+                         pc.width = 64
+                         pc.height = 64
+                         pc.getContext('2d').drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight, 0, 0, 64, 64)
+                         el.setAttribute('tile-preview', pc.toDataURL())
+                     }
+                     img.src = url
+                 })
+             }
 
             // ── Cliff per-vertex terrain height + normal shader ─────────────
             // Injects custom vertex code that:
@@ -1644,42 +1656,42 @@
                 }
             }
 
-            function _buildModel(data, replaceableTextures, isCliff) {
-                const geosets = data.geosets || []
-                const textures = data.textures || []
-                const materials = data.materials || []
-                const entries = []
+             function _buildModel(data, replaceableTextures, isCliff) {
+                 const geosets = data.geosets || []
+                 const textures = data.textures || []
+                 const materials = data.materials || []
+                 const entries = []
 
-                // Resolve texture path for a given layer
-                function _resolveLayerTexture(layer) {
-                    if (!layer) return null
-                    const texId = layer.texture_id
-                    if (texId == null || texId >= textures.length) return null
-                    const tex = textures[texId]
-                    if (!tex) return null
-                    let texPath = null
-                    if (tex.replaceable_id && replaceableTextures) {
-                        if (replaceableTextures._cliffTex !== undefined) {
-                            texPath = replaceableTextures._cliffTex
-                        } else if (replaceableTextures[tex.replaceable_id]) {
-                            texPath = replaceableTextures[tex.replaceable_id]
-                        }
-                    } else if (tex.file_name && !tex.replaceable_id) {
-                        texPath = tex.file_name
-                    }
-                    // Built-in replaceable textures: team color & team glow
-                    if (!texPath && tex.replaceable_id === 1) return _teamColorTex
-                    if (!texPath && tex.replaceable_id === 2) return _teamGlowTex
-                    if (!texPath) return null
-                    const url = _texUrl(texPath)
-                    if (!url) return null
-                    const t = _textureLoader.load(url)
-                    t.wrapS = THREE.RepeatWrapping
-                    t.wrapT = THREE.RepeatWrapping
-                    t.magFilter = THREE.LinearFilter
-                    t.minFilter = THREE.LinearMipmapLinearFilter
-                    return t
-                }
+                 // Resolve texture path for a given layer
+                 function _resolveLayerTexture(layer) {
+                     if (!layer) return null
+                     const texId = layer.texture_id
+                     if (texId == null || texId >= textures.length) return null
+                     const tex = textures[texId]
+                     if (!tex) return null
+                     let texPath = null
+                     if (tex.replaceable_id && replaceableTextures) {
+                         if (replaceableTextures._cliffTex !== undefined) {
+                             texPath = replaceableTextures._cliffTex
+                         } else if (replaceableTextures[tex.replaceable_id]) {
+                             texPath = replaceableTextures[tex.replaceable_id]
+                         }
+                     } else if (tex.file_name && !tex.replaceable_id) {
+                         texPath = tex.file_name
+                     }
+                     // Built-in replaceable textures: team color & team glow
+                     if (!texPath && tex.replaceable_id === 1) return _teamColorTex
+                     if (!texPath && tex.replaceable_id === 2) return _teamGlowTex
+                     if (!texPath) return null
+                     const url = _texUrl(texPath)
+                     if (!url) return null
+                     const t = _textureLoader.load(url)
+                     t.wrapS = THREE.RepeatWrapping
+                     t.wrapT = THREE.RepeatWrapping
+                     t.magFilter = THREE.LinearFilter
+                     t.minFilter = THREE.LinearMipmapLinearFilter
+                     return t
+                 }
 
                 // Build material options for a single layer (matches model-viewer.js buildLayerMesh)
                 function _buildLayerMaterial(layer, isCliff) {
@@ -1872,7 +1884,8 @@
                             it.p[1] - D.offsetY - halfGridH,
                             it.p[2]
                         )
-                        euler.set(it.rx || 0, it.ry || 0, it.a || 0, 'ZYX')
+                        const rz = it.rz != null ? it.rz : (it.a || 0)
+                        euler.set(it.rx || 0, it.ry || 0, rz, 'ZYX')
                         quat.setFromEuler(euler)
                         scl.set(it.s[0] || 1, it.s[1] || 1, it.s[2] || 1)
                         mat4.compose(pos, quat, scl)
@@ -2316,18 +2329,17 @@
                     const requestedFile = preResolved || file
                     const variation = preResolved ? 0 : (item.v || 0)
 
-                    // fixedRot override: positive or zero → fixed angle in degrees
-                    // (HiveWE Doodad::acceptable_angle: fixedRot >= 0 → radians(fixedRot))
-                    // Negative value (-1 default) means free rotation — use DOO angle.
+                    // fixedRot override: fixedRot >= 0 fully overrides DOO yaw.
+                    // Keep original DOO angle untouched in item.a and place with item.rz.
+                    const dooYaw = item.a || 0
                     const fixedRot = typeof entry === 'object' ? (entry.fixedRot != null ? entry.fixedRot : -1) : -1
-                    if (fixedRot >= 0) {
-                        item.a = fixedRot * Math.PI / 180
-                    }
+                    const finalYaw = fixedRot >= 0 ? fixedRot * Math.PI / 180 : dooYaw
+                    item.rz = finalYaw
 
-                    // Compute terrain-following tilt from maxPitch/maxRoll
+                    // Compute terrain-following tilt from maxPitch/maxRoll using final yaw.
                     const mp = typeof entry === 'object' ? (entry.maxPitch != null ? entry.maxPitch : 0) : 0
                     const mr = typeof entry === 'object' ? (entry.maxRoll != null ? entry.maxRoll : 0) : 0
-                    const tilt = _computeTerrainTilt(item.p[0], item.p[1], item.a || 0, mp, mr)
+                    const tilt = _computeTerrainTilt(item.p[0], item.p[1], finalYaw, mp, mr)
                     if (tilt) { item.rx = tilt.rx; item.ry = tilt.ry }
 
                     const cacheKey = requestedFile.toLowerCase() + '|' + variation + (texFile ? '|' + texFile : '')
@@ -2421,6 +2433,7 @@
             // Listen for model data coming back from the extension host
             window.addEventListener('message', function (e) {
                 const msg = e.data
+
                 if (msg && msg.command === 'mapObjectModel') {
                     const rawKey = msg.path.toLowerCase() + '|' + (msg.variation || 0)
                     _rawModelData[rawKey] = msg
@@ -2537,9 +2550,9 @@
 
             // Water texture animation state
             const _waterTextures = []     // THREE.Texture array (loaded async)
-            let _waterTexturesReady = false
-            let _waterFrame = 0           // float, advances by _waterTexRate * dt
-            let _waterLastFrame = -1      // last integer frame applied
+             let _waterTexturesReady = false
+             let _waterFrame = 0           // float, advances by _waterTexRate * dt
+             let _waterLastFrame = -1      // last integer frame applied
 
             // Depth thresholds (in tile units, matching HiveWE water.vert)
             const W_MIN_DEPTH = 10 / 128
@@ -2591,36 +2604,38 @@
                 return h
             }
 
-            // Load water textures asynchronously from the HTTP server
-            // Path format: {texFile}{i:02}.blp (e.g. "ReplaceableTextures\Water\Water00.blp")
-            function _loadWaterTextures() {
-                const bs = DATA.binaryServer
-                if (!bs || !_waterTexFile || _waterNumTex <= 0) return
-                let loaded = 0
-                for (let i = 0; i < _waterNumTex; i++) {
-                    const texPath = _waterTexFile + String(i).padStart(2, '0') + '.blp'
-                    const params = new URLSearchParams({token: bs.token, path: texPath})
-                    if (DATA.archivePath) params.set('archive', DATA.archivePath)
-                    if (DATA.tileset) params.set('tileset', DATA.tileset)
-                    const url = 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params
-                    const tex = _textureLoader.load(url, function () {
-                        loaded++
-                        if (loaded >= _waterNumTex) {
-                            _waterTexturesReady = true
-                            // Apply first frame immediately
-                            if (_waterMesh && _waterTextures[0]) {
-                                _waterMesh.material.map = _waterTextures[0]
-                                _waterMesh.material.needsUpdate = true
-                            }
-                        }
-                    })
-                    tex.wrapS = THREE.ClampToEdgeWrapping
-                    tex.wrapT = THREE.ClampToEdgeWrapping
-                    tex.magFilter = THREE.LinearFilter
-                    tex.minFilter = THREE.LinearMipmapLinearFilter
-                    _waterTextures[i] = tex
-                }
-            }
+             // Load water textures asynchronously from the HTTP server
+             // Path format: {texFile}{i:02}.blp (e.g. "ReplaceableTextures\Water\Water00.blp")
+             function _loadWaterTextures() {
+                 const bs = DATA.binaryServer
+                 if (!bs || !_waterTexFile || _waterNumTex <= 0) return
+                 _waterTexturesReady = false
+                 _waterTextures.length = 0 // Clear old textures
+                 let loaded = 0
+                 for (let i = 0; i < _waterNumTex; i++) {
+                     const texPath = _waterTexFile + String(i).padStart(2, '0') + '.blp'
+                     const params = new URLSearchParams({token: bs.token, path: texPath})
+                     if (DATA.archivePath) params.set('archive', DATA.archivePath)
+                     if (DATA.tileset) params.set('tileset', DATA.tileset)
+                     const url = 'http://127.0.0.1:' + bs.port + '/mdx/texture?' + params
+                     const tex = _textureLoader.load(url, function () {
+                         loaded++
+                         if (loaded >= _waterNumTex) {
+                             _waterTexturesReady = true
+                             // Apply first frame immediately
+                             if (_waterMesh && _waterTextures[0]) {
+                                 _waterMesh.material.map = _waterTextures[0]
+                                 _waterMesh.material.needsUpdate = true
+                             }
+                         }
+                     })
+                     tex.wrapS = THREE.ClampToEdgeWrapping
+                     tex.wrapT = THREE.ClampToEdgeWrapping
+                     tex.magFilter = THREE.LinearFilter
+                     tex.minFilter = THREE.LinearMipmapLinearFilter
+                     _waterTextures[i] = tex
+                 }
+             }
             _loadWaterTextures()
 
             // Advance water animation frame. Called from the render loop.
@@ -2807,7 +2822,7 @@
                 if (Object.keys(destDataMap).length > 0) {
                     _destFileMap = {}
                     for (const [rawId, d] of Object.entries(destDataMap)) {
-                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || '', maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0}
+                        if (d.file) _destFileMap[rawId] = {file: d.file, numVar: d.numVar || 1, texId: d.texId || 0, texFile: d.texFile || '', maxPitch: d.maxPitch != null ? d.maxPitch : 0, maxRoll: d.maxRoll != null ? d.maxRoll : 0, fixedRot: d.fixedRot != null ? d.fixedRot : -1}
                     }
                 }
                 if (units && units.unitsMerged && units.unitsMerged.units) {
@@ -3073,6 +3088,3 @@
         console.error('Three.js init error:', e)
     }
 })()
-
-
-
