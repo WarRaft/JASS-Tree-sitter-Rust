@@ -55,10 +55,15 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
     async function _fetchDecorations() {
         const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
-        if (!bs || !isArchive) return null
+        if (!bs || !isArchive || !bs.port || !bs.token) return null
         const params = new URLSearchParams({token: bs.token, archive: filePath})
         try {
-            const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/decorations?${params}`)
+            const controller = new AbortController()
+            const timeoutId = setTimeout(() => controller.abort(), 10000)
+            const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/decorations?${params}`, {
+                signal: controller.signal
+            })
+            clearTimeout(timeoutId)
             if (!resp.ok) return null
             const data = await resp.json()
             _cachedDecorations = data
@@ -70,10 +75,15 @@ async function resolveMapEditor(document, webviewPanel, _token, client, extensio
 
     async function _fetchUnits() {
         const bs = typeof getBinaryServer === 'function' ? getBinaryServer() : null
-        if (!bs || !isArchive) return null
+        if (!bs || !isArchive || !bs.port || !bs.token) return null
         const params = new URLSearchParams({token: bs.token, archive: filePath})
         try {
-            const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/units?${params}`)
+            const controller = new AbortController()
+            const timeoutId = setTimeout(() => controller.abort(), 10000)
+            const resp = await fetch(`http://127.0.0.1:${bs.port}/mapEditor/units?${params}`, {
+                signal: controller.signal
+            })
+            clearTimeout(timeoutId)
             if (!resp.ok) return null
             const data = await resp.json()
             _cachedUnits = data

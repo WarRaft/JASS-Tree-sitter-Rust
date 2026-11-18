@@ -530,16 +530,16 @@ function renderMapEditor(terrainData, fname, threeSrc, mapInfo) {
         </table>
         <div class="tw-section-title">Layers</div>
         <div class="terrain-checks">
-            <label class="menu-cb"><input type="checkbox" id="cbWater" checked /> Water</label>
-            <label class="menu-cb"><input type="checkbox" id="cbBoundary" /> Boundary</label>
-            <label class="menu-cb"><input type="checkbox" id="cbBlight" /> Blight</label>
-            <label class="menu-cb"><input type="checkbox" id="cbRamp" /> Ramp</label>
-            <label class="menu-cb"><input type="checkbox" id="cbWireframe" checked /> Wireframe</label>
-            <label class="menu-cb"><input type="checkbox" id="cbTextures" checked /> Textures</label>
-            <label class="menu-cb"><input type="checkbox" id="cbDeformation" checked /> Deformation</label>
-            <label class="menu-cb"><input type="checkbox" id="cbSlopes" checked /> Slopes</label>
-            <label class="menu-cb"><input type="checkbox" id="cbCliffs" checked /> Cliffs</label>
-            <label class="menu-cb"><input type="checkbox" id="cbObjects" checked /> Objects</label>
+            <toggle-check id="cbWater" key="cbWater" checked>Water</toggle-check>
+            <toggle-check id="cbBoundary" key="cbBoundary">Boundary</toggle-check>
+            <toggle-check id="cbBlight" key="cbBlight">Blight</toggle-check>
+            <toggle-check id="cbRamp" key="cbRamp">Ramp</toggle-check>
+            <toggle-check id="cbWireframe" key="cbWireframe" checked>Wireframe</toggle-check>
+            <toggle-check id="cbTextures" key="cbTextures" checked>Textures</toggle-check>
+            <toggle-check id="cbDeformation" key="cbDeformation" checked>Deformation</toggle-check>
+            <toggle-check id="cbSlopes" key="cbSlopes" checked>Slopes</toggle-check>
+            <toggle-check id="cbCliffs" key="cbCliffs" checked>Cliffs</toggle-check>
+            <toggle-check id="cbObjects" key="cbObjects" checked>Objects</toggle-check>
         </div>
     </float-window>
     ` : ''}

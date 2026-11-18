@@ -1011,3 +1011,123 @@ class UnitItem extends HTMLElement {
 
 customElements.define('unit-item', UnitItem);
 
+
+// ── <toggle-check> Custom Element ────────────────────────────────────
+// A keyboard-free checkbox replacement that uses emoji icons and
+// persists its state automatically via localStorage.
+//
+// Usage:
+//   <toggle-check key="cbWater" checked>Water</toggle-check>
+//   <toggle-check key="cbBoundary">Boundary</toggle-check>
+//
+// Attributes:
+//   key     – localStorage key used to persist the checked state
+//   checked – present when the checkbox is "on"
+//
+// Properties / API:
+//   .checked (get/set)
+//
+// Events:
+//   change – bubbles; e.target.checked reflects new state
+
+class ToggleCheck extends HTMLElement {
+    static get observedAttributes() { return ['checked']; }
+
+    constructor() {
+        super();
+        const shadow = this.attachShadow({mode: 'open'});
+        shadow.innerHTML = `
+<style>
+:host {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--vscode-editor-foreground, #ccc);
+    padding: 3px 6px;
+    border-radius: 3px;
+    white-space: nowrap;
+    user-select: none;
+    -webkit-user-select: none;
+}
+:host(:hover) { background: rgba(255, 255, 255, 0.06); }
+:host(:focus-visible) {
+    outline: 1.5px solid var(--vscode-focusBorder, #007acc);
+    outline-offset: 1px;
+}
+.icon {
+    font-size: 15px;
+    line-height: 1;
+    flex-shrink: 0;
+    display: inline-block;
+    /* prevent layout shift between ✅ and ⬜ */
+    min-width: 1em;
+    text-align: center;
+}
+</style>
+<span class="icon" id="icon"></span><slot></slot>`;
+
+        this._icon = shadow.getElementById('icon');
+
+        this.addEventListener('click', () => this._toggle());
+        this.setAttribute('tabindex', '0');
+        this.addEventListener('keydown', e => {
+            if (e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                this._toggle();
+            }
+        });
+
+        this._render();
+    }
+
+    connectedCallback() {
+        // Restore persisted state from localStorage (overrides HTML default
+        // only when a saved value exists, so HTML `checked` acts as the
+        // default for first-run).
+        const key = this.getAttribute('key');
+        if (key) {
+            const saved = localStorage.getItem('toggle-check:' + key);
+            if (saved !== null) {
+                const wasChecked = saved === 'true';
+                if (wasChecked) this.setAttribute('checked', '');
+                else this.removeAttribute('checked');
+            }
+        }
+        this._render();
+    }
+
+    attributeChangedCallback(name) {
+        if (name === 'checked') this._render();
+    }
+
+    get checked() { return this.hasAttribute('checked'); }
+    set checked(v) {
+        if (v) this.setAttribute('checked', '');
+        else this.removeAttribute('checked');
+    }
+
+    _toggle() {
+        this.checked = !this.checked;
+        const key = this.getAttribute('key');
+        if (key) {
+            localStorage.setItem('toggle-check:' + key, String(this.checked));
+        }
+        this.dispatchEvent(new CustomEvent('change', {
+            bubbles: true,
+            composed: true,
+            detail: {checked: this.checked},
+        }));
+    }
+
+    _render() {
+        if (this._icon) {
+            this._icon.textContent = this.checked ? '✅' : '⬜';
+        }
+    }
+}
+
+customElements.define('toggle-check', ToggleCheck);
+
+

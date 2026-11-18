@@ -1062,25 +1062,8 @@
             }
 
             // ── Checkbox state persistence ──────────────────────
-            const savedState = (vscode && vscode.getState()) || {}
-            const cbState = savedState.terrainChecks || {}
-
-            function saveCbState() {
-                if (!vscode) return
-                const st = vscode.getState() || {}
-                const checks = {};
-                ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation', 'cbSlopes', 'cbCliffs', 'cbObjects'].forEach(id => {
-                    const el = document.getElementById(id)
-                    if (el) checks[id] = el.checked
-                })
-                st.terrainChecks = checks
-                vscode.setState(st)
-            }
-
-            ['cbWater', 'cbBoundary', 'cbBlight', 'cbRamp', 'cbWireframe', 'cbTextures', 'cbDeformation', 'cbSlopes', 'cbCliffs', 'cbObjects'].forEach(id => {
-                const el = document.getElementById(id)
-                if (el && cbState[id] != null) el.checked = cbState[id]
-            })
+            // State is now persisted automatically by the <toggle-check>
+            // custom element via localStorage (key attribute).
 
             const cbWaterEl = document.getElementById('cbWater')
             const cbBoundaryEl = document.getElementById('cbBoundary')
@@ -1134,30 +1117,25 @@
                 showWater = e.target.checked
                 applyColors()
                 _buildWaterMesh()
-                saveCbState()
             })
             cb('cbBoundary', e => {
                 showBoundary = e.target.checked
                 applyColors()
                 if (_lastTileImages) buildComposited(_lastTileImages)
                 _updateInstanceBoundaryColors()
-                saveCbState()
             })
             cb('cbBlight', e => {
                 showBlight = e.target.checked
                 applyColors()
-                saveCbState()
             })
             cb('cbRamp', e => {
                 showRamp = e.target.checked
                 applyColors()
                 buildRampDiamonds()
-                saveCbState()
             })
             cb('cbWireframe', e => {
                 fineMesh.visible = e.target.checked
                 coarseMesh.visible = e.target.checked
-                saveCbState()
             })
             cb('cbTextures', e => {
                 useTextures = e.target.checked
@@ -1166,7 +1144,6 @@
                 mat.transparent = false // always opaque — terrain must render before water
                 mat.alphaTest = useTex ? 0.01 : 0
                 mat.needsUpdate = true
-                saveCbState()
             })
             cb('cbDeformation', e => {
                 showDeformation = e.target.checked
@@ -1175,7 +1152,6 @@
                 buildRampDiamonds()
                 _updateTerrainHeightTexture()
                 _buildWaterMesh()
-                saveCbState()
             })
             cb('cbSlopes', e => {
                 showSlopes = e.target.checked
@@ -1184,7 +1160,6 @@
                 buildRampDiamonds()
                 _updateTerrainHeightTexture()
                 _buildWaterMesh()
-                saveCbState()
             })
 
             const raycaster = new THREE.Raycaster()
@@ -2485,17 +2460,14 @@
 
             // Checkbox: toggle object visibility
             const cbObjectsEl = document.getElementById('cbObjects')
-            if (cbObjectsEl && cbState.cbObjects != null) cbObjectsEl.checked = cbState.cbObjects
             if (cbObjectsEl && !cbObjectsEl.checked) objectGroup.visible = false
 
             cb('cbObjects', e => {
                 objectGroup.visible = e.target.checked
-                saveCbState()
             })
 
             // Checkbox: toggle cliff model visibility
             const cbCliffsEl = document.getElementById('cbCliffs')
-            if (cbCliffsEl && cbState.cbCliffs != null) cbCliffsEl.checked = cbState.cbCliffs
             if (cbCliffsEl && !cbCliffsEl.checked) {
                 cliffGroup.visible = false
                 showCliffs = false
@@ -2508,7 +2480,6 @@
                 _updateCliffCells()
                 applyColors()
                 if (canvasTex) buildComposited(_lastTileImages || [])
-                saveCbState()
             })
 
             // Initial load if SLK maps have data
