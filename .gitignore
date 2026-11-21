@@ -1,4 +1,3 @@
-.DS_Store
 
 **/Cargo.lock
 package-lock.json
@@ -57,3 +56,5 @@ bin/
 
 /MdlVis/
 /HiveWE/
+# macOS Finder files, in any case (.DS_Store, .ds_store)
+.[Dd][Ss]_[Ss][Tt][Oo][Rr][Ee]
